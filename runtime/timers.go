@@ -10,13 +10,11 @@ import (
 // Timers is the real timer service: one goroutine, one table, Set-replaces
 // semantics.
 //
-// The table is a fixed array indexed by TimerID rather than a heap or a map,
-// because proto.AllTimerIDs is a closed set of three. That is not an
-// optimisation — it is what makes "Set on an armed timer REPLACES it" a
-// property of the data structure instead of a rule somebody has to remember.
-// A queue-shaped implementation would let two fires for one id exist at once,
-// and a duplicated retransmit fire is a retransmission storm no ring-1 test
-// could ever see.
+// A table indexed by TimerID rather than a heap or a map, because
+// proto.AllTimerIDs is a closed set of three: that makes "Set on an armed
+// timer REPLACES it" a property of the data structure rather than a rule to
+// remember. A queue would let two fires for one id exist at once, and a
+// duplicated retransmit fire is a storm no ring-1 test could see.
 //
 // One goroutine owns every time.Timer, so a Cancel racing a fire resolves in
 // one place. A fire that loses that race is dropped rather than delivered: the
@@ -32,11 +30,10 @@ type Timers struct {
 	done   chan struct{}
 }
 
-// numTimers is the size of the timer table. It is derived from the protocol's
-// closed set rather than written as a literal, so adding a TimerID cannot
-// silently index past the end here. Slices rather than arrays for exactly that
-// reason: an array length must be a constant, and a constant is a second copy
-// of a fact proto already owns.
+// numTimers is derived from the protocol's closed set, not written as a
+// literal, so adding a TimerID cannot silently index past the end here. Hence
+// slices: an array length must be constant, and a constant would be a second
+// copy of a fact proto already owns.
 var numTimers = len(proto.AllTimerIDs())
 
 // NewTimers returns a running timer service.

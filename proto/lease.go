@@ -9,13 +9,12 @@ import (
 
 // Lease is what the machine derived from an ACK.
 //
-// Every deadline is an Instant on the monotonic clock, because that is the
-// only clock ring 1 has and because RFC 2131 section 3.3 requires intervals to
-// be measured on a clock that does not step. Turning these into a persistable
-// wall-clock expiry is ring 2's job and is deliberately not done here: a
-// monotonic reading means nothing to the next process, and mixing the two
-// inside the pure ring is how a lease survives a restart with the wrong
-// deadline.
+// Every deadline is an Instant on the monotonic clock: the only clock ring 1
+// has, and RFC 2131 section 3.3 requires intervals to be measured on a clock
+// that does not step. Turning these into a persistable wall-clock expiry is
+// ring 2's job — a monotonic reading means nothing to the next process, and
+// mixing the two in the pure ring is how a lease survives a restart with the
+// wrong deadline.
 type Lease struct {
 	// Addr is the address with the mask the server gave, so a caller has the
 	// prefix in one value. When the server sends no subnet mask the prefix is
@@ -102,11 +101,11 @@ func (l Lease) RebindAt() (Instant, bool) {
 
 // Equal reports whether two leases would configure an interface identically.
 //
-// Start is deliberately NOT compared: a renewal of the same address produces a
-// new Start and an identical configuration, and a caller that reapplies the
-// address on every renewal is churning the interface for nothing. Options is
-// not compared either — it is the pass-through bag, and a server that reorders
-// an option nobody reads must not read as a changed lease.
+// Start is NOT compared: a renewal of the same address produces a new Start
+// and an identical configuration, and a caller that reapplied the address on
+// every renewal would churn the interface for nothing. Nor is Options, the
+// pass-through bag: a server reordering an option nobody reads is not a
+// changed lease.
 func (l Lease) Equal(o Lease) bool {
 	if l.Addr != o.Addr || l.ServerID != o.ServerID || l.Domain != o.Domain || l.MTU != o.MTU {
 		return false
@@ -137,10 +136,9 @@ func (l Lease) String() string {
 // missing either is not something to half-apply.
 //
 // The middle return is a note for the journal, empty when nothing was
-// anomalous. It exists because the one anomaly this function tolerates — a
-// non-contiguous subnet mask — changes the lease it hands back, and a silent
-// change is the kind that gets diagnosed as "the plugin used the wrong
-// prefix" months later.
+// anomalous. The one anomaly tolerated here — a non-contiguous subnet mask —
+// changes the lease handed back, and a silent change is the kind diagnosed as
+// "the plugin used the wrong prefix" months later.
 func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 	if !m.YIAddr.Is4() || m.YIAddr.IsUnspecified() {
 		return Lease{}, "", false

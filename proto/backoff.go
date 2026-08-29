@@ -9,14 +9,13 @@ package proto
 // to +1. The retransmission delay SHOULD be doubled with subsequent
 // retransmissions up to a maximum of 64 seconds."
 //
-// It is a struct rather than three constants because the same paragraph says
-// the delay "SHOULD be chosen to allow sufficient time for replies from the
-// server to be delivered based on the characteristics of the internetwork
-// between the client and the server", and gives 4/8/64 as an example "in a
-// 10Mb/sec Ethernet internetwork". A veth pair inside a network namespace is
-// not that internetwork. Configuring this for a test fixture is therefore
-// using the RFC's own knob, not weakening a test — and the RFC defaults are
-// pinned by their own table test so a change to them is visible.
+// A struct rather than three constants because the same paragraph says the
+// delay "SHOULD be chosen to allow sufficient time for replies from the server
+// to be delivered based on the characteristics of the internetwork between the
+// client and the server", and gives 4/8/64 only as an example "in a 10Mb/sec
+// Ethernet internetwork". Configuring it for a fixture is using the RFC's own
+// knob, not weakening a test; the defaults are pinned by
+// TestDefaultBackoffMatchesRFC2131.
 type Backoff struct {
 	// Initial is the delay before the first retransmission, before jitter.
 	Initial Duration
@@ -49,11 +48,11 @@ func DefaultBackoff() Backoff {
 // Delay returns the delay before retransmission number n, counting the first
 // retransmission as n == 0.
 //
-// The doubling is done by shifting Initial, with the shift count clamped
-// before it is applied. Clamping the RESULT instead would be wrong for a
-// large n in a way no test on small n can see: 4s << 62 overflows int64 and
-// comes back negative, and a negative delay is a timer that fires immediately
-// and retransmits in a tight loop.
+// The doubling stops at Max BEFORE it is applied. Doubling first and clamping
+// the result would be wrong for a large n in a way no test on small n can see:
+// 4s doubled 62 times overflows int64 and comes back negative, and a negative
+// delay is a timer that fires immediately and retransmits in a tight loop.
+// TestBackoffNeverOverflows.
 func (b Backoff) Delay(n int, rnd uint64) Duration {
 	if n < 0 {
 		n = 0
@@ -82,11 +81,10 @@ func (b Backoff) Exhausted(n int) bool {
 // jitter applies a uniform randomisation of +/- half over d, never returning a
 // negative delay.
 //
-// The modulo introduces a bias of at most one part in 2^64 divided by the
-// range, which for a range of 2*10^9 is on the order of 10^-10. Named rather
-// than hidden: it is not worth a rejection loop, and a rejection loop would
-// consume an unbounded number of entropy values per Step, which would break
-// the one-rnd-per-Step contract the journal depends on.
+// BOUND: the modulo biases the distribution by at most one part in 2^64/range,
+// on the order of 10^-10 for a one-second half-width. Not worth a rejection
+// loop, which would consume an unbounded number of entropy values per Step and
+// break the one-rnd-per-Step contract the journal depends on.
 func jitter(d, half Duration, rnd uint64) Duration {
 	if half <= 0 {
 		if d < 0 {
@@ -105,14 +103,13 @@ func jitter(d, half Duration, rnd uint64) Duration {
 
 // split derives the i-th independent value from one entropy input.
 //
-// Step is handed exactly one rnd, because journalling one value per Step is
-// what makes replay bit-exact and because a machine that pulled from a
-// generator would make replay depend on a call count. Some transitions need
-// two unrelated random values (a fresh xid AND a jittered delay), so they are
-// derived here by a fixed, pure mixing function of (rnd, i).
+// Step is handed exactly one rnd: journalling one value per Step is what makes
+// replay bit-exact, where pulling from a generator would make replay depend on
+// a call count. Transitions needing two unrelated values (a fresh xid AND a
+// jittered delay) derive them here instead.
 //
-// This is splitmix64's finalizer. It is used as a mixer, not as a source of
-// cryptographic randomness: the entropy comes from the caller.
+// splitmix64's finalizer, used as a mixer and not as a source of cryptographic
+// randomness — the entropy comes from the caller.
 func split(rnd uint64, i uint64) uint64 {
 	z := rnd + 0x9E3779B97F4A7C15*(i+1)
 	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9

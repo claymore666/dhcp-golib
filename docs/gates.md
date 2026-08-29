@@ -227,19 +227,18 @@ that fails for the wrong reason looks exactly like one that fails for the right
 one. `verify.sh` runs it as a step, so the verifier is checked by the command
 that runs the verifier.
 
-The scenarios cover: a clean copy passing; a verdict printed on a planted
-abort; a verdict printed with `go.mod` deleted; a required gate deleted; an
-unlisted gate added; a ring-1 impurity; a clock wait in a test; an unformatted
-file; a data race (which drives `-race`); a second run served from the test
-cache (which drives `-count=1`); a gate that panics; a gate that genuinely
-refuses; a shell script absent from the lint list; unreachable code, which only
-`go vet` sees; the oracle itself stubbed out, in both directions; a suite over
-the ceiling; the same suite under the shipped ceiling; and the ceiling's
-declared value.
+The scenario roster is the `SCENARIOS` list in that script, cross-checked in
+both directions against the `sc_*` functions beside it. Read it there, not
+here: a prose copy of a list the script already enforces is an unrun checklist,
+and this paragraph was one — it enumerated the scenarios as they stood before
+`hang-bounded`, `bounds-ordering` and `stale-citation` were added.
 
 **Every step's DELETION was driven, not assumed.** MEASURED 2026-08-29 by
 removing one step at a time from a copy of `verify.sh` and running the oracle
-against that copy:
+against that copy. The table covers the nine steps that existed at that
+measurement; `citations` and `bounds` were added later the same day, each
+driven by its own absence check at introduction — delete the step from a copy,
+watch its scenario report ABSENT — rather than by a re-run of this sweep:
 
 | step deleted from `verify.sh` | oracle scenarios that went red |
 |---|---|
@@ -254,7 +253,8 @@ against that copy:
 
 `vet` is why this sweep is in the document rather than in a transcript. It was
 the one step in the file that no scenario drove: with `step "vet" go vet ./...`
-deleted, the oracle passed **18 of 18**. A step nothing drives is a step that
+deleted, the oracle passed **18 of the 18 scenarios that existed then**. A step
+nothing drives is a step that
 can be deleted, which is the defect class of every finding this project has
 paid for twice.
 
@@ -299,7 +299,7 @@ to be typed into the invocation you are reading.
    like: the catch is `shellcheck` objecting that deleting the step left
    `--inner`'s variable unused. MEASURED 2026-08-29, composing past that single
    objection — one `disable=SC2034` and a `: "$INNER"` — the copy prints
-   `VERDICT: PASS (8 steps)` with the arbiter's own arbiter silently gone. This
+   a PASS verdict with the arbiter's own arbiter silently gone. This
    is inherent and not fixable from inside: a `verify.sh` that drops the step
    never runs the scenario that checks the step is there. Running
    `scripts/test-verify.sh` by hand is the only check for it, and running it by
@@ -325,13 +325,35 @@ to be typed into the invocation you are reading.
    have no `verify-oracle` row) but not mutation-driven, because that mutant is
    unbounded recursion and running it on a shared machine is not worth the
    evidence. MEASURED 2026-08-29 by hand instead, in both directions:
-   `./verify.sh` reports 9 steps including a `verify-oracle` row;
-   `./verify.sh --inner` reports 8 and no such row.
+   `./verify.sh` reports exactly one step more than `./verify.sh --inner`, and
+   the extra row is `verify-oracle`; the inner run has no such row. The counts
+   themselves are not written here — they move with every step added.
 4. **Two defensive arms that are unreachable today.** The `*)` unexpected
    exit-code arm — the gates return only 0/1/2 — and the "gate does not
    compile" arm, since a gate that fails to build fails `build`, `vet` and
    `unit-suite` first. Both are correct code and no test is owed; they are
    named here so a reader does not mistake them for gaps.
+
+### Two steps added 2026-08-29, and what each cannot see
+
+- **`citations`** fails the run when a `// See Test…` pointer in a comment
+  names a test no `_test.go` file declares. It exists because converting a
+  fact-comment into a pointer at a test is exactly how an invented test name
+  gets written down and believed: one was invented during that conversion, and
+  one already in the tree (`internal/gates/rings/policy_test.go`) named a test
+  that had never existed. Its bounds are stated where it is implemented — a
+  `Test...` token inside a Go string literal counts as a declaration, and `.sh`
+  files are outside the domain because the oracle plants test bodies into
+  heredocs. A third bound was found by writing this section: prose in a `.md`
+  file cannot use a PLACEHOLDER test name, because the check cannot tell a
+  placeholder from a citation. That is the loud direction, and it stays.
+  Driven by the `stale-citation` scenario and by its own absence: with the step
+  deleted from a copy, that scenario reports ABSENT.
+- **`bounds`** fails the run unless the `go test` hang timeout exceeds the
+  suite ceiling. That ordering was a comment saying nothing enforced it; it is
+  enforced now. Below the ceiling, a slow suite is killed before the ceiling
+  can diagnose it, and the run reports a hang where the truth is drift. Driven
+  by the `bounds-ordering` scenario and by its own absence, same shape.
 
 `shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
 `verify.sh`'s own steps. The linted list is enumerated AND cross-checked
@@ -383,7 +405,7 @@ review, and this was a blocking finding: the stream derivation guarded against
 `go doc` breaking — a signature it could not read was a failure — but not
 against its own pattern going inert. Neutering the regexp so it matched nothing
 left the whole suite green, and a ring-1 file calling `fmt.Fprintf` into a
-`bytes.Buffer` then passed the full lane at `VERDICT: PASS (9 steps)`. A check
+`bytes.Buffer` then passed the full lane with a PASS verdict. A check
 with one possible verdict reports that verdict.
 
 Two things stand behind it now, and they are different guards rather than one

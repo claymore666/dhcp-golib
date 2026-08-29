@@ -9,14 +9,13 @@ import (
 // Entropy is the real source of the rnd value each Step consumes.
 //
 // crypto/rand seeds it; a splitmix64 generator produces the stream. Not
-// math/rand: the transaction id derives from this, and RFC 2131 section 4.1
-// requires a client to "choose" an xid that a server uses to match responses,
-// which an attacker who can predict it can forge. Not crypto/rand per call
-// either — the machine consumes a value on EVERY Step, including ones that use
-// it for nothing, and a syscall per timer fire is a cost with no return.
+// math/rand: the transaction id derives from this, and an xid an attacker can
+// predict is an xid it can forge (RFC 2131 section 4.1). Not crypto/rand per
+// call either — the machine consumes a value on EVERY Step, and a syscall per
+// timer fire buys nothing.
 //
-// A seed failure is fatal by design. Continuing with a predictable stream would
-// mean a client whose xids can be guessed, which is worse than not starting.
+// A seed failure is fatal: a client whose xids can be guessed is worse than a
+// client that did not start.
 type Entropy struct {
 	mu    sync.Mutex
 	state uint64
@@ -31,10 +30,9 @@ func NewEntropy() (*Entropy, error) {
 	return &Entropy{state: binary.BigEndian.Uint64(b[:])}, nil
 }
 
-// NewEntropySeeded returns a deterministic source. It exists for replay and for
-// tests, and it is exported rather than test-only because a replay of a
-// recorded journal is a production feature (requirement G6), not a test
-// fixture.
+// NewEntropySeeded returns a deterministic source. Exported rather than
+// test-only because replaying a recorded journal is a production feature
+// (requirement G6), not a test fixture.
 func NewEntropySeeded(seed uint64) *Entropy { return &Entropy{state: seed} }
 
 // Uint64 returns the next value.

@@ -2,23 +2,11 @@
 #
 # test-verify.sh — the oracle for verify.sh.
 #
-# verify.sh is the only instrument in this repository with no external arbiter:
-# there is no CI (build plan §5.1), so nothing but this script ever asks
-# whether the verifier still detects anything. A gate nobody drives is
-# indistinguishable from a gate that passes everything.
-#
-# How it works, and why it does not recurse: it copies the tree, plants ONE
-# defect in the copy, runs the COPY's `./verify.sh --inner`, and asserts both
-# that the run failed AND that the row which failed is the row that owns the
-# defect. --inner is what stops the copy from running this script again. The
-# recursion obstacle is real, but it is specific to writing the oracle as a
-# `go test`: verify.sh runs `go test ./...`, so a Go test that ran verify.sh
-# would re-enter it with no place to put a flag. As a standalone script with
-# an explicit flag on the inner invocation, there is no recursion to break.
-#
-# Attributing the failure to the ROW, not just to the exit status, is the same
-# lesson that produced the guard in internal/gates/gatetest: a run that fails
-# for the wrong reason looks exactly like a run that fails for the right one.
+# Nothing but this script ever asks whether verify.sh still detects anything.
+# Each scenario copies the tree, plants ONE defect, runs the copy's
+# `./verify.sh --inner`, and asserts both that the run failed AND that the row
+# which failed is the row that owns the defect — a run that fails for the wrong
+# reason looks exactly like one that fails for the right reason.
 #
 # Usage:  scripts/test-verify.sh              run every scenario
 #         scripts/test-verify.sh --scenario N run one (used by the parallel driver)
@@ -32,9 +20,9 @@ ROOT="$PWD"
 
 JOBS="${ORACLE_JOBS:-4}"
 
-# Every scenario. The driver refuses if the number of result lines it collects
-# is not exactly the number of names here — a scenario that dies without
-# printing is otherwise a silent pass for the whole oracle.
+# Every scenario. The driver refuses if the number of result lines collected is
+# not exactly the number of names here: a scenario that dies without printing
+# is otherwise a silent pass for the whole oracle.
 SCENARIOS=(
 	control
 	verdict-on-abort
@@ -56,6 +44,8 @@ SCENARIOS=(
 	unlinted-shebang-script
 	oracle-is-invoked
 	hang-bounded
+	bounds-ordering
+	stale-citation
 )
 
 # ------------------------------------------------------------------ helpers --
@@ -72,9 +62,8 @@ copy_tree() {
 	[ -x "$1/verify.sh" ] || refuse "the copy has no executable verify.sh"
 }
 
-# edit FILE FROM TO — a sed that MUST change something. A mutation that
-# silently fails to apply leaves a pristine copy, and a pristine copy passes,
-# which is the one outcome this script must never mistake for a detection.
+# edit FILE FROM TO — an edit that MUST change something. A mutation that fails
+# to apply leaves a pristine copy, and a pristine copy passes.
 edit() {
 	local f="$1" from="$2" to="$3" before
 	before="$(cat "$f")"
@@ -104,9 +93,9 @@ run_verify_outer() {
 	OUT="$(cd "$1" && ./verify.sh 2>&1)" || RC=$?
 }
 
-# table — the step rows of $OUT and nothing else. Diagnostics are printed to
-# stderr and merged into OUT, so matching a step name anywhere in the output
-# would let a diagnostic line satisfy an assertion about a row.
+# table — the step rows of $OUT and nothing else. Diagnostics go to stderr and
+# are merged into OUT, so matching a step name anywhere in the output would let
+# a diagnostic line satisfy an assertion about a row.
 table() {
 	printf '%s\n' "$OUT" | awk '
 		/^----[ ]+------/ { in_table = 1; next }
@@ -115,9 +104,8 @@ table() {
 	'
 }
 
-# row NAME — PASS, FAIL, or ABSENT. ABSENT is a distinct answer on purpose:
-# an absent row is not a passing row, and a step that stopped existing is the
-# quietest way for a verifier to stop checking something.
+# row NAME — PASS, FAIL, or ABSENT. ABSENT is distinct on purpose: a step that
+# stopped existing is the quietest way for a verifier to stop checking.
 row() {
 	table | awk -v n="$1" '$1 == n { print $2; found = 1 } END { if (!found) print "ABSENT" }'
 }
@@ -143,9 +131,8 @@ sc_control() {
 sc_verdict_on_abort() {
 	local d="$1"
 	copy_tree "$d"
-	# A hard abort under `set -e`, planted at a point every run reaches. This
-	# drives the EXIT trap directly rather than through one known-bad line:
-	# the promise is "any abort still prints a verdict", not "this abort does".
+	# A hard abort under `set -e`, planted at a point every run reaches: the
+	# promise is "any abort still prints a verdict", not "this abort does".
 	edit "$d/verify.sh" '# -------------------------------------------------------------- gate roster --' \
 		'oracle_planted_command_that_does_not_exist'
 	run_verify "$d"
@@ -229,28 +216,20 @@ sc_gofmt_violation() {
 
 sc_vet_violation() {
 	# MEASURED 2026-08-29: deleting `step "vet" go vet ./...` from verify.sh
-	# left this oracle passing 18 of 18. Every other step in the file is
-	# cross-checked by some scenario that plants a defect only that step can
-	# see — deleting gofmt reddened 4 scenarios, shellcheck 2, the unit suite
-	# refused the run outright — and vet alone had no such witness. A step
-	# nothing drives is a step that can be deleted, which is the same defect
-	# class as a gate that cannot see whether it is still wired in.
+	# left this oracle passing 18 of 18 — vet was the one step no scenario
+	# drove, and a step nothing drives can be deleted silently.
 	#
-	# The bait is unreachable code, chosen for attribution rather than
-	# convenience: it is in `go vet`'s suite but NOT in the subset `go test`
-	# runs by default (atomic, bool, buildtags, directive, errorsas,
-	# ifaceassert, nilfunc, printf, stringintconv, tests), so it reddens the
-	# vet row and leaves unit-suite alone. A printf bait would have failed
-	# both rows and proved nothing about which one saw it.
+	# The bait is unreachable code because of attribution, not convenience: it
+	# is in `go vet`'s suite but NOT in the subset `go test` runs by default
+	# (atomic, bool, buildtags, directive, errorsas, ifaceassert, nilfunc,
+	# printf, stringintconv, tests), so it reddens the vet row and leaves
+	# unit-suite alone, which the rows below assert.
 	local d="$1"
 	copy_tree "$d"
 	printf 'package proto\n\nfunc vetBait() int {\n\treturn 0\n\treturn 1\n}\n' >"$d/proto/vetbait.go"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unreachable code passed the verifier"
 	[ "$(row vet)" = FAIL ] || note "vet did not report unreachable code: $(row vet)"
-	# Attribution, in the direction that catches a bait too blunt to localise:
-	# the plant compiles and is gofmt-clean, so a FAIL in either of those rows
-	# means this scenario is measuring something other than vet.
 	[ "$(row build)" = PASS ] || note "the vet bait broke the build; it is not a vet-only defect: $(row build)"
 	[ "$(row gofmt)" = PASS ] || note "the vet bait is unformatted; it is not a vet-only defect: $(row gofmt)"
 	[ "$(row unit-suite)" = PASS ] || note "the vet bait reddened the unit suite; go test's own vet subset saw it: $(row unit-suite)"
@@ -259,8 +238,8 @@ sc_vet_violation() {
 sc_race_detector() {
 	local d="$1"
 	copy_tree "$d"
-	# Drives -race behaviourally. Without it on the `go test` line this test
-	# passes: two goroutines racing on an int is not a failure, it is a race.
+	# Without -race on the `go test` line this test passes: two goroutines
+	# racing on an int is not a failure, it is a race.
 	cat >"$d/proto/race_test.go" <<'GO'
 package proto
 
@@ -295,10 +274,8 @@ GO
 sc_test_cache() {
 	local d="$1"
 	copy_tree "$d"
-	# Drives -count=1. Removing it lets the SECOND run be served from the test
-	# cache, and a cached PASS is a result that was not measured on this tree.
-	# The first run must still pass — otherwise the second run's failure could
-	# be anything.
+	# Removing -count=1 lets the SECOND run be served from the test cache. The
+	# first run must still pass, or the second run's failure could be anything.
 	edit "$d/verify.sh" 'go test -race -count=1 -timeout' 'go test -race -timeout'
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "the first run of the -count=1-less copy did not pass: exit $RC"
@@ -310,10 +287,9 @@ sc_test_cache() {
 
 # ceiling_tree DEST — a copy whose suite genuinely takes a few seconds.
 #
-# The delay is a busy loop and not time.Sleep on purpose: T2 would refuse the
-# sleep, and the row under test here is unit-suite. It is also the exact shape
-# docs/gates.md names as beyond T2's reach — built entirely from allowlisted
-# identifiers — so this doubles as a live demonstration of that bound.
+# A busy loop and not time.Sleep: T2 would refuse the sleep, and the row under
+# test here is unit-suite. It is also the shape docs/gates.md names as beyond
+# T2's reach, so this doubles as a live demonstration of that bound.
 ceiling_tree() {
 	copy_tree "$1"
 	cat >"$1/proto/slow_test.go" <<'GO'
@@ -344,9 +320,8 @@ sc_ceiling_fires() {
 }
 
 sc_ceiling_control() {
-	# The preservation control for the scenario above, and the reason it is a
-	# measurement rather than a coincidence: the SAME slow test under the SAME
-	# copy, with the ceiling left where it ships, must PASS. Without this the
+	# The preservation control for the scenario above: the SAME slow test under
+	# the SAME copy, with the ceiling where it ships, must PASS. Without it the
 	# scenario above proves only that a busy loop breaks something.
 	local d="$1"
 	ceiling_tree "$d"
@@ -356,13 +331,11 @@ sc_ceiling_control() {
 }
 
 sc_hang_bounded() {
-	# Drives the -timeout on the suite. A test that never returns cannot be
-	# caught by the wall-clock ceiling — the ceiling is computed after go test
-	# returns — so without the flag this scenario would hang the oracle, which
-	# is exactly the failure it exists to make impossible.
-	#
-	# The hang is a receive on a channel with no sender: no time and no context
-	# identifier anywhere, so T2 cannot see it, which is asserted below.
+	# A test that never returns cannot be caught by the wall-clock ceiling,
+	# which is computed after `go test` returns — so without -timeout this
+	# scenario would hang the oracle. The hang is a receive on a channel with
+	# no sender: no time or context identifier, so T2 cannot see it either,
+	# which the last row asserts.
 	local d="$1"
 	copy_tree "$d"
 	cat >"$d/proto/hang_test.go" <<'GO'
@@ -385,12 +358,39 @@ GO
 	[ "$(row t2)" = PASS ] || note "the planted hang tripped T2; the timeout is not what failed this run"
 }
 
+sc_bounds_ordering() {
+	# The ordering between the two suite bounds used to be prose saying nothing
+	# enforced it. This drives the check that now does: only the timeout moves,
+	# and it moves BELOW the shipped ceiling.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'SUITE_TIMEOUT_SECONDS=180' 'SUITE_TIMEOUT_SECONDS=30'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a hang timeout below the ceiling passed"
+	[ "$(row bounds)" = FAIL ] || note "the bounds step did not catch it: $(row bounds)"
+	[ "$(row unit-suite)" = PASS ] || note "the suite itself failed; this run failed for a reason this scenario does not name: $(row unit-suite)"
+}
+
+sc_stale_citation() {
+	# A comment pointing at a test that does not exist. The plant is a comment
+	# line, so it is gofmt-clean and compiles, and only the citations row can
+	# see it.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'package proto' 'package proto
+
+// See TestThisCitationWasNeverWritten.'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a comment citing a test that does not exist passed"
+	[ "$(row citations)" = FAIL ] || note "citations did not report the stale pointer: $(row citations)"
+	[ "$(row gofmt)" = PASS ] || note "the planted comment is unformatted; this run failed for a reason this scenario does not name"
+	[ "$(row unit-suite)" = PASS ] || note "the planted comment broke the suite: $(row unit-suite)"
+}
+
 sc_gate_panic() {
-	# A Go panic exits 2 and so does a deliberate REFUSE, so the exit code
-	# alone cannot say which happened. Both are a FAIL, which is why this was
-	# never a correctness hole — but a crash reported as "could not measure its
-	# domain" sends the reader to the wrong place. The gates print a REFUSED
-	# line; this drives verify.sh actually reading it.
+	# A panic and a deliberate REFUSE both exit 2. Both are a FAIL, so this was
+	# never a correctness hole, but a crash reported as "could not measure its
+	# domain" sends the reader to the wrong place.
 	local d="$1"
 	copy_tree "$d"
 	edit "$d/internal/gates/t2/main.go" 'func main() {' 'func main() {
@@ -403,13 +403,10 @@ sc_gate_panic() {
 }
 
 sc_gate_refuses() {
-	# The other direction of the split above, and the reason it is a split at
-	# all. MEASURED 2026-08-29: with only the crash scenario, mutating
-	# verify.sh to report EVERY exit-2 as a crash survived — nothing drove a
-	# gate that genuinely declines to measure its domain.
-	#
-	# Deleting a ring root is that case: T1 rule D refuses rather than passing,
-	# because a universal claim about an empty set is not a pass.
+	# The other direction of the split above. MEASURED 2026-08-29: with only
+	# the crash scenario, mutating verify.sh to report EVERY exit-2 as a crash
+	# survived. Deleting a ring root is the refusing case — T1 rule D declines
+	# rather than passing a universal claim about an empty set.
 	local d="$1"
 	copy_tree "$d"
 	rm -rf "$d/proto"
@@ -421,11 +418,8 @@ sc_gate_refuses() {
 }
 
 sc_unlinted_script() {
-	# The shell scripts that get linted are enumerated in verify.sh and
-	# cross-checked against the ones that exist. A list that discovers itself
-	# is silenced by moving a file out of the glob; a list that is only
-	# enumerated is silenced by adding a file nobody lists. This drives the
-	# second direction, which is the one an enumeration cannot cover.
+	# The lint list is enumerated in verify.sh, so it is silenced by adding a
+	# file nobody lists. This drives that direction.
 	local d="$1"
 	copy_tree "$d"
 	printf '#!/bin/sh\necho unlisted\n' >"$d/scripts/extra.sh"
@@ -437,9 +431,9 @@ sc_unlinted_script() {
 
 sc_unlinted_shebang_script() {
 	# The half a suffix glob cannot see. MEASURED 2026-08-29 by review: the
-	# lint roster keyed on ".sh" while its own comments claimed "every
-	# executable shell script" and "every tracked .sh". A script with a shebang
-	# and no extension satisfied none of the three and was linted by nothing.
+	# roster keyed on ".sh" while its comments claimed "every executable shell
+	# script" and "every tracked .sh"; a shebang script with no extension
+	# satisfied none of the three and was linted by nothing.
 	local d="$1"
 	copy_tree "$d"
 	printf '#!/bin/sh\necho unlisted\n' >"$d/scripts/preflight"
@@ -453,15 +447,13 @@ sc_unlinted_shebang_script() {
 
 sc_oracle_is_invoked() {
 	# MEASURED 2026-08-29: replacing verify.sh's oracle step with a hardcoded
-	# PASS survived every scenario here. It had to — this script IS the control
-	# for those mutants, and mutate.sh runs it directly, so verify.sh dropping
-	# the step is invisible from inside it. A gate that cannot see whether it
-	# is still wired in is the defect class both blocking findings were.
+	# PASS survived every scenario here — this script IS the control for those
+	# mutants, so verify.sh dropping the step was invisible from inside it.
 	#
 	# Checking it needs the UNFLAGGED invocation, which would normally recurse.
-	# The recursion is bounded by replacing the copy's oracle with a stub: the
-	# stub answers, does not call verify.sh, and its answer is chosen by this
-	# scenario — so both directions are drivable and neither runs deep.
+	# Replacing the copy's oracle with a stub bounds that: the stub answers
+	# without calling verify.sh, and this scenario chooses its answer, so both
+	# directions are drivable and neither runs deep.
 	local d="$1" stub marker
 	marker="oracle-stub-was-invoked"
 	copy_tree "$d"
@@ -485,12 +477,11 @@ sc_oracle_is_invoked() {
 }
 
 sc_ceiling_band() {
-	# A STRUCTURAL check, and weaker than the others by construction — say so
-	# rather than let the table imply otherwise. Driving the ceiling's VALUE
-	# behaviourally needs a suite between the real ceiling and a raised one,
-	# i.e. minutes of wall clock per run. This costs nothing and still kills
-	# the two mutations that matter: deleting the line, and raising it to a
-	# number no suite could ever reach.
+	# STRUCTURAL, and weaker than the others by construction — driving the
+	# ceiling's VALUE behaviourally would need a suite between the real ceiling
+	# and a raised one, i.e. minutes of wall clock per run. This still kills the
+	# two mutations that matter: deleting the line, and raising it beyond any
+	# suite's reach.
 	local v
 	v="$(sed -n 's/^SUITE_CEILING_SECONDS=\([0-9][0-9]*\)$/\1/p' "$ROOT/verify.sh")"
 	[ -n "$v" ] || {
@@ -529,16 +520,12 @@ fi
 command -v python3 >/dev/null 2>&1 || refuse "python3 is not on PATH; planted edits cannot be applied"
 
 # The oracle's own roster, cross-checked in BOTH directions against the sc_*
-# functions this file defines — the same shape verify.sh applies to its gates,
-# and for the same reason: a universal claim is satisfied by emptying its
-# domain, so "every scenario passed" is worth exactly as much as the scenario
-# list is hard to shorten. Deleting a name from SCENARIOS shrinks the run
-# silently; this makes it a REFUSAL.
+# functions defined here: a universal claim is satisfied by emptying its
+# domain, so deleting a name from SCENARIOS is a REFUSAL rather than a shorter
+# run.
 #
-# Its bound, named rather than left for a reader to discover: deleting a name
-# AND its function together is consistent, and this check cannot see it. What
-# it buys is that the cheap edit — one line out of the array — is not the
-# quiet one. The expensive edit remains available to anyone who wants it.
+# BOUND: deleting a name AND its function together is consistent, and this
+# cannot see it. What it buys is that the cheap edit is not the quiet one.
 declared="$(printf '%s\n' "${SCENARIOS[@]}" | tr - _ | sort)"
 defined="$(declare -F | sed -n 's/^declare -f sc_//p' | sort)"
 if [ "$declared" != "$defined" ]; then

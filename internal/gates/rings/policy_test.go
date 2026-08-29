@@ -101,9 +101,9 @@ func TestPureRefusedPkgsAreAbsent(t *testing.T) {
 }
 
 // TestRefusedIdentsAreNotAllowed keeps the two kinds of table disjoint. It is
-// cheap and it is not the real guard — TestRefusedIdentsAreDrivenThroughTheGates
-// in the t1 and t2 packages is, because membership in a map proves nothing
-// about what the gate does.
+// cheap and it is not the real guard: membership in a map proves nothing about
+// what the gate does, so TestPureRefusedIdentsAreRefusedByTheGate and
+// TestTestRefusedIdentsAreRefusedByTheGate drive them through the built gates.
 func TestRefusedIdentsAreNotAllowed(t *testing.T) {
 	check := func(kind string, refused map[string][]string, allowed map[string]map[string]bool) {
 		if len(refused) == 0 {

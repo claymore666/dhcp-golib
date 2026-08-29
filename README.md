@@ -16,14 +16,11 @@ Transactions, timers, the state machine, persistence, change notification.
 ## Design
 
 The architecture document and the protocol conformance checklist are held
-privately alongside the plugin project, not in this tree. This README states
-the part a reader needs before opening any file; `docs/gates.md` states what
-the two gates enforce and what they cannot see.
-
-This paragraph used to name those documents by their exact path under the
-plugin's gitignored notes directory. That path is private scaffolding, and this
-repository publishes the day the plugin depends on it — so the reference would
-have gone public with it.
+privately alongside the plugin project, not in this tree, and are deliberately
+not named by path: this repository publishes on the trigger above, and a path
+into private scaffolding would publish with it. This README states the part a
+reader needs before opening any file; `docs/gates.md` states what the two gates
+enforce and what they cannot see.
 
 The one thing to know before reading any code: **ring 1 is pure.** The
 state machine is `Step(now, rnd, event) -> (state, []action)` with no I/O, no
@@ -117,27 +114,31 @@ FAIL. A step that cannot be measured is a FAIL, never a skip.
 It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
 a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
-that never returns — it is computed after `go test` comes back), and its own
-oracle.
+that never returns — it is computed after `go test` comes back), a check that
+the hang timeout exceeds that ceiling, a check that every `See Test…` pointer
+in a comment names a test that exists, and its own oracle.
 
 "Every check" is bounded, and the bound is worth stating because it is the
 shape of the failure this repository keeps finding: **a check runs only if
 `verify.sh` calls it, and nothing inside `verify.sh` notices a call that is no
 longer there.** So the deletion of each step was driven rather than assumed.
 MEASURED 2026-08-29, deleting one step at a time from a copy and running
-`scripts/test-verify.sh` against it: eight of the nine steps redden at least
-one oracle scenario — `gofmt` 4, the gate roster 3, the two gates 6, the unit
-suite refuses the run outright, `shellcheck` 2, `build` and `vet` 1 each.
-Those counts were taken against the 19-scenario oracle, before `hang-bounded`
-was added later the same day. They are LOWER bounds now rather than equalities:
-a scenario can only add a detection, never remove one, and nobody re-ran the
-nine deletions.
+`scripts/test-verify.sh` against it: eight of the nine steps then present
+redden at least one oracle scenario — `gofmt` 4, the gate roster 3, the two
+gates 6, the unit suite refuses the run outright, `shellcheck` 2, `build` and
+`vet` 1 each. Those counts were taken against the 19-scenario oracle, before
+`hang-bounded`, `bounds-ordering` and `stale-citation` were added later the
+same day. They are LOWER bounds now rather than equalities: a scenario can only
+add a detection, never remove one, and nobody re-ran the nine deletions. The
+two steps added after that sweep — the timeout-ordering check and the citation
+check — were each driven by deleting the step from a copy and watching the
+scenario that owns it report ABSENT.
 
-`vet` had no witness until this measurement was taken; it passed 18 of 18 with
-the step deleted, and the `vet-violation` scenario exists because of that.
+`vet` had no witness until this measurement was taken; it passed 18 of the 18
+scenarios that existed then with the step deleted, and the `vet-violation`
+scenario exists because of that.
 
-The ninth step is the oracle itself, and it is the one that cannot be closed
-from the inside: see below.
+The oracle step is the one that cannot be closed from the inside: see below.
 
 There is no CI on this repository and there will not be: the self-hosted
 runners belong to the plugin repository and cannot serve a second private repo
@@ -151,8 +152,8 @@ That loop closes only while it is wired, and it cannot close itself: a
 `verify.sh` that drops its oracle step never runs the scenario that checks the
 step is there. MEASURED 2026-08-29 — deleting the step is caught, but only
 incidentally, by `shellcheck` objecting that `--inner`'s variable became
-unused; composing past that one objection gives a clean `VERDICT: PASS (8
-steps)` with the arbiter's own arbiter silently gone. Running
+unused; composing past that one objection gives a clean PASS verdict with the
+arbiter's own arbiter silently gone. Running
 `scripts/test-verify.sh` directly is the check for that, and it is a human act,
 not a wired one. The rest of what neither can see is in `docs/gates.md`.
 

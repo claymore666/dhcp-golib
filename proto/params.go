@@ -10,10 +10,9 @@ import (
 
 // Params is everything the machine needs that is not an event.
 //
-// It is a value, copied into the Machine at New, and the Machine never mutates
-// it. Two consequences that are the point rather than an accident: a replay
-// constructs the same Machine from the same Params, and nothing outside can
-// change the machine's configuration between two Steps.
+// A value, copied into the Machine at New and never mutated, so that a replay
+// constructs the same Machine from the same Params and nothing outside can
+// change the configuration between two Steps.
 type Params struct {
 	// CHAddr is the client hardware address. Required: RFC 2131 section 4.4.1
 	// makes it a MUST when it is needed for reply delivery, which it always is
@@ -54,14 +53,12 @@ type Params struct {
 	// Broadcast sets the BROADCAST flag (RFC 2131 section 2), asking the
 	// server to broadcast its replies.
 	//
-	// It defaults to TRUE in DefaultParams and that is deliberate. The flag
-	// exists for "a client that cannot receive unicast IP datagrams until its
-	// protocol software has been configured with an IP address" (RFC 2131
-	// section 4.1), and a raw AF_PACKET socket on an unconfigured interface is
-	// exactly that: the kernel has no address on the link, so a unicast IP
-	// reply addressed to yiaddr is not delivered to any socket. Clearing this
-	// while ring 3 is a raw socket produces a client that works against
-	// servers which ignore the flag and hangs against those which honour it.
+	// TRUE in DefaultParams. The flag exists for "a client that cannot receive
+	// unicast IP datagrams until its protocol software has been configured
+	// with an IP address" (RFC 2131 section 4.1), which is exactly a raw
+	// AF_PACKET socket on an unconfigured interface. Clearing it while ring 3
+	// is a raw socket produces a client that works against servers ignoring
+	// the flag and hangs against those honouring it.
 	Broadcast bool
 
 	// Discover and Request are the retransmission schedules for the two
@@ -73,10 +70,10 @@ type Params struct {
 	// 4.4.1: "The client SHOULD wait a random time between one and ten seconds
 	// to desynchronize the use of DHCP at startup."
 	//
-	// Setting both to zero disables it. That is a configuration, not an
-	// opt-out: the delay desynchronises a fleet of hosts booting together, and
-	// a single container acquiring one lease has nothing to desynchronise
-	// from. The RFC defaults are pinned by their own test.
+	// Both zero disables it — a configuration, not an opt-out: the delay
+	// desynchronises a fleet of hosts booting together, and a single container
+	// acquiring one lease has nothing to desynchronise from. The RFC defaults
+	// are pinned by TestDesyncWindowIsWithinTheRFC.
 	DesyncMin Duration
 	DesyncMax Duration
 
@@ -84,9 +81,9 @@ type Params struct {
 	// before the machine gives up on the transport and reports
 	// ReasonTransport.
 	//
-	// This is R2's visible consequence. Without it, a machine whose every send
-	// fails sits in SELECTING re-arming a timer forever, reporting nothing,
-	// and looks exactly like a machine waiting for a slow server.
+	// R2's visible consequence: without it, a machine whose every send fails
+	// sits in SELECTING re-arming a timer forever, reporting nothing, looking
+	// exactly like one waiting for a slow server.
 	MaxSendFailures int
 }
 

@@ -9,15 +9,13 @@ import (
 
 // JournalEntry is one Step, recorded.
 //
-// It carries everything Step consumed — now, rnd and the event — because that
-// is exactly what a replay needs, and nothing else. The design document calls
-// the journal "free" (section 2.2) and it is: a record of the Step calls.
+// It carries what Step consumed — now, rnd and the event — and nothing else,
+// which is exactly what a replay needs (design document section 2.2).
 //
 // Raw carries the bytes an EvReceived was decoded FROM, not the decoded
-// message. That is deliberate and it is what makes Replay worth running:
-// replaying from a decoded struct re-runs ring 1 against a decode that already
-// happened, and would agree with itself even if the codec were wrong.
-// Replaying from bytes puts ring 0 back inside the loop.
+// message, and that is what makes Replay worth running: replaying from a
+// decoded struct re-runs ring 1 against a decode that already happened and
+// would agree with itself even if the codec were wrong.
 type JournalEntry struct {
 	Seq  uint64
 	Now  Instant
@@ -46,13 +44,11 @@ type JournalEntry struct {
 	Actions []string
 }
 
-// NewJournalEntry builds the entry for one Step.
-//
-// It exists so that the journal's shape is defined ONCE. The manager records
-// steps and the tests record steps, and a test recorder that built entries its
-// own way would be a probe derived differently from its subject: it could
-// replay perfectly while the manager's journal replayed not at all, and the
-// suite would report the opposite of the truth.
+// NewJournalEntry builds the entry for one Step, so the journal's shape is
+// defined ONCE. The manager records steps and so do the tests; a test recorder
+// that built entries its own way would be a probe derived differently from its
+// subject, and could replay perfectly while the manager's journal replayed not
+// at all.
 func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
 	return JournalEntry{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
@@ -126,14 +122,14 @@ type ReplayResult struct {
 // Replay re-runs a recorded exchange through a fresh Machine and checks that
 // it reproduces the recorded transitions exactly.
 //
-// This is the public entry point requirement T4 asks for, not a test-only
-// hook: replaying a captured exchange offline, with no network and no root, is
-// the support workflow the design document (section 4.3) says dhcpcd
-// structurally cannot give us.
+// The public entry point requirement T4 asks for, not a test-only hook:
+// replaying a captured exchange offline with no network and no root is the
+// support workflow the design document (section 4.3) says dhcpcd structurally
+// cannot give us.
 //
-// It is exact rather than approximate because ring 1 is pure. now and rnd came
-// in as parameters and are recorded, so the replayed machine sees the same
-// inputs in the same order and there is nothing left for it to consult.
+// Exact rather than approximate because ring 1 is pure: now and rnd came in as
+// parameters and are recorded, so the replayed machine sees the same inputs in
+// the same order and has nothing else to consult.
 func Replay(p Params, entries []JournalEntry) (ReplayResult, error) {
 	m, err := New(p)
 	if err != nil {

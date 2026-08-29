@@ -8,17 +8,15 @@ import (
 
 // Journal is the bounded in-memory journal (requirements G2, R3).
 //
-// Bounded because R3 says every buffer in this library has a fixed maximum: a
-// long-lived client renews for months, and an unbounded journal is a memory
-// leak with a respectable name. When the ring wraps, the OLDEST entries are
-// discarded and Dropped counts them.
+// Bounded because R3 says every buffer here has a fixed maximum: a long-lived
+// client renews for months. When the ring wraps, the OLDEST entries go and
+// Dropped counts them.
 //
-// Dropped is not decoration. Replay (proto.Replay) needs a CONTIGUOUS run of
-// entries starting at the machine's start; a wrapped journal cannot supply one,
-// and Entries() would otherwise hand back a plausible-looking prefix-less
-// sequence that replays into a divergence nobody could explain. A caller that
-// wants replayability checks Dropped is zero, and the divergence it would
-// otherwise chase is named at its source.
+// Dropped matters because proto.Replay needs a CONTIGUOUS run of entries from
+// the machine's start. A wrapped journal cannot supply one, and Entries()
+// would hand back a plausible prefix-less sequence that replays into an
+// unexplainable divergence, so a caller that wants replayability checks that
+// Dropped is zero.
 type Journal struct {
 	mu      sync.Mutex
 	buf     []proto.JournalEntry
@@ -27,17 +25,13 @@ type Journal struct {
 	dropped int
 }
 
-// DefaultJournalSize is the number of entries a Journal keeps.
-//
-// 4096 entries covers an acquisition and a long run of renewals with room to
-// spare, and costs a few hundred kilobytes. It is a default, not a limit: a
-// caller that wants the whole life of a process journalled asks for it.
+// DefaultJournalSize covers an acquisition and a long run of renewals for a
+// few hundred kilobytes. A default, not a limit.
 const DefaultJournalSize = 4096
 
 // NewJournal returns a journal holding at most size entries. A size below 1 is
-// raised to 1 rather than producing a journal that silently records nothing —
-// a zero-capacity recorder and a working one are indistinguishable from the
-// outside, which is the shape this project keeps paying for.
+// raised to 1: a zero-capacity recorder and a working one are
+// indistinguishable from the outside.
 func NewJournal(size int) *Journal {
 	if size < 1 {
 		size = 1

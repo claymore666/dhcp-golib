@@ -9,14 +9,13 @@ import (
 	"github.com/claymore666/dhcplease/proto"
 )
 
-// Client is the assembled thing: ring 3's implementations wired into ring 2's
-// manager. It is the only type in this library a caller needs in the ordinary
-// case.
+// Client is ring 3's implementations wired into ring 2's manager — the only
+// type a caller needs in the ordinary case.
 //
-// It is a thin assembly on purpose. Everything it does is choosing which
-// implementation goes into which port, and every one of those choices is
-// visible and replaceable — the same manager runs against fakes with no root
-// and no network, which is what makes the acquisition path table-testable.
+// A thin assembly on purpose: all it does is choose which implementation goes
+// into which port, and every choice is replaceable. The same manager runs
+// against fakes with no root and no network, which is what makes the
+// acquisition path table-testable.
 type Client struct {
 	mgr       *lease.Manager
 	transport *PacketTransport

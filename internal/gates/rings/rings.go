@@ -183,9 +183,9 @@ var TestRefusedIdents = map[string][]string{
 // TestIdents restricts, per import path, which identifiers a _test.go file may
 // name. This is T2: no test waits on wall-clock time.
 //
-// Allowlists again, for the same reason. time.Sleep, time.After, time.Tick,
-// time.NewTimer, time.NewTicker and time.AfterFunc are absent, and so is
-// anything the standard library adds later, until somebody adds it here.
+// Allowlists again, for the same reason: anything the standard library adds
+// later is absent until somebody adds it here. What must stay absent is
+// TestRefusedIdents above, which is driven through the real gate.
 //
 // time.Now, time.Since and time.Until ARE allowed. They read the clock, they
 // do not wait on it, and T2's subject is waiting. That is a deliberate bound,
@@ -222,9 +222,7 @@ var TestIdents = map[string]map[string]bool{
 		// context.AfterFunc is absent, and the honest reason is that the
 		// allowlist admits nothing by default — not that it was adjudicated.
 		// It fires on ctx cancellation, not on a clock, so it is not obviously
-		// a T2 violation; it stays out because nothing has argued it in. This
-		// comment used to claim the omission was deliberate and fail-closed,
-		// which read as an enforced decision when nothing enforced anything.
+		// a T2 violation; it stays out because nothing has argued it in.
 		//
 		// Neither derivation can reach it either: its signature
 		// (ctx Context, f func()) (stop func() bool) names no time.Duration

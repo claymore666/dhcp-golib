@@ -8,17 +8,14 @@ import (
 	"github.com/claymore666/dhcplease/proto"
 )
 
-// This file is R2, and it is written BEFORE the happy path on purpose.
-//
-// R2 says every action can fail and that failure re-enters the machine as an
-// event. The requirements document calls it "the requirement most likely to be
-// quietly dropped, because a fire-and-forget action list is easier to write
-// and looks identical while everything works" — and it is unretrofittable:
-// once the machine assumes its sends succeeded, every transition has to be
-// revisited to decide what happens when they do not.
-//
-// Building the fault transport first makes that impossible to skip. There is
-// no moment at which the happy path exists and the failure path does not.
+// R2, written BEFORE the happy path on purpose: every action can fail, and the
+// failure re-enters the machine as an event. The requirements document calls
+// it "the requirement most likely to be quietly dropped, because a
+// fire-and-forget action list is easier to write and looks identical while
+// everything works", and it is unretrofittable — once the machine assumes its
+// sends succeeded, every transition has to be revisited. Building the fault
+// transport first leaves no moment at which the happy path exists and the
+// failure path does not.
 
 // ErrInjected is the error a FaultTransport returns for a send it was told to
 // fail. It is a distinct value so a test can assert the failure it planted is
@@ -27,10 +24,9 @@ var ErrInjected = errors.New("lease: injected transport fault")
 
 // Fault is a deterministic fault plan.
 //
-// Deterministic — a list of ordinals rather than a probability — because a
-// randomly failing transport produces a test that fails one run in twenty and
-// gets "fixed" by removing the fault. Every field below is counted from 1, so
-// FailSends{1} fails the first send.
+// A list of ordinals rather than a probability: a randomly failing transport
+// produces a test that fails one run in twenty and gets "fixed" by removing
+// the fault. Ordinals count from 1, so FailSends{1} fails the first send.
 type Fault struct {
 	// FailSends names the send ordinals that return ErrInjected instead of
 	// transmitting.
@@ -65,10 +61,9 @@ func contains(xs []int, n int) bool {
 
 // FaultTransport wraps a Transport and applies a Fault plan.
 //
-// It wraps rather than replaces so the same plan can be driven against the
-// fake transport in a unit test and against the real AF_PACKET transport in a
-// ring-3 test. A fault injector that only exists for the fake proves nothing
-// about the real one.
+// It wraps rather than replaces so one plan drives both the fake transport in
+// a unit test and the real AF_PACKET transport in a ring-3 test: a fault
+// injector that only exists for the fake proves nothing about the real one.
 type FaultTransport struct {
 	inner Transport
 	plan  Fault
@@ -124,10 +119,9 @@ func (f *FaultTransport) Close() error {
 	return err
 }
 
-// Counts reports how many sends and inbound packets have passed through. A
-// test asserts on these so that "the fault was applied" is measured rather
-// than assumed — a plan naming send 7 on a run that only makes three sends
-// injects nothing and would otherwise look like a passing test.
+// Counts reports how many sends and inbound packets have passed through, so a
+// test can measure that the fault was applied: a plan naming send 7 on a run
+// that makes three sends injects nothing and otherwise looks like a pass.
 func (f *FaultTransport) Counts() (sends, inbounds int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

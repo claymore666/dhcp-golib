@@ -39,12 +39,10 @@ const (
 	EvAddressLost
 	// EvActionFailed says an action the machine emitted did not happen.
 	//
-	// This is R2, and it is the reason the action list carries ids. A machine
-	// that assumes its actions succeeded believes things that are not true —
-	// the same defect class as asserting on your own counters instead of the
-	// server's log, relocated inside the library. It is built now because it
-	// is unretrofittable: every transition that emits an action has to have
-	// decided what happens when that action fails.
+	// R2, and the reason the action list carries ids: a machine that assumes
+	// its actions succeeded believes things that are not true. Built now
+	// because it is unretrofittable — every transition that emits an action
+	// has to have decided what happens when that action fails.
 	EvActionFailed
 )
 
@@ -85,16 +83,15 @@ func AllEventKinds() []EventKind {
 type Event struct {
 	Kind EventKind
 
-	// Msg is set when Kind is EvReceived. It may be nil even then — a
-	// transport that hands the machine a nil message is a bug, and the
-	// machine's answer is to ignore it rather than to panic, because R1 says
-	// Step is total and a panic in ring 1 takes the whole plugin down.
+	// Msg is set when Kind is EvReceived, and may be nil even then. A
+	// transport handing the machine a nil message is a bug; the machine
+	// ignores it rather than panicking, because R1 says Step is total and a
+	// panic in ring 1 takes the whole plugin down.
 	Msg *wire.Message
 
-	// Raw is the bytes Msg was decoded from, when they are available. The
-	// journal stores it so a replay can re-decode rather than trust a
-	// previously decoded struct — that puts ring 0 back inside the replay
-	// rather than around it.
+	// Raw is the bytes Msg was decoded from, when available. The journal
+	// stores it so a replay re-decodes rather than trusting an already-decoded
+	// struct, which puts ring 0 back inside the replay.
 	Raw []byte
 
 	// Timer is set when Kind is EvTimerFired.

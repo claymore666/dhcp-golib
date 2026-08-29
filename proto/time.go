@@ -8,16 +8,13 @@ import (
 // Instant is a reading of a monotonic clock, in nanoseconds, on an epoch this
 // package deliberately does not name.
 //
-// Ring 1 cannot import "time" — the T1 gate refuses it — and that refusal is
-// not an inconvenience being worked around here. Time is a PARAMETER of Step,
-// so the machine has no way to read a clock even if it wanted one, and every
-// deadline it computes is a function of the Instant it was handed. That is
+// Ring 1 cannot import "time" — the T1 gate refuses it. Time is a PARAMETER of
+// Step, so the machine cannot read a clock even if it wanted one and every
+// deadline it computes is a function of the Instant it was handed, which is
 // what makes a replay bit-exact.
 //
-// Ring 3 supplies these from CLOCK_BOOTTIME, so an Instant advances across a
-// host suspend (CLOCK_MONOTONIC does not). Which clock feeds this is ring 3's
-// decision and is documented there; the machine only requires that successive
-// Instants do not go backwards.
+// Ring 3 supplies these from CLOCK_BOOTTIME (see runtime.Clock). The machine
+// requires only that successive Instants do not go backwards.
 type Instant int64
 
 // Duration is a length of time in nanoseconds.

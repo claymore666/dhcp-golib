@@ -2,26 +2,19 @@
 #
 # verify.sh — the one command. Runs every gate and prints one verdict.
 #
-# This repository has no CI and, per the build plan §5.1, will not get any:
-# the self-hosted runners belong to the plugin repository and cannot serve a
-# second private repo without an organisation. There is therefore no external
-# arbiter, and "green" has to mean something a person can run in one line.
-#
-# A verifier reassembled from memory each time is not a verifier. Neither is a
-# README paragraph listing what a developer "should run".
-#
 # Usage:  ./verify.sh            run every gate, including the verifier oracle
-#         ./verify.sh --inner    same, minus the oracle (see below)
-# Exit:   0 = PASS (the normal state), 1 = FAIL. Any step that cannot be
-#         measured is a FAIL, never a skip.
+#         ./verify.sh --inner    same, minus the oracle
+# Exit:   0 = PASS, 1 = FAIL. A step that cannot be measured is a FAIL, never
+#         a skip.
 #
-# --inner exists for exactly one caller: scripts/test-verify.sh, which is the
-# oracle for THIS file. It copies the tree, plants a defect, and runs the
-# copy's verify.sh — so without the flag the oracle would run itself, forever.
-# It is a flag and not an environment variable on purpose: an ambient variable
-# silences the oracle for anyone who happens to have it set, which is the
-# opt-out shape this project keeps paying for. A flag has to be typed into the
-# invocation you are looking at.
+# DECISION 2026-08-29: no CI here (build plan §5.1) — the runners belong to the
+# plugin repository — so this file is the only arbiter and has to be one line a
+# person can type.
+#
+# DECISION 2026-08-29: --inner is a flag, not an environment variable. Its one
+# caller is scripts/test-verify.sh, the oracle for this file, which would
+# otherwise re-enter it forever; an ambient variable would silence the oracle
+# for anyone who happened to have it set.
 
 set -euo pipefail
 
@@ -39,36 +32,24 @@ for arg in "$@"; do
 	esac
 done
 
-# The wall-clock ceiling on the unit suite, in seconds. This is T2's second
-# instrument: the identifier gate reads source, this reads the clock, and a
-# wait the gate cannot see still costs time here.
+# The wall-clock ceiling on the unit suite, in seconds — T2's second
+# instrument, reading the clock where the identifier gate reads source.
 #
-# Its bound, stated rather than discovered: a count backstop only holds AT the
-# threshold. A 200ms sleep does not move a 60s ceiling. It catches a suite that
-# has drifted into waiting, not a single test that waits a little.
+# BOUND: a threshold only holds AT the threshold. A 200ms sleep does not move a
+# 60s ceiling, so this catches a suite that has drifted into waiting, not one
+# test that waits a little.
 SUITE_CEILING_SECONDS=60
 
-# The hang bound, in seconds, passed to `go test -timeout`.
-#
-# The ceiling above CANNOT bound a hang, and that is not a subtlety: it is
-# computed from a clock read AFTER `go test` returns, so a test that never
-# returns never reaches the comparison. Without this line the only bound is
-# Go's own default of ten minutes per test binary — set nowhere in this
-# repository, ten times the ceiling, and removable through GOFLAGS by anyone
-# who never reads this file.
-#
-# It MUST stay strictly greater than the ceiling, and comfortably so: a suite
-# that is slow but finishing should be diagnosed by the ceiling, which says
-# something is waiting, rather than killed by this, which says only that it did
-# not finish. Nothing enforces that ordering — both numbers are printed in the
-# unit-suite row of every run, which is the whole of what checks it.
+# The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
+# cannot bound a hang: it is computed after `go test` returns (scenario
+# hang-bounded). Without this line the only bound is Go's default of ten
+# minutes per binary, which is set nowhere here and is removable through
+# GOFLAGS.
 SUITE_TIMEOUT_SECONDS=180
 
-# The gates that MUST run. Enumerated here, and cross-checked below against the
-# gates that actually exist, in BOTH directions: a required gate that has been
-# deleted is a FAIL, and a gate present in the tree but absent from this list
-# is also a FAIL. A verifier that discovers its own checklist can be silenced
-# by deleting a check.
+# The gates that MUST run: enumerated, not discovered — a verifier that finds
+# its own checklist is silenced by deleting a check. Cross-checked below in
+# both directions (scenarios roster-gate-deleted, roster-gate-added).
 REQUIRED_GATES=(t1 t2)
 
 BIN="$(mktemp -d)"
@@ -78,17 +59,13 @@ FAILED=0
 VERDICT_PRINTED=0
 ABORT_LINE=""
 
-# The verdict is printed by a trap, not by the last line of the script.
+# The verdict is printed by a trap so that EVERY exit path prints one.
 #
-# MEASURED 2026-08-29: it used to be the last line, and a single unprotected
-# assignment above it (the gate-roster `go list`) took `set -e` with it — so
-# deleting go.mod made this file exit 1 having printed no verdict at all. A
-# verifier whose whole promise is "one command, one verdict" was silent in the
-# one case where the tree was most broken.
-#
-# Fixing that assignment fixes that assignment. The promise is a property of
-# the file, so it is held here, where every exit path passes: any abort, from
-# any line, still prints a verdict, and it prints FAIL.
+# MEASURED 2026-08-29: as the last line of the script instead, a single
+# unprotected assignment above it took `set -e` with it, and deleting go.mod
+# made this file exit 1 having printed no verdict at all. Fixing that
+# assignment would fix that assignment; the promise is a property of the file.
+# Scenarios verdict-on-abort, verdict-without-gomod.
 on_exit() {
 	local rc=$?
 	rm -rf "$BIN"
@@ -128,12 +105,57 @@ command -v go >/dev/null 2>&1 || {
 	exit 1
 }
 
+# ------------------------------------------------------------- citations --
+# A comment that shrinks a fact to "see TestFoo" is worth exactly as much as
+# the pointer, and a renamed test leaves the pointer looking right. Every
+# TestXxx named in a .go comment or in a .md file must be a test that exists.
+#
+# "Exists" is: the token appears on a non-comment line of some .go file. That
+# also covers ordinary identifiers such as rings.TestIdents, which are not
+# citations at all. BOUND: a token quoted inside a Go string literal counts as
+# existing, and .sh files are outside the domain because the oracle plants test
+# bodies into heredocs. BOUND, found by writing docs/gates.md: prose cannot use
+# a PLACEHOLDER test name either, because nothing distinguishes one from a
+# citation. That is the loud direction and it stays.
+cite_scan() {
+	find . -type f \( -name '*.go' -o -name '*.md' \) -not -path './.git/*' -print0 |
+		xargs -0 awk -v want="$1" '
+			function emit(s) {
+				while (match(s, /Test[A-Z][A-Za-z0-9_]*/)) {
+					print substr(s, RSTART, RLENGTH)
+					s = substr(s, RSTART + RLENGTH)
+				}
+			}
+			{
+				comment = (FILENAME ~ /\.md$/) || ($0 ~ /^[ \t]*\/\//)
+				if ((want == "cited") == comment) emit($0)
+			}
+		' | sort -u
+}
+
+missing="$(comm -23 <(cite_scan cited) <(cite_scan known) | tr '\n' ' ' | sed 's/ $//')"
+if [ -z "$missing" ]; then
+	record "citations" PASS "every cited test exists"
+else
+	record "citations" FAIL "cited but not defined anywhere: $missing"
+	echo "--- citations FAILED: a comment or document names a test that does not exist ---" >&2
+fi
+
+# The hang timeout must exceed the ceiling, or a merely slow suite is killed by
+# the timeout — which says only that it did not finish — instead of being
+# diagnosed by the ceiling, which says something is waiting.
+if [ "$SUITE_TIMEOUT_SECONDS" -gt "$SUITE_CEILING_SECONDS" ]; then
+	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s"
+else
+	record "bounds" FAIL "hang timeout ${SUITE_TIMEOUT_SECONDS}s does not exceed the ${SUITE_CEILING_SECONDS}s ceiling; a slow suite would be killed before the ceiling could diagnose it"
+fi
+
 # ---------------------------------------------------------------- toolchain --
 step "build" go build ./...
 step "vet" go vet ./...
 
-# gofmt -l exits 0 whether or not it lists anything, so its exit code is not
-# the signal — the output is. An error folded into a value has no direction.
+# gofmt -l exits 0 whether or not it lists anything, so its output is the
+# signal and its exit code is not.
 fmt_out="$(gofmt -l . 2>&1)" || true
 if [ -n "$fmt_out" ]; then
 	record "gofmt" FAIL "unformatted: $(printf '%s' "$fmt_out" | tr '\n' ' ')"
@@ -141,31 +163,21 @@ else
 	record "gofmt" PASS "all files formatted"
 fi
 
-# verify.sh is itself a load-bearing instrument and nothing else checks it, so
-# it is linted here, and so is scripts/test-verify.sh, which is the oracle for
-# this file. A missing shellcheck is a FAIL, not a skip: a step that cannot be
-# measured must not report a pass.
-#
-# The list is enumerated AND cross-checked against the shell scripts the tree
-# actually holds, in both directions. A lint list that discovers itself is
-# silenced by moving a file out of the glob; one that is only enumerated is
-# silenced by adding a file nobody lists.
+# Enumerated, then cross-checked in both directions against the scripts the
+# tree holds (scenarios unlinted-script, unlinted-shebang-script).
 SHELL_SCRIPTS=(verify.sh scripts/test-verify.sh)
 
 # shell_files prints every shell script in the tree, one per line, relative to
-# the root.
+# the root: a regular file ending in .sh, OR one opening with a shell shebang.
 #
-# "Shell script" is defined here as: a regular file that either ends in .sh OR
-# opens with a shell shebang. Both halves are load-bearing. MEASURED 2026-08-29
-# by review: this used to key on the .sh suffix alone while the comments around
-# it described the domain two other ways — "every executable shell script" and
-# "every tracked .sh" — so all three descriptions disagreed and none matched
-# the code. A future scripts/preflight with a #!/bin/sh line would have been
-# linted by nothing and would have tripped neither direction of the check.
+# MEASURED 2026-08-29 by review: this used to key on the suffix alone while the
+# comments around it described the domain two other ways, so all three
+# disagreed and none matched the code; a scripts/preflight with a shebang and
+# no extension was linted by nothing.
 #
-# A filesystem walk and not `git ls-files`: git is unavailable inside the
-# oracle's copies of the tree, and a check that silently does nothing where it
-# is being tested is a check with no observer.
+# DECISION 2026-08-29: a filesystem walk, not `git ls-files` — git is
+# unavailable inside the oracle's copies of the tree, and a check that
+# silently does nothing where it is being tested has no observer.
 shell_files() {
 	find . -type f -not -path './.git/*' -printf '%P\n' | while IFS= read -r f; do
 		case "$f" in
@@ -198,11 +210,9 @@ fi
 
 # -------------------------------------------------------------- gate roster --
 # Structural, not a glob over directory names: ask the go tool which packages
-# under internal/gates are commands.
-# The rc is captured rather than allowed to propagate: `go list` failing is a
-# measurable outcome of this step (a tree with no go.mod, say), not a reason
-# for the verifier to vanish. The EXIT trap would still print a verdict, but
-# "aborted at line N" is a worse diagnosis than the one this step can give.
+# under internal/gates are commands. The rc is captured rather than allowed to
+# propagate, because `go list` failing is a measurable outcome of this step and
+# "aborted at line N" is a worse diagnosis than the one it can give.
 roster_rc=0
 roster_raw="$(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./internal/gates/... 2>&1)" || roster_rc=$?
 discovered="$(printf '%s\n' "$roster_raw" | sed -n 's|^.*/||p' | sort | tr '\n' ' ' | sed 's/ $//')"
@@ -218,10 +228,9 @@ else
 fi
 
 # ------------------------------------------------------------------- gates --
-# Built, then executed. NOT `go run`: MEASURED 2026-08-29, `go run` collapses
-# every non-zero child status to 1, so a gate REFUSING (2) because it could not
-# measure its domain would be indistinguishable from a gate reporting a
-# violation (1). The distinction is the whole reason the codes differ.
+# Built, then executed. MEASURED 2026-08-29: `go run` collapses every non-zero
+# child status to 1, which would make a gate REFUSING (2) indistinguishable
+# from a gate reporting a violation (1). Scenarios gate-panic, gate-refuses.
 for g in "${REQUIRED_GATES[@]}"; do
 	if ! go build -o "$BIN/$g" "./internal/gates/$g" 2>"$BIN/$g.err"; then
 		record "$g" FAIL "gate does not compile"
@@ -234,10 +243,9 @@ for g in "${REQUIRED_GATES[@]}"; do
 	0) record "$g" PASS "$(printf '%s' "$out" | tail -1)" ;;
 	1) record "$g" FAIL "VIOLATION" ;;
 	2)
-		# A Go panic also exits 2, so the code alone does not say whether the
-		# gate declined to measure or died trying. Both are a FAIL — this is
-		# fail-closed either way — but they are different diagnoses, and the
-		# gates print a REFUSED line precisely so the two can be told apart.
+		# A Go panic also exits 2. Both are a FAIL, but they are different
+		# diagnoses, and the gates print a REFUSED line so the two can be told
+		# apart.
 		if printf '%s' "$out" | grep -q 'REFUSED'; then
 			record "$g" FAIL "REFUSED — the gate could not measure its domain"
 		else
@@ -251,7 +259,7 @@ done
 
 # ------------------------------------------------------------- unit suite --
 # -count=1 defeats the test cache: a cached PASS is a result that was not
-# measured on this tree.
+# measured on this tree. Scenario test-cache.
 suite_start=$(date +%s)
 rc=0
 suite_out="$(go test -race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s" ./... 2>&1)" || rc=$?
@@ -260,10 +268,6 @@ if [ "$rc" -ne 0 ]; then
 	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"
 	printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
 elif printf '%s' "$suite_out" | grep -q '(cached)'; then
-	# -count=1 is above; this is what proves it was in force. A cached PASS is
-	# a result that was not measured on this tree, and it is indistinguishable
-	# from a real one in the exit status alone — so the flag needs an observer
-	# and not just a reader.
 	record "unit-suite" FAIL "go test reported a cached result; -count=1 was not in force, so the suite was not measured on this tree"
 	printf '\n--- unit-suite was served from the test cache ---\n%s\n' "$suite_out" >&2
 elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
@@ -274,8 +278,7 @@ else
 fi
 
 # ------------------------------------------------------------- self-oracle --
-# The verifier is the one instrument here with no external arbiter, so it has
-# one of its own. See scripts/test-verify.sh for what it can and cannot see.
+# See scripts/test-verify.sh for what this can and cannot see.
 if [ "$INNER" -eq 0 ]; then
 	if [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		step "verify-oracle" "$ROOT/scripts/test-verify.sh"

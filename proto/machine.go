@@ -8,13 +8,11 @@ import (
 
 // Machine is the DHCPv4 client state machine. It is pure.
 //
-// The whole surface is Step. There is no clock inside it, no scheduler, no
-// goroutine and no I/O — the T1 gate enforces that structurally rather than
-// this comment enforcing it socially. Determinism is therefore a property of
-// the type and not a discipline the tests have to maintain: the same Machine,
-// fed the same (now, rnd, event) sequence, produces the same actions, which is
-// what makes Replay exact and what makes the whole acquisition path testable
-// in microseconds with no root, no namespace and no network.
+// The whole surface is Step: no clock, no scheduler, no goroutine, no I/O,
+// enforced by the T1 gate rather than by this comment. Determinism is
+// therefore a property of the type — the same Machine fed the same (now, rnd,
+// event) sequence produces the same actions — which is what makes Replay exact
+// and the acquisition path testable with no root and no network.
 type Machine struct {
 	params Params
 
@@ -91,10 +89,9 @@ func (m *Machine) Params() Params { return m.params }
 // reachable panic. R1 tests that over the whole product of AllStates and
 // AllEventKinds rather than sampling it.
 //
-// now and rnd are parameters, not ambients. rnd is journalled beside the event
-// so a replay is bit-exact; a PRNG inside the machine would make replay depend
-// on a persisted seed AND a call count, which is determinism by discipline and
-// is the thing this design exists to avoid.
+// now and rnd are parameters, not ambients: rnd is journalled beside the event
+// so a replay is bit-exact, where a PRNG inside the machine would make replay
+// depend on a persisted seed AND a call count.
 func (m *Machine) Step(now Instant, rnd uint64, ev Event) (State, []Action) {
 	var out actions
 	switch m.state {
@@ -377,12 +374,11 @@ func (m *Machine) stop(out *actions) {
 
 // enterBound installs the lease and arms the expiry timer.
 //
-// The timer is armed for exp-now, NOT for the lease duration. Those differ by
-// the round trip: the lease clock starts when the REQUEST was sent (RFC 2131
-// section 4.4.5), and by the time the ACK is in hand some of it is already
-// spent. Arming for the full duration holds the address past its expiry by
-// exactly the round-trip time — invisible on a fixture where that is
-// microseconds, real on a slow or retransmitting link.
+// Armed for exp-now, NOT for the lease duration: the lease clock starts when
+// the REQUEST was sent (RFC 2131 section 4.4.5), so by the time the ACK is in
+// hand some of it is spent. Arming for the full duration holds the address
+// past its expiry by the round-trip time — invisible on a fixture, real on a
+// slow or retransmitting link.
 func (m *Machine) enterBound(now Instant, l Lease, out *actions) {
 	out.cancel(m, TimerRetransmit)
 	m.lease = l
@@ -426,12 +422,11 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 
 // noteActionFailed is R2: an action the machine emitted did not happen.
 //
-// A failed Send is the case that matters, and the machine's answer is NOT to
-// pretend it happened. The retransmission counter is deliberately not
+// A failed Send is the case that matters. The retransmission counter is NOT
 // advanced — the server never saw anything — and the retransmit timer is
-// re-armed at the current attempt's delay so the machine tries again. After
-// MaxSendFailures consecutive failures the transport is reported broken, with
-// a typed reason, instead of the machine sitting in SELECTING looking healthy.
+// re-armed at the current attempt's delay. After MaxSendFailures consecutive
+// failures the transport is reported broken with a typed reason, instead of
+// the machine sitting in SELECTING looking healthy.
 func (m *Machine) noteActionFailed(rnd uint64, ev Event, out *actions) {
 	m.sendFailures++
 	out.journal(m, fmt.Sprintf("%s failed (%s), consecutive failures %d",

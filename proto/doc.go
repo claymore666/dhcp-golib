@@ -7,6 +7,4 @@
 // with time and entropy passed in as parameters rather than read from the
 // environment. That is what makes the tests instant and offline replay
 // bit-exact, and it is enforced by the T1 gate rather than by this comment.
-//
-// Empty at M0 by design.
 package proto

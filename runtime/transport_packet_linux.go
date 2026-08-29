@@ -20,21 +20,18 @@ import (
 const ethPIP = 0x0800
 
 // inboundBuffer is how many parsed replies may sit undelivered before the
-// reader starts dropping them. It is small on purpose: a DHCP exchange is a
-// handful of packets, and a manager that is more than this far behind has a
-// problem that a bigger buffer would hide rather than fix.
+// reader drops them. Small on purpose: a DHCP exchange is a handful of packets,
+// and a manager further behind than this has a problem a bigger buffer hides.
 const inboundBuffer = 16
 
-// maxFrame is the read buffer. A DHCP message is far below this; the size is
-// chosen so a jumbo frame carrying something else cannot be silently truncated
-// into a DIFFERENT valid-looking frame.
+// maxFrame is the read buffer, sized so a jumbo frame carrying something else
+// cannot be truncated into a DIFFERENT valid-looking frame.
 const maxFrame = 9216
 
 // broadcastMAC is the link-layer destination for every message this milestone
 // sends. RFC 2131 section 4.1: a client with no configured address must
-// broadcast, and it must do so at the link layer too — a server that unicasts
-// to an unconfigured client's address relies on the client accepting a frame
-// for an address it does not have.
+// broadcast at the link layer too — unicasting to an address the client does
+// not yet have relies on it accepting a frame for an address it does not own.
 var broadcastMAC = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 var (
@@ -47,23 +44,19 @@ var (
 // PacketTransport is the raw AF_PACKET transport.
 //
 // SOCK_DGRAM rather than SOCK_RAW: the kernel supplies the Ethernet header on
-// send and strips it on receive, which is the whole of what SOCK_RAW would buy
-// us here, and SOCK_DGRAM does not require us to know the link's header format.
-// The IP and UDP headers are still ours to build — see ipudp.go for why no
-// socket API can produce the first DISCOVER.
+// send and strips it on receive, so we need not know the link's header format.
+// The IP and UDP headers are still ours to build (see ipudp.go).
 //
-// # What this type deliberately does NOT do
+// BOUNDS:
 //
 //   - No BPF filter. Every IPv4 frame on the link is read and filtered in user
-//     space by ParseIPv4UDP. On a busy link that is real wasted wakeups, and
-//     attaching an LSF program is the fix; it is not done at M1 because a
-//     wrong filter drops the packet you are debugging and is invisible when it
-//     does. The cost is measured as Stats.Skipped rather than assumed away.
-//   - No ARP, and therefore no unicast. Send refuses a unicast Dest with
+//     space by ParseIPv4UDP — real wasted wakeups on a busy link, measured as
+//     Stats.Skipped. An LSF program is the fix; not at M1, because a wrong
+//     filter drops the packet you are debugging and is invisible when it does.
+//   - No ARP, therefore no unicast: Send refuses a unicast Dest with
 //     ErrUnicastUnsupported rather than broadcasting it anyway. RENEWING
-//     unicasts to the server identifier and arrives in a later milestone,
-//     where it needs an address on the interface and can use an ordinary UDP
-//     socket.
+//     arrives in a later milestone, where an address on the interface makes an
+//     ordinary UDP socket possible.
 //   - No fragment reassembly (see ParseIPv4UDP).
 type PacketTransport struct {
 	f       *os.File
@@ -74,16 +67,15 @@ type PacketTransport struct {
 
 	ident atomic.Uint32
 
-	// Stats counters. Skipped in particular is load-bearing: a transport that
-	// sees nothing and a transport that sees everything and rejects all of it
-	// are the same silence without it. reads is bumped LAST, in deliver: see
-	// the invariant documented there.
+	// Without skipped, a transport that sees nothing and one that sees
+	// everything and rejects all of it are the same silence. reads is bumped
+	// LAST, in deliver: see the invariant there.
 	reads   atomic.Uint64
 	skipped atomic.Uint64
 	sends   atomic.Uint64
 
-	// The two ways a payload reaches us unverified. Counted apart because
-	// they have different diagnoses: see ChecksumState.
+	// The two ways a payload reaches us unverified, counted apart because they
+	// have different diagnoses: see ChecksumState.
 	uncompleted atomic.Uint64
 	absent      atomic.Uint64
 	dropped     atomic.Uint64
@@ -99,39 +91,32 @@ type TransportStats struct {
 	Skipped uint64
 	Sends   uint64
 	// Uncompleted counts accepted datagrams whose UDP checksum field held the
-	// pseudo-header sum, which is what a Linux sender leaves when it defers
-	// the sum to hardware (CHECKSUM_PARTIAL). Absent counts datagrams that
-	// carried no checksum at all (RFC 768's zero). Neither payload was
-	// verified — acceptUDPChecksum says why that is the only workable answer,
-	// and counting them is what keeps it from being a silent one.
+	// pseudo-header sum (CHECKSUM_PARTIAL); Absent counts those carrying no
+	// checksum at all (RFC 768's zero). Neither payload was verified — see
+	// acceptUDPChecksum — and counting them is what keeps that from being
+	// silent.
 	//
-	// Neither counter says WHERE the sender is. This comment used to claim
-	// Uncompleted meant a sender on this host; the transport measures a field
-	// value and nothing else, and a counter that reports a locality it never
-	// measured is precisely the failure this project's counters exist to
-	// avoid. The expectation runs the other way, and only as an expectation:
-	// a client leasing from a server on this host will show Uncompleted on
-	// every reply.
+	// Neither says WHERE the sender is; this said so until 2026-08-29. The
+	// expectation runs the other way and only as an expectation: a client
+	// leasing from a server on this host shows Uncompleted on every reply.
 	Uncompleted uint64
 	Absent      uint64
 	// Dropped counts DHCP replies that parsed and were then thrown away
-	// because the consumer had not drained the inbound channel. It is not
-	// Skipped: see the comment at the drop site.
+	// because the consumer had not drained the inbound channel. Not Skipped:
+	// see the drop site.
 	Dropped uint64
 }
 
 // NewPacketTransport opens an AF_PACKET socket bound to ifName.
 //
-// The socket is opened NON-BLOCKING and handed to os.NewFile so the Go runtime
-// poller owns it. That is not a performance choice: a blocking raw socket read
-// cannot be interrupted by closing the fd from another goroutine — the read
-// sits in the kernel on a descriptor that no longer exists — and every attempt
-// to work around it ends in a leaked goroutine or a use-after-free on an fd
-// number the runtime has reused. With the poller, Close unblocks the reader.
+// NON-BLOCKING, handed to os.NewFile so the Go runtime poller owns it: a
+// blocking raw socket read cannot be interrupted by closing the fd from
+// another goroutine, and working around that ends in a leaked goroutine or a
+// use-after-free on an fd number the runtime has reused. With the poller,
+// Close unblocks the reader.
 //
-// For the same reason Send never calls f.Fd(): Fd() puts the descriptor back
-// into blocking mode and removes it from the poller, which would silently undo
-// all of the above. SyscallConn is the route that keeps the poller.
+// For the same reason Send never calls f.Fd(), which would put the descriptor
+// back into blocking mode and remove it from the poller. SyscallConn keeps it.
 func NewPacketTransport(ifName string) (*PacketTransport, error) {
 	iface, err := net.InterfaceByName(ifName)
 	if err != nil {
@@ -247,7 +232,7 @@ func (t *PacketTransport) read() {
 			if t.closed.Load() {
 				return
 			}
-			// A read error on a live socket is reported, not swallowed: the
+			// A read error on a live socket is reported, not swallowed: an
 			// interface going away is exactly this, and it must reach the
 			// machine as an event rather than as a silence.
 			select {
@@ -262,27 +247,23 @@ func (t *PacketTransport) read() {
 
 // deliver classifies one frame and, if it is a reply for us, queues it.
 //
-// The read counter is bumped in a DEFER, so it is the LAST thing that happens
-// to a frame. That is not tidiness: it makes Reads a barrier. A test — or an
-// operator — that sees Reads reach N knows those N frames have each been
-// skipped, dropped or queued, and the invariant Reads == Skipped + Dropped +
-// queued holds at every moment it is read. Bumping it on arrival instead left
-// the last frame classified a few instructions later, which is a race a test
-// cannot see and cannot wait out.
+// The read counter is bumped in a DEFER, LAST, which makes Reads a barrier:
+// seeing Reads reach N means those N frames have each been skipped, dropped or
+// queued. Bumping it on arrival instead left the last frame classified a few
+// instructions later, a race a test cannot wait out.
+// TestPacketTransportDropsWhenTheConsumerStalls.
 func (t *PacketTransport) deliver(frame []byte) {
 	defer t.reads.Add(1)
 	dg, perr := ParseIPv4UDP(frame)
 	if perr != nil {
-		// Not for us. On a shared link this is the overwhelming majority
-		// of what arrives, so it is counted rather than reported.
+		// Not for us — on a shared link, most of what arrives — so counted
+		// rather than reported.
 		t.skipped.Add(1)
 		return
 	}
 	if !dg.Checksum.Verified() {
 		// Accepted, and counted: the payload was NOT verified. See
-		// acceptUDPChecksum. A client leasing from a server on the same
-		// host shows Uncompleted on every reply, which is normal; a client
-		// on a physical link showing either state is worth a second look.
+		// acceptUDPChecksum.
 		switch dg.Checksum {
 		case ChecksumUncompleted:
 			t.uncompleted.Add(1)
@@ -297,15 +278,13 @@ func (t *PacketTransport) deliver(frame []byte) {
 	select {
 	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
 	default:
-		// The consumer is behind. Dropping is the honest outcome: blocking
-		// here would stall the reader and lose packets in the kernel
-		// instead, where nothing can count them.
+		// The consumer is behind. Blocking here would stall the reader and
+		// lose packets in the kernel instead, where nothing can count them.
 		//
-		// Counted APART from Skipped, and that separation is the point: a
-		// frame that was not for us and a DHCP reply we threw away are
-		// opposite facts, and one counter holding both reports the second
-		// as the first. Dropped above zero means a stalled manager and a
-		// retransmission that need not have happened.
+		// Counted APART from Skipped: a frame that was not for us and a DHCP
+		// reply we threw away are opposite facts, and one counter holding both
+		// reports the second as the first. Dropped above zero means a stalled
+		// manager and a retransmission that need not have happened.
 		t.dropped.Add(1)
 	}
 }

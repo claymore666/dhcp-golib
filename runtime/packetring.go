@@ -8,12 +8,11 @@ import (
 
 // PacketRing is the bounded ring of every message in and out (G1, R3).
 //
-// Separate from the Journal, and deliberately: the journal records the machine
-// stepping, the ring records the wire. A packet the codec REFUSED never
-// reaches ring 1 and so never appears in the journal — and that packet is the
-// most valuable one in a support case, because "the server sent something we
-// could not parse" and "the server sent nothing" are the same silence with
-// only the journal to look at.
+// Separate from the Journal on purpose: the journal records the machine
+// stepping, this records the wire. A packet the codec REFUSED never reaches
+// ring 1 and so never appears in the journal — and with only the journal to
+// look at, "the server sent something we could not parse" and "the server sent
+// nothing" are the same silence.
 type PacketRing struct {
 	mu      sync.Mutex
 	buf     []lease.CapturedPacket

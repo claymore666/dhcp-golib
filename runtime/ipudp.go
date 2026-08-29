@@ -7,19 +7,16 @@ import (
 	"net/netip"
 )
 
-// This file builds and parses the IPv4 and UDP headers by hand.
-//
-// It has to. A DHCP client's first message goes out over an interface the
-// kernel has no address on, to a destination that is not routable, and it must
-// carry source 0.0.0.0 — RFC 2131 section 4.1: "the client MUST set the IP
-// source address to 0". No socket API will produce that packet, which is why
-// the transport is AF_PACKET and why the two headers below are our problem.
+// The IPv4 and UDP headers, built and parsed by hand: a DHCP client's first
+// message goes out over an interface the kernel has no address on, to a
+// destination that is not routable, carrying source 0.0.0.0 (RFC 2131 section
+// 4.1, "the client MUST set the IP source address to 0"). No socket API will
+// produce that packet, which is why the transport is AF_PACKET.
 
-// The ports. RFC 2131 section 4.1.
+// ClientPort and ServerPort are the DHCP ports, bootpc and bootps. RFC 2131
+// section 4.1.
 const (
-	// ClientPort is the DHCP client port (bootpc).
 	ClientPort = 68
-	// ServerPort is the DHCP server port (bootps).
 	ServerPort = 67
 )
 
@@ -30,10 +27,8 @@ const (
 	ipv4Version   = 4
 )
 
-// Errors from parsing a received frame. These are all "not for us" rather than
-// "something is wrong": a raw socket sees every packet on the link, so the
-// common case for each of these is a perfectly healthy packet belonging to
-// somebody else.
+// Errors from parsing a received frame. These mean "not for us", not
+// "something is wrong": a raw socket sees every packet on the link.
 var (
 	ErrNotIPv4      = errors.New("runtime: not IPv4")
 	ErrNotUDP       = errors.New("runtime: not UDP")
@@ -46,17 +41,14 @@ var (
 
 // BuildIPv4UDP wraps payload in a UDP datagram inside an IPv4 packet.
 //
-// The IPv4 header checksum is mandatory. The UDP checksum is optional over
-// IPv4 (RFC 768 allows the all-zero "not computed" value) and this function
-// computes it anyway: a zero checksum is legal and is also exactly what a
-// broken implementation emits, so computing it costs nothing and removes a
-// reading.
+// The UDP checksum is optional over IPv4 (RFC 768 allows the all-zero "not
+// computed" value) and is computed anyway: zero is legal and is also what a
+// broken implementation emits, so computing it removes a reading.
 //
-// The identification field is caller-supplied rather than generated here, so
-// that the transport is a pure function of its inputs and a golden-bytes test
-// is possible. RFC 6864 section 4.1 permits any value for a datagram that will
-// not be fragmented, and these will not be: a DHCP message is far below any
-// link MTU.
+// ident is caller-supplied so that this stays a pure function of its inputs
+// and a golden-bytes test is possible. RFC 6864 section 4.1 permits any value
+// for a datagram that will not be fragmented, and a DHCP message is far below
+// any link MTU.
 func BuildIPv4UDP(src, dst netip.Addr, sport, dport uint16, ident uint16, ttl uint8, payload []byte) ([]byte, error) {
 	if !src.Is4() || !dst.Is4() {
 		return nil, fmt.Errorf("%w: src %s dst %s", ErrNotIPv4, src, dst)
@@ -91,20 +83,16 @@ func BuildIPv4UDP(src, dst netip.Addr, sport, dport uint16, ident uint16, ttl ui
 }
 
 // ChecksumState says what a received datagram's UDP checksum field bought us.
-//
-// It is three states rather than a bool because "the payload was not checked"
-// has two causes with different diagnoses, and an operator looking at a counter
-// cannot act on the two of them merged.
+// Three states and not a bool because "not checked" has two causes with
+// different diagnoses, and an operator cannot act on them merged.
 type ChecksumState uint8
 
-// The three states. Only the first one means the payload was verified.
 const (
 	// ChecksumVerified: the field held a correct checksum over the datagram
 	// and its pseudo-header.
 	ChecksumVerified ChecksumState = iota
-	// ChecksumAbsent: the field was all zeroes. RFC 768 reserves that value
-	// for "no checksum computed", and it is legal over IPv4. A server that
-	// does this is telling you it did not check.
+	// ChecksumAbsent: the field was all zeroes, which RFC 768 reserves for
+	// "no checksum computed" and which is legal over IPv4.
 	//
 	// NOT TRANSFERABLE TO IPv6. RFC 8200 section 8.1 requires an IPv6
 	// receiver to DISCARD a UDP packet with a zero checksum, so copying this
@@ -118,12 +106,10 @@ const (
 	// is what Linux leaves in a datagram whose checksum it has deferred to
 	// hardware (CHECKSUM_PARTIAL). See acceptUDPChecksum.
 	//
-	// It does NOT say the sender is on this host, and this comment used to.
-	// All this code sees is a field holding a particular value; the locality
-	// is an INFERENCE about the commonest producer of that value, and the
-	// inference runs one way only. Every observation of it so far has been a
-	// sender on the same host — that is a measurement about our fixtures, not
-	// a property of the state.
+	// It does NOT say the sender is on this host, and this comment said so
+	// until 2026-08-29. The code sees a field holding a value; locality is an
+	// INFERENCE about the commonest producer of that value and runs one way
+	// only.
 	ChecksumUncompleted
 )
 
@@ -143,31 +129,23 @@ func (c ChecksumState) String() string {
 	}
 }
 
-// Datagram is one parsed UDP datagram.
-//
-// It is a struct rather than three return values because Checksum has to travel
-// with the payload: it is the difference between "this datagram was checked"
-// and "this datagram could not be checked", and a caller that cannot see it
-// cannot report it.
+// Datagram is one parsed UDP datagram. Checksum travels with the payload
+// because a caller that cannot see it cannot report it.
 type Datagram struct {
-	// Payload is the UDP payload. It aliases the frame passed in.
-	Payload []byte
-	// Src is the IPv4 source address of the frame.
-	Src netip.Addr
-	// Checksum says whether the payload was verified, and if not, why not.
+	// Payload aliases the frame passed in.
+	Payload  []byte
+	Src      netip.Addr
 	Checksum ChecksumState
 }
 
 // ParseIPv4UDP extracts the UDP payload of a DHCP reply from a raw IPv4 frame.
-//
 // It returns ErrWrongPort for anything not addressed to the client port, which
 // on a shared link is most of what arrives.
 //
-// Fragments are REFUSED rather than reassembled. Reassembly is a real piece of
-// machinery with its own timers and its own denial-of-service surface, and a
-// DHCP reply that arrives fragmented is a server doing something exotic. The
-// bound is stated rather than hidden: a fragmented DHCP reply is dropped and
-// the client retransmits until it gives up.
+// BOUND: fragments are refused, not reassembled — reassembly is timers and a
+// denial-of-service surface for a case that means the server is doing
+// something exotic. A fragmented reply is dropped and the client retransmits
+// until it gives up.
 func ParseIPv4UDP(frame []byte) (Datagram, error) {
 	if len(frame) < ipv4HeaderLen {
 		return Datagram{}, ErrShortFrame
@@ -191,9 +169,9 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 	}
 
 	// The IPv4 total-length field, not len(frame): a SOCK_DGRAM read can hand
-	// back trailing link-layer padding, and a short DHCP reply on Ethernet is
-	// padded to the 60-octet minimum frame more often than not. Trusting
-	// len(frame) here makes the UDP checksum fail on exactly those replies.
+	// back the trailing padding an Ethernet frame carries up to its 60-octet
+	// minimum, which would break the UDP checksum below.
+	// TestParseUsesTheTotalLengthField.
 	total := int(binary.BigEndian.Uint16(frame[2:4]))
 	if total < ihl || total > len(frame) {
 		return Datagram{}, ErrShortFrame
@@ -226,50 +204,32 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 }
 
 // acceptUDPChecksum decides whether a received datagram's checksum field lets
-// it through, and says which of the three states it is in.
+// it through, and says which state it is in. Only the second case verifies
+// anything.
 //
-// Three cases are accepted, and only the middle one is a verification:
+// The third case, the pseudo-header sum alone, is Linux's CHECKSUM_PARTIAL and
+// not corruption: for a locally generated datagram the kernel writes
+// ~csum_tcpudp_magic(saddr, daddr, len, IPPROTO_UDP, 0) — the folded
+// pseudo-header sum — and leaves completing it to the hardware, so an
+// AF_PACKET reader on the far side of a veth pair sees the frame first.
+// Refusing it would not produce a stricter client, it would produce one that
+// cannot lease from a server on the same host. Measured against a real dnsmasq
+// OFFER in ipudp_test.go: realOfferField, realOfferCompleted,
+// TestParseAcceptsARealServersUncompletedChecksum. (Until 2026-08-29 this said
+// the completed value was 0x0074, a number from a working note rather than
+// from the fixture two lines below it.)
 //
-//  1. Zero. RFC 768 reserves the all-zero value for "no checksum computed",
-//     and it is legal over IPv4.
+// BOUND: the zero case and the pseudo-header case both accept a corrupt
+// payload, the zero case more cheaply. Neither is a lucky collision — the
+// accepting value is a pure function of source, destination and UDP length,
+// all read from the frame itself. Read both as "unchecked", never as
+// "probably fine": TestAnUncheckedChecksumAcceptsACorruptPayload,
+// TestThePseudoHeaderSumIsBlindToThePayload.
 //
-//  2. A correct checksum: the datagram plus its pseudo-header sums to 0xFFFF.
-//
-//  3. The pseudo-header sum ALONE. This is Linux's CHECKSUM_PARTIAL, and it
-//     is not corruption: for a locally generated datagram the kernel writes
-//     ~csum_tcpudp_magic(saddr, daddr, len, IPPROTO_UDP, 0) into the field —
-//     the folded pseudo-header sum — and leaves completing it to the hardware.
-//     An AF_PACKET reader on the far side of a veth pair, or on any local
-//     delivery path, sees the frame BEFORE anything completes it.
-//
-//     MEASURED 2026-08-29 against dnsmasq 2.91 over a veth pair: the captured
-//     OFFER carried 0x24f6 in the field where its completed checksum is
-//     0xe58c. Both numbers are in ipudp_test.go as realOfferField and
-//     realOfferCompleted, asserted against those bytes, and 0x24f6 is the
-//     folded pseudo-header sum for that source, destination and length.
-//
-//     This paragraph used to give the completed value as 0x0074 — a number
-//     computed from a hand-reassembled copy of an EARLIER capture, sitting one
-//     line above a pointer to the fixture that contradicts it. It travelled
-//     two hops before anyone recomputed it. Cite the fixture, never a working
-//     note: the fixture is checked on every run and the note is checked never.
-//
-//     Refusing this case does not produce a stricter client, it produces a
-//     client that cannot lease from a server on the same host.
-//
-// THE BOUND, and it covers case 1 exactly as much as case 3: neither checks
-// the payload, so a corrupt payload is accepted in both — and more cheaply in
-// case 1, where the accepting value is the constant zero. Case 3 is not a
-// lucky collision either: the accepting value is a pure function of the source
-// address, destination address and UDP length, every one of them read from the
-// frame itself, so anyone who can put a frame on the link can compute it.
-// Read both states as "unchecked", never as "probably fine".
-//
-// What would actually close this is PACKET_AUXDATA, whose TP_STATUS_CSUMNOTREADY
-// says outright that the kernel deferred the sum — turning the inference above
-// into a measurement, and letting a frame WITHOUT that flag be held to a
-// correct checksum. That is new I/O with its own failure modes and it belongs
-// to a milestone, not to a comment.
+// PACKET_AUXDATA's TP_STATUS_CSUMNOTREADY would close it — the kernel saying
+// outright that it deferred the sum, which would let a frame without the flag
+// be held to a correct checksum. New I/O with its own failure modes; it
+// belongs to a milestone.
 func acceptUDPChecksum(src, dst [4]byte, u []byte) (state ChecksumState, ok bool) {
 	got := binary.BigEndian.Uint16(u[6:8])
 	switch {
