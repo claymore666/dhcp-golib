@@ -90,6 +90,23 @@ func BuildIPv4UDP(src, dst netip.Addr, sport, dport uint16, ident uint16, ttl ui
 	return buf, nil
 }
 
+// Datagram is one parsed UDP datagram.
+//
+// It is a struct rather than three return values because PartialChecksum has to
+// travel with the payload: it is the difference between "this datagram was
+// checked" and "this datagram could not be checked", and a caller that cannot
+// see it cannot report it.
+type Datagram struct {
+	// Payload is the UDP payload. It aliases the frame passed in.
+	Payload []byte
+	// Src is the IPv4 source address of the frame.
+	Src netip.Addr
+	// PartialChecksum reports that the UDP checksum field held the
+	// pseudo-header sum instead of a completed checksum, so the payload was
+	// NOT verified. See acceptUDPChecksum.
+	PartialChecksum bool
+}
+
 // ParseIPv4UDP extracts the UDP payload of a DHCP reply from a raw IPv4 frame.
 //
 // It returns ErrWrongPort for anything not addressed to the client port, which
@@ -100,26 +117,26 @@ func BuildIPv4UDP(src, dst netip.Addr, sport, dport uint16, ident uint16, ttl ui
 // DHCP reply that arrives fragmented is a server doing something exotic. The
 // bound is stated rather than hidden: a fragmented DHCP reply is dropped and
 // the client retransmits until it gives up.
-func ParseIPv4UDP(frame []byte) (payload []byte, src netip.Addr, err error) {
+func ParseIPv4UDP(frame []byte) (Datagram, error) {
 	if len(frame) < ipv4HeaderLen {
-		return nil, netip.Addr{}, ErrShortFrame
+		return Datagram{}, ErrShortFrame
 	}
 	if frame[0]>>4 != ipv4Version {
-		return nil, netip.Addr{}, ErrNotIPv4
+		return Datagram{}, ErrNotIPv4
 	}
 	ihl := int(frame[0]&0x0F) * 4
 	if ihl < ipv4HeaderLen || len(frame) < ihl {
-		return nil, netip.Addr{}, ErrShortFrame
+		return Datagram{}, ErrShortFrame
 	}
 	if frame[9] != protoUDP {
-		return nil, netip.Addr{}, ErrNotUDP
+		return Datagram{}, ErrNotUDP
 	}
 	// More-fragments set, or a non-zero fragment offset.
 	if frame[6]&0x20 != 0 || (uint16(frame[6]&0x1F)<<8|uint16(frame[7])) != 0 {
-		return nil, netip.Addr{}, ErrFragmented
+		return Datagram{}, ErrFragmented
 	}
 	if checksum(frame[:ihl]) != 0 {
-		return nil, netip.Addr{}, fmt.Errorf("%w: IPv4 header", ErrBadChecksum)
+		return Datagram{}, fmt.Errorf("%w: IPv4 header", ErrBadChecksum)
 	}
 
 	// The IPv4 total-length field, not len(frame): a SOCK_DGRAM read can hand
@@ -128,29 +145,76 @@ func ParseIPv4UDP(frame []byte) (payload []byte, src netip.Addr, err error) {
 	// len(frame) here makes the UDP checksum fail on exactly those replies.
 	total := int(binary.BigEndian.Uint16(frame[2:4]))
 	if total < ihl || total > len(frame) {
-		return nil, netip.Addr{}, ErrShortFrame
+		return Datagram{}, ErrShortFrame
 	}
 	u := frame[ihl:total]
 	if len(u) < udpHeaderLen {
-		return nil, netip.Addr{}, ErrShortFrame
+		return Datagram{}, ErrShortFrame
 	}
 	if binary.BigEndian.Uint16(u[2:4]) != ClientPort {
-		return nil, netip.Addr{}, ErrWrongPort
+		return Datagram{}, ErrWrongPort
 	}
 	ulen := int(binary.BigEndian.Uint16(u[4:6]))
 	if ulen < udpHeaderLen || ulen > len(u) {
-		return nil, netip.Addr{}, ErrPayloadShort
+		return Datagram{}, ErrPayloadShort
 	}
 	u = u[:ulen]
 
 	var s4, d4 [4]byte
 	copy(s4[:], frame[12:16])
 	copy(d4[:], frame[16:20])
-	// A zero UDP checksum means "not computed" (RFC 768) and is legal.
-	if binary.BigEndian.Uint16(u[6:8]) != 0 && udpChecksumVerify(s4, d4, u) != 0 {
-		return nil, netip.Addr{}, fmt.Errorf("%w: UDP", ErrBadChecksum)
+	partial, ok := acceptUDPChecksum(s4, d4, u)
+	if !ok {
+		return Datagram{}, fmt.Errorf("%w: UDP", ErrBadChecksum)
 	}
-	return u[udpHeaderLen:], netip.AddrFrom4(s4), nil
+	return Datagram{
+		Payload:         u[udpHeaderLen:],
+		Src:             netip.AddrFrom4(s4),
+		PartialChecksum: partial,
+	}, nil
+}
+
+// acceptUDPChecksum decides whether a received datagram's checksum field lets
+// it through, and reports whether the payload actually got checked.
+//
+// Three cases are accepted, and only the middle one is a verification:
+//
+//  1. Zero. RFC 768 reserves the all-zero value for "no checksum computed",
+//     and it is legal over IPv4.
+//
+//  2. A correct checksum: the datagram plus its pseudo-header sums to 0xFFFF.
+//
+//  3. The pseudo-header sum ALONE. This is Linux's CHECKSUM_PARTIAL, and it
+//     is not corruption: for a locally generated datagram the kernel writes
+//     ~csum_tcpudp_magic(saddr, daddr, len, IPPROTO_UDP, 0) into the field —
+//     the folded pseudo-header sum — and leaves completing it to the hardware.
+//     An AF_PACKET reader on the far side of a veth pair, or on any local
+//     delivery path, sees the frame BEFORE anything completes it.
+//
+//     MEASURED 2026-08-29 against dnsmasq 2.91 over a veth pair: every OFFER
+//     and ACK arrived with checksum 0x24f6 where the completed value was
+//     0x0074, and 0x24f6 is exactly the folded pseudo-header sum for that
+//     source, destination and length. The captured frame is a fixture in
+//     ipudp_test.go. Refusing this case does not produce a stricter client,
+//     it produces a client that cannot lease from a server on the same host.
+//
+// Case 3 carries NO information about the payload, so it is exactly as trusted
+// as case 1 — which is why it is reported rather than hidden. THE BOUND: a
+// datagram whose payload is corrupt and whose checksum field happens to equal
+// the pseudo-header sum is accepted. Nothing here can distinguish that from a
+// kernel that has not finished the sum yet; the two are the same bytes.
+func acceptUDPChecksum(src, dst [4]byte, u []byte) (partial, ok bool) {
+	got := binary.BigEndian.Uint16(u[6:8])
+	switch {
+	case got == 0:
+		return true, true
+	case udpChecksumVerify(src, dst, u) == 0:
+		return false, true
+	case got == pseudoHeaderSum(src, dst, len(u)):
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 // checksum is the one's-complement sum of 16-bit words, complemented (RFC 1071).
@@ -194,13 +258,24 @@ func udpChecksumVerify(src, dst [4]byte, u []byte) uint16 {
 	return ^pseudoSum(src, dst, u)
 }
 
-func pseudoSum(src, dst [4]byte, u []byte) uint16 {
+// pseudoHeaderSum is the folded one's-complement sum of the UDP pseudo-header
+// alone — no payload. It is what Linux leaves in the checksum field of a
+// datagram it has not finished checksumming; see acceptUDPChecksum.
+func pseudoHeaderSum(src, dst [4]byte, ulen int) uint16 {
+	return sum16(nil, pseudoBase(src, dst, ulen))
+}
+
+func pseudoBase(src, dst [4]byte, ulen int) uint32 {
 	var sum uint32
 	sum += uint32(binary.BigEndian.Uint16(src[0:2]))
 	sum += uint32(binary.BigEndian.Uint16(src[2:4]))
 	sum += uint32(binary.BigEndian.Uint16(dst[0:2]))
 	sum += uint32(binary.BigEndian.Uint16(dst[2:4]))
 	sum += uint32(protoUDP)
-	sum += uint32(len(u))
-	return sum16(u, sum)
+	sum += uint32(ulen)
+	return sum
+}
+
+func pseudoSum(src, dst [4]byte, u []byte) uint16 {
+	return sum16(u, pseudoBase(src, dst, len(u)))
 }

@@ -74,6 +74,7 @@ type PacketTransport struct {
 	reads   atomic.Uint64
 	skipped atomic.Uint64
 	sends   atomic.Uint64
+	partial atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -85,6 +86,12 @@ type TransportStats struct {
 	Reads   uint64
 	Skipped uint64
 	Sends   uint64
+	// PartialChecksums counts accepted datagrams whose UDP checksum the
+	// sending kernel had not completed (Linux CHECKSUM_PARTIAL). Those
+	// payloads were not verified — acceptUDPChecksum says why that is the
+	// only workable answer, and counting them is what keeps it from being a
+	// silent one.
+	PartialChecksums uint64
 }
 
 // NewPacketTransport opens an AF_PACKET socket bound to ifName.
@@ -196,9 +203,10 @@ func (t *PacketTransport) Close() error {
 // Stats reports what the socket has seen.
 func (t *PacketTransport) Stats() TransportStats {
 	return TransportStats{
-		Reads:   t.reads.Load(),
-		Skipped: t.skipped.Load(),
-		Sends:   t.sends.Load(),
+		Reads:            t.reads.Load(),
+		Skipped:          t.skipped.Load(),
+		Sends:            t.sends.Load(),
+		PartialChecksums: t.partial.Load(),
 	}
 }
 
@@ -222,19 +230,26 @@ func (t *PacketTransport) read() {
 		}
 		t.reads.Add(1)
 
-		payload, src, perr := ParseIPv4UDP(buf[:n])
+		dg, perr := ParseIPv4UDP(buf[:n])
 		if perr != nil {
 			// Not for us. On a shared link this is the overwhelming majority
 			// of what arrives, so it is counted rather than reported.
 			t.skipped.Add(1)
 			continue
 		}
+		if dg.PartialChecksum {
+			// Accepted, and counted: the payload was NOT verified. See
+			// acceptUDPChecksum. A client leasing from a server on the same
+			// host will show this on every reply, which is normal; a client on
+			// a physical link showing it is worth a second look.
+			t.partial.Add(1)
+		}
 		// The payload aliases buf, which the next read overwrites.
-		p := make([]byte, len(payload))
-		copy(p, payload)
+		p := make([]byte, len(dg.Payload))
+		copy(p, dg.Payload)
 
 		select {
-		case t.inbound <- lease.Inbound{Payload: p, From: src}:
+		case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
 		default:
 			// The consumer is behind. Dropping is the honest outcome: blocking
 			// here would stall the reader and lose packets in the kernel
