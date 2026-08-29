@@ -537,3 +537,103 @@ func TestAnUncheckedChecksumAcceptsACorruptPayload(t *testing.T) {
 		}
 	})
 }
+
+// TestAFrameThatIsBothVerifiedAndPseudoHeaderSum pins the ORDER of the arms in
+// acceptUDPChecksum, which round 1 of review flagged as untested and round 2
+// re-derived as still untested: swapping the verify arm and the pseudo-header
+// arm left the whole suite green, and the witness that justified the order
+// existed only in a review note outside the repository.
+//
+// The two arms are not disjoint. A frame whose checksum field happens to equal
+// the pseudo-header sum AND is a correct checksum satisfies both, and it must
+// be reported as Verified: the payload really was checked, and reporting it as
+// Uncompleted would count a verified datagram as unverified.
+//
+// It is constructed rather than asserted to be rare: choosing the field and
+// then solving for one 16-bit payload word gives a witness in one pass.
+//
+// The zero arm overlaps too, and the first draft of this comment claimed it
+// did not — "a zero field cannot be a correct checksum", which
+// TestUDPChecksumNeverTransmitsZero refutes two hundred lines up by
+// constructing a datagram whose real checksum is zero. A frame carrying that
+// datagram with a zero field satisfies the zero arm AND the verify arm, and
+// must be reported Absent: RFC 768 reserves zero for "no checksum computed",
+// so the receiver must not treat it as checked. The zero subtest below drives
+// that, so all three arms now have their order pinned.
+func TestAFrameThatIsBothVerifiedAndPseudoHeaderSum(t *testing.T) {
+	frame := realOffer(t)
+	var src, dst [4]byte
+	copy(src[:], frame[12:16])
+	copy(dst[:], frame[16:20])
+
+	field := pseudoHeaderSum(src, dst, len(frame[20:]))
+	if field == 0 {
+		t.Fatal("the pseudo-header sum is zero for this fixture; the two arms cannot overlap")
+	}
+	binary.BigEndian.PutUint16(frame[26:28], field)
+
+	// Solve for the payload word that makes the same field a CORRECT checksum.
+	found := false
+	for v := 0; v <= 0xFFFF; v++ {
+		binary.BigEndian.PutUint16(frame[100:102], uint16(v))
+		if udpChecksumVerify(src, dst, frame[20:]) == 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no payload word makes this field a correct checksum; the witness cannot be built")
+	}
+
+	// The premise, asserted rather than assumed: the frame satisfies BOTH arms.
+	if got := udpChecksumVerify(src, dst, frame[20:]); got != 0 {
+		t.Fatalf("verify = %#04x, want 0", got)
+	}
+	if got := binary.BigEndian.Uint16(frame[26:28]); got != pseudoHeaderSum(src, dst, len(frame[20:])) {
+		t.Fatalf("field %#04x is not the pseudo-header sum %#04x", got, pseudoHeaderSum(src, dst, len(frame[20:])))
+	}
+
+	state, ok := acceptUDPChecksum(src, dst, frame[20:])
+	if !ok {
+		t.Fatal("a correct checksum was refused")
+	}
+	if state != ChecksumVerified {
+		t.Fatalf("state = %s, want verified: the verify arm must be reached before the pseudo-header arm", state)
+	}
+
+	dg, err := ParseIPv4UDP(frame)
+	if err != nil {
+		t.Fatalf("ParseIPv4UDP refused the witness: %v", err)
+	}
+	if dg.Checksum != ChecksumVerified {
+		t.Fatalf("ParseIPv4UDP reported %s, want verified", dg.Checksum)
+	}
+
+	t.Run("zero", func(t *testing.T) {
+		// A datagram whose REAL checksum is zero, carried with a zero field:
+		// the zero arm and the verify arm both match. Zero must win — RFC 768
+		// reserves it for "no checksum computed", so a receiver that reports
+		// this as verified reports a check it did not perform.
+		var zsrc, zdst [4]byte
+		u := make([]byte, 12)
+		binary.BigEndian.PutUint16(u[0:2], ServerPort)
+		binary.BigEndian.PutUint16(u[2:4], ClientPort)
+		binary.BigEndian.PutUint16(u[4:6], 12)
+		s0 := pseudoSum(zsrc, zdst, u)
+		binary.BigEndian.PutUint16(u[10:12], 0xFFFF-s0)
+
+		if got := binary.BigEndian.Uint16(u[6:8]); got != 0 {
+			t.Fatalf("the checksum field is %#04x, not zero", got)
+		}
+		if got := udpChecksumVerify(zsrc, zdst, u); got != 0 {
+			t.Fatalf("verify = %#04x: the constructed datagram does not also verify, so the arms do not overlap here", got)
+		}
+		state, ok := acceptUDPChecksum(zsrc, zdst, u)
+		if !ok {
+			t.Fatal("a zero checksum was refused")
+		}
+		if state != ChecksumAbsent {
+			t.Fatalf("state = %s, want absent: the zero arm must be reached before the verify arm", state)
+		}
+	})
+}

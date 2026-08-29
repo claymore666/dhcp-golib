@@ -47,6 +47,11 @@ SUITE_CEILING_SECONDS=60
 # GOFLAGS.
 SUITE_TIMEOUT_SECONDS=180
 
+# The flags `go test` actually runs with, in ONE array, so the constant the
+# bounds step reads is the constant the suite uses. Scenarios test-cache,
+# race-detector, hang-bounded, bounds-ordering, suite-timeout-detached.
+SUITE_ARGS=(-race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s")
+
 # The gates that MUST run: enumerated, not discovered — a verifier that finds
 # its own checklist is silenced by deleting a check. Cross-checked below in
 # both directions (scenarios roster-gate-deleted, roster-gate-added).
@@ -106,48 +111,90 @@ command -v go >/dev/null 2>&1 || {
 }
 
 # ------------------------------------------------------------- citations --
-# A comment that shrinks a fact to "see TestFoo" is worth exactly as much as
-# the pointer, and a renamed test leaves the pointer looking right. Every
-# TestXxx named in a .go comment or in a .md file must be a test that exists.
+# The rule, stated as the code implements it rather than as a summary of it —
+# an earlier wording of this comment described a stricter check than the code
+# performed, which is the defect the whole sweep was about:
 #
-# "Exists" is: the token appears on a non-comment line of some .go file. That
-# also covers ordinary identifiers such as rings.TestIdents, which are not
-# citations at all. BOUND: a token quoted inside a Go string literal counts as
-# existing, and .sh files are outside the domain because the oracle plants test
-# bodies into heredocs. BOUND, found by writing docs/gates.md: prose cannot use
-# a PLACEHOLDER test name either, because nothing distinguishes one from a
-# citation. That is the loud direction and it stays.
+#   CITED  = every Test/Benchmark/Fuzz/Example token in the part of a .go line
+#            that follows "//", or anywhere on a line of a .md file.
+#   KNOWN  = every such token that a .go line DECLARES, i.e. a line beginning
+#            "func"/"var"/"const"/"type" followed by the token. That admits the
+#            exported maps TestIdents and TestRefusedIdents, which are
+#            identifiers rather than citations.
+#   VERDICT = every CITED token must be KNOWN.
+#
+# BOUNDS, and there are six because two were not enough — each one is a shape
+# this cannot see, not a shape it forgives:
+#   1. Block comments. A /* ... */ citation is invisible; nothing in the tree
+#      uses them and an awk state machine is the price of covering them.
+#   2. A declaration written inside a Go raw string literal counts as a
+#      declaration. internal/gates/t2 embeds test bodies that way on purpose.
+#   3. .sh files are outside the domain entirely, because the oracle plants
+#      test bodies into heredocs.
+#   4. Prose cannot use a PLACEHOLDER name: nothing distinguishes one from a
+#      citation. That is the loud direction and it stays.
+#   5. Import aliasing and shadowing are not resolved; this is textual.
+#   6. "No unseen shape is present in the tree" is a measurement at one head,
+#      never a property. A new file reintroduces one silently.
 cite_scan() {
 	find . -type f \( -name '*.go' -o -name '*.md' \) -not -path './.git/*' -print0 |
 		xargs -0 awk -v want="$1" '
 			function emit(s) {
-				while (match(s, /Test[A-Z][A-Za-z0-9_]*/)) {
+				while (match(s, /(Test|Benchmark|Fuzz|Example)[_A-Z][A-Za-z0-9_]*/)) {
 					print substr(s, RSTART, RLENGTH)
 					s = substr(s, RSTART + RLENGTH)
 				}
 			}
-			{
-				comment = (FILENAME ~ /\.md$/) || ($0 ~ /^[ \t]*\/\//)
-				if ((want == "cited") == comment) emit($0)
+			want == "cited" {
+				if (FILENAME ~ /\.md$/) { emit($0); next }
+				i = index($0, "//")
+				if (i > 0) emit(substr($0, i + 2))
+				next
+			}
+			FILENAME ~ /\.go$/ && match($0, /^(func|var|const|type)[ \t]+(Test|Benchmark|Fuzz|Example)[_A-Z][A-Za-z0-9_]*/) {
+				tok = substr($0, RSTART, RLENGTH)
+				sub(/^(func|var|const|type)[ \t]+/, "", tok)
+				print tok
 			}
 		' | sort -u
 }
 
-missing="$(comm -23 <(cite_scan cited) <(cite_scan known) | tr '\n' ' ' | sed 's/ $//')"
-if [ -z "$missing" ]; then
-	record "citations" PASS "every cited test exists"
+cited_f="$(mktemp)"
+known_f="$(mktemp)"
+cite_scan cited >"$cited_f"
+cite_scan known >"$known_f"
+cited_n="$(wc -l <"$cited_f" | tr -d ' ')"
+known_n="$(wc -l <"$known_f" | tr -d ' ')"
+missing="$(comm -23 "$cited_f" "$known_f" | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$cited_f" "$known_f"
+
+# Non-vacuity, both sides. A universal claim over an empty domain is a PASS
+# that measured nothing, and the cited side is exactly the side this project's
+# method keeps shrinking: the sweep replaced facts with pointers.
+if [ "$known_n" -eq 0 ] || [ "$cited_n" -eq 0 ]; then
+	record "citations" FAIL "measured nothing: $cited_n cited token(s), $known_n declared; a scan that finds no domain is not a passing scan"
+elif [ -z "$missing" ]; then
+	record "citations" PASS "$cited_n cited token(s), all declared among $known_n"
 else
-	record "citations" FAIL "cited but not defined anywhere: $missing"
-	echo "--- citations FAILED: a comment or document names a test that does not exist ---" >&2
+	record "citations" FAIL "cited but never declared: $missing"
+	echo "--- citations FAILED: a comment or document names a test that is not declared anywhere ---" >&2
 fi
 
-# The hang timeout must exceed the ceiling, or a merely slow suite is killed by
-# the timeout — which says only that it did not finish — instead of being
-# diagnosed by the ceiling, which says something is waiting.
-if [ "$SUITE_TIMEOUT_SECONDS" -gt "$SUITE_CEILING_SECONDS" ]; then
-	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s"
-else
+# Two things, because checking only the first was adjacency dressed as a check:
+# the hang timeout must exceed the ceiling, AND the flags the suite actually
+# runs with must carry that timeout. Without the second, a hardcoded
+# `-timeout 90s` on the go test line left both this step and hang-bounded
+# green while the constant compared here bound nothing.
+#
+# BOUND: this reads SUITE_ARGS, so it holds only while the invocation expands
+# SUITE_ARGS. An invocation that stops using the array is invisible here, and
+# nothing else sees it either.
+if [ "$SUITE_TIMEOUT_SECONDS" -le "$SUITE_CEILING_SECONDS" ]; then
 	record "bounds" FAIL "hang timeout ${SUITE_TIMEOUT_SECONDS}s does not exceed the ${SUITE_CEILING_SECONDS}s ceiling; a slow suite would be killed before the ceiling could diagnose it"
+elif [[ " ${SUITE_ARGS[*]} " != *" -timeout ${SUITE_TIMEOUT_SECONDS}s "* ]]; then
+	record "bounds" FAIL "the suite flags do not carry -timeout ${SUITE_TIMEOUT_SECONDS}s, so the checked constant is not the one in force: ${SUITE_ARGS[*]}"
+else
+	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the suite runs with it"
 fi
 
 # ---------------------------------------------------------------- toolchain --
@@ -262,7 +309,7 @@ done
 # measured on this tree. Scenario test-cache.
 suite_start=$(date +%s)
 rc=0
-suite_out="$(go test -race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s" ./... 2>&1)" || rc=$?
+suite_out="$(go test "${SUITE_ARGS[@]}" ./... 2>&1)" || rc=$?
 suite_elapsed=$(($(date +%s) - suite_start))
 if [ "$rc" -ne 0 ]; then
 	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"

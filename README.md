@@ -115,8 +115,9 @@ It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
 a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
 that never returns — it is computed after `go test` comes back), a check that
-the hang timeout exceeds that ceiling, a check that every `See Test…` pointer
-in a comment names a test that exists, and its own oracle.
+the flags the suite runs with carry a hang timeout that exceeds that ceiling, a
+check that every Test/Benchmark/Fuzz/Example token named in a comment or a
+document is DECLARED somewhere in the Go source, and its own oracle.
 
 "Every check" is bounded, and the bound is worth stating because it is the
 shape of the failure this repository keeps finding: **a check runs only if

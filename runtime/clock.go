@@ -34,8 +34,10 @@ type FixedClock struct {
 	WallAt time.Time
 }
 
+// Mono returns MonoAt.
 func (c *FixedClock) Mono() proto.Instant { return c.MonoAt }
 
+// Wall returns WallAt.
 func (c *FixedClock) Wall() time.Time { return c.WallAt }
 
 // Advance moves both clocks forward by the same amount.

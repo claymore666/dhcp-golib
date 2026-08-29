@@ -336,24 +336,51 @@ to be typed into the invocation you are reading.
 
 ### Two steps added 2026-08-29, and what each cannot see
 
-- **`citations`** fails the run when a `// See Test…` pointer in a comment
-  names a test no `_test.go` file declares. It exists because converting a
-  fact-comment into a pointer at a test is exactly how an invented test name
-  gets written down and believed: one was invented during that conversion, and
-  one already in the tree (`internal/gates/rings/policy_test.go`) named a test
-  that had never existed. Its bounds are stated where it is implemented — a
-  `Test...` token inside a Go string literal counts as a declaration, and `.sh`
-  files are outside the domain because the oracle plants test bodies into
-  heredocs. A third bound was found by writing this section: prose in a `.md`
-  file cannot use a PLACEHOLDER test name, because the check cannot tell a
-  placeholder from a citation. That is the loud direction, and it stays.
-  Driven by the `stale-citation` scenario and by its own absence: with the step
-  deleted from a copy, that scenario reports ABSENT.
+- **`citations`** fails the run when a Test/Benchmark/Fuzz/Example token
+  appearing after `//` on a `.go` line, or anywhere on a `.md` line, is not
+  DECLARED by some `.go` line beginning `func`/`var`/`const`/`type`. It exists
+  because converting a fact-comment into a pointer at a test is exactly how an
+  invented test name gets written down and believed: one was invented during
+  that conversion, and one already in the tree
+  (`internal/gates/rings/policy_test.go`) named a test that had never existed.
+
+  **This bullet described a stricter check than the code performed**, and a
+  reviewer measured the gap with five planted trees: trailing comments, block
+  comments, and names the token pattern did not reach — an underscore suffix,
+  and benchmarks — all passed, and a genuinely
+  stale citation was whitewashed whenever the same token appeared in a Go
+  string literal anywhere in the tree — because "exists" meant "appears on a
+  non-comment line". Four of the five are caught now, each with its own
+  scenario: `citation-trailing`, `citation-underscore`, `citation-whitewash`,
+  and `stale-citation`, whose plant is INDENTED so that narrowing the match
+  back to column 0 kills it. `citation-vacuous` drives the other direction — a
+  scan that finds no domain at all must FAIL rather than report that every
+  citation resolved. The six remaining bounds are listed beside the
+  implementation in `verify.sh` and not restated here; the first is block
+  comments, and none of them is a completeness claim.
 - **`bounds`** fails the run unless the `go test` hang timeout exceeds the
-  suite ceiling. That ordering was a comment saying nothing enforced it; it is
-  enforced now. Below the ceiling, a slow suite is killed before the ceiling
-  can diagnose it, and the run reports a hang where the truth is drift. Driven
-  by the `bounds-ordering` scenario and by its own absence, same shape.
+  suite ceiling AND the flags the suite actually runs with carry that timeout.
+  The second half was missing, which is why this bullet is longer than its
+  first version: comparing two constants declared a hundred lines above the
+  `go test` line is adjacency, not a data dependency. MEASURED by a reviewer, a
+  hardcoded `-timeout 90s` on the invocation survived both `bounds-ordering`
+  and `hang-bounded`. The flags are one array now, the invocation expands it,
+  `suite-timeout-detached` plants exactly that mutant, and the residual bound —
+  an invocation that stops using the array — is stated at the check.
+
+Every scenario named above was driven by its own absence: with the step it
+guards deleted from a copy, or with the widening it drives reverted, each one
+goes red. Six mutants across seven runs, MEASURED 2026-08-29 — the step
+deleted, the comment match narrowed back to column 0 (two scenarios), "exists"
+reverted to any non-comment line, the token pattern narrowed back to
+`Test[A-Z]`, the non-vacuity branch deleted, and the flags check deleted. It is
+a statement about those six and about nothing else.
+
+The residual bound on `bounds` is MEASURED, not reasoned: replacing
+`go test "${SUITE_ARGS[@]}"` with a `go test` line carrying its own literal
+`-timeout 300s` leaves `bounds` PASS. The check holds the array honest; it
+cannot hold an invocation that stops reading the array, and nothing else
+does either.
 
 `shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
 `verify.sh`'s own steps. The linted list is enumerated AND cross-checked

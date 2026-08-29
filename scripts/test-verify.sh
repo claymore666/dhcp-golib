@@ -45,7 +45,12 @@ SCENARIOS=(
 	oracle-is-invoked
 	hang-bounded
 	bounds-ordering
+	suite-timeout-detached
 	stale-citation
+	citation-trailing
+	citation-underscore
+	citation-whitewash
+	citation-vacuous
 )
 
 # ------------------------------------------------------------------ helpers --
@@ -276,7 +281,7 @@ sc_test_cache() {
 	copy_tree "$d"
 	# Removing -count=1 lets the SECOND run be served from the test cache. The
 	# first run must still pass, or the second run's failure could be anything.
-	edit "$d/verify.sh" 'go test -race -count=1 -timeout' 'go test -race -timeout'
+	edit "$d/verify.sh" 'SUITE_ARGS=(-race -count=1 -timeout' 'SUITE_ARGS=(-race -timeout'
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "the first run of the -count=1-less copy did not pass: exit $RC"
 	run_verify "$d"
@@ -372,19 +377,100 @@ sc_bounds_ordering() {
 }
 
 sc_stale_citation() {
-	# A comment pointing at a test that does not exist. The plant is a comment
-	# line, so it is gofmt-clean and compiles, and only the citations row can
-	# see it.
+	# A comment pointing at a test that does not exist. The plant is INDENTED
+	# on purpose: a column-0 plant is satisfied by a gate that only looks at
+	# column 0, and the fixture would then select the passing path. Narrowing
+	# the gate's comment match to /^\/\// must kill this scenario.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/proto/state.go" 'package proto' 'package proto
-
-// See TestThisCitationWasNeverWritten.'
+	edit "$d/proto/state.go" '	switch s {' '	switch s {
+	// See TestThisCitationWasNeverWritten.'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a comment citing a test that does not exist passed"
 	[ "$(row citations)" = FAIL ] || note "citations did not report the stale pointer: $(row citations)"
 	[ "$(row gofmt)" = PASS ] || note "the planted comment is unformatted; this run failed for a reason this scenario does not name"
 	[ "$(row unit-suite)" = PASS ] || note "the planted comment broke the suite: $(row unit-suite)"
+}
+
+sc_citation_trailing() {
+	# A citation in a TRAILING comment. The first version of this gate matched
+	# only lines that BEGIN with //, so this shape passed and two documents
+	# said otherwise.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" '		return "BOUND"' '		return "BOUND" // See TestTrailingCitationNeverWritten.'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a trailing-comment citation of a test that does not exist passed"
+	[ "$(row citations)" = FAIL ] || note "citations did not see the trailing comment: $(row citations)"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite)"
+}
+
+sc_citation_underscore() {
+	# Test_lowercase and Benchmark names. The first token pattern was
+	# Test[A-Z], which saw neither — two spellings enumerated means a third
+	# exists, and there were two more.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" '	switch s {' '	switch s {
+	// See Test_neverWrittenAtAll and BenchmarkNeverWrittenEither.'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "citations of a Test_ and a Benchmark that do not exist passed"
+	[ "$(row citations)" = FAIL ] || note "citations did not see the underscore/Benchmark names: $(row citations)"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+	printf '%s\n' "$OUT" | grep -q 'Test_neverWrittenAtAll' || note "the diagnosis does not name the Test_ token"
+	printf '%s\n' "$OUT" | grep -q 'BenchmarkNeverWrittenEither' || note "the diagnosis does not name the Benchmark token"
+	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite)"
+}
+
+sc_citation_whitewash() {
+	# A genuinely stale citation, plus the SAME token inside a Go string
+	# literal in the same file. Under the first rule any occurrence on a
+	# non-comment line counted as "exists", so one string literal anywhere in
+	# the tree silenced every citation of that name. "Exists" is now "a line
+	# DECLARES it", and a string literal declares nothing.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'import "fmt"' 'import "fmt"
+
+// See TestWhitewashedByAStringLiteral.
+var whitewashProbe = "TestWhitewashedByAStringLiteral"'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a stale citation was whitewashed by a string literal in the same file"
+	[ "$(row citations)" = FAIL ] || note "citations was whitewashed: $(row citations)"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+	printf '%s\n' "$OUT" | grep -q 'TestWhitewashedByAStringLiteral' || note "the diagnosis does not name the whitewashed token"
+	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite)"
+}
+
+sc_citation_vacuous() {
+	# The citations row must not report PASS having measured nothing. The
+	# token pattern is neutered so both sides of the comparison come back
+	# empty; comm then reports no missing token, which is exactly the shape a
+	# universal claim over an empty domain takes.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" '(Test|Benchmark|Fuzz|Example)[_A-Z][A-Za-z0-9_]*/)) {' '(ZzNeverMatchesAnything)[_A-Z][A-Za-z0-9_]*/)) {'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a citations scan that found no domain at all passed"
+	[ "$(row citations)" = FAIL ] || note "an empty citation domain did not fail the row: $(row citations)"
+	printf '%s\n' "$OUT" | grep -q 'measured nothing' || note "the diagnosis does not say the scan measured nothing"
+	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite)"
+}
+
+sc_suite_timeout_detached() {
+	# The bounds step used to compare two constants declared a hundred lines
+	# above the go test line and call that a check on the invocation. This
+	# hardcodes a timeout into the flags the suite runs with, leaving the
+	# compared constant bound to nothing. MEASURED before the fix: this
+	# survived both bounds-ordering and hang-bounded.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" '-timeout "${SUITE_TIMEOUT_SECONDS}s")' '-timeout 90s)'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a suite whose timeout is detached from the checked constant passed"
+	[ "$(row bounds)" = FAIL ] || note "bounds did not see the detached timeout: $(row bounds)"
+	[ "$(row unit-suite)" = PASS ] || note "the suite itself failed; this run failed for a reason this scenario does not name: $(row unit-suite)"
 }
 
 sc_gate_panic() {

@@ -133,8 +133,10 @@ func (c ChecksumState) String() string {
 // because a caller that cannot see it cannot report it.
 type Datagram struct {
 	// Payload aliases the frame passed in.
-	Payload  []byte
-	Src      netip.Addr
+	Payload []byte
+	// Src is the IPv4 source address of the frame.
+	Src netip.Addr
+	// Checksum says whether the payload was verified, and if not, why not.
 	Checksum ChecksumState
 }
 
@@ -220,11 +222,18 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 // from the fixture two lines below it.)
 //
 // BOUND: the zero case and the pseudo-header case both accept a corrupt
-// payload, the zero case more cheaply. Neither is a lucky collision — the
-// accepting value is a pure function of source, destination and UDP length,
-// all read from the frame itself. Read both as "unchecked", never as
-// "probably fine": TestAnUncheckedChecksumAcceptsACorruptPayload,
+// payload, the zero case more cheaply — its accepting value is the constant
+// zero. The pseudo-header case is no harder to hit on purpose: its accepting
+// value is a pure function of source, destination and UDP length, all read
+// from the frame itself, so anyone who can put a frame on the link can compute
+// it. Read both as "unchecked", never as "probably fine":
+// TestAnUncheckedChecksumAcceptsACorruptPayload,
 // TestThePseudoHeaderSumIsBlindToThePayload.
+//
+// The ORDER of the arms below is load-bearing and is not obvious: a frame can
+// satisfy both the verify arm and the pseudo-header arm at once, and it must
+// be reported as Verified. TestAFrameThatIsBothVerifiedAndPseudoHeaderSum
+// constructs one.
 //
 // PACKET_AUXDATA's TP_STATUS_CSUMNOTREADY would close it — the kernel saying
 // outright that it deferred the sum, which would let a frame without the flag

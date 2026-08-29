@@ -263,7 +263,9 @@ func (t *PacketTransport) deliver(frame []byte) {
 	}
 	if !dg.Checksum.Verified() {
 		// Accepted, and counted: the payload was NOT verified. See
-		// acceptUDPChecksum.
+		// acceptUDPChecksum. A client leasing from a server on the same
+		// host shows Uncompleted on every reply, which is normal; a client
+		// on a physical link showing either state is worth a second look.
 		switch dg.Checksum {
 		case ChecksumUncompleted:
 			t.uncompleted.Add(1)

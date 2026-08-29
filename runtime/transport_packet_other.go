@@ -18,8 +18,12 @@ import (
 // ordinary UDP socket would fail only against a real server.
 var ErrUnsupportedPlatform = errors.New("runtime: AF_PACKET transport requires Linux")
 
-// TransportStats is what a PacketTransport has seen. The fields match the
-// Linux declaration so that a caller reading them compiles on both.
+// TransportStats is what a PacketTransport has seen.
+//
+// The field list must match the Linux declaration, and NOT because the build
+// says so: the fields' only readers are Linux-only test files, so deleting one
+// here leaves `GOOS=darwin go build ./...` and `go vet` at rc=0. What holds it
+// is TestTransportStatsDeclarationsAgree, which parses both files.
 type TransportStats struct {
 	Reads       uint64
 	Skipped     uint64
@@ -33,6 +37,7 @@ type TransportStats struct {
 // or is empty; none of them pretends to transport anything.
 type PacketTransport struct{}
 
+// NewPacketTransport always fails off Linux, with ErrUnsupportedPlatform.
 func NewPacketTransport(string) (*PacketTransport, error) { return nil, ErrUnsupportedPlatform }
 
 func (*PacketTransport) Send(proto.Dest, []byte) error { return ErrUnsupportedPlatform }
