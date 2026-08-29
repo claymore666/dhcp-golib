@@ -226,13 +226,16 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 		t, _ := msg.Type()
 		switch t {
 		case wire.MsgAck:
-			lse, ok := leaseFromAck(msg, m.requestSentAt)
+			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
 			if !ok {
 				// An ACK with no yiaddr or no lease time cannot be applied.
 				// The retransmission timer is still armed, so this is not a
 				// dead end: the machine keeps asking.
 				out.journal(m, "DHCPACK without a usable yiaddr and lease time: discarded")
 				return
+			}
+			if note != "" {
+				out.journal(m, note)
 			}
 			m.enterBound(now, lse, out)
 		case wire.MsgNak:
@@ -414,7 +417,11 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 	m.haveLse = false
 	m.lease = Lease{}
 	out.cancel(m, TimerExpire)
-	out.add(Action{Kind: ActLeaseLost, Reason: r})
+	// stamp, not add: every action carries a unique id so an EvActionFailed
+	// can name exactly which one did not happen (R2). An unstamped action
+	// carries id 0, which collides with the first stamped action of the
+	// machine's life — and the collision is silent.
+	out.stamp(m, Action{Kind: ActLeaseLost, Reason: r})
 }
 
 // noteActionFailed is R2: an action the machine emitted did not happen.
@@ -603,8 +610,6 @@ func (m *Machine) nakText(msg *wire.Message) string {
 // actions accumulates the action list, stamping each with the machine's next
 // ActionID so a failure can name exactly which one did not happen.
 type actions struct{ list []Action }
-
-func (a *actions) add(x Action) { a.list = append(a.list, x) }
 
 func (a *actions) stamp(m *Machine, x Action) {
 	x.ID = m.nextAction

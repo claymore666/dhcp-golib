@@ -135,14 +135,21 @@ func (l Lease) String() string {
 // It returns ok=false when the message cannot describe a lease at all: no
 // yiaddr, or no lease time. Both are the server's obligation and a message
 // missing either is not something to half-apply.
-func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, bool) {
+//
+// The middle return is a note for the journal, empty when nothing was
+// anomalous. It exists because the one anomaly this function tolerates — a
+// non-contiguous subnet mask — changes the lease it hands back, and a silent
+// change is the kind that gets diagnosed as "the plugin used the wrong
+// prefix" months later.
+func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 	if !m.YIAddr.Is4() || m.YIAddr.IsUnspecified() {
-		return Lease{}, false
+		return Lease{}, "", false
 	}
 	secs, ok := m.Uint32(wire.OptLeaseTime)
 	if !ok {
-		return Lease{}, false
+		return Lease{}, "", false
 	}
+	note := ""
 	bits := 32
 	if mask, ok := m.Addr4(wire.OptSubnetMask); ok {
 		if n, ok := maskBits(mask); ok {
@@ -150,10 +157,10 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, bool) {
 		} else {
 			// A non-contiguous mask is not a prefix. Refusing the whole lease
 			// over it would be worse than using a host route, so the address
-			// is kept at /32 and the anomaly is recorded in the note the
-			// caller journals. Silently rounding it to the nearest prefix is
-			// the option not taken.
+			// is kept at /32 and the anomaly is journalled. Silently rounding
+			// it to the nearest prefix is the option not taken.
 			bits = 32
+			note = "subnet mask " + mask.String() + " is not contiguous: address kept at /32"
 		}
 	}
 	l := Lease{
@@ -183,7 +190,7 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, bool) {
 	if t2, ok := m.Uint32(wire.OptRebindingTime); ok {
 		l.T2 = SecondsToDuration(t2)
 	}
-	return l, true
+	return l, note, true
 }
 
 // maskBits converts a dotted subnet mask to a prefix length, refusing a

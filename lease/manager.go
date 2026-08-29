@@ -255,11 +255,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 		mg.stats.Steps++
 		mg.mu.Unlock()
 
-		mg.journal.Append(proto.JournalEntry{
-			Seq: seq, Now: now, Rnd: rnd, Kind: e.Kind,
-			Raw: e.Raw, Timer: e.Timer, Action: e.Action, Reason: e.Reason,
-			From: from, To: to, Actions: proto.RenderActions(acts),
-		})
+		mg.journal.Append(proto.NewJournalEntry(seq, now, rnd, e, from, to, acts))
 
 		queue = append(queue, mg.drain(ctx, acts)...)
 	}

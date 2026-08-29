@@ -46,6 +46,21 @@ type JournalEntry struct {
 	Actions []string
 }
 
+// NewJournalEntry builds the entry for one Step.
+//
+// It exists so that the journal's shape is defined ONCE. The manager records
+// steps and the tests record steps, and a test recorder that built entries its
+// own way would be a probe derived differently from its subject: it could
+// replay perfectly while the manager's journal replayed not at all, and the
+// suite would report the opposite of the truth.
+func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
+	return JournalEntry{
+		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
+		Raw: ev.Raw, Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
+		From: from, To: to, Actions: RenderActions(acts),
+	}
+}
+
 // Event reconstructs the Step input this entry records.
 //
 // A Received entry is re-DECODED here, so a corrupt or unparseable Raw is
