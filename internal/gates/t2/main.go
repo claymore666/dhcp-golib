@@ -21,15 +21,13 @@
 //	   `import t "time"` then `t.Sleep` is caught; a text search for
 //	   "time.Sleep" is not.
 //
-//	B  Non-vacuity. The tree must contain at least one _test.go file for the
-//	   gate to have a domain at all, unless -allow-empty is passed. A
-//	   universal gate is satisfied by emptying its domain, so an empty domain
-//	   is a refusal, not a pass.
-//
-// -allow-empty exists because at M0 the library is deliberately an empty
-// package with no tests, and the gate has to be provable before there is
-// anything to gate. It is passed by verify.sh only while that is true, and the
-// verifier prints that it did.
+//	B  Non-vacuity. The tree must contain at least one _test.go file, or the
+//	   gate refuses. A universal gate is satisfied by emptying its domain, so
+//	   an empty domain is a refusal and never a pass. There is no opt-out
+//	   flag: one existed at M0, for the case where the library had no tests at
+//	   all, and it was removed once the gates' own self-tests made the domain
+//	   genuinely non-empty. An unused escape hatch is what a later session
+//	   reaches for when the gate is inconvenient.
 //
 // The wall-clock ceiling that T2 also calls for is enforced by verify.sh
 // around the suite, not here: it is a different instrument measuring a
@@ -58,15 +56,13 @@ const (
 
 func main() {
 	root := flag.String("root", ".", "tree to check")
-	allowEmpty := flag.Bool("allow-empty", false,
-		"pass when the tree contains no _test.go file; only correct before any test exists")
 	flag.Parse()
 
 	abs, err := filepath.Abs(*root)
 	if err != nil {
 		refuse("cannot resolve -root %q: %v", *root, err)
 	}
-	os.Exit(run(abs, *allowEmpty))
+	os.Exit(run(abs))
 }
 
 func refuse(format string, args ...any) {
@@ -79,7 +75,7 @@ type violation struct {
 	msg string
 }
 
-func run(root string, allowEmpty bool) int {
+func run(root string) int {
 	files, err := scan.GoFiles(root)
 	if err != nil {
 		refuse("cannot walk %q: %v", root, err)
@@ -92,12 +88,7 @@ func run(root string, allowEmpty bool) int {
 		}
 	}
 	if len(tests) == 0 {
-		if !allowEmpty {
-			refuse("no _test.go file found under %q; the domain is empty", root)
-		}
-		fmt.Printf("T2 PASS (VACUOUS): no test files exist under %s, and -allow-empty was given. "+
-			"This verdict measured nothing. Drop -allow-empty as soon as the first test lands.\n", root)
-		return exitPass
+		refuse("no _test.go file found under %q; the domain is empty", root)
 	}
 
 	var vs []violation

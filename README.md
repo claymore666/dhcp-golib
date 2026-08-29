@@ -15,8 +15,15 @@ Transactions, timers, the state machine, persistence, change notification.
 
 ## Design
 
-`.claude/internal/2x-dhcp-library-design.md` in the plugin repo.
-Protocol obligations: `2x-protocol-conformance.md` beside it.
+The architecture document and the protocol conformance checklist are held
+privately alongside the plugin project, not in this tree. This README states
+the part a reader needs before opening any file; `docs/gates.md` states what
+the two gates enforce and what they cannot see.
+
+This paragraph used to name those documents by their exact path under the
+plugin's gitignored notes directory. That path is private scaffolding, and this
+repository publishes the day the plugin depends on it — so the reference would
+have gone public with it.
 
 The one thing to know before reading any code: **ring 1 is pure.** The
 state machine is `Step(now, rnd, event) -> (state, []action)` with no I/O, no

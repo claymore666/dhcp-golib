@@ -130,14 +130,18 @@ they do not wait on it, and T2's subject is waiting.
 3. **A wait inside a helper in non-test code**, called from a test. T2's domain
    is `_test.go` files. That is deliberate — ring 3 has a real clock in it —
    and it means a test can wait by delegating.
-4. **Files under `testdata/`.** Not walked, because the go tool does not
+4. **Its domain at M0 is the gates' own self-tests.** There is no library code
+   yet, so the three test files T2 checks are the gates testing themselves. The
+   gate is proven to work; it is not yet guarding any protocol test, and it
+   will not be until M1.
+5. **Files under `testdata/`.** Not walked, because the go tool does not
    compile them, so a file there is not part of any test binary. It is also
    where the gates' own deliberate violations live.
-5. **Shadowing, in the loud direction.** A local variable named `time` would
+6. **Shadowing, in the loud direction.** A local variable named `time` would
    make the gate report a false positive. That direction is deliberate: a gate
    that refuses something innocent is loud, and one that misses something is
    not.
-6. **A third-party dependency that sleeps.** There are none today; the gate has
+7. **A third-party dependency that sleeps.** There are none today; the gate has
    no view into module cache source.
 
 ## verify.sh
@@ -159,9 +163,9 @@ One command, every check, one verdict. Two details that are not incidental:
 
 **Its own logic has no automated test.** The roster comparison, the exit-code
 mapping and the ceiling arithmetic were attacked by hand at M0 — a deleted
-gate, an unregistered extra gate, a gate that does not compile, and a check
-that `-allow-empty` is never passed — and all four behaved. None of that is
-repeatable by a check, which is the exact shape this project distrusts.
+gate, an unregistered extra gate, and a gate that does not compile — and all
+three behaved. None of that is repeatable by a check, which is the exact shape
+this project distrusts.
 
 The obstacle is real rather than an excuse: the obvious test runs `verify.sh`
 against a mutated copy of the tree, and the copy's `verify.sh` would run the

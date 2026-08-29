@@ -20,7 +20,6 @@ func TestT2(t *testing.T) {
 	cases := []struct {
 		name   string
 		files  map[string]string
-		args   []string
 		want   int
 		substr string
 	}{{
@@ -99,14 +98,6 @@ func TestT2(t *testing.T) {
 		want:   gatetest.Refuse,
 		substr: "domain is empty",
 	}, {
-		// The escape hatch M0 needs, and it must announce itself as vacuous
-		// rather than printing an ordinary pass.
-		name:   "no test files with -allow-empty passes, loudly vacuous",
-		files:  nil,
-		args:   []string{"-allow-empty"},
-		want:   gatetest.Pass,
-		substr: "PASS (VACUOUS)",
-	}, {
 		// Controls. Durations and instants are how a test drives a fake
 		// clock; forbidding them would make the gate unusable and it would be
 		// weakened at the first inconvenience.
@@ -139,7 +130,7 @@ func TestT2(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := gatetest.Fixture(t, tc.files)
-			code, out := gatetest.Run(t, bin, root, tc.args...)
+			code, out := gatetest.Run(t, bin, root)
 			if code != tc.want {
 				t.Errorf("exit code = %d, want %d\noutput:\n%s", code, tc.want, out)
 			}
