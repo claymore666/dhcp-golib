@@ -86,8 +86,8 @@ func TestBuildParseRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseIPv4UDP: %v", err)
 			}
-			if dg.PartialChecksum {
-				t.Fatal("a frame this package built reports an unverified checksum")
+			if dg.Checksum != ChecksumVerified {
+				t.Fatalf("a frame this package built parsed as %s, want verified", dg.Checksum)
 			}
 			got, src := dg.Payload, dg.Src
 			if len(got) != len(tc.payload) {
@@ -115,7 +115,17 @@ func TestParseUsesTheTotalLengthField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildIPv4UDP: %v", err)
 	}
-	padded := append(append([]byte(nil), frame...), make([]byte, 26)...)
+	// The padding is NON-ZERO on purpose. Zero padding adds nothing to a
+	// one's-complement sum, so a parser that summed to len(frame) would pass
+	// this test anyway — MEASURED by mutation on 2026-08-29, where replacing
+	// frame[ihl:total] with frame[ihl:] survived a zero-padded fixture. Real
+	// padding is not reliably zero either: CVE-2003-0001 was an entire class
+	// of drivers padding short frames with whatever was in the buffer.
+	pad := make([]byte, 27)
+	for i := range pad {
+		pad[i] = byte(0xA0 + i)
+	}
+	padded := append(append([]byte(nil), frame...), pad...)
 
 	dg, err := ParseIPv4UDP(padded)
 	if err != nil {
@@ -195,8 +205,8 @@ func TestParseAcceptsAZeroUDPChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a zero UDP checksum was rejected: %v", err)
 	}
-	if !dg.PartialChecksum {
-		t.Fatal("a zero checksum verifies nothing and must be reported as unverified")
+	if dg.Checksum != ChecksumAbsent {
+		t.Fatalf("a zero checksum parsed as %s, want absent", dg.Checksum)
 	}
 }
 
@@ -362,8 +372,11 @@ func TestParseAcceptsARealServersUncompletedChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a real DHCPOFFER was rejected: %v", err)
 	}
-	if !dg.PartialChecksum {
-		t.Fatal("the reply was accepted but not reported as unverified")
+	if dg.Checksum != ChecksumUncompleted {
+		t.Fatalf("the reply parsed as %s, want uncompleted", dg.Checksum)
+	}
+	if dg.Checksum.Verified() {
+		t.Fatal("an uncompleted checksum was reported as verifying the payload")
 	}
 	if got := dg.Src.String(); got != "192.168.99.1" {
 		t.Fatalf("source = %s, want the server", got)
@@ -373,6 +386,48 @@ func TestParseAcceptsARealServersUncompletedChecksum(t *testing.T) {
 	}
 	if dg.Payload[0] != 2 {
 		t.Fatalf("op = %d, want 2 (BOOTREPLY)", dg.Payload[0])
+	}
+}
+
+// TestParseRefusesAUDPLengthPastTheIPTotalLength is the case the total-length
+// slice actually guards, and it is not the padding case next to it.
+//
+// MEASURED 2026-08-29 by mutation: replacing frame[ihl:total] with frame[ihl:]
+// SURVIVED the padded-frame test even with non-zero padding, because the later
+// u = u[:ulen] truncates to the UDP length anyway. What the IP total length
+// bounds is a datagram whose UDP length field claims MORE than the IP header
+// allows: without it, the extra octets are link padding, and handing padding
+// to the caller as DHCP payload is CVE-2003-0001's whole class of bug.
+func TestParseRefusesAUDPLengthPastTheIPTotalLength(t *testing.T) {
+	frame, err := BuildIPv4UDP(anyAddr, broadcastAddr, ServerPort, ClientPort, 1, 1, []byte("five!"))
+	if err != nil {
+		t.Fatalf("BuildIPv4UDP: %v", err)
+	}
+	// Pad the frame the way a link does, then claim the padding is payload by
+	// growing the UDP length. The IPv4 total length is left alone, which is
+	// exactly the disagreement being tested.
+	pad := make([]byte, 20)
+	for i := range pad {
+		pad[i] = byte(0xB0 + i)
+	}
+	padded := append(append([]byte(nil), frame...), pad...)
+	udpLen := binary.BigEndian.Uint16(padded[24:26])
+	binary.BigEndian.PutUint16(padded[24:26], udpLen+8)
+
+	if _, err := ParseIPv4UDP(padded); !errors.Is(err, ErrPayloadShort) {
+		t.Fatalf("err = %v, want %v — link padding was accepted as payload", err, ErrPayloadShort)
+	}
+
+	// Preservation control: the same frame with the UDP length left honest
+	// still parses, so the refusal above is about the disagreement and not
+	// about the padding.
+	padded = append(append([]byte(nil), frame...), pad...)
+	dg, err := ParseIPv4UDP(padded)
+	if err != nil {
+		t.Fatalf("the honest padded frame was rejected: %v", err)
+	}
+	if string(dg.Payload) != "five!" {
+		t.Fatalf("payload = %q, want %q", dg.Payload, "five!")
 	}
 }
 
@@ -397,8 +452,8 @@ func TestParseStillRefusesAWrongChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a completed checksum was rejected: %v", err)
 	}
-	if dg.PartialChecksum {
-		t.Fatal("a verified payload was reported as unverified")
+	if dg.Checksum != ChecksumVerified {
+		t.Fatalf("a completed checksum parsed as %s, want verified", dg.Checksum)
 	}
 }
 
@@ -415,7 +470,7 @@ func TestPartialChecksumAcceptsACorruptPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the bound has moved: %v", err)
 	}
-	if !dg.PartialChecksum {
-		t.Fatal("accepted without reporting that nothing was verified")
+	if dg.Checksum != ChecksumUncompleted {
+		t.Fatalf("parsed as %s, want uncompleted", dg.Checksum)
 	}
 }

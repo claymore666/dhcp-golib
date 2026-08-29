@@ -19,6 +19,12 @@ import (
 // ethPIP is ETH_P_IP in host byte order. syscall does not export it.
 const ethPIP = 0x0800
 
+// inboundBuffer is how many parsed replies may sit undelivered before the
+// reader starts dropping them. It is small on purpose: a DHCP exchange is a
+// handful of packets, and a manager that is more than this far behind has a
+// problem that a bigger buffer would hide rather than fix.
+const inboundBuffer = 16
+
 // maxFrame is the read buffer. A DHCP message is far below this; the size is
 // chosen so a jumbo frame carrying something else cannot be silently truncated
 // into a DIFFERENT valid-looking frame.
@@ -70,11 +76,17 @@ type PacketTransport struct {
 
 	// Stats counters. Skipped in particular is load-bearing: a transport that
 	// sees nothing and a transport that sees everything and rejects all of it
-	// are the same silence without it.
+	// are the same silence without it. reads is bumped LAST, in deliver: see
+	// the invariant documented there.
 	reads   atomic.Uint64
 	skipped atomic.Uint64
 	sends   atomic.Uint64
-	partial atomic.Uint64
+
+	// The two ways a payload reaches us unverified. Counted apart because
+	// they have different diagnoses: see ChecksumState.
+	uncompleted atomic.Uint64
+	absent      atomic.Uint64
+	dropped     atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -86,12 +98,18 @@ type TransportStats struct {
 	Reads   uint64
 	Skipped uint64
 	Sends   uint64
-	// PartialChecksums counts accepted datagrams whose UDP checksum the
-	// sending kernel had not completed (Linux CHECKSUM_PARTIAL). Those
-	// payloads were not verified — acceptUDPChecksum says why that is the
-	// only workable answer, and counting them is what keeps it from being a
-	// silent one.
-	PartialChecksums uint64
+	// Uncompleted counts accepted datagrams whose UDP checksum the sending
+	// kernel had not completed (Linux CHECKSUM_PARTIAL), which means the
+	// sender is on this host. Absent counts datagrams that carried no
+	// checksum at all (RFC 768's zero). Neither payload was verified —
+	// acceptUDPChecksum says why that is the only workable answer, and
+	// counting them is what keeps it from being a silent one.
+	Uncompleted uint64
+	Absent      uint64
+	// Dropped counts DHCP replies that parsed and were then thrown away
+	// because the consumer had not drained the inbound channel. It is not
+	// Skipped: see the comment at the drop site.
+	Dropped uint64
 }
 
 // NewPacketTransport opens an AF_PACKET socket bound to ifName.
@@ -132,7 +150,7 @@ func NewPacketTransport(ifName string) (*PacketTransport, error) {
 		f:       os.NewFile(uintptr(fd), "af_packet:"+ifName),
 		ifIndex: iface.Index,
 		src:     netip.AddrFrom4([4]byte{0, 0, 0, 0}),
-		inbound: make(chan lease.Inbound, 16),
+		inbound: make(chan lease.Inbound, inboundBuffer),
 	}
 	t.wg.Add(1)
 	go t.read()
@@ -203,10 +221,12 @@ func (t *PacketTransport) Close() error {
 // Stats reports what the socket has seen.
 func (t *PacketTransport) Stats() TransportStats {
 	return TransportStats{
-		Reads:            t.reads.Load(),
-		Skipped:          t.skipped.Load(),
-		Sends:            t.sends.Load(),
-		PartialChecksums: t.partial.Load(),
+		Reads:       t.reads.Load(),
+		Skipped:     t.skipped.Load(),
+		Sends:       t.sends.Load(),
+		Uncompleted: t.uncompleted.Load(),
+		Absent:      t.absent.Load(),
+		Dropped:     t.dropped.Load(),
 	}
 }
 
@@ -228,34 +248,57 @@ func (t *PacketTransport) read() {
 			}
 			return
 		}
-		t.reads.Add(1)
+		t.deliver(buf[:n])
+	}
+}
 
-		dg, perr := ParseIPv4UDP(buf[:n])
-		if perr != nil {
-			// Not for us. On a shared link this is the overwhelming majority
-			// of what arrives, so it is counted rather than reported.
-			t.skipped.Add(1)
-			continue
+// deliver classifies one frame and, if it is a reply for us, queues it.
+//
+// The read counter is bumped in a DEFER, so it is the LAST thing that happens
+// to a frame. That is not tidiness: it makes Reads a barrier. A test — or an
+// operator — that sees Reads reach N knows those N frames have each been
+// skipped, dropped or queued, and the invariant Reads == Skipped + Dropped +
+// queued holds at every moment it is read. Bumping it on arrival instead left
+// the last frame classified a few instructions later, which is a race a test
+// cannot see and cannot wait out.
+func (t *PacketTransport) deliver(frame []byte) {
+	defer t.reads.Add(1)
+	dg, perr := ParseIPv4UDP(frame)
+	if perr != nil {
+		// Not for us. On a shared link this is the overwhelming majority
+		// of what arrives, so it is counted rather than reported.
+		t.skipped.Add(1)
+		return
+	}
+	if !dg.Checksum.Verified() {
+		// Accepted, and counted: the payload was NOT verified. See
+		// acceptUDPChecksum. A client leasing from a server on the same
+		// host shows Uncompleted on every reply, which is normal; a client
+		// on a physical link showing either state is worth a second look.
+		switch dg.Checksum {
+		case ChecksumUncompleted:
+			t.uncompleted.Add(1)
+		case ChecksumAbsent:
+			t.absent.Add(1)
 		}
-		if dg.PartialChecksum {
-			// Accepted, and counted: the payload was NOT verified. See
-			// acceptUDPChecksum. A client leasing from a server on the same
-			// host will show this on every reply, which is normal; a client on
-			// a physical link showing it is worth a second look.
-			t.partial.Add(1)
-		}
-		// The payload aliases buf, which the next read overwrites.
-		p := make([]byte, len(dg.Payload))
-		copy(p, dg.Payload)
+	}
+	// The payload aliases buf, which the next read overwrites.
+	p := make([]byte, len(dg.Payload))
+	copy(p, dg.Payload)
 
-		select {
-		case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
-		default:
-			// The consumer is behind. Dropping is the honest outcome: blocking
-			// here would stall the reader and lose packets in the kernel
-			// instead, where nothing can count them.
-			t.skipped.Add(1)
-		}
+	select {
+	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
+	default:
+		// The consumer is behind. Dropping is the honest outcome: blocking
+		// here would stall the reader and lose packets in the kernel
+		// instead, where nothing can count them.
+		//
+		// Counted APART from Skipped, and that separation is the point: a
+		// frame that was not for us and a DHCP reply we threw away are
+		// opposite facts, and one counter holding both reports the second
+		// as the first. Dropped above zero means a stalled manager and a
+		// retransmission that need not have happened.
+		t.dropped.Add(1)
 	}
 }
 

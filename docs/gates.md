@@ -157,10 +157,13 @@ they do not wait on it, and T2's subject is waiting.
 4. **A wait inside a helper in non-test code**, called from a test. T2's domain
    is `_test.go` files. That is deliberate — ring 3 has a real clock in it —
    and it means a test can wait by delegating.
-5. **Its domain at M0 is the gates' own self-tests.** There is no library code
-   yet, so every `_test.go` file T2 checks is a gate testing itself. The
-   gate is proven to work; it is not yet guarding any protocol test, and it
-   will not be until M1.
+5. **Its domain was the gates' own self-tests at M0, and is the library's
+   tests from M1 on.** That bullet used to end "it will not be guarding any
+   protocol test until M1"; M1 landed on 2026-08-29 and it now checks every
+   test file in `wire`, `proto`, `lease` and `runtime`. Two of those tests
+   BLOCK — one on a real dnsmasq's log line, one spinning on a counter with
+   `runtime.Gosched` — and T2 sees neither, by bullets (1) and (4). What
+   bounds them is the suite ceiling, and only at the threshold, per (3).
 6. **Files under `testdata/`.** Not walked, because the go tool does not
    compile them, so a file there is not part of any test binary. It is also
    where the gates' own deliberate violations live.

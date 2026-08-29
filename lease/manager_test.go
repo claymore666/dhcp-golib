@@ -27,14 +27,41 @@ func testParams() proto.Params {
 // reads. An unlocked recorder is a data race, and -race reports it against
 // whichever test happens to be running.
 type journalRecorder struct {
-	mu      sync.Mutex
-	entries []proto.JournalEntry
+	mu       sync.Mutex
+	entries  []proto.JournalEntry
+	appended chan proto.JournalEntry
+}
+
+func newJournalRecorder() *journalRecorder {
+	return &journalRecorder{appended: make(chan proto.JournalEntry, 64)}
 }
 
 func (j *journalRecorder) Append(e proto.JournalEntry) {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	j.entries = append(j.entries, e)
+	j.mu.Unlock()
+	select {
+	case j.appended <- e:
+	default:
+	}
+}
+
+// waitAppended blocks until a journalled Step satisfies want.
+//
+// It is a DIFFERENT barrier from packetRecorder.waitRecorded, and the
+// difference is the whole reason it exists: a packet is recorded BEFORE it is
+// fed to ring 1 (manager.go, onInbound), so waiting on the packet ring proves
+// only that the packet arrived. A journal entry is appended AFTER Step and
+// after the previous event's actions have drained, so it is the only barrier
+// in this package that proves the machine has SEEN something.
+func (j *journalRecorder) waitAppended(t *testing.T, what string, want func(proto.JournalEntry) bool) {
+	t.Helper()
+	for e := range j.appended {
+		if want(e) {
+			return
+		}
+	}
+	t.Fatalf("the journal closed before %s was recorded", what)
 }
 
 func (j *journalRecorder) Entries() []proto.JournalEntry {
@@ -134,7 +161,7 @@ func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault)
 		fault:   ft,
 		timers:  newFakeTimers(),
 		clock:   newFakeClock(),
-		journal: &journalRecorder{},
+		journal: newJournalRecorder(),
 		packets: newPacketRecorder(),
 		done:    make(chan error, 1),
 	}
@@ -452,20 +479,34 @@ func TestDuplicateReplyProducesOneLease(t *testing.T) {
 		t.Fatalf("first event is %s", ev)
 	}
 
-	// Force a second, independent barrier: expire the lease. If the duplicate
-	// ACK had produced an event, it would arrive before this one.
-	r.clock.advance(3600 * proto.Second)
-	r.timers.fire(proto.TimerExpire)
-	if ev = r.nextEvent(t); ev.Kind != Lost {
-		t.Fatalf("second event is %s, want the expiry — a duplicate ACK produced an extra event", ev)
-	}
+	// Barrier: the machine has STEPPED the duplicate. The duplicate is the
+	// only event of the run whose Step starts in BOUND, so the predicate names
+	// it exactly. Waiting on the packet ring instead would prove only that the
+	// duplicate arrived — see waitAppended.
+	r.journal.waitAppended(t, "the duplicated ACK", func(e proto.JournalEntry) bool {
+		return e.From == proto.StateBound
+	})
 
+	// The counter is read HERE, before the expiry below, and that ordering is
+	// the fix for a flake this test had when it was written: an expiry is a
+	// RESTART, so the fake server answers the DISCOVER that follows it and
+	// LeasesAcquired legitimately reaches 2. Reading the counter afterwards
+	// was measuring a race between the test and a correct re-acquisition —
+	// four runs in ten. The assertion was wrong about WHEN, not about what.
 	_, inbounds := r.fault.Counts()
 	if inbounds < 2 {
 		t.Fatalf("the fault plan named inbound 2 but only %d arrived; nothing was injected", inbounds)
 	}
 	if got := r.mgr.Stats().LeasesAcquired; got != 1 {
 		t.Fatalf("LeasesAcquired = %d after a duplicated ACK, want 1", got)
+	}
+
+	// And a second, independent barrier on the EVENT stream: expire the lease.
+	// If the duplicate had produced an event, it would arrive before this one.
+	r.clock.advance(3600 * proto.Second)
+	r.timers.fire(proto.TimerExpire)
+	if ev = r.nextEvent(t); ev.Kind != Lost {
+		t.Fatalf("second event is %s, want the expiry — a duplicate ACK produced an extra event", ev)
 	}
 }
 

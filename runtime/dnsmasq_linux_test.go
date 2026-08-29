@@ -271,15 +271,30 @@ func runAgainstDnsmasq(t *testing.T) {
 		t.Fatalf("the packet ring holds %d packets, want at least the four of an acquisition", len(pkts))
 	}
 	ts := c.TransportStats()
-	t.Logf("transport: %d reads, %d skipped as not-for-us, %d sends, %d with an uncompleted checksum",
-		ts.Reads, ts.Skipped, ts.Sends, ts.PartialChecksums)
-	// PartialChecksums is LOGGED and not asserted on. MEASURED 2026-08-29:
-	// every reply over this veth pair arrives with the checksum uncompleted,
-	// because the sending kernel defers it to hardware that is not there. That
-	// is a fact about the local delivery path, not about the library, and a
-	// host that completes the sum would fail an assertion here for being
-	// healthier. The behaviour itself is pinned in ipudp_test.go against the
-	// captured bytes, where it cannot drift with the environment.
+	t.Logf("transport: %d reads, %d skipped as not-for-us, %d sends, %d uncompleted checksums, %d absent",
+		ts.Reads, ts.Skipped, ts.Sends, ts.Uncompleted, ts.Absent)
+	// MEASURED 2026-08-29 on this path: every reply arrives with its UDP
+	// checksum UNCOMPLETED. The sending kernel writes the pseudo-header sum
+	// and leaves the rest to hardware that a veth pair does not have, so the
+	// count equals the number of replies read.
+	//
+	// This is asserted rather than logged because an uncounted counter is the
+	// failure this project keeps paying for: the first run of this test hung
+	// for two minutes on exactly these frames being discarded, and a count
+	// nobody checks would let that return silently. It is also the one
+	// assertion here that could go red for a HEALTHY reason — a kernel that
+	// completes the sum on a local delivery path would drive it to zero — so
+	// the message says so, and ipudp_test.go pins the parsing behaviour
+	// against captured bytes where no environment can move it.
+	if ts.Uncompleted != ts.Reads {
+		t.Fatalf("%d of %d replies had an uncompleted checksum, want all of them. "+
+			"If this host's kernel now completes the UDP checksum on a local "+
+			"delivery path, the right answer is 0 and this assertion is what "+
+			"needs revisiting -- not the parser.", ts.Uncompleted, ts.Reads)
+	}
+	if ts.Reads == 0 {
+		t.Fatal("the transport read nothing, so the count above is vacuous")
+	}
 	if ts.Sends < 2 {
 		t.Fatalf("the transport sent %d frames, want at least the DISCOVER and the REQUEST", ts.Sends)
 	}

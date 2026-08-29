@@ -90,21 +90,57 @@ func BuildIPv4UDP(src, dst netip.Addr, sport, dport uint16, ident uint16, ttl ui
 	return buf, nil
 }
 
+// ChecksumState says what a received datagram's UDP checksum field bought us.
+//
+// It is three states rather than a bool because "the payload was not checked"
+// has two causes with different diagnoses, and an operator looking at a counter
+// cannot act on the two of them merged.
+type ChecksumState uint8
+
+// The three states. Only the first one means the payload was verified.
+const (
+	// ChecksumVerified: the field held a correct checksum over the datagram
+	// and its pseudo-header.
+	ChecksumVerified ChecksumState = iota
+	// ChecksumAbsent: the field was all zeroes. RFC 768 reserves that value
+	// for "no checksum computed", and it is legal over IPv4. A server that
+	// does this is telling you it did not check.
+	ChecksumAbsent
+	// ChecksumUncompleted: the field held the pseudo-header sum alone. That is
+	// Linux CHECKSUM_PARTIAL, and it means the SENDER is on this host: see
+	// acceptUDPChecksum.
+	ChecksumUncompleted
+)
+
+// Verified reports whether the payload was actually checked.
+func (c ChecksumState) Verified() bool { return c == ChecksumVerified }
+
+func (c ChecksumState) String() string {
+	switch c {
+	case ChecksumVerified:
+		return "verified"
+	case ChecksumAbsent:
+		return "absent"
+	case ChecksumUncompleted:
+		return "uncompleted"
+	default:
+		return fmt.Sprintf("checksumstate(%d)", uint8(c))
+	}
+}
+
 // Datagram is one parsed UDP datagram.
 //
-// It is a struct rather than three return values because PartialChecksum has to
-// travel with the payload: it is the difference between "this datagram was
-// checked" and "this datagram could not be checked", and a caller that cannot
-// see it cannot report it.
+// It is a struct rather than three return values because Checksum has to travel
+// with the payload: it is the difference between "this datagram was checked"
+// and "this datagram could not be checked", and a caller that cannot see it
+// cannot report it.
 type Datagram struct {
 	// Payload is the UDP payload. It aliases the frame passed in.
 	Payload []byte
 	// Src is the IPv4 source address of the frame.
 	Src netip.Addr
-	// PartialChecksum reports that the UDP checksum field held the
-	// pseudo-header sum instead of a completed checksum, so the payload was
-	// NOT verified. See acceptUDPChecksum.
-	PartialChecksum bool
+	// Checksum says whether the payload was verified, and if not, why not.
+	Checksum ChecksumState
 }
 
 // ParseIPv4UDP extracts the UDP payload of a DHCP reply from a raw IPv4 frame.
@@ -163,19 +199,19 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 	var s4, d4 [4]byte
 	copy(s4[:], frame[12:16])
 	copy(d4[:], frame[16:20])
-	partial, ok := acceptUDPChecksum(s4, d4, u)
+	state, ok := acceptUDPChecksum(s4, d4, u)
 	if !ok {
 		return Datagram{}, fmt.Errorf("%w: UDP", ErrBadChecksum)
 	}
 	return Datagram{
-		Payload:         u[udpHeaderLen:],
-		Src:             netip.AddrFrom4(s4),
-		PartialChecksum: partial,
+		Payload:  u[udpHeaderLen:],
+		Src:      netip.AddrFrom4(s4),
+		Checksum: state,
 	}, nil
 }
 
 // acceptUDPChecksum decides whether a received datagram's checksum field lets
-// it through, and reports whether the payload actually got checked.
+// it through, and says which of the three states it is in.
 //
 // Three cases are accepted, and only the middle one is a verification:
 //
@@ -203,17 +239,17 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 // datagram whose payload is corrupt and whose checksum field happens to equal
 // the pseudo-header sum is accepted. Nothing here can distinguish that from a
 // kernel that has not finished the sum yet; the two are the same bytes.
-func acceptUDPChecksum(src, dst [4]byte, u []byte) (partial, ok bool) {
+func acceptUDPChecksum(src, dst [4]byte, u []byte) (state ChecksumState, ok bool) {
 	got := binary.BigEndian.Uint16(u[6:8])
 	switch {
 	case got == 0:
-		return true, true
+		return ChecksumAbsent, true
 	case udpChecksumVerify(src, dst, u) == 0:
-		return false, true
+		return ChecksumVerified, true
 	case got == pseudoHeaderSum(src, dst, len(u)):
-		return true, true
+		return ChecksumUncompleted, true
 	default:
-		return false, false
+		return ChecksumVerified, false
 	}
 }
 

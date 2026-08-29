@@ -42,9 +42,58 @@ Four rings; each depends only on the rings below it.
     ring 1  proto/     THE STATE MACHINE — pure. no I/O, no clock, no goroutines
     ring 0  wire/      codec: bytes <-> typed messages
 
-All four are empty at M0 on purpose. The gates below were built and proven
+All four were empty at M0 on purpose: the gates below were built and proven
 against an empty package, because a gate added after the code it guards gets
-weakened to fit the code.
+weakened to fit the code. M1 filled all four.
+
+## What works today — M1
+
+One IPv4 lease, INIT to BOUND, over a real socket. Three things are true of it,
+and each is a test rather than a claim:
+
+- **A lease from a real server.** `runtime` re-executes itself into a user and
+  network namespace, wires a veth pair, runs dnsmasq on one end and this
+  library on the other, and asserts the exchange against **dnsmasq's own log** —
+  DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK — not against the library's
+  opinion of what happened. No root, no password, no host state touched.
+- **That same exchange replayed offline.** The journal of the live run is fed
+  back through ring 1 and must produce the identical lease. Ring 1 is pure, so
+  the replay needs no socket, no clock and no server.
+- **The whole acquisition path in milliseconds.** `proto` tables the path with
+  no root, no namespace and no network at all.
+
+### What M1 does NOT do
+
+Stated because a bound nobody writes down is read as a guarantee:
+
+- **No renewal.** T1 and T2 are computed and the timers are armed, but
+  RENEWING, REBINDING, the unicast that renewal needs, and expiry back to INIT
+  are the next milestone. A lease acquired here is not yet a lease *kept*.
+- **No RELEASE, no DECLINE, no INFORM, and no address-in-use probe.**
+- **IPv4 only.** No DHCPv6, no Router Advertisement, no SLAAC.
+- **Broadcast only, so no ARP.** `Send` REFUSES a unicast destination rather
+  than broadcasting it anyway.
+- **No fragment reassembly and no BPF filter.** A fragmented reply is dropped;
+  every IPv4 frame on the link is read and filtered in user space, and the cost
+  is counted as `Skipped` rather than assumed away.
+- **One server implementation has ever answered it:** dnsmasq 2.91.
+
+### One thing that surprised us, recorded because it will surprise the next reader
+
+A reply from a server on the SAME HOST arrives with its UDP checksum **not
+computed**. Linux writes the folded pseudo-header sum into the field and leaves
+completing it to hardware, so an AF_PACKET reader on the far side of a veth
+pair sees `CHECKSUM_PARTIAL` bytes. MEASURED 2026-08-29 against dnsmasq 2.91:
+the field held `0x24f6` where the completed value was `0x0074`, and `0x24f6` is
+exactly the pseudo-header sum for that source, destination and length.
+
+A client that verifies the checksum strictly therefore never sends a REQUEST —
+which is precisely what the first run of the dnsmasq test did, for two minutes,
+retransmitting DISCOVER while the server answered every one of them. The parser
+recognises that exact value, reports the payload as unverified, and the
+transport counts it. **The bound:** a datagram whose payload is corrupt and
+whose checksum field happens to equal the pseudo-header sum is accepted, and
+nothing at this layer can tell that from a kernel that has not finished the sum.
 
 ## Verifying
 
