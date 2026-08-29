@@ -111,6 +111,27 @@ func TestT1(t *testing.T) {
 		want:   gatetest.Refuse,
 		substr: "domain is empty",
 	}, {
+		// Distinct from the case above and it took a mutant to notice: there,
+		// the directory is gone and the os.Stat refusal fires. Here the
+		// directory EXISTS and holds only a test file, which is the branch a
+		// real tree reaches when somebody deletes the implementation and
+		// leaves its tests behind. Without this case that branch never ran.
+		name: "ring root holding only a test file refuses",
+		files: map[string]string{
+			"proto/doc.go":    gatetest.Delete,
+			"proto/x_test.go": "package proto\n",
+		},
+		want:   gatetest.Refuse,
+		substr: "holds no non-test .go file",
+	}, {
+		name: "ring root holding no .go file at all refuses",
+		files: map[string]string{
+			"proto/doc.go":   gatetest.Delete,
+			"proto/NOTES.md": "not go source\n",
+		},
+		want:   gatetest.Refuse,
+		substr: "holds no non-test .go file",
+	}, {
 		name: "renamed module refuses",
 		files: map[string]string{
 			"go.mod": "module github.com/claymore666/renamed\n\ngo 1.25\n",

@@ -79,6 +79,15 @@ else
 	record "gofmt" PASS "all files formatted"
 fi
 
+# verify.sh is itself a load-bearing instrument and nothing else checks it, so
+# it is linted here. A missing shellcheck is a FAIL, not a skip: a step that
+# cannot be measured must not report a pass.
+if command -v shellcheck >/dev/null 2>&1; then
+	step "shellcheck" shellcheck -S warning "$ROOT/verify.sh"
+else
+	record "shellcheck" FAIL "shellcheck is not installed; verify.sh was not linted"
+fi
+
 # -------------------------------------------------------------- gate roster --
 # Structural, not a glob over directory names: ask the go tool which packages
 # under internal/gates are commands.

@@ -122,7 +122,10 @@ func defaultLocal(path string) string {
 		base = base[i+1:]
 	}
 	// A trailing major-version element is not the package name.
-	if len(base) > 1 && base[0] == 'v' {
+	// len(path) > len(base) is not a formality: without it, the single-element
+	// path "v2" slices path[:-1] and panics the gate. Found by mutating alias
+	// resolution and then asking what defaultLocal does at its edges.
+	if len(base) > 1 && base[0] == 'v' && len(path) > len(base) {
 		if _, err := strconv.Atoi(base[1:]); err == nil {
 			rest := path[:len(path)-len(base)-1]
 			if i := strings.LastIndex(rest, "/"); i >= 0 {
