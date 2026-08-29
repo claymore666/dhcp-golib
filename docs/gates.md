@@ -315,15 +315,35 @@ admit. Membership in a map proves nothing about behaviour, so each case is
 generated into a fixture and run through the built gate: the gate must exit
 VIOLATION. Widening the allowlist makes it exit PASS and the case goes red.
 
-**Preservation controls.** A guard fails in one direction, and a policy that
-refuses everything passes every refusal test. `TestPureAllowlistIsAccepted`
-imports all 15 admitted packages and names all 25 restricted identifiers in one
-ring-1 fixture and requires PASS. `TestTestAllowlistIsAccepted` names all 77
-allowlisted identifiers across `time` and `context` in a test fixture and
-requires PASS. `TestFakeClockTestIsAccepted` is the realistic one: a
-table-driven lease-lifecycle test built on a `fakeClock` with `Advance`,
-`time.Unix`, and duration arithmetic — the shape M1 will actually write — must
-pass untouched.
+**Preservation controls, of two kinds, because one kind is not enough.** A
+guard fails in one direction, and a policy that refuses everything passes every
+refusal test.
+
+*Generated.* `TestPureAllowlistIsAccepted` imports all 15 admitted packages and
+names all 25 restricted identifiers in one ring-1 fixture and requires PASS.
+`TestTestAllowlistIsAccepted` names all 77 allowlisted identifiers across `time`
+and `context` in a test fixture and requires PASS. Both build their fixture from
+the tables, so they cover a package ADDED to a table that nobody wrote a test
+for.
+
+*Hand-written.* `TestRealisticRing1CodeIsAccepted` and
+`TestFakeClockTestIsAccepted` are ordinary code of the shape M1 will contain —
+option parsing, wire encoding, address formatting; a table-driven lease
+lifecycle on a `fakeClock` — written out rather than generated.
+
+**The split is not stylistic and it was measured.** MEASURED 2026-08-29:
+deleting `bytes` from the ring-1 allowlist SURVIVED the generated control, and
+so did deleting `Since` from the test allowlist. A control that builds its
+fixture from the table it is testing shrinks with the table: the fixture simply
+stopped importing `bytes` and passed. A measurement cannot backstop itself.
+With the hand-written controls in place, nine narrowings — five packages, four
+identifiers — all die.
+
+The two kinds fail in opposite directions and neither subsumes the other. The
+generated ones cover ADDITIONS to a table; the hand-written ones cover
+REMOVALS. The bound on the hand-written half is the obvious one: a package
+admitted later and never written into those fixtures is unprotected against a
+later narrowing.
 
 ### What the policy guards cannot see
 
@@ -348,7 +368,12 @@ pass untouched.
    (`TestContextAfterFuncIsRefusedByDefault`): today's answer is refused,
    admitting it means deleting the case and writing down why. A pin records a
    decision that has not been made; it does not make one.
-5. **The stdlib moving under them.** `go doc` is queried at test time against
+5. **A narrowing of a table nothing exercises.** The hand-written controls
+   cover what M1 is expected to need. A package or identifier admitted after
+   them and never written into a fixture can be removed again without anything
+   going red — the generated controls cannot see it, because they are derived
+   from the same table.
+6. **The stdlib moving under them.** `go doc` is queried at test time against
    the toolchain in use, so an identifier removed upstream turns the existence
    probe red — which is correct — but a *newly added* waiting primitive is
    simply not on the allowlist, and is refused by default rather than noticed.

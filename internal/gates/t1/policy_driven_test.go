@@ -153,3 +153,108 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestRealisticRing1CodeIsAccepted is the preservation control that a
+// GENERATED one cannot be.
+//
+// MEASURED 2026-08-29: deleting "bytes" from rings.PureStdlib survived the
+// whole suite. TestPureAllowlistIsAccepted builds its fixture FROM the table,
+// so narrowing the table narrows the control with it — the fixture simply
+// stopped importing bytes and passed. A measurement cannot backstop itself,
+// and a control derived from its own subject is not a control in the
+// narrowing direction at all.
+//
+// So this fixture is written BY HAND: ordinary ring-1 code of the shape M1
+// will actually contain — option parsing, wire encoding, address formatting.
+// It names all fifteen admitted packages and stays inside the identifier
+// restrictions. Narrowing the allowlist makes the gate refuse it.
+//
+// The two controls fail in opposite directions and neither subsumes the other:
+// the generated one covers a package ADDED to the table that this file does
+// not mention; this one covers a package REMOVED from it.
+//
+// What it CANNOT see: it is an enumeration, so a package admitted later and
+// never written into this fixture is unprotected against a later narrowing.
+// That is a bound, not an oversight — it is why the generated control exists
+// beside it.
+func TestRealisticRing1CodeIsAccepted(t *testing.T) {
+	const src = `package proto
+
+import (
+	"bytes"
+	"cmp"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"iter"
+	"math"
+	"math/bits"
+	"net/netip"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+)
+
+var ErrShort = errors.New("message too short")
+
+type Option struct {
+	Code uint8
+	Data []byte
+}
+
+func Parse(b []byte) ([]Option, error) {
+	if len(b) < 4 {
+		return nil, fmt.Errorf("parse: %w (%d of %d bytes)", ErrShort, len(b), math.MaxUint16)
+	}
+	opts := make([]Option, 0, len(b)/2)
+	for i := 0; i+1 < len(b); i += 2 {
+		opts = append(opts, Option{Code: b[i], Data: bytes.Clone(b[i+1 : i+2])})
+	}
+	slices.SortFunc(opts, func(a, b Option) int { return cmp.Compare(a.Code, b.Code) })
+	sort.SliceStable(opts, func(x, y int) bool { return len(opts[x].Data) < len(opts[y].Data) })
+	return opts, nil
+}
+
+func All(opts []Option) iter.Seq[Option] {
+	return func(yield func(Option) bool) {
+		for _, o := range opts {
+			if !yield(o) {
+				return
+			}
+		}
+	}
+}
+
+func Encode(xid uint32) []byte {
+	out := make([]byte, 4)
+	binary.BigEndian.PutUint32(out, xid)
+	return out
+}
+
+func Describe(addr netip.Addr, prefix int, raw []byte, label string) string {
+	var sb strings.Builder
+	sb.WriteString(addr.String())
+	sb.WriteByte('/')
+	sb.WriteString(strconv.Itoa(prefix))
+	sb.WriteString(" width=")
+	sb.WriteString(strconv.Itoa(bits.Len32(uint32(prefix))))
+	sb.WriteString(" raw=")
+	sb.WriteString(hex.EncodeToString(raw))
+	if utf8.ValidString(label) {
+		sb.WriteString(" label=")
+		sb.WriteString(strings.TrimSpace(label))
+	}
+	return sb.String()
+}
+`
+	root := gatetest.Fixture(t, map[string]string{"proto/realistic.go": src})
+	code, out := gatetest.Run(t, bin(t), root)
+	if code != gatetest.Pass {
+		t.Fatalf("ordinary ring-1 code was refused: exit %d, want PASS. The ring-1 "+
+			"allowlist has been narrowed below what pure protocol code needs, or an "+
+			"identifier restriction is too tight.\noutput:\n%s", code, out)
+	}
+}

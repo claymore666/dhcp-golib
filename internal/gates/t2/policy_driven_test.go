@@ -129,6 +129,22 @@ func TestLeaseLifecycle(t *testing.T) {
 	if elapsed := c.Now().Sub(time.Unix(0, 0)); elapsed != 2*time.Hour+15*time.Minute+30*time.Second {
 		t.Fatalf("elapsed = %v", elapsed)
 	}
+	if c.Now().Before(time.Unix(0, 0)) || c.Now().Equal(time.Unix(0, 0)) {
+		t.Fatal("clock went backwards")
+	}
+	renew, err := time.ParseDuration("12h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(c.Now().Add(renew)); d < time.Millisecond {
+		t.Fatalf("renew window = %v", d)
+	}
+	// Reading the real clock is allowed and is what a test does to bound its
+	// own runtime; waiting on it is not.
+	if took := time.Since(time.Now()); took > time.Second {
+		t.Fatalf("the test body took %v", took)
+	}
+	t.Logf("deadline %s", c.Now().Add(renew).UTC().Format(time.RFC3339))
 }
 `
 	root := gatetest.Fixture(t, map[string]string{"proto/lifecycle_test.go": src})
