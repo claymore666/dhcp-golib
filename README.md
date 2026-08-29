@@ -116,8 +116,24 @@ gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
 a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
 that never returns — it is computed after `go test` comes back), a check that
 the flags the suite runs with carry a hang timeout that exceeds that ceiling
-and that the suite invocation expands them, a check that every package holding
-a `_test.go` file actually ran a test, a citation check, and its own oracle.
+and that the suite invocation expands them, a check that every test function
+DECLARED in a `_test.go` file actually ran, a citation check, and its own
+oracle.
+
+**No row can report PASS on an exit status alone.** A row records PASS only by
+also stating how many things it examined, and a count that is absent or zero is
+rewritten to FAIL by the one function that writes a row. This is structural
+rather than a guard per row, because three rows were found passing over an
+absent subject in three consecutive review rounds — the unit suite with every
+test build-tagged out, the oracle replaced by `exit 0`, and the row roster
+itself with a step call deleted — and all three inherited the same default,
+that a command with nothing to do exits 0.
+
+The residual is worth naming beside the claim: nothing inside the script can
+force that count to be DERIVED rather than written. What closes that is
+external — one oracle scenario per row that empties the row's domain and
+requires it to go red, plus a refusal when a required row is asserted on by no
+scenario at all.
 
 The citation check is stated here as a BOUND, because the sentence that used to
 stand in its place was a completeness claim and the tree falsifies it. What it
@@ -131,10 +147,22 @@ enumerated escapes, including the one direction in which it produces a false
 positive, are in `docs/gates.md`; they are part of the check, not a caveat
 about it.
 
-"Every check" is bounded, and the bound is worth stating because it is the
-shape of the failure this repository keeps finding: **a check runs only if
+"Every check" used to be bounded by this sentence: *a check runs only if
 `verify.sh` calls it, and nothing inside `verify.sh` notices a call that is no
-longer there.** So the deletion of each step was driven rather than assumed.
+longer there.* That bound was accurate and it rested on the oracle's scenarios
+noticing instead — and on 2026-08-30 a review measured that the oracle can be
+replaced by a two-line script that exits 0. **An acknowledged bound was
+load-bearing on a guard that dies with its subject**, and the composition was
+never measured: with the oracle stubbed AND a step call deleted, the arbiter
+printed `VERDICT: PASS (10 steps)`.
+
+Both halves are closed now. `REQUIRED_ROWS` is cross-checked against the rows
+actually recorded, in both directions, so a deleted row is a named failure
+rather than a smaller table; and the oracle's expected scenario count is
+derived by `verify.sh` from the oracle's own source, so a stub — total or
+partial — is a mismatch rather than an answer.
+
+The step deletions below were driven rather than assumed.
 MEASURED 2026-08-29, deleting one step at a time from a copy and running
 `scripts/test-verify.sh` against it: eight of the nine steps then present
 redden at least one oracle scenario — `gofmt` 4, the gate roster 3, the two

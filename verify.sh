@@ -65,6 +65,24 @@ SUITE_ARGS=(-race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # both directions (scenarios roster-gate-deleted, roster-gate-added).
 REQUIRED_GATES=(t1 t2)
 
+# The ROWS that must appear in the verdict table, for the same reason and
+# against a defect measured 2026-08-30: the verdict printed
+# `VERDICT: PASS (${#NAMES[@]} steps)`, a count DESCRIBED and never CHECKED.
+# Replacing `step "vet" go vet ./...` with `true` produced
+# `VERDICT: PASS (10 steps)` and nothing refused.
+#
+# That is the same class as the two findings above it, one level up again: the
+# SET OF ROWS was a population with no non-vacuity check. It composed with the
+# stubbed oracle rather than sitting beside it — README stated this exact bound
+# and rested it on the oracle's scenarios, and the oracle turned out to be
+# deletable. Neither half was wrong when it was written; the composition was
+# never measured.
+#
+# Cross-checked in BOTH directions at the verdict (scenarios row-deleted,
+# row-added), and refusing on an empty roster, because a universal gate is
+# satisfied by emptying its own domain.
+REQUIRED_ROWS=(citations bounds build vet gofmt shellcheck gate-roster t1 t2 unit-suite verify-oracle)
+
 BIN="$(mktemp -d)"
 
 declare -a NAMES=() RESULTS=() NOTES=()
@@ -93,20 +111,68 @@ on_exit() {
 trap on_exit EXIT
 trap 'ABORT_LINE=$LINENO' ERR
 
-record() { # name result note
-	NAMES+=("$1")
-	RESULTS+=("$2")
-	NOTES+=("${3:-}")
-	[ "$2" = PASS ] || FAILED=1
+# record NAME RESULT NOTE [COUNT] — the ONE place a row is written, and the one
+# place PASS is decided.
+#
+# A PASS must carry COUNT: how many things the row examined. Absent,
+# non-numeric or zero and the row is REWRITTEN to FAIL. This is the round-7
+# structural change and it exists because three separate rows passed over an
+# absent subject, in three consecutive review rounds, each found only where
+# somebody happened to look:
+#
+#   the unit suite, with every test build-tagged out  (round 5, 22 files)
+#   the oracle, replaced by `exit 0`                  (round 6, B7)
+#   the ROW ROSTER, with a step call deleted          (round 7, measured here)
+#
+# All three inherited one default: `step()` recorded PASS from rc == 0, and a
+# command with nothing to do exits 0. The fix is not another guard beside
+# another row — it is that the default is now FAIL, and a row has to say what
+# it looked at in order to pass.
+#
+# BOUND, and it is the design's real residual: nothing here can force COUNT to
+# be DERIVED. A row that hard-codes `1` satisfies this completely. What closes
+# that is external and is where the round's evidence actually lives — one
+# oracle scenario per row that empties THAT row's domain and requires the row
+# to go red. See the row-drive scenarios in scripts/test-verify.sh.
+record() { # name result note [count]
+	local name="$1" result="$2" note="${3:-}" count="${4:-}"
+	if [ "$result" = PASS ]; then
+		case "$count" in
+		'' | *[!0-9]*)
+			result=FAIL
+			note="recorded PASS with no numeric domain size (got '$count'); a row that cannot say how many things it examined has measured nothing"
+			;;
+		*)
+			if [ "$count" -lt 1 ]; then
+				result=FAIL
+				note="recorded PASS having examined 0 items; an empty domain is not a passing domain"
+			fi
+			;;
+		esac
+	fi
+	NAMES+=("$name")
+	RESULTS+=("$result")
+	NOTES+=("$note")
+	[ "$result" = PASS ] || FAILED=1
 }
 
-step() { # name -- command...
-	local name="$1"
-	shift
-	local out rc=0
+# step NAME COUNT -- command... — the exit-status rows, which can no longer
+# pass on an exit status alone: COUNT is a second operand and record refuses
+# a PASS without it.
+#
+# The detail column falls back to the domain size when the command printed
+# nothing. B7's measurement is why: a stubbed oracle produced `verify-oracle
+# PASS` with an EMPTY detail column, and an empty cell is the quietest thing a
+# table can contain.
+step() { # name count -- command...
+	local name="$1" count="$2"
+	shift 2
+	local out rc=0 detail
 	out="$("$@" 2>&1)" || rc=$?
 	if [ "$rc" -eq 0 ]; then
-		record "$name" PASS "$(printf '%s' "$out" | tail -1)"
+		detail="$(printf '%s' "$out" | tail -1)"
+		[ -n "$detail" ] || detail="$count item(s) in domain"
+		record "$name" PASS "$detail" "$count"
 	else
 		record "$name" FAIL "exit $rc"
 		printf '\n--- %s FAILED (exit %s) ---\n%s\n' "$name" "$rc" "$out" >&2
@@ -146,6 +212,13 @@ command -v go >/dev/null 2>&1 || {
 #   5. Import aliasing and shadowing are not resolved; this is textual.
 #   6. "No unseen shape is present in the tree" is a measurement at one head,
 #      never a property. A new file reintroduces one silently.
+#   8. The token must start a word: a citation is matched only where the
+#      character before it is not a letter, digit or underscore. Without that
+#      an ordinary camelCase identifier mentioned in prose reads as a citation
+#      of a test that does not exist. The direction it still cannot see is a
+#      token that starts a word but is part of a longer WORD-BOUNDED name, and
+#      that one is indistinguishable from a citation by any textual rule.
+#      Scenarios citation-embedded-identifier, citation-word-start.
 #   7. The ":" rule covers a URL scheme and nothing else. A "//" inside an
 #      ordinary string literal with no colon before it ("a//b") still reads as
 #      a comment, and a token after it is still cited. That direction is a
@@ -156,9 +229,17 @@ command -v go >/dev/null 2>&1 || {
 cite_scan() {
 	find . -type f \( -name '*.go' -o -name '*.md' \) -not -path './.git/*' -print0 |
 		xargs -0 awk -v want="$1" '
-			function emit(s) {
+			function emit(s,   pre) {
 				while (match(s, /(Test|Benchmark|Fuzz|Example)[_A-Z][A-Za-z0-9_]*/)) {
-					print substr(s, RSTART, RLENGTH)
+					# The token must START a word. Without this the pattern
+					# matches INSIDE an identifier: MEASURED 2026-08-30, the
+					# comment on isTestFuncName was read as citing a test
+					# called TestFuncName, and the run failed over a token
+					# nobody wrote. Bound 8.
+					pre = (RSTART > 1) ? substr(s, RSTART - 1, 1) : " "
+					if (pre !~ /[A-Za-z0-9_]/) {
+						print substr(s, RSTART, RLENGTH)
+					}
 					s = substr(s, RSTART + RLENGTH)
 				}
 			}
@@ -204,7 +285,7 @@ rm -f "$cited_f" "$known_f"
 if [ "$known_n" -eq 0 ] || [ "$cited_n" -eq 0 ]; then
 	record "citations" FAIL "measured nothing: $cited_n cited token(s), $known_n declared; a scan that finds no domain is not a passing scan"
 elif [ -z "$missing" ]; then
-	record "citations" PASS "$cited_n cited token(s), all declared among $known_n"
+	record "citations" PASS "$cited_n cited token(s), all declared among $known_n" "$cited_n"
 else
 	record "citations" FAIL "cited but never declared: $missing"
 	echo "--- citations FAILED: a comment or document names a test that is not declared anywhere ---" >&2
@@ -235,12 +316,21 @@ elif [ -z "$bounds_src" ]; then
 elif [ "$bounds_src" -ne 1 ]; then
 	record "bounds" FAIL "found $bounds_src suite invocation(s) expanding SUITE_ARGS, expected exactly 1; the checked constants are not the ones in force"
 else
-	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the one suite invocation expands SUITE_ARGS"
+	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the one suite invocation expands SUITE_ARGS" "$bounds_src"
 fi
 
 # ---------------------------------------------------------------- toolchain --
-step "build" go build ./...
-step "vet" go vet ./...
+# The Go domain, derived once and handed to the rows that examine it. MEASURED
+# 2026-08-30: `go build ./...` over zero packages exits 0, so build had no
+# guard of its own and was held only by its neighbours reddening — adjacency,
+# not a data dependency. `go vet ./...` over zero packages exits 1, which is
+# why the two behaved differently under the same caller and why grouping them
+# as one adjudication in round 5 was wrong.
+go_pkgs_n="$(go list ./... 2>/dev/null | grep -c . || true)"
+go_files_n="$(find . -name '*.go' -not -path './.git/*' -printf 'x\n' | grep -c . || true)"
+
+step "build" "$go_pkgs_n" go build ./...
+step "vet" "$go_pkgs_n" go vet ./...
 
 # gofmt -l exits 0 whether or not it lists anything, so its output is the
 # signal and its exit code is not.
@@ -248,7 +338,7 @@ fmt_out="$(gofmt -l . 2>&1)" || true
 if [ -n "$fmt_out" ]; then
 	record "gofmt" FAIL "unformatted: $(printf '%s' "$fmt_out" | tr '\n' ' ')"
 else
-	record "gofmt" PASS "all files formatted"
+	record "gofmt" PASS "all $go_files_n .go file(s) formatted" "$go_files_n"
 fi
 
 # Enumerated, then cross-checked in both directions against the scripts the
@@ -290,7 +380,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	else
 		linted=()
 		for sh in "${SHELL_SCRIPTS[@]}"; do linted+=("$ROOT/$sh"); done
-		step "shellcheck" shellcheck -S warning "${linted[@]}"
+		step "shellcheck" "${#linted[@]}" shellcheck -S warning "${linted[@]}"
 	fi
 else
 	record "shellcheck" FAIL "shellcheck is not installed; the shell scripts were not linted"
@@ -309,7 +399,7 @@ if [ "$roster_rc" -ne 0 ]; then
 	record "gate-roster" FAIL "go list could not enumerate the gates (exit $roster_rc); the roster is UNMEASURED"
 	printf '\n--- gate-roster could not be measured ---\n%s\n' "$roster_raw" >&2
 elif [ "$discovered" = "$expected" ]; then
-	record "gate-roster" PASS "gates present: $discovered"
+	record "gate-roster" PASS "gates present: $discovered" "${#REQUIRED_GATES[@]}"
 else
 	record "gate-roster" FAIL "required [$expected] but tree has [$discovered]"
 	echo "--- gate-roster FAILED: the set of gate commands does not match REQUIRED_GATES in verify.sh ---" >&2
@@ -328,7 +418,15 @@ for g in "${REQUIRED_GATES[@]}"; do
 	rc=0
 	out="$("$BIN/$g" -root "$ROOT" 2>&1)" || rc=$?
 	case "$rc" in
-	0) record "$g" PASS "$(printf '%s' "$out" | tail -1)" ;;
+	# The gate's own domain size, read out of the line it prints. Both gates
+	# already REFUSE on an empty domain (t1 rule D, t2 rule B), so this is the
+	# second reading of a fact they already enforce — and that is the point of
+	# a choke point: the row cannot pass without stating it, whether or not the
+	# subject also checks itself.
+	0)
+		gate_n="$(printf '%s' "$out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) \(transitive dep(s)\|test file(s)\) checked.*/\1/p' | tail -1)"
+		record "$g" PASS "$(printf '%s' "$out" | tail -1)" "$gate_n"
+		;;
 	1) record "$g" FAIL "VIOLATION" ;;
 	2)
 		# A Go panic also exits 2. Both are a FAIL, but they are different
@@ -382,6 +480,45 @@ while IFS= read -r d; do
 done <<EOF
 $tested_dirs
 EOF
+
+# The population that actually matters, and the one the package check above
+# cannot see. MEASURED 2026-08-30 by review: with the package check in force,
+# ten of twenty-two test files could be build-tagged out — keeping one file per
+# package — taking the suite from 161 declared tests to 61 with every row
+# green. Package granularity was exactly the boundary: including wire's only
+# test file DID go red.
+#
+# So: every test function DECLARED in a _test.go file must appear in
+# `go test -list`. internal/tools/testroster derives the declarations by
+# walking the filesystem and parsing, which is what makes it independent of the
+# build constraints that hid those ten files. It exits non-zero on an empty
+# roster rather than printing nothing, because "every declared test ran" is
+# vacuously true of no declarations at all.
+#
+# BOUNDS, stated rather than a completeness claim:
+#   - A test DELETED, rather than disabled, leaves both sides agreeing. That is
+#     true of every suite; a deleted test is invisible to the suite it left.
+#   - `go test -list` honours build constraints and the walk does not, so this
+#     is exact only while every _test.go builds on the host running it. The
+#     tree has no platform-conditional test file that fails to build here
+#     today; a _windows_test.go would read as declared-and-not-listed.
+roster_out=""
+roster_rc2=0
+roster_out="$(go run ./internal/tools/testroster "$ROOT" 2>&1)" || roster_rc2=$?
+declared_n=0
+undeclared=""
+unlisted=""
+if [ "$roster_rc2" -eq 0 ]; then
+	listed_f="$(mktemp)"
+	declared_f="$(mktemp)"
+	printf '%s\n' "$roster_out" | LC_ALL=C sort -u >"$declared_f"
+	go test -list '.*' ./... 2>/dev/null | grep -E '^(Test|Benchmark|Fuzz|Example)' | LC_ALL=C sort -u >"$listed_f" || true
+	declared_n="$(grep -c . <"$declared_f" || true)"
+	unlisted="$(LC_ALL=C comm -23 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
+	undeclared="$(LC_ALL=C comm -13 "$declared_f" "$listed_f" | tr '\n' ' ' | sed 's/ $//')"
+	rm -f "$listed_f" "$declared_f"
+fi
+
 if [ "$rc" -ne 0 ]; then
 	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"
 	printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
@@ -402,15 +539,58 @@ elif ! printf '%s\n' "$suite_out" | grep -q '^ok[[:space:]]'; then
 elif [ -n "$missing" ]; then
 	record "unit-suite" FAIL "exited 0, but package(s)${missing} hold a _test.go file and ran no test"
 	printf '\n--- unit-suite: these packages have test files that did not run ---\n%s\n%s\n' "$missing" "$suite_out" >&2
+elif [ "$roster_rc2" -ne 0 ]; then
+	record "unit-suite" FAIL "the declared-test roster is UNMEASURED (testroster exit $roster_rc2): $(printf '%s' "$roster_out" | tail -1)"
+elif [ -n "$unlisted" ]; then
+	record "unit-suite" FAIL "declared but never run: $unlisted"
+	printf '\n--- unit-suite: these tests are declared in a _test.go file and go test did not list them ---\n%s\n' "$unlisted" >&2
+elif [ -n "$undeclared" ]; then
+	# The other direction, and it is an INSTRUMENT failure rather than a suite
+	# failure: go test found a test the walk did not. Reported so that the
+	# comparison cannot quietly become one-sided.
+	record "unit-suite" FAIL "go test listed test(s) the declaration walk did not find: $undeclared"
 else
-	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $tested_n package(s) with tests all ran"
+	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s) all ran across $tested_n package(s)" "$declared_n"
 fi
 
 # ------------------------------------------------------------- self-oracle --
 # See scripts/test-verify.sh for what this can and cannot see.
+#
+# The expected scenario count is derived HERE, from the oracle's own source,
+# and not taken from the oracle's answer. MEASURED 2026-08-30 by review:
+# replacing scripts/test-verify.sh in its entirety with `#!/bin/sh` + `exit 0`
+# left `VERDICT: PASS (11 steps)` and `verify-oracle PASS` with an empty detail
+# column. The scenario that drives "verify.sh reads the oracle's answer" lives
+# INSIDE the file being replaced, so it went with it — a guard that dies with
+# its subject is not a guard.
+#
+# Deriving the expectation here closes the total stub (no sc_ definitions →
+# expected 0 → refused as an empty domain) AND the partial stub the review
+# named as its own bound (a well-formed line reporting fewer scenarios than the
+# file defines → mismatch).
+#
+# BOUND: this counts sc_ FUNCTION DEFINITIONS, so it is a spelling check over
+# the oracle's source. A scenario body emptied of its assertions is defined,
+# counted, and says nothing; that is what the roster cross-check inside the
+# oracle is for, and it is named there.
 if [ "$INNER" -eq 0 ]; then
 	if [ -x "$ROOT/scripts/test-verify.sh" ]; then
-		step "verify-oracle" "$ROOT/scripts/test-verify.sh"
+		oracle_expected="$(grep -c '^sc_[a-z0-9_]*() {' "$ROOT/scripts/test-verify.sh" || true)"
+		orc_rc=0
+		orc_out="$("$ROOT/scripts/test-verify.sh" 2>&1)" || orc_rc=$?
+		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n 's/^ORACLE PASS: \([0-9][0-9]*\) scenarios.*/\1/p' | tail -1)"
+		if [ "$orc_rc" -ne 0 ]; then
+			record "verify-oracle" FAIL "exit $orc_rc"
+			printf '\n--- verify-oracle FAILED (exit %s) ---\n%s\n' "$orc_rc" "$orc_out" >&2
+		elif [ -z "$oracle_reported" ]; then
+			record "verify-oracle" FAIL "the oracle exited 0 but printed no 'ORACLE PASS: <n> scenarios' line; its answer is not the account of a run"
+			printf '\n--- verify-oracle produced no verdict line ---\n%s\n' "$orc_out" >&2
+		elif [ "$oracle_expected" != "$oracle_reported" ]; then
+			record "verify-oracle" FAIL "the oracle reports $oracle_reported scenario(s); its source defines $oracle_expected"
+			printf '\n--- verify-oracle ran a different set than it defines ---\n%s\n' "$orc_out" >&2
+		else
+			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1)" "$oracle_reported"
+		fi
 	else
 		record "verify-oracle" FAIL "scripts/test-verify.sh is missing or not executable; verify.sh was not itself checked"
 	fi
@@ -424,6 +604,30 @@ for i in "${!NAMES[@]}"; do
 	printf '%-20s %-7s %s\n' "${NAMES[$i]}" "${RESULTS[$i]}" "${NOTES[$i]}"
 done
 echo
+
+# The roster cross-check. --inner does not run the oracle, so the expected set
+# is the declared one minus verify-oracle in that mode; the row is expected
+# exactly when it is meant to have run.
+expected_rows=()
+for r in "${REQUIRED_ROWS[@]}"; do
+	if [ "$r" = verify-oracle ] && [ "$INNER" -eq 1 ]; then continue; fi
+	expected_rows+=("$r")
+done
+rows_expected="$(printf '%s\n' "${expected_rows[@]}" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+rows_present="$(printf '%s\n' "${NAMES[@]}" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+
+if [ "${#REQUIRED_ROWS[@]}" -eq 0 ]; then
+	echo "VERDICT: FAIL — REQUIRED_ROWS is empty, so the roster check measured nothing." >&2
+	VERDICT_PRINTED=1
+	exit 1
+fi
+if [ "$rows_expected" != "$rows_present" ]; then
+	echo "VERDICT: FAIL — the rows recorded are not the rows required." >&2
+	echo "  required: [$rows_expected]" >&2
+	echo "  recorded: [$rows_present]" >&2
+	VERDICT_PRINTED=1
+	exit 1
+fi
 
 VERDICT_PRINTED=1
 if [ "$FAILED" -eq 0 ]; then

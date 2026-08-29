@@ -59,6 +59,16 @@ SCENARIOS=(
 	suite-one-package-disabled
 	suite-domain-unmeasured-module
 	suite-domain-unmeasured-walk
+	suite-files-disabled-partial
+	suite-roster-unmeasured
+	record-refuses-uncounted-pass
+	record-refuses-zero-count
+	row-deleted
+	row-added
+	oracle-stub-total
+	oracle-stub-partial
+	citation-embedded-identifier
+	citation-word-start
 )
 
 # ------------------------------------------------------------------ helpers --
@@ -372,9 +382,8 @@ GO
 }
 
 sc_bounds_ordering() {
-	# The ordering between the two suite bounds used to be prose saying nothing
-	# enforced it. This drives the check that now does: only the timeout moves,
-	# and it moves BELOW the shipped ceiling.
+	# Only the timeout moves, and it moves BELOW the shipped ceiling, so a
+	# ceiling failure cannot be what this scenario measures.
 	local d="$1"
 	copy_tree "$d"
 	edit "$d/verify.sh" 'SUITE_TIMEOUT_SECONDS=180' 'SUITE_TIMEOUT_SECONDS=30'
@@ -624,6 +633,168 @@ sc_suite_domain_unmeasured_walk() {
 	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
+sc_suite_files_disabled_partial() {
+	# B8, exactly as measured by review at 86cb3c5: disable ten of the
+	# twenty-two test files, chosen so every package keeps at least one. The
+	# package-keyed check sees nine ok lines and passes; 62% of the suite is
+	# gone. The declared-function population is what sees it.
+	local d="$1" f
+	copy_tree "$d"
+	for f in runtime/ipudp_test.go runtime/platform_parity_test.go \
+		runtime/prose_test.go runtime/ring_test.go runtime/timers_test.go \
+		proto/machine_test.go proto/lease_test.go proto/journal_test.go \
+		lease/manager_test.go lease/fault_test.go; do
+		[ -f "$d/$f" ] || refuse "the plant names $f, which this tree does not have"
+	done
+	disable_tests "$d" '*/runtime/ipudp_test.go'
+	disable_tests "$d" '*/runtime/platform_parity_test.go'
+	disable_tests "$d" '*/runtime/prose_test.go'
+	disable_tests "$d" '*/runtime/ring_test.go'
+	disable_tests "$d" '*/runtime/timers_test.go'
+	disable_tests "$d" '*/proto/machine_test.go'
+	disable_tests "$d" '*/proto/lease_test.go'
+	disable_tests "$d" '*/proto/journal_test.go'
+	disable_tests "$d" '*/lease/manager_test.go'
+	disable_tests "$d" '*/lease/fault_test.go'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "ten test files were switched off, every package kept one, and the run passed"
+	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with most of the suite disabled: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'declared but never run' || note "the diagnosis does not name the declared tests that did not run"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+}
+
+sc_suite_roster_unmeasured() {
+	# The declared-test walk is the instrument the row's verdict now rests on.
+	# If it cannot run, the comparison is between an empty set and everything,
+	# which is vacuously satisfied. It must refuse.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'go run ./internal/tools/testroster "$ROOT"' 'go run ./internal/tools/no_such_tool "$ROOT"'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "unit-suite passed with its declared-test roster unmeasurable"
+	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable roster did not fail the row: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the roster was unmeasured"
+}
+
+sc_record_refuses_uncounted_pass() {
+	# The round-7 choke point, driven directly: a row that records PASS without
+	# saying how many things it examined must not pass. gofmt is the subject
+	# because its PASS is the one that carried no evidence at all before this.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'record "gofmt" PASS "all $go_files_n .go file(s) formatted" "$go_files_n"' 'record "gofmt" PASS "all files formatted"'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a row recorded PASS with no domain size and the run passed"
+	[ "$(row gofmt)" = FAIL ] || note "an uncounted PASS was not rewritten to FAIL: $(row gofmt)"
+	printf '%s\n' "$OUT" | grep -q 'no numeric domain size' || note "the diagnosis does not name the missing count"
+}
+
+sc_record_refuses_zero_count() {
+	# The other half of the same guard, and the one that matters when a row's
+	# derivation is honest but its domain is empty.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" "go_files_n=\"\$(find . -name '*.go' -not -path './.git/*' -printf 'x\\n' | grep -c . || true)\"" 'go_files_n=0'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a row recorded PASS having examined zero items and the run passed"
+	[ "$(row gofmt)" = FAIL ] || note "a zero-domain PASS was not rewritten to FAIL: $(row gofmt)"
+	printf '%s\n' "$OUT" | grep -q 'examined 0 items' || note "the diagnosis does not say the domain was empty"
+}
+
+sc_row_deleted() {
+	# The third instance of the round's class, MEASURED 2026-08-30 before the
+	# fix: the verdict printed the number of rows and checked it against
+	# nothing, so deleting a step call produced "VERDICT: PASS (10 steps)".
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'step "vet" "$go_pkgs_n" go vet ./...' 'true # row deleted'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a deleted row left the run passing"
+	[ "$(row vet)" = ABSENT ] || note "this scenario is not measuring a deleted row: vet is $(row vet)"
+	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+}
+
+sc_row_added() {
+	# The other direction. A row nobody declared is as much a roster failure as
+	# a missing one — it is how a check gets renamed into invisibility.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'step "build" "$go_pkgs_n" go build ./...' 'step "build" "$go_pkgs_n" go build ./...
+record "undeclared-row" PASS "invented" 1'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "an undeclared row left the run passing"
+	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+}
+
+sc_oracle_stub_total() {
+	# B7. Replacing this very file with a script that exits 0 left
+	# "VERDICT: PASS (11 steps)" and "verify-oracle PASS" with an empty detail
+	# column, because the only thing checking the oracle was the oracle.
+	#
+	# run_verify_outer is safe here for the reason its comment gives: the
+	# copy's oracle has been replaced by a stub, so nothing recurses.
+	local d="$1" parent base
+	copy_tree "$d"
+	printf '#!/bin/sh\nexit 0\n' >"$d/scripts/test-verify.sh"
+	chmod +x "$d/scripts/test-verify.sh"
+	parent="$(dirname "$d")"
+	base="$(basename "$d")"
+	RC=0
+	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	[ "$RC" -ne 0 ] || note "the oracle was replaced by 'exit 0' and the arbiter still passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "a stubbed oracle did not fail its row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
+}
+
+sc_oracle_stub_partial() {
+	# The bound the review stated on its own remedy: an oracle that prints a
+	# well-formed verdict line for FEWER scenarios than it defines. Requiring
+	# the line is not enough; the expected count has to be derived outside the
+	# file, which is why verify.sh counts sc_ definitions itself.
+	local d="$1" parent base
+	copy_tree "$d"
+	printf '#!/bin/sh\necho "ORACLE PASS: 3 scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' >"$d/scripts/test-verify.sh"
+	chmod +x "$d/scripts/test-verify.sh"
+	parent="$(dirname "$d")"
+	base="$(basename "$d")"
+	RC=0
+	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	[ "$RC" -ne 0 ] || note "an oracle claiming 3 scenarios against a file defining none still passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "a partial stub did not fail its row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'its source defines' || note "the diagnosis does not compare reported against defined"
+}
+
+sc_citation_embedded_identifier() {
+	# PRESERVATION control for bound 8. An ordinary camelCase identifier that
+	# happens to contain a test-shaped substring is not a citation. MEASURED
+	# 2026-08-30 against the pre-fix scan: a comment on a function called
+	# isTestFuncName failed the run over a token nobody wrote.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'import "fmt"' 'import "fmt"
+
+// isTestRosterProbe is named to embed a test-shaped substring on purpose.
+func isTestRosterProbe() bool { return true }'
+	run_verify "$d"
+	[ "$RC" -eq 0 ] || note "an identifier embedding a test-shaped substring failed the run: $OUT"
+	[ "$(row citations)" = PASS ] || note "citations read part of an identifier as a citation: $(row citations)"
+}
+
+sc_citation_word_start() {
+	# The other direction of the same fix: a citation that DOES start a word is
+	# still caught. A word-boundary rule that blinds the scan would satisfy the
+	# scenario above and defeat the gate.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'import "fmt"' 'import "fmt"
+
+// See TestRevCWordStartNeverWritten for the rest.'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a citation at a word start was not caught"
+	[ "$(row citations)" = FAIL ] || note "the word-boundary rule blinded the scan: $(row citations)"
+	printf '%s\n' "$OUT" | grep -q 'TestRevCWordStartNeverWritten' || note "the diagnosis does not name the token"
+}
+
 sc_gate_panic() {
 	# A panic and a deliberate REFUSE both exit 2. Both are a FAIL, so this was
 	# never a correctness hole, but a crash reported as "could not measure its
@@ -691,12 +862,19 @@ sc_oracle_is_invoked() {
 	# Replacing the copy's oracle with a stub bounds that: the stub answers
 	# without calling verify.sh, and this scenario chooses its answer, so both
 	# directions are drivable and neither runs deep.
+	# Since round 7 the stub must be WELL-FORMED: verify.sh derives the
+	# expected scenario count from the sc_ definitions in this file and
+	# requires the reported count to match, so a stub that merely prints a
+	# marker is now a FAIL (scenarios oracle-stub-total, oracle-stub-partial).
+	# The stub therefore defines one scenario and reports one. That is not a
+	# weakening — the two directions this scenario drives are unchanged, and
+	# the stub being obliged to look like an oracle is the point of B7's fix.
 	local d="$1" stub marker
 	marker="oracle-stub-was-invoked"
 	copy_tree "$d"
 	stub="$d/scripts/test-verify.sh"
 
-	printf '#!/bin/sh\necho "ORACLE PASS: %s"\nexit 0\n' "$marker" >"$stub"
+	printf '#!/bin/sh\nsc_stub() {\n\t:\n}\necho "ORACLE PASS: 1 scenarios, %s"\nexit 0\n' "$marker" >"$stub"
 	chmod +x "$stub"
 	run_verify_outer "$d"
 	[ "$RC" -eq 0 ] || note "verify.sh failed with a passing oracle: exit $RC"
@@ -706,7 +884,7 @@ sc_oracle_is_invoked() {
 
 	# The other direction: a failing oracle must fail the run. Without this,
 	# verify.sh could invoke the oracle and ignore its answer.
-	printf '#!/bin/sh\necho "ORACLE FAIL: %s"\nexit 1\n' "$marker" >"$stub"
+	printf '#!/bin/sh\nsc_stub() {\n\t:\n}\necho "ORACLE FAIL: %s"\nexit 1\n' "$marker" >"$stub"
 	chmod +x "$stub"
 	run_verify_outer "$d"
 	[ "$RC" -ne 0 ] || note "verify.sh passed with a FAILING oracle; the oracle's answer is not read"
@@ -770,6 +948,25 @@ if [ "$declared" != "$defined" ]; then
 	printf 'defined : %s\n' "$(printf '%s' "$defined" | tr '\n' ' ')" >&2
 	refuse "the SCENARIOS list and the sc_* functions in this file do not match"
 fi
+
+# Every row verify.sh requires must be asserted on by SOME scenario.
+#
+# Round 7's design makes a row unable to record PASS without stating how many
+# things it examined, but nothing inside verify.sh can force that number to be
+# DERIVED rather than written. A row with a hard-coded count is caught by
+# emptying its domain and watching it go red — which only happens if a scenario
+# exists. This is the check that a new row arrives with one.
+#
+# BOUND: it is a spelling check. A scenario that names a row and asserts
+# nothing useful about it satisfies this, and its own empty case is refused
+# below.
+required_rows="$(sed -n 's/^REQUIRED_ROWS=(\(.*\))$/\1/p' "$ROOT/verify.sh")"
+[ -n "$required_rows" ] || refuse "could not read REQUIRED_ROWS from verify.sh; the row-coverage check has no domain"
+unasserted=""
+for r in $required_rows; do
+	grep -q "row $r" "$ROOT/scripts/test-verify.sh" || unasserted="$unasserted $r"
+done
+[ -z "$unasserted" ] || refuse "verify.sh requires row(s)$unasserted that no scenario in this file asserts on"
 
 results="$(mktemp)"
 trap 'rm -f "$results"' EXIT

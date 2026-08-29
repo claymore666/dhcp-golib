@@ -356,7 +356,7 @@ to be typed into the invocation you are reading.
   and `stale-citation`, whose plant is INDENTED so that narrowing the match
   back to column 0 kills it. `citation-vacuous` drives the other direction — a
   scan that finds no domain at all must FAIL rather than report that every
-  citation resolved. The seven remaining bounds are listed beside the
+  citation resolved. The eight remaining bounds are listed beside the
   implementation in `verify.sh` and not restated here; the first is block
   comments, and none of them is a completeness claim.
 
@@ -371,6 +371,16 @@ to be typed into the invocation you are reading.
   fix is that it blinds the gate: `citation-url` plants the reviewer's exact URL
   and must leave the run green, and `citation-after-url` plants a real stale
   citation in a comment following a URL on the same line and must still fail.
+
+  The eighth arrived 2026-08-30, the same way and from the author's own tree:
+  the token pattern had no LEFT word boundary, so it matched inside an ordinary
+  identifier. A comment on a function called `isTestFuncName` was read as
+  citing a test by the embedded name, and the run failed over a token nobody
+  wrote. The match now requires the character before the token not to be a
+  letter, digit or underscore. Driven in both directions for the same reason
+  the URL fix was — `citation-embedded-identifier` must stay green,
+  `citation-word-start` must still go red — because a boundary rule that
+  blinds the scan would satisfy the first and defeat the gate.
 - **`bounds`** fails the run unless the `go test` hang timeout exceeds the
   suite ceiling AND the flags the suite actually runs with carry that timeout.
   The second half was missing, which is why this bullet is longer than its
@@ -391,6 +401,61 @@ to be typed into the invocation you are reading.
   `suite-args-detached` plants the detached invocation. What remains is a
   spelling check over one line: a second `go test` elsewhere in the file, or
   the array under another name, is outside it.
+### The row contract, added 2026-08-30 (round 7)
+
+Everything above describes what individual rows check. This describes what a
+row is ALLOWED to conclude, and it is the only structural change in the file.
+
+**A row cannot record PASS without stating how many things it examined.**
+`record` is the single place a row is written; a `PASS` whose count is absent,
+non-numeric or zero is rewritten to FAIL. `step()`, which previously recorded
+PASS from `rc == 0`, now takes the domain size as a second operand and cannot
+pass without it.
+
+It is structural rather than one more guard because the same defect was found
+three times, at three levels, in three consecutive review rounds, each time
+only where somebody happened to look:
+
+| level | what passed over an absent subject | found |
+|---|---|---|
+| the suite | all 22 `_test.go` files build-tagged out; 0 tests ran | round 5, by the author |
+| the oracle | `scripts/test-verify.sh` replaced by `exit 0` | round 6, by review (B7) |
+| the row roster | a `step` call replaced by `true`; `PASS (10 steps)` | round 7, by the author |
+
+All three inherited one default: a command with nothing to do exits 0. Fixing
+them one at a time was fixing instances of a class, and the class is what the
+contract closes.
+
+**What the contract does NOT do, stated because it is the whole residual.**
+Nothing inside `verify.sh` can force a count to be DERIVED rather than written;
+`record "build" PASS "ok" 1` satisfies it completely. That is closed from
+outside, and this is where the round's evidence actually is: one oracle
+scenario per row that empties that row's domain and requires it to go red, plus
+a refusal in the oracle when a row named in `REQUIRED_ROWS` is asserted on by no
+scenario. The second is a spelling check over the oracle's own source and is
+worth reading as one — a scenario that names a row and asserts nothing useful
+satisfies it.
+
+**`REQUIRED_ROWS`** is cross-checked against the rows recorded, in both
+directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
+
+- **`verify-oracle`** derives its expected scenario count from the oracle's
+  SOURCE — the `sc_` function definitions — rather than from the oracle's
+  answer. Requiring an `ORACLE PASS: <n> scenarios` line closes a total stub;
+  it does not close the partial stub the review named as its own remedy's
+  bound, and deriving the expectation outside the file closes both. MEASURED
+  2026-08-30 against the final tree: a stub printing `ORACLE PASS: 45
+  scenarios` over a file defining none records
+  `the oracle reports 45 scenario(s); its source defines 0`. Scenarios
+  `oracle-stub-total`, `oracle-stub-partial`. BOUND: this counts DEFINITIONS,
+  so a scenario body emptied of its assertions is defined, counted, and says
+  nothing.
+- **`build` and `gofmt` had no non-vacuity guard of their own** and were held
+  by their neighbours reddening — adjacency, not a data dependency. MEASURED:
+  `go build ./...` over zero packages exits **0**, `go vet ./...` exits **1**,
+  which is why the two behaved differently under one caller. Both now count
+  their domain like every other row. Scenarios `record-refuses-uncounted-pass`,
+  `record-refuses-zero-count`.
 - **`unit-suite`** gained a domain check on 2026-08-30, from the same review.
   MEASURED: `go test ./...` exits 0 on a tree with no test files, so adding
   `ignore` to the build constraint of all 22 `_test.go` files took the whole
@@ -401,7 +466,33 @@ to be typed into the invocation you are reading.
   run, and refuses if that population is empty or if the output carries no `ok`
   line at all. It is keyed on the population rather than on a test-count floor,
   which is a number somebody has to maintain and which cannot see one package's
-  tests being switched off. `suite-tests-disabled` and
+  tests being switched off.
+
+  **That reasoning was right and incomplete, and the incompleteness was the
+  escape.** MEASURED by review at `86cb3c5`: with the population keyed on
+  packages, ten of twenty-two test files could be build-tagged out — keeping
+  one file per package — taking the suite from 161 declared tests to 61 with
+  every row green. Package granularity was exactly the boundary; including
+  `wire`'s only test file DID go red. The comment defended the choice on two
+  true grounds and stated no escape, and the measurement was the escape.
+
+  The population is now declared test FUNCTIONS: every `Test`/`Benchmark`/
+  `Fuzz`/`Example` function declared in a `_test.go` file must appear in
+  `go test -list`. `internal/tools/testroster` derives the declarations by
+  walking the filesystem and parsing — walking, because `go list` honours the
+  build constraints that hid those ten files; parsing, because
+  `internal/gates/t2` embeds test bodies inside raw string literals and a grep
+  reports two declarations that do not exist. MEASURED on the final tree: 165
+  declared, 165 listed, the sets identical; with the review's ten-file plant,
+  65 listed and the row names all 100 that did not run. Scenario
+  `suite-files-disabled-partial`; `suite-roster-unmeasured` drives the walk
+  itself failing. BOUNDS: a test DELETED rather than disabled leaves both sides
+  agreeing, which is true of every suite; and `go test -list` honours build
+  constraints while the walk does not, so the comparison is exact only while
+  every `_test.go` builds on the host running it.
+
+  The package check is kept beside it for its diagnosis, which names the
+  package. `suite-tests-disabled` and
   `suite-one-package-disabled` plant both, and
   `suite-domain-unmeasured-module` / `suite-domain-unmeasured-walk` drive the
   two ways the domain itself can come back empty — the same shape
