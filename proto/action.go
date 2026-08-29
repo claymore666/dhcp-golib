@@ -1,0 +1,214 @@
+package proto
+
+import (
+	"fmt"
+	"net/netip"
+
+	"github.com/claymore666/dhcplease/wire"
+)
+
+// TimerID names a timer. The set is closed, so ring 3's timer table is a fixed
+// array rather than a map keyed on something the machine invents.
+type TimerID uint8
+
+// The timers this milestone uses.
+const (
+	// TimerRetransmit is the RFC 2131 section 4.1 retransmission timer, live
+	// in SELECTING and REQUESTING.
+	TimerRetransmit TimerID = iota
+	// TimerDesync is the "wait a random time between one and ten seconds to
+	// desynchronize the use of DHCP at startup" of RFC 2131 section 4.4.1.
+	TimerDesync
+	// TimerExpire is the lease expiry, live in BOUND.
+	TimerExpire
+)
+
+func (t TimerID) String() string {
+	switch t {
+	case TimerRetransmit:
+		return "retransmit"
+	case TimerDesync:
+		return "desync"
+	case TimerExpire:
+		return "expire"
+	default:
+		return fmt.Sprintf("timer(%d)", uint8(t))
+	}
+}
+
+// AllTimerIDs is every TimerID.
+func AllTimerIDs() []TimerID { return []TimerID{TimerRetransmit, TimerDesync, TimerExpire} }
+
+// ActionKind is what an action asks the caller to do.
+type ActionKind uint8
+
+// The actions the machine emits.
+const (
+	// ActSend transmits a message. Dest says where.
+	ActSend ActionKind = iota
+	// ActSetTimer arms a timer. Re-arming a live timer replaces it.
+	ActSetTimer
+	// ActCancelTimer disarms a timer. Cancelling a timer that is not armed is
+	// defined and does nothing — a machine that has to track what is armed in
+	// order to cancel correctly has duplicated ring 3's bookkeeping.
+	ActCancelTimer
+	// ActLeaseAcquired reports a lease the caller did not have.
+	ActLeaseAcquired
+	// ActLeaseChanged reports a lease whose contents differ from the one the
+	// caller already had. Unused at M1 — nothing here re-acquires without
+	// first losing — and present so ring 2's switch is written over the whole
+	// set from the start.
+	ActLeaseChanged
+	// ActLeaseLost reports that the lease is gone, with a reason.
+	ActLeaseLost
+	// ActFailed reports that acquisition failed in a way the caller should
+	// hear about, with a typed reason. This is what U5 branches on.
+	ActFailed
+	// ActJournal records something that changed no state. It is how a
+	// silently-discarded packet becomes visible: RFC 2131 says "silently
+	// discard", and a client that is silent to its own operator is the reason
+	// this project has debugging requirements at all.
+	ActJournal
+)
+
+func (k ActionKind) String() string {
+	switch k {
+	case ActSend:
+		return "Send"
+	case ActSetTimer:
+		return "SetTimer"
+	case ActCancelTimer:
+		return "CancelTimer"
+	case ActLeaseAcquired:
+		return "LeaseAcquired"
+	case ActLeaseChanged:
+		return "LeaseChanged"
+	case ActLeaseLost:
+		return "LeaseLost"
+	case ActFailed:
+		return "Failed"
+	case ActJournal:
+		return "Journal"
+	default:
+		return fmt.Sprintf("action(%d)", uint8(k))
+	}
+}
+
+// ActionID identifies one emitted action so a failure can name it.
+//
+// It is a monotonically increasing counter owned by the Machine, so an id is
+// unique within one machine's lifetime and is reproduced exactly on replay.
+type ActionID uint64
+
+func (a ActionID) String() string { return fmt.Sprintf("action#%d", uint64(a)) }
+
+// Dest says where a Send goes.
+type Dest struct {
+	// Broadcast sends to 255.255.255.255 on the link. Every message M1 sends
+	// is broadcast: the client has no address until it is BOUND, and RFC 2131
+	// section 4.1 requires the IP source address to be 0 for a message
+	// broadcast before the client has its address.
+	Broadcast bool
+	// Addr is the unicast destination when Broadcast is false. Unused at M1;
+	// RENEWING unicasts to the server identifier and is the next milestone.
+	Addr netip.Addr
+}
+
+func (d Dest) String() string {
+	if d.Broadcast {
+		return "broadcast"
+	}
+	return d.Addr.String()
+}
+
+// Reason is a typed cause. It is what U5 asks for: a caller branches on this,
+// never on text.
+type Reason uint8
+
+// The reasons this milestone can produce.
+const (
+	ReasonNone Reason = iota
+	// ReasonNoServer means the retransmission budget ran out with no usable
+	// reply. This is "no server answered".
+	ReasonNoServer
+	// ReasonNak means the server refused the REQUEST with a DHCPNAK.
+	ReasonNak
+	// ReasonExpired means the lease reached its expiry.
+	ReasonExpired
+	// ReasonStopped means the caller stopped the client.
+	ReasonStopped
+	// ReasonLinkDown means the interface lost carrier.
+	ReasonLinkDown
+	// ReasonAddressLost means the address went away underneath us.
+	ReasonAddressLost
+	// ReasonConflict means another host is using the address.
+	ReasonConflict
+	// ReasonTransport means the transport could not send, repeatedly. This is
+	// R2's visible consequence: without it a machine whose sends all fail sits
+	// in SELECTING forever looking healthy.
+	ReasonTransport
+)
+
+func (r Reason) String() string {
+	switch r {
+	case ReasonNone:
+		return "none"
+	case ReasonNoServer:
+		return "no-server"
+	case ReasonNak:
+		return "nak"
+	case ReasonExpired:
+		return "expired"
+	case ReasonStopped:
+		return "stopped"
+	case ReasonLinkDown:
+		return "link-down"
+	case ReasonAddressLost:
+		return "address-lost"
+	case ReasonConflict:
+		return "conflict"
+	case ReasonTransport:
+		return "transport"
+	default:
+		return fmt.Sprintf("reason(%d)", uint8(r))
+	}
+}
+
+// Action is one thing the caller must do, in the order returned.
+type Action struct {
+	ID   ActionID
+	Kind ActionKind
+
+	Msg  *wire.Message // ActSend
+	Dest Dest          // ActSend
+
+	Timer TimerID  // ActSetTimer, ActCancelTimer
+	After Duration // ActSetTimer
+
+	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged
+	Reason Reason // ActLeaseLost, ActFailed
+	Note   string // ActJournal, and detail beside Reason
+}
+
+func (a Action) String() string {
+	switch a.Kind {
+	case ActSend:
+		return fmt.Sprintf("Send %s to %s", a.Msg.Summary(), a.Dest)
+	case ActSetTimer:
+		return fmt.Sprintf("SetTimer %s after %s", a.Timer, a.After)
+	case ActCancelTimer:
+		return fmt.Sprintf("CancelTimer %s", a.Timer)
+	case ActLeaseAcquired:
+		return fmt.Sprintf("LeaseAcquired %s", a.Lease)
+	case ActLeaseChanged:
+		return fmt.Sprintf("LeaseChanged %s", a.Lease)
+	case ActLeaseLost:
+		return fmt.Sprintf("LeaseLost %s", a.Reason)
+	case ActFailed:
+		return fmt.Sprintf("Failed %s: %s", a.Reason, a.Note)
+	case ActJournal:
+		return "Journal " + a.Note
+	default:
+		return a.Kind.String()
+	}
+}

@@ -1,0 +1,392 @@
+package lease
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcplease/wire"
+)
+
+// Config is everything the Manager needs. Every effect is an interface, so the
+// whole acquisition path runs with no root, no namespace and no network when
+// the fakes are supplied.
+type Config struct {
+	Params    proto.Params
+	Transport Transport
+	Clock     Clock
+	Timers    Timers
+	Entropy   Entropy
+
+	// Journal and Packets are optional. A nil Journal means transitions are
+	// not recorded and Replay has nothing to replay; a nil PacketRing means
+	// no packet capture. Both default to a discarding implementation rather
+	// than to a nil dereference.
+	Journal Journal
+	Packets PacketRing
+
+	// EventBuffer is the depth of the outward event channel. Zero means a
+	// small default.
+	EventBuffer int
+}
+
+// Manager runs one managed lease.
+//
+// It is the serialisation point: one event at a time, with the whole action
+// list drained before the next Step. Nothing else in the library takes that
+// responsibility, and the design document names the alternative as a source
+// of heisenbugs (section 2.4 item 2).
+type Manager struct {
+	cfg     Config
+	machine *proto.Machine
+	journal Journal
+	packets PacketRing
+
+	events chan Event
+
+	// stopping is set on the Run goroutine before the shutdown Stop is
+	// dispatched, and is read only there. It switches emit from blocking to
+	// best-effort — see emit for why that is required and why it does not
+	// lose the final event.
+	stopping bool
+
+	mu    sync.Mutex
+	lease Lease
+	held  bool
+	seq   uint64
+
+	// stats are counters the plugin's Health RPC will need (constraint C5).
+	// They are a fold over what actually happened rather than increments
+	// scattered at call sites — the shape the 1.x antipattern list names as
+	// having produced counters that could be deleted with the suite still
+	// green.
+	stats Stats
+}
+
+// Stats are the counters this manager produces.
+type Stats struct {
+	Steps            uint64
+	Sent             uint64
+	SendFailures     uint64
+	Received         uint64
+	DecodeFailures   uint64
+	TransportErrors  uint64
+	LeasesAcquired   uint64
+	LeasesLost       uint64
+	AcquireFailures  uint64
+	TimerFires       uint64
+	EventsDropped    uint64
+	ActionsExecuted  uint64
+	ActionsFailedFed uint64
+}
+
+// ErrNoTransport and friends are returned by NewManager for a Config that
+// cannot work. They are distinct values so a caller can tell a programming
+// error from a runtime one.
+var (
+	ErrNoTransport = errors.New("lease: Config.Transport is required")
+	ErrNoClock     = errors.New("lease: Config.Clock is required")
+	ErrNoTimers    = errors.New("lease: Config.Timers is required")
+	ErrNoEntropy   = errors.New("lease: Config.Entropy is required")
+)
+
+// NewManager builds a Manager.
+func NewManager(cfg Config) (*Manager, error) {
+	switch {
+	case cfg.Transport == nil:
+		return nil, ErrNoTransport
+	case cfg.Clock == nil:
+		return nil, ErrNoClock
+	case cfg.Timers == nil:
+		return nil, ErrNoTimers
+	case cfg.Entropy == nil:
+		return nil, ErrNoEntropy
+	}
+	m, err := proto.New(cfg.Params)
+	if err != nil {
+		return nil, err
+	}
+	buf := cfg.EventBuffer
+	if buf <= 0 {
+		buf = 8
+	}
+	mg := &Manager{
+		cfg:     cfg,
+		machine: m,
+		journal: cfg.Journal,
+		packets: cfg.Packets,
+		events:  make(chan Event, buf),
+	}
+	if mg.journal == nil {
+		mg.journal = discardJournal{}
+	}
+	if mg.packets == nil {
+		mg.packets = discardPackets{}
+	}
+	return mg, nil
+}
+
+// Events is the outward stream. It is closed when Run returns.
+func (mg *Manager) Events() <-chan Event { return mg.events }
+
+// Lease returns a snapshot of the held lease.
+func (mg *Manager) Lease() (Lease, bool) {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.lease, mg.held
+}
+
+// Stats returns a snapshot of the counters.
+func (mg *Manager) Stats() Stats {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.stats
+}
+
+// Journal returns the recorded transitions. It is public on purpose: replay
+// (T4, G3) is a supported entry point, not a test hook.
+func (mg *Manager) Journal() []proto.JournalEntry { return mg.journal.Entries() }
+
+// Packets returns the packet ring (G1).
+func (mg *Manager) Packets() []CapturedPacket { return mg.packets.Packets() }
+
+// Run drives the lease until ctx is cancelled.
+//
+// It returns ctx.Err() on cancellation, which is the ordinary exit. On the way
+// out it feeds Stop into the machine so the lease is reported lost and every
+// timer is cancelled, then closes the event channel — so a caller ranging over
+// Events sees the final Lost and then a clean close, rather than a channel
+// that simply stops.
+func (mg *Manager) Run(ctx context.Context) error {
+	defer close(mg.events)
+
+	mg.dispatch(ctx, proto.Simple(proto.EvStart))
+
+	inbound := mg.cfg.Transport.Received()
+	fired := mg.cfg.Timers.Fired()
+
+	for {
+		select {
+		case <-ctx.Done():
+			mg.shutdown()
+			return ctx.Err()
+
+		case in, ok := <-inbound:
+			if !ok {
+				// The transport closed under us. That is not a clean stop:
+				// something took the socket away.
+				mg.shutdown()
+				return errors.New("lease: transport closed")
+			}
+			mg.onInbound(ctx, in)
+
+		case id, ok := <-fired:
+			if !ok {
+				mg.shutdown()
+				return errors.New("lease: timers closed")
+			}
+			mg.bump(func(s *Stats) { s.TimerFires++ })
+			mg.dispatch(ctx, proto.TimerFired(id))
+		}
+	}
+}
+
+// shutdown feeds Stop so the lease is reported lost and every timer is
+// cancelled, on the way out of Run.
+//
+// It uses a background context because the caller's is already cancelled and
+// dispatching with a dead context would cancel the very actions — timer
+// cancellation, the final Lost — that shutdown exists to perform.
+func (mg *Manager) shutdown() {
+	mg.stopping = true
+	mg.dispatch(context.Background(), proto.Simple(proto.EvStop))
+}
+
+func (mg *Manager) onInbound(ctx context.Context, in Inbound) {
+	if in.Err != nil {
+		mg.bump(func(s *Stats) { s.TransportErrors++ })
+		mg.packets.Record(CapturedPacket{
+			At: mg.cfg.Clock.Wall(), Dir: DirIn, DecodeErr: in.Err,
+		})
+		return
+	}
+	mg.bump(func(s *Stats) { s.Received++ })
+	msg, err := wire.Decode(in.Payload)
+	mg.packets.Record(CapturedPacket{
+		At:        mg.cfg.Clock.Wall(),
+		Dir:       DirIn,
+		Raw:       append([]byte(nil), in.Payload...),
+		Msg:       msg,
+		DecodeErr: err,
+	})
+	if err != nil {
+		// A packet that will not decode never reaches ring 1. It is counted
+		// and captured, because "we dropped something" with no evidence is
+		// the failure mode this library's debug requirements exist for.
+		mg.bump(func(s *Stats) { s.DecodeFailures++ })
+		return
+	}
+	mg.dispatch(ctx, proto.Received(msg, append([]byte(nil), in.Payload...)))
+}
+
+// dispatch feeds one event and everything that event produces.
+//
+// The queue is what enforces the ordering rule: an action that fails becomes
+// an EvActionFailed appended to the queue, and it is fed only after the
+// CURRENT action list has been drained in full. Feeding it immediately would
+// re-enter Step in the middle of executing the previous Step's actions, which
+// is the reentrancy the design document forbids.
+func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
+	queue := []proto.Event{ev}
+	for len(queue) > 0 {
+		e := queue[0]
+		queue = queue[1:]
+
+		now := mg.cfg.Clock.Mono()
+		rnd := mg.cfg.Entropy.Uint64()
+		from := mg.machine.State()
+		to, acts := mg.machine.Step(now, rnd, e)
+
+		mg.mu.Lock()
+		seq := mg.seq
+		mg.seq++
+		mg.stats.Steps++
+		mg.mu.Unlock()
+
+		mg.journal.Append(proto.JournalEntry{
+			Seq: seq, Now: now, Rnd: rnd, Kind: e.Kind,
+			Raw: e.Raw, Timer: e.Timer, Action: e.Action, Reason: e.Reason,
+			From: from, To: to, Actions: proto.RenderActions(acts),
+		})
+
+		queue = append(queue, mg.drain(ctx, acts)...)
+	}
+}
+
+// drain executes an action list in order and returns the failure events it
+// produced.
+func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event {
+	var failures []proto.Event
+	bridgeAt := bridge(mg.cfg.Clock)
+
+	for _, a := range acts {
+		mg.bump(func(s *Stats) { s.ActionsExecuted++ })
+		switch a.Kind {
+		case proto.ActSend:
+			raw, err := wire.Encode(a.Msg)
+			if err != nil {
+				mg.bump(func(s *Stats) { s.SendFailures++ })
+				failures = append(failures, proto.ActionFailed(a.ID, "encode: "+err.Error()))
+				continue
+			}
+			if err := mg.cfg.Transport.Send(a.Dest, raw); err != nil {
+				mg.bump(func(s *Stats) { s.SendFailures++ })
+				failures = append(failures, proto.ActionFailed(a.ID, err.Error()))
+				continue
+			}
+			mg.bump(func(s *Stats) { s.Sent++ })
+			mg.packets.Record(CapturedPacket{
+				At: bridgeAt.wall, Dir: DirOut, Raw: raw, Msg: a.Msg,
+			})
+
+		case proto.ActSetTimer:
+			mg.cfg.Timers.Set(a.Timer, a.After)
+
+		case proto.ActCancelTimer:
+			mg.cfg.Timers.Cancel(a.Timer)
+
+		case proto.ActLeaseAcquired:
+			l := toLease(a.Lease, bridgeAt)
+			mg.mu.Lock()
+			mg.lease, mg.held = l, true
+			mg.stats.LeasesAcquired++
+			mg.mu.Unlock()
+			mg.emit(ctx, Event{Kind: Acquired, Lease: l})
+
+		case proto.ActLeaseChanged:
+			l := toLease(a.Lease, bridgeAt)
+			mg.mu.Lock()
+			mg.lease, mg.held = l, true
+			mg.mu.Unlock()
+			mg.emit(ctx, Event{Kind: Changed, Lease: l})
+
+		case proto.ActLeaseLost:
+			mg.mu.Lock()
+			lost := mg.lease
+			mg.lease, mg.held = Lease{}, false
+			mg.stats.LeasesLost++
+			mg.mu.Unlock()
+			mg.emit(ctx, Event{Kind: Lost, Lease: lost, Reason: a.Reason})
+
+		case proto.ActFailed:
+			mg.bump(func(s *Stats) { s.AcquireFailures++ })
+			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})
+
+		case proto.ActJournal:
+			// Already in the journal entry's Actions. Nothing else to do —
+			// and the case is written out rather than falling into a default,
+			// so that adding an action kind makes this switch incomplete
+			// under a linter rather than silently doing nothing.
+
+		default:
+			mg.journal.Append(proto.JournalEntry{
+				Kind: proto.EvActionFailed,
+				Reason: fmt.Sprintf("manager does not implement action kind %s",
+					a.Kind),
+			})
+		}
+	}
+	if len(failures) > 0 {
+		mg.bump(func(s *Stats) { s.ActionsFailedFed += uint64(len(failures)) })
+	}
+	return failures
+}
+
+// emit delivers an outward event.
+//
+// While running it BLOCKS until the caller takes it or the context ends.
+// Dropping a lease event to keep the loop moving would mean the caller's view
+// of the lease silently diverging from the machine's, which is the class of
+// bug this library exists to remove.
+//
+// While shutting down it is best-effort, and that is not a weakening of the
+// rule above. The caller has already cancelled; a blocking send would deadlock
+// Run against a caller that has stopped reading, which is the ordinary way to
+// stop a client. The final event is not lost by it either: the event channel
+// is buffered and Go delivers buffered values after a close, so a caller that
+// drains Events after Run returns still sees the closing Lost. EventsDropped
+// counts the case where even the buffer was full, so "we dropped one" is a
+// measurement rather than an assumption.
+func (mg *Manager) emit(ctx context.Context, e Event) {
+	if mg.stopping {
+		select {
+		case mg.events <- e:
+		default:
+			mg.bump(func(s *Stats) { s.EventsDropped++ })
+		}
+		return
+	}
+	select {
+	case mg.events <- e:
+	case <-ctx.Done():
+		mg.bump(func(s *Stats) { s.EventsDropped++ })
+	}
+}
+
+func (mg *Manager) bump(f func(*Stats)) {
+	mg.mu.Lock()
+	f(&mg.stats)
+	mg.mu.Unlock()
+}
+
+type discardJournal struct{}
+
+func (discardJournal) Append(proto.JournalEntry)     {}
+func (discardJournal) Entries() []proto.JournalEntry { return nil }
+
+type discardPackets struct{}
+
+func (discardPackets) Record(CapturedPacket)     {}
+func (discardPackets) Packets() []CapturedPacket { return nil }
