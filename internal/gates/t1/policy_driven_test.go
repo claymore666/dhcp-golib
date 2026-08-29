@@ -173,10 +173,20 @@ func sortedKeys[V any](m map[string]V) []string {
 // the generated one covers a package ADDED to the table that this file does
 // not mention; this one covers a package REMOVED from it.
 //
-// What it CANNOT see: it is an enumeration, so a package admitted later and
-// never written into this fixture is unprotected against a later narrowing.
-// That is a bound, not an oversight — it is why the generated control exists
-// beside it.
+// What it CANNOT see, stated as it MEASURES today rather than as a hypothesis
+// about the future: it is an enumeration, so any allowlisted identifier this
+// fixture does not name is unprotected against a narrowing. MEASURED
+// 2026-08-29 — 16 of 102 allowlisted identifiers are named in any test file at
+// all, so 86 are unprotected NOW; review measured 4 of 8 identifier narrowings
+// on today's tables surviving the whole suite. PACKAGE narrowings are covered:
+// 4 of 4 die, by this fixture.
+//
+// TestNarrowingCoverageIsMeasured in internal/gates/rings prints the current
+// number, so this comment cannot be the only place it lives.
+//
+// This sentence used to say "a package admitted LATER", which described an
+// escape that is open today as though it opened in future. That is a
+// completeness claim wearing a bound's clothes.
 func TestRealisticRing1CodeIsAccepted(t *testing.T) {
 	const src = `package proto
 

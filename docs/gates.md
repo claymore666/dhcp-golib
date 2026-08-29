@@ -214,9 +214,40 @@ abort; a verdict printed with `go.mod` deleted; a required gate deleted; an
 unlisted gate added; a ring-1 impurity; a clock wait in a test; an unformatted
 file; a data race (which drives `-race`); a second run served from the test
 cache (which drives `-count=1`); a gate that panics; a gate that genuinely
-refuses; a shell script absent from the lint list; the oracle itself stubbed
-out, in both directions; a suite over the ceiling; the same suite under the
-shipped ceiling; and the ceiling's declared value.
+refuses; a shell script absent from the lint list; unreachable code, which only
+`go vet` sees; the oracle itself stubbed out, in both directions; a suite over
+the ceiling; the same suite under the shipped ceiling; and the ceiling's
+declared value.
+
+**Every step's DELETION was driven, not assumed.** MEASURED 2026-08-29 by
+removing one step at a time from a copy of `verify.sh` and running the oracle
+against that copy:
+
+| step deleted from `verify.sh` | oracle scenarios that went red |
+|---|---|
+| `build`     | 1 (`vet-violation`, whose bait must compile) |
+| `vet`       | 1 (`vet-violation`) — **0 before that scenario existed** |
+| `gofmt`     | 4 |
+| `shellcheck`| 2 |
+| `gate-roster` | 3 |
+| the `t1`/`t2` gate loop | 6 |
+| `unit-suite` | REFUSED — a scenario died without reporting |
+| `verify-oracle` | 4, but see the bound below |
+
+`vet` is why this sweep is in the document rather than in a transcript. It was
+the one step in the file that no scenario drove: with `step "vet" go vet ./...`
+deleted, the oracle passed **18 of 18**. A step nothing drives is a step that
+can be deleted, which is the defect class of every finding this project has
+paid for twice.
+
+The `vet-violation` bait is unreachable code, and the choice is about
+attribution rather than convenience. `go test` runs a vet subset of its own
+(atomic, bool, buildtags, directive, errorsas, ifaceassert, nilfunc, printf,
+stringintconv, tests), so a `printf` bait would redden the unit-suite row too
+and prove nothing about which step saw it. `unreachable` is in `go vet` and not
+in that subset, so the scenario can assert `build`, `gofmt` and `unit-suite`
+all still PASS — the preservation control that makes the vet row's FAIL
+attributable.
 
 **The oracle also checks that `verify.sh` still runs it.** MEASURED 2026-08-29:
 replacing the oracle step with a hardcoded PASS survived every other scenario,
@@ -245,6 +276,17 @@ to be typed into the invocation you are reading.
 
 ### What the oracle cannot see
 
+0. **`verify.sh` no longer calling the oracle.** The row above says 4 scenarios
+   catch it, and that number is honest but the mechanism is not what it looks
+   like: the catch is `shellcheck` objecting that deleting the step left
+   `--inner`'s variable unused. MEASURED 2026-08-29, composing past that single
+   objection — one `disable=SC2034` and a `: "$INNER"` — the copy prints
+   `VERDICT: PASS (8 steps)` with the arbiter's own arbiter silently gone. This
+   is inherent and not fixable from inside: a `verify.sh` that drops the step
+   never runs the scenario that checks the step is there. Running
+   `scripts/test-verify.sh` by hand is the only check for it, and running it by
+   hand is not a wired check. Recorded because an incidental catch is the
+   easiest thing in this file to mistake for a designed one.
 1. **A defect nobody planted.** It is a list of scenarios, not a proof. The
    scenario list is cross-checked in both directions against the `sc_*`
    functions in the file, so removing a name is a REFUSAL rather than a quiet
@@ -275,10 +317,20 @@ to be typed into the invocation you are reading.
 
 `shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
 `verify.sh`'s own steps. The linted list is enumerated AND cross-checked
-against every tracked `.sh` file, for the reason the gate roster is: a list
-that discovers itself is silenced by moving a file, and a list that is only
-enumerated is silenced by adding one. It covers shell defects and says nothing
-about whether the verdicts are right.
+against the shell scripts the tree holds, for the reason the gate roster is: a
+list that discovers itself is silenced by moving a file, and a list that is
+only enumerated is silenced by adding one.
+
+"Shell script" means a regular file ending in `.sh` **or** opening with a shell
+shebang. MEASURED 2026-08-29 by review: the walk keyed on the suffix alone
+while the surrounding comments described the domain as "every executable shell
+script" and as "every tracked `.sh`" — three descriptions, none of which was
+the code. A `scripts/preflight` with a `#!/bin/sh` line was linted by nothing
+and tripped neither direction of the cross-check. The oracle now plants exactly
+that file, deliberately WITHOUT an exec bit, since being a shell script is what
+makes it need linting.
+
+It covers shell defects and says nothing about whether the verdicts are right.
 
 ## The policy is itself under test
 
@@ -298,8 +350,8 @@ names; they compute the answer from the standard library and compare.
 | Check | What it derives | Killed by |
 |---|---|---|
 | `TestPureStdlibClosureIsClean` | `go list -deps` of every admitted package; any whose closure reaches `os`, `syscall`, `net`, `time`, `context`, … must carry an identifier restriction | admitting an impure package |
-| `TestAllowlistedIdentifiersExist` | `go doc pkg.Ident` per entry, as an existence oracle | a typo, or an identifier the stdlib removed |
-| `TestAllowlistsExcludeStreamAPIs` | signatures naming `io.Writer`/`io.Reader`/… | admitting a stream API into a pure ring |
+| `TestAllowlistedIdentifiersExist` | two signals per entry — `go doc pkg.Ident` resolving AND the name appearing verbatim in `go doc -all pkg` | a typo, or an identifier the stdlib removed |
+| `TestAllowlistsExcludeStreamAPIs` | signatures naming `io.Writer`/`io.Reader`/…, per package, refusing when it matches nothing | admitting a stream API into a pure ring; and, via witnesses, the pattern going inert |
 | `TestTimeAllowlistExcludesWaiters` | signatures returning `<-chan Time`, `*Timer`, `*Ticker` | admitting a waiting primitive into tests |
 | `TestContextAllowlistExcludesDeadlines` | constructors whose signature names `time.Duration` or `time.Time` | admitting a deadline constructor into tests |
 
@@ -307,6 +359,37 @@ The derived layer covers identifiers nobody enumerated, which is the point: it
 found a hole neither human pass did. `encoding/hex` was admitted to ring 1
 unrestricted; its dependency closure reaches `os` and `syscall`, and
 `hex.Dumper` takes an `io.Writer`. It now carries a restriction.
+
+**A derived check must refuse when it cannot derive.** MEASURED 2026-08-29 by
+review, and this was a blocking finding: the stream derivation guarded against
+`go doc` breaking — a signature it could not read was a failure — but not
+against its own pattern going inert. Neutering the regexp so it matched nothing
+left the whole suite green, and a ring-1 file calling `fmt.Fprintf` into a
+`bytes.Buffer` then passed the full lane at `VERDICT: PASS (9 steps)`. A check
+with one possible verdict reports that verdict.
+
+Two things stand behind it now, and they are different guards rather than one
+guard twice. **Per-package non-vacuity:** if the pattern matches no signature
+in a restricted package, the test REFUSES and says how many signatures it read,
+so "the pattern is broken" is distinguishable from "the toolchain answered
+nothing". **Witnesses:** `streamWitnesses` names three identifiers per
+restricted package that provably take or return a stream (`fmt.Fprintf`,
+`fmt.Fprintln`, `fmt.Fscanf`; `hex.Dumper`, `hex.NewEncoder`, `hex.NewDecoder`),
+and the control asserts the pattern matches each one *directly* — not that the
+check recorded a match, which a mutant that records everything defeats. A
+second test cross-checks the witness map against the restricted packages in
+both directions, so emptying it is a refusal rather than a shrinkage.
+
+Each guard alone suffices and the composition proves it: with the pattern
+neutered, deleting either guard still goes red; deleting **both** returns
+exactly the original green. That is the evidence that neither is decoration.
+
+`go doc pkg.Ident` is an existence probe and **not** an exact oracle — MEASURED
+2026-08-29, `go doc time.now` exits 0, so it is case-insensitive and a
+lower-cased typo resolves to the unexported original. The existence check
+therefore takes a second signal: the name must also appear as a whole word in
+`go doc -all pkg`, whose output is case-sensitive. Validated over all 102
+allowlisted identifiers with no false miss.
 
 **Enumerated, and driven through the real binary**
 (`t1/policy_driven_test.go`, `t2/policy_driven_test.go`). `PureRefusedPkgs`,
@@ -341,9 +424,29 @@ identifiers — all die.
 
 The two kinds fail in opposite directions and neither subsumes the other. The
 generated ones cover ADDITIONS to a table; the hand-written ones cover
-REMOVALS. The bound on the hand-written half is the obvious one: a package
-admitted later and never written into those fixtures is unprotected against a
-later narrowing.
+REMOVALS.
+
+**The bound on the hand-written half is open today, not in future.** MEASURED
+2026-08-29 and confirmed independently by review: **16 of the 102 allowlisted
+identifiers are named in any `_test.go` file at all** — `encoding/hex` 1/11,
+`fmt` 1/14, `context` 2/12, `time` 12/65 — so 86 could be removed from an
+allowlist with nothing going red. Review measured 4 of 8 identifier narrowings
+against today's tables SURVIVING the whole suite (`fmt.Sprintf`, `hex.Dump`,
+`time.Kitchen`, `context.WithValue`) and 4 dying. PACKAGE narrowings are
+covered: 4 of 4 die.
+
+This used to read "a package admitted **later** and never written into those
+fixtures", which described a present-tense escape as a future one — a
+completeness claim wearing a bound's clothes. The number is printed by
+`TestNarrowingCoverageIsMeasured`, which refuses rather than reporting zero
+coverage when it cannot find the test files, so it is a measurement a run makes
+rather than a sentence in a document.
+
+Why it is tolerated at M0 rather than closed: a narrowing makes the gate REFUSE
+honest code, loudly, at the point of use, naming the identifier — a
+self-announcing failure. A widening is silent, and the widening direction is
+covered. Naming all 102 identifiers in a hand-written fixture would rebuild the
+generated control by hand and misrepresent what M1 needs.
 
 ### What the policy guards cannot see
 
@@ -368,11 +471,13 @@ later narrowing.
    (`TestContextAfterFuncIsRefusedByDefault`): today's answer is refused,
    admitting it means deleting the case and writing down why. A pin records a
    decision that has not been made; it does not make one.
-5. **A narrowing of a table nothing exercises.** The hand-written controls
-   cover what M1 is expected to need. A package or identifier admitted after
-   them and never written into a fixture can be removed again without anything
-   going red — the generated controls cannot see it, because they are derived
-   from the same table.
+5. **A narrowing of the 86 identifiers no fixture names.** MEASURED
+   2026-08-29: 16 of 102 allowlisted identifiers appear in any test file, so
+   the rest can be removed from an allowlist with nothing going red — the
+   generated controls cannot see it, being derived from the same table, and the
+   hand-written ones name only what realistic code uses. This is open now; the
+   count is printed by `TestNarrowingCoverageIsMeasured` and the reasoning for
+   accepting it at M0 is above.
 6. **The stdlib moving under them.** `go doc` is queried at test time against
    the toolchain in use, so an identifier removed upstream turns the existence
    probe red — which is correct — but a *newly added* waiting primitive is
@@ -392,6 +497,13 @@ relative to the tree root, so no diagnostic carries the caller's directory. And
 at the one place every self-test passes through: `gatetest.Run` fails any case
 whose gate output contains the fixture root. A source fix holds only until the
 next diagnostic is written; the choke point holds after that.
+
+`scan.RelErr` is the same fix for the other half. MEASURED 2026-08-29 by
+review: the first pass at keeping roots out of diagnostics dropped the *error*
+along with the path, so a refusal said the tree was unreadable without saying
+why. `RelErr` relativises the message and keeps the cause. `gatetest.Run`
+already covers the root half at every call site; `TestRelErr` covers the cause
+half, which nothing else did.
 
 `Rel` falls back to the **basename** for a path it cannot relativise, and a
 basename satisfies the choke point perfectly well — it does not contain the

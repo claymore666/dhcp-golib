@@ -78,7 +78,7 @@ type violation struct {
 func run(root string) int {
 	files, err := scan.GoFiles(root)
 	if err != nil {
-		refuse("the tree is not readable")
+		refuse("the tree is not readable: %s", scan.RelErr(root, err))
 	}
 
 	var tests []string

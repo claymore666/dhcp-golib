@@ -126,23 +126,51 @@ else
 fi
 
 # verify.sh is itself a load-bearing instrument and nothing else checks it, so
-# it is linted here. A missing shellcheck is a FAIL, not a skip: a step that
-# cannot be measured must not report a pass.
-# scripts/test-verify.sh is linted here too: it is the oracle for this file and
-# therefore load-bearing. Enumerated rather than globbed, and cross-checked
-# below against every executable shell script in the tree — a lint list that
-# discovers itself can be silenced by moving a file out of the glob, and one
-# that is enumerated only can be silenced by adding a file nobody lists.
+# it is linted here, and so is scripts/test-verify.sh, which is the oracle for
+# this file. A missing shellcheck is a FAIL, not a skip: a step that cannot be
+# measured must not report a pass.
+#
+# The list is enumerated AND cross-checked against the shell scripts the tree
+# actually holds, in both directions. A lint list that discovers itself is
+# silenced by moving a file out of the glob; one that is only enumerated is
+# silenced by adding a file nobody lists.
 SHELL_SCRIPTS=(verify.sh scripts/test-verify.sh)
+
+# shell_files prints every shell script in the tree, one per line, relative to
+# the root.
+#
+# "Shell script" is defined here as: a regular file that either ends in .sh OR
+# opens with a shell shebang. Both halves are load-bearing. MEASURED 2026-08-29
+# by review: this used to key on the .sh suffix alone while the comments around
+# it described the domain two other ways — "every executable shell script" and
+# "every tracked .sh" — so all three descriptions disagreed and none matched
+# the code. A future scripts/preflight with a #!/bin/sh line would have been
+# linted by nothing and would have tripped neither direction of the check.
+#
+# A filesystem walk and not `git ls-files`: git is unavailable inside the
+# oracle's copies of the tree, and a check that silently does nothing where it
+# is being tested is a check with no observer.
+shell_files() {
+	find . -type f -not -path './.git/*' -printf '%P\n' | while IFS= read -r f; do
+		case "$f" in
+		*.sh)
+			printf '%s\n' "$f"
+			;;
+		*)
+			if head -n 1 -- "$f" 2>/dev/null | grep -qE '^#!.*[ /](ba|da|k|z|a)?sh$|^#!.*[ /](ba|da|k|z|a)?sh '; then
+				printf '%s\n' "$f"
+			fi
+			;;
+		esac
+	done
+	return 0
+}
+
 if command -v shellcheck >/dev/null 2>&1; then
-	# A filesystem walk, not `git ls-files`: git is unavailable inside the
-	# oracle's copies of the tree, and a check that silently does nothing where
-	# it is being tested is a check with no observer. Fail-closed by
-	# construction — an empty walk cannot match a non-empty list.
 	shell_expected="$(printf '%s\n' "${SHELL_SCRIPTS[@]}" | sort | tr '\n' ' ')"
-	shell_found="$(find . -name '*.sh' -not -path './.git/*' -printf '%P\n' | sort | tr '\n' ' ')"
+	shell_found="$(shell_files | sort | tr '\n' ' ')"
 	if [ "$shell_expected" != "$shell_found" ]; then
-		record "shellcheck" FAIL "the linted list [$shell_expected] is not every tracked .sh [$shell_found]"
+		record "shellcheck" FAIL "the linted list [$shell_expected] is not every shell script in the tree [$shell_found]"
 	else
 		linted=()
 		for sh in "${SHELL_SCRIPTS[@]}"; do linted+=("$ROOT/$sh"); done

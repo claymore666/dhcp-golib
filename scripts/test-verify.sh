@@ -44,6 +44,7 @@ SCENARIOS=(
 	t1-violation
 	t2-violation
 	gofmt-violation
+	vet-violation
 	race-detector
 	test-cache
 	ceiling-fires
@@ -52,6 +53,7 @@ SCENARIOS=(
 	gate-panic
 	gate-refuses
 	unlinted-script
+	unlinted-shebang-script
 	oracle-is-invoked
 )
 
@@ -224,6 +226,35 @@ sc_gofmt_violation() {
 	[ "$(row gofmt)" = FAIL ] || note "gofmt did not report an unformatted file: $(row gofmt)"
 }
 
+sc_vet_violation() {
+	# MEASURED 2026-08-29: deleting `step "vet" go vet ./...` from verify.sh
+	# left this oracle passing 18 of 18. Every other step in the file is
+	# cross-checked by some scenario that plants a defect only that step can
+	# see — deleting gofmt reddened 4 scenarios, shellcheck 2, the unit suite
+	# refused the run outright — and vet alone had no such witness. A step
+	# nothing drives is a step that can be deleted, which is the same defect
+	# class as a gate that cannot see whether it is still wired in.
+	#
+	# The bait is unreachable code, chosen for attribution rather than
+	# convenience: it is in `go vet`'s suite but NOT in the subset `go test`
+	# runs by default (atomic, bool, buildtags, directive, errorsas,
+	# ifaceassert, nilfunc, printf, stringintconv, tests), so it reddens the
+	# vet row and leaves unit-suite alone. A printf bait would have failed
+	# both rows and proved nothing about which one saw it.
+	local d="$1"
+	copy_tree "$d"
+	printf 'package proto\n\nfunc vetBait() int {\n\treturn 0\n\treturn 1\n}\n' >"$d/proto/vetbait.go"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "unreachable code passed the verifier"
+	[ "$(row vet)" = FAIL ] || note "vet did not report unreachable code: $(row vet)"
+	# Attribution, in the direction that catches a bait too blunt to localise:
+	# the plant compiles and is gofmt-clean, so a FAIL in either of those rows
+	# means this scenario is measuring something other than vet.
+	[ "$(row build)" = PASS ] || note "the vet bait broke the build; it is not a vet-only defect: $(row build)"
+	[ "$(row gofmt)" = PASS ] || note "the vet bait is unformatted; it is not a vet-only defect: $(row gofmt)"
+	[ "$(row unit-suite)" = PASS ] || note "the vet bait reddened the unit suite; go test's own vet subset saw it: $(row unit-suite)"
+}
+
 sc_race_detector() {
 	local d="$1"
 	copy_tree "$d"
@@ -371,6 +402,22 @@ sc_unlinted_script() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a shell script absent from the lint list passed"
 	[ "$(row shellcheck)" = FAIL ] || note "shellcheck did not report the unlisted script: $(row shellcheck)"
+}
+
+sc_unlinted_shebang_script() {
+	# The half a suffix glob cannot see. MEASURED 2026-08-29 by review: the
+	# lint roster keyed on ".sh" while its own comments claimed "every
+	# executable shell script" and "every tracked .sh". A script with a shebang
+	# and no extension satisfied none of the three and was linted by nothing.
+	local d="$1"
+	copy_tree "$d"
+	printf '#!/bin/sh\necho unlisted\n' >"$d/scripts/preflight"
+	# Deliberately NOT chmod +x: being a shell script is what makes it need
+	# linting, not being executable. Driving it without the exec bit is what
+	# proves the detection does not secretly depend on one.
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "an extension-less shell script absent from the lint list passed"
+	[ "$(row shellcheck)" = FAIL ] || note "shellcheck did not report the shebang script: $(row shellcheck)"
 }
 
 sc_oracle_is_invoked() {

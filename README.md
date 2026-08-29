@@ -50,12 +50,27 @@ weakened to fit the code.
 
     ./verify.sh
 
-One command, every check, one verdict. Exit 0 is PASS and is the normal state;
-exit 1 is FAIL. A step that cannot be measured is a FAIL, never a skip.
+One command, one verdict. Exit 0 is PASS and is the normal state; exit 1 is
+FAIL. A step that cannot be measured is a FAIL, never a skip.
 
 It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
 a wall-clock ceiling, and its own oracle.
+
+"Every check" is bounded, and the bound is worth stating because it is the
+shape of the failure this repository keeps finding: **a check runs only if
+`verify.sh` calls it, and nothing inside `verify.sh` notices a call that is no
+longer there.** So the deletion of each step was driven rather than assumed.
+MEASURED 2026-08-29, deleting one step at a time from a copy and running
+`scripts/test-verify.sh` against it: eight of the nine steps redden at least
+one oracle scenario — `gofmt` 4, the gate roster 3, the two gates 6, the unit
+suite refuses the run outright, `shellcheck` 2, `build` and `vet` 1 each.
+
+`vet` had no witness until this measurement was taken; it passed 18 of 18 with
+the step deleted, and the `vet-violation` scenario exists because of that.
+
+The ninth step is the oracle itself, and it is the one that cannot be closed
+from the inside: see below.
 
 There is no CI on this repository and there will not be: the self-hosted
 runners belong to the plugin repository and cannot serve a second private repo
@@ -63,8 +78,16 @@ without an organisation. `verify.sh` is the only arbiter there is, which is why
 it is one command and not a paragraph describing what a developer should run —
 and why it has an oracle of its own, `scripts/test-verify.sh`, which plants a
 defect in a copy of the tree and requires the row that owns that defect to be
-the row that fails. `verify.sh` runs it as a step, so the arbiter is checked by
-the command that runs the arbiter. What it cannot see is in `docs/gates.md`.
+the row that fails. `verify.sh` runs it as a step.
+
+That loop closes only while it is wired, and it cannot close itself: a
+`verify.sh` that drops its oracle step never runs the scenario that checks the
+step is there. MEASURED 2026-08-29 — deleting the step is caught, but only
+incidentally, by `shellcheck` objecting that `--inner`'s variable became
+unused; composing past that one objection gives a clean `VERDICT: PASS (8
+steps)` with the arbiter's own arbiter silently gone. Running
+`scripts/test-verify.sh` directly is the check for that, and it is a human act,
+not a wired one. The rest of what neither can see is in `docs/gates.md`.
 
 ### The two gates
 

@@ -198,3 +198,27 @@ func IsStdlib(path string) bool {
 	}
 	return !strings.Contains(first, ".")
 }
+
+// RelErr renders err with the tree root stripped out of it.
+//
+// The gates report positions relative to the root so that no diagnostic
+// carries the caller's directory (review round 1, finding 2). MEASURED
+// 2026-08-29 by review round 2: the first fix for that dropped the underlying
+// error entirely rather than relativising it, so "ring root %q is not
+// readable" stopped saying whether that was a permission error or something
+// else. Both properties are available at once; losing the cause was not
+// required by keeping the path out.
+//
+// The stripping is textual because that is what an os.PathError carries — an
+// absolute path inside a message, not a structured field this can reach.
+func RelErr(root string, err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	msg := err.Error()
+	if root == "" {
+		return msg
+	}
+	msg = strings.ReplaceAll(msg, root+string(filepath.Separator), "")
+	return strings.ReplaceAll(msg, root, ".")
+}

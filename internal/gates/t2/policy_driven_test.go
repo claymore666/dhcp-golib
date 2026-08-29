@@ -219,4 +219,44 @@ func TestCancel(t *testing.T) {
 			"Its refusal is held only by its absence from the allowlist; this case is "+
 			"what makes that absence observable.\noutput:\n%s", code, gatetest.Violate, out)
 	}
+	// The exit code alone is not the assertion. The fixture also names
+	// context.WithCancel and context.Background, so ANY violation in it
+	// satisfies `code == Violate` — including one that never objected to
+	// AfterFunc.
+	//
+	// MEASURED 2026-08-29 by review: removing "Background" from
+	// TestIdents["context"] makes the fixture violate for a reason this pin
+	// does not own, and this case still passed. That is round 1's finding 2
+	// exactly — a case green for the wrong reason — reproduced inside the fix
+	// for round 1's findings. Every other gate-driven case in this file and in
+	// t1/policy_driven_test.go already asserts the diagnosis names the
+	// identifier; this one did not.
+	if !strings.Contains(out, "context.AfterFunc") {
+		t.Fatalf("the gate refused the fixture but its diagnosis does not name "+
+			"context.AfterFunc, so this case is not pinning what it claims to pin.\noutput:\n%s", out)
+	}
+	// Naming AfterFunc is necessary and NOT sufficient, and the difference is
+	// measurable rather than theoretical.
+	//
+	// The review that raised this proposed exactly the Contains check above as
+	// the fix. MEASURED 2026-08-29: it does not kill the review's own mutant.
+	// Removing "Background" from TestIdents["context"] makes the gate report
+	// TWO findings — AfterFunc AND Background — so the diagnosis still names
+	// AfterFunc and the Contains check still passes. The review's supporting
+	// sentence ("green over a run that never objected to AfterFunc") does not
+	// match what the gate prints; it objects to AfterFunc as finding 1 of 2.
+	//
+	// The FINDING was right and only the remedy was short. What makes the
+	// verdict attributable is that AfterFunc is the ONLY thing wrong here, so
+	// the case asserts the rest of the fixture is clean. This is a preservation
+	// control living inside the pin: it is what stops the pin from being
+	// satisfied by an unrelated violation.
+	for _, innocent := range []string{"context.Background", "context.WithCancel"} {
+		if strings.Contains(out, innocent) {
+			t.Fatalf("the gate also objected to %s. That identifier is legitimate in a "+
+				"test and this case does not own it, so the VIOLATION above is no longer "+
+				"attributable to context.AfterFunc — the pin would pass for the wrong "+
+				"reason.\noutput:\n%s", innocent, out)
+		}
+	}
 }

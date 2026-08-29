@@ -1,7 +1,10 @@
 package scan
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -147,5 +150,67 @@ func TestRel(t *testing.T) {
 				t.Fatalf("Rel(%q, %q) = %q, want %q", c.root, c.path, got, c.want)
 			}
 		})
+	}
+}
+
+// TestRelErr pins both halves of the property RelErr exists to hold at once:
+// the cause survives, and the root does not.
+//
+// Dropping the cause was the first fix for round 1's finding 2 — a diagnostic
+// carrying the caller's temp directory let an assertion match the directory
+// name instead of the diagnosis. Deleting the error kept the root out and took
+// the reason with it. gatetest.Run's guard covers the root half at every call
+// site; nothing covered the cause half until this case.
+func TestRelErr(t *testing.T) {
+	root := "/tmp/fixture-Test_third_party"
+	cases := []struct {
+		name          string
+		root          string
+		err           error
+		wantContains  string
+		wantOmitsRoot bool
+	}{
+		{
+			name:          "a path under the root is relativised and the cause kept",
+			root:          root,
+			err:           fmt.Errorf("stat %s/proto: permission denied", root),
+			wantContains:  "permission denied",
+			wantOmitsRoot: true,
+		},
+		{
+			name:          "the root itself becomes a dot",
+			root:          root,
+			err:           fmt.Errorf("open %s: is a directory", root),
+			wantContains:  "is a directory",
+			wantOmitsRoot: true,
+		},
+		{
+			name:          "an error naming no path is returned unchanged",
+			root:          root,
+			err:           errors.New("unexpected EOF"),
+			wantContains:  "unexpected EOF",
+			wantOmitsRoot: true,
+		},
+		{
+			name:          "an empty root cannot strip anything and must not try",
+			root:          "",
+			err:           errors.New("no such file or directory"),
+			wantContains:  "no such file or directory",
+			wantOmitsRoot: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := RelErr(c.root, c.err)
+			if !strings.Contains(got, c.wantContains) {
+				t.Errorf("RelErr dropped the cause: got %q, want it to contain %q", got, c.wantContains)
+			}
+			if c.wantOmitsRoot && strings.Contains(got, c.root) {
+				t.Errorf("RelErr left the root in the message: %q still contains %q", got, c.root)
+			}
+		})
+	}
+	if got := RelErr("/anything", nil); got != "<nil>" {
+		t.Errorf("RelErr(nil) = %q; a nil error must not render as an empty diagnosis", got)
 	}
 }

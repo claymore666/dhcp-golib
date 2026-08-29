@@ -1,7 +1,14 @@
 package rings
 
 import (
+	"bytes"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -123,8 +130,8 @@ func TestAllowlistedIdentifiersExist(t *testing.T) {
 		for _, pkg := range sortedKeys(tbl) {
 			for _, id := range sortedKeys(tbl[pkg]) {
 				n++
-				if !declared(pkg, id) {
-					t.Errorf("%s.%s is allowlisted but %q declares no such exported identifier", pkg, id, pkg)
+				if ok, why := declared(pkg, id); !ok {
+					t.Errorf("%s.%s is allowlisted but %q declares no such exported identifier (%s)", pkg, id, pkg, why)
 				}
 			}
 		}
@@ -140,9 +147,27 @@ func TestAllowlistedIdentifiersExist(t *testing.T) {
 // hands a pure ring a stream, whatever it is called. It covers the whole
 // package surface, so a function added to fmt in a future Go release is
 // covered without anybody editing this file.
+//
+// MEASURED 2026-08-29 by review, and this is why the hits guard below exists:
+// with only the len(sigs) guard, neutering this regexp turned the whole lane
+// green over a LIVE ring-1 purity violation. fmt.Fprintf admitted, its
+// enumerated refusal removed, the pattern neutered, and a ring-1 file calling
+// fmt.Fprintf into a bytes.Buffer: `./verify.sh` printed VERDICT: PASS (9
+// steps) and exited 0. Ring 1 held a writer and every instrument in the
+// repository reported the tree clean.
+//
+// The trigger needs no edit to this file at all. `go doc` changing how it
+// renders a signature on a toolchain upgrade does it, which is exactly what
+// the two sibling derivations below already guarded against and this one did
+// not. A derivation that cannot say when it has stopped working reports
+// success and silence identically.
 func TestAllowlistsExcludeStreamAPIs(t *testing.T) {
 	stream := regexp.MustCompile(`\bio\.(Writer|Reader|WriteCloser|ReadCloser|ReadWriter)\b`)
-	for pkg, allowed := range PureIdents {
+	if len(PureIdents) == 0 {
+		t.Fatal("PureIdents is empty; this check would pass having judged nothing")
+	}
+	for _, pkg := range sortedKeys(PureIdents) {
+		allowed := PureIdents[pkg]
 		sigs, err := goDocSignatures(pkg)
 		if err != nil {
 			t.Fatalf("cannot read the signatures of %q: %v", pkg, err)
@@ -150,10 +175,87 @@ func TestAllowlistsExcludeStreamAPIs(t *testing.T) {
 		if len(sigs) == 0 {
 			t.Fatalf("no signatures parsed for %q; refusing rather than passing", pkg)
 		}
+		matched := map[string]bool{}
 		for name, sig := range sigs {
-			if stream.MatchString(sig) && allowed[name] {
+			if !stream.MatchString(sig) {
+				continue
+			}
+			matched[name] = true
+			if allowed[name] {
 				t.Errorf("%s.%s is allowlisted for ring 1 but its signature carries a stream: %s", pkg, name, sig)
 			}
+		}
+
+		// Per PACKAGE, not once for the loop: a pattern that still matches in
+		// fmt while having stopped matching in encoding/hex would satisfy any
+		// single counter, and hex is the package this whole derivation found.
+		if len(matched) == 0 {
+			t.Fatalf("the stream pattern matched nothing in package %q; the derivation has stopped "+
+				"working and would now pass over any identifier handing ring 1 a writer. "+
+				"%d signatures were read, so this is the pattern, not the toolchain.", pkg, len(sigs))
+		}
+
+		// The witnesses are the positive control, and they are why this is not
+		// merely a counter.
+		//
+		// MEASURED 2026-08-29: a bare `hits == 0` guard SURVIVED a mutant that
+		// moved the increment out of the match branch — every signature then
+		// counted as a hit, the guard could never fire, and the derivation was
+		// silently disabled again. A count cannot distinguish "matched the
+		// right things" from "matched everything"; naming what MUST match can.
+		//
+		// These are not policy. They are known stream APIs of the package,
+		// chosen so the assertion fails loudly if Go ever removes one, and
+		// they are checked against the pattern rather than against the
+		// allowlist.
+		for _, w := range streamWitnesses[pkg] {
+			sig, ok := sigs[w]
+			if !ok {
+				t.Fatalf("%s.%s is a stream witness but `go doc -all %s` no longer declares it. "+
+					"Either the standard library removed it or the signature reader broke; "+
+					"either way the derivation is unverified.", pkg, w, pkg)
+			}
+			// Against the PATTERN, not against the matched set built above.
+			// MEASURED 2026-08-29: a mutant that recorded every signature as a
+			// match defeated both the emptiness guard AND a witness check
+			// written against that set — everything looked matched, including
+			// the witnesses. A positive control has to test the instrument,
+			// not the instrument's bookkeeping.
+			if !stream.MatchString(sig) {
+				t.Errorf("the stream pattern does not match %s.%s (%q), which takes or returns a "+
+					"stream. The derivation is no longer detecting what it was written to detect, "+
+					"so its silence about the rest of %q means nothing.", pkg, w, sig, pkg)
+			}
+		}
+	}
+}
+
+// streamWitnesses names, per restricted package, identifiers whose signatures
+// MUST match the stream pattern. Emptying this map, or leaving a package out
+// of it, is a refusal rather than a pass — a positive control with no subject
+// is the shape it exists to prevent.
+var streamWitnesses = map[string][]string{
+	"fmt":          {"Fprintf", "Fprintln", "Fscanf"},
+	"encoding/hex": {"Dumper", "NewEncoder", "NewDecoder"},
+}
+
+// TestStreamWitnessesCoverEveryRestrictedPackage keeps the positive control
+// from quietly narrowing. A package given a PureIdents restriction but no
+// witness would have its stream derivation running unobserved.
+func TestStreamWitnessesCoverEveryRestrictedPackage(t *testing.T) {
+	if len(PureIdents) == 0 {
+		t.Fatal("PureIdents is empty; this check would pass having judged nothing")
+	}
+	for _, pkg := range sortedKeys(PureIdents) {
+		if len(streamWitnesses[pkg]) == 0 {
+			t.Errorf("%q carries a PureIdents restriction but no stream witness, so nothing "+
+				"proves the stream derivation still fires for it.", pkg)
+		}
+	}
+	for pkg := range streamWitnesses {
+		if _, ok := PureIdents[pkg]; !ok {
+			t.Errorf("%q has stream witnesses but no PureIdents entry; the witness is checked "+
+				"against a package the derivation never visits.", pkg)
 		}
 	}
 }
@@ -248,8 +350,24 @@ var typeRe = regexp.MustCompile(`^type ([A-Z]\w*)\b`)
 // saw 3 of the 6 waiting primitives while its own non-empty guard stayed
 // satisfied by the 3 it did see. Under-coverage hiding behind a passing check
 // is the defect this whole file exists to remove.
-func goDocSignatures(pkg string) (map[string]string, error) {
+// goDocAll runs `go doc -all` once per package. Cached because the exactness
+// half of declared() asks for it per identifier and there are ~100 of them.
+var goDocAllCache = map[string][]byte{}
+
+func goDocAll(pkg string) ([]byte, error) {
+	if out, ok := goDocAllCache[pkg]; ok {
+		return out, nil
+	}
 	out, err := exec.Command("go", "doc", "-all", pkg).Output()
+	if err != nil {
+		return nil, err
+	}
+	goDocAllCache[pkg] = out
+	return out, nil
+}
+
+func goDocSignatures(pkg string) (map[string]string, error) {
+	out, err := goDocAll(pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -269,13 +387,41 @@ func goDocSignatures(pkg string) (map[string]string, error) {
 	return sigs, nil
 }
 
-// declared asks the toolchain whether pkg.ident exists, rather than parsing a
-// listing for it. `go doc pkg.Ident` exits non-zero when it does not resolve,
-// which is an exact oracle with no format to drift: constants inside a grouped
-// const block, methods, types and functions all answer the same way. Measured
-// at ~25ms per probe, so the whole allowlist costs a couple of seconds.
-func declared(pkg, ident string) bool {
-	return exec.Command("go", "doc", pkg+"."+ident).Run() == nil
+// declared asks whether pkg declares exactly this exported identifier.
+//
+// Two signals, because each covers the other's blind spot:
+//
+//  1. `go doc pkg.Ident` exits non-zero when it does not resolve. It reaches
+//     constants inside a grouped const block, methods, types and functions
+//     alike, which no single listing pattern does.
+//  2. The spelling must appear verbatim in `go doc -all pkg`.
+//
+// (1) alone is what this file used, and it was documented as "an exact oracle
+// with no format to drift". MEASURED 2026-08-29 by review: it is
+// CASE-INSENSITIVE. `go doc time.now`, `go doc fmt.errorf` and
+// `go doc encoding/hex.dump` all resolve. So `"Kitchen"` mistyped as
+// `"kitchen"` survived the whole suite, while `"Kitchenz"` died — a
+// case-only typo was inert rather than caught, which is dead weight of
+// exactly the kind this check exists to remove.
+//
+// (2) alone would accept an identifier the standard library has REMOVED but
+// still mentions in a doc comment, which is the drift (1) is good at.
+//
+// MEASURED 2026-08-29: (2) returns a hit for all 102 currently allowlisted
+// identifiers, 0 misses, so it is implementable today with no false positive.
+func declared(pkg, ident string) (bool, string) {
+	if exec.Command("go", "doc", pkg+"."+ident).Run() != nil {
+		return false, "does not resolve"
+	}
+	out, err := goDocAll(pkg)
+	if err != nil {
+		return false, "go doc -all failed: " + err.Error()
+	}
+	if !regexp.MustCompile(`\b` + regexp.QuoteMeta(ident) + `\b`).Match(out) {
+		return false, "resolves only because `go doc` is case-insensitive; " +
+			"the spelling appears nowhere in the package"
+	}
+	return true, ""
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -285,4 +431,123 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestNarrowingCoverageIsMeasured reports how much of the allowlist any test
+// file names at all. It asserts no floor; it exists so the bound in
+// docs/gates.md is a number a run prints rather than a sentence that rots.
+//
+// Why the bound needs one. The preservation controls come in two kinds
+// (t1/policy_driven_test.go, t2/policy_driven_test.go): generated ones, which
+// build their fixture FROM the tables and therefore cannot see a table being
+// narrowed, and hand-written ones, which can. So an identifier no hand-written
+// fixture names can be deleted from the allowlist with nothing going red.
+//
+// MEASURED 2026-08-29, and confirmed independently by review: 16 of 102
+// allowlisted identifiers are named in any _test.go file — encoding/hex 1/11,
+// fmt 1/14, context 2/12, time 12/65. Review measured 4 of 8 identifier
+// narrowings on TODAY's tables surviving the whole suite (fmt.Sprintf,
+// hex.Dump, time.Kitchen, context.WithValue), against 4 of 4 PACKAGE
+// narrowings dying.
+//
+// That escape is open NOW. Three sentences in this repository used to say a
+// package admitted "later" was unprotected, which read as a hypothesis about
+// the future; it is a description of the present.
+//
+// Why it is tolerated at M0 rather than closed: an over-narrow allowlist makes
+// the gate REFUSE honest code, loudly, at the point of use, naming the
+// identifier. It is a self-announcing failure, unlike a widening, which is
+// silent — and the widening direction is fully covered. Closing it by naming
+// all 102 identifiers in a hand-written fixture would rebuild the generated
+// control by hand and lie about what M1 needs.
+//
+// The corpus is the test files with COMMENTS STRIPPED, and that is not a
+// detail. MEASURED 2026-08-29: scanning the raw bytes reported 20/102 rather
+// than 16/102, because this very docstring names fmt.Sprintf, hex.Dump,
+// time.Kitchen and context.WithValue while explaining that they are NOT
+// covered. A measurement that reads its own prose as evidence is the defect
+// this file exists to remove, committed by the check that reports it.
+//
+// What this CANNOT see: it is a literal scan for "pkg.Ident", so a fixture
+// naming an identifier through any other construction is invisible to it, and
+// it counts appearances in VIOLATE-expecting fixtures too — so the number it
+// prints is an UPPER bound on real preservation coverage, not the coverage.
+func TestNarrowingCoverageIsMeasured(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("cannot locate the module root from this package, so coverage is unmeasurable: %v", err)
+	}
+
+	var corpus []byte
+	files := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if name := d.Name(); name == ".git" || name == "testdata" || name == "vendor" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := codeWithoutComments(path)
+		if err != nil {
+			return err
+		}
+		files++
+		corpus = append(corpus, b...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the tree for test files failed, so coverage is unmeasurable: %v", err)
+	}
+	// A walk that finds nothing would report 0/102 as though it were a
+	// measurement of the fixtures rather than of the walk.
+	if files == 0 {
+		t.Fatal("no _test.go file was found; this check would report zero coverage having measured nothing")
+	}
+
+	total, named := 0, 0
+	for _, tbl := range []map[string]map[string]bool{PureIdents, TestIdents} {
+		for _, pkg := range sortedKeys(tbl) {
+			local := pkg[strings.LastIndex(pkg, "/")+1:]
+			n, seen := 0, 0
+			for _, id := range sortedKeys(tbl[pkg]) {
+				n++
+				if regexp.MustCompile(`\b` + regexp.QuoteMeta(local+"."+id) + `\b`).Match(corpus) {
+					seen++
+				}
+			}
+			total += n
+			named += seen
+			t.Logf("%-14s %2d/%2d allowlisted identifiers named in a test file", pkg, seen, n)
+		}
+	}
+	if total == 0 {
+		t.Fatal("the allowlists are empty; this check would report full coverage having measured nothing")
+	}
+	t.Logf("NARROWING COVERAGE (upper bound): %d/%d named across %d test files; %d are named nowhere "+
+		"and could be removed from the allowlist with nothing going red", named, total, files, total-named)
+}
+
+// codeWithoutComments renders a Go file with its comments removed, so a
+// measurement over test sources cannot count prose about an identifier as a
+// use of it. Fixtures held in raw string literals are preserved, because those
+// are code as far as the gates are concerned.
+func codeWithoutComments(path string) ([]byte, error) {
+	fset := token.NewFileSet()
+	// No parser.ParseComments: comments are then not attached to the AST at
+	// all, so the printer cannot reintroduce them.
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, fset, f); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
