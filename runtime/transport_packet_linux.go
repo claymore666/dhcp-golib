@@ -98,12 +98,20 @@ type TransportStats struct {
 	Reads   uint64
 	Skipped uint64
 	Sends   uint64
-	// Uncompleted counts accepted datagrams whose UDP checksum the sending
-	// kernel had not completed (Linux CHECKSUM_PARTIAL), which means the
-	// sender is on this host. Absent counts datagrams that carried no
-	// checksum at all (RFC 768's zero). Neither payload was verified —
-	// acceptUDPChecksum says why that is the only workable answer, and
-	// counting them is what keeps it from being a silent one.
+	// Uncompleted counts accepted datagrams whose UDP checksum field held the
+	// pseudo-header sum, which is what a Linux sender leaves when it defers
+	// the sum to hardware (CHECKSUM_PARTIAL). Absent counts datagrams that
+	// carried no checksum at all (RFC 768's zero). Neither payload was
+	// verified — acceptUDPChecksum says why that is the only workable answer,
+	// and counting them is what keeps it from being a silent one.
+	//
+	// Neither counter says WHERE the sender is. This comment used to claim
+	// Uncompleted meant a sender on this host; the transport measures a field
+	// value and nothing else, and a counter that reports a locality it never
+	// measured is precisely the failure this project's counters exist to
+	// avoid. The expectation runs the other way, and only as an expectation:
+	// a client leasing from a server on this host will show Uncompleted on
+	// every reply.
 	Uncompleted uint64
 	Absent      uint64
 	// Dropped counts DHCP replies that parsed and were then thrown away

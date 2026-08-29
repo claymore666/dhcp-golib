@@ -84,16 +84,28 @@ A reply from a server on the SAME HOST arrives with its UDP checksum **not
 computed**. Linux writes the folded pseudo-header sum into the field and leaves
 completing it to hardware, so an AF_PACKET reader on the far side of a veth
 pair sees `CHECKSUM_PARTIAL` bytes. MEASURED 2026-08-29 against dnsmasq 2.91:
-the field held `0x24f6` where the completed value was `0x0074`, and `0x24f6` is
-exactly the pseudo-header sum for that source, destination and length.
+the captured OFFER held `0x24f6` in a field whose completed value is `0xe58c`.
+Both are fixtures in `runtime/ipudp_test.go`, asserted against the captured
+bytes. `0x24f6` is the pseudo-header sum for that source, destination and
+length and nothing else — flip a payload octet and the completed checksum
+moves while the field does not, which is a test, and is exactly why the field
+says nothing about the payload.
 
 A client that verifies the checksum strictly therefore never sends a REQUEST —
 which is precisely what the first run of the dnsmasq test did, for two minutes,
 retransmitting DISCOVER while the server answered every one of them. The parser
 recognises that exact value, reports the payload as unverified, and the
-transport counts it. **The bound:** a datagram whose payload is corrupt and
-whose checksum field happens to equal the pseudo-header sum is accepted, and
-nothing at this layer can tell that from a kernel that has not finished the sum.
+transport counts it — though the counter says only what a field held, never
+where the sender was.
+
+**The bound, both halves of it:** neither an uncompleted checksum nor RFC 768's
+zero checks the payload, so a corrupt payload is accepted under both — more
+cheaply under the zero. The accepting value in the uncompleted case is not a
+lucky collision either: it is a pure function of source, destination and UDP
+length, all read from the frame itself, so anyone who can put a frame on the
+link can compute it. Closing it needs `PACKET_AUXDATA`, whose
+`TP_STATUS_CSUMNOTREADY` states the deferral as a fact instead of leaving us to
+infer it — new I/O, and a later milestone.
 
 ## Verifying
 
@@ -104,7 +116,9 @@ FAIL. A step that cannot be measured is a FAIL, never a skip.
 
 It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
-a wall-clock ceiling, and its own oracle.
+a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
+that never returns — it is computed after `go test` comes back), and its own
+oracle.
 
 "Every check" is bounded, and the bound is worth stating because it is the
 shape of the failure this repository keeps finding: **a check runs only if
@@ -114,6 +128,10 @@ MEASURED 2026-08-29, deleting one step at a time from a copy and running
 `scripts/test-verify.sh` against it: eight of the nine steps redden at least
 one oracle scenario — `gofmt` 4, the gate roster 3, the two gates 6, the unit
 suite refuses the run outright, `shellcheck` 2, `build` and `vet` 1 each.
+Those counts were taken against the 19-scenario oracle, before `hang-bounded`
+was added later the same day. They are LOWER bounds now rather than equalities:
+a scenario can only add a detection, never remove one, and nobody re-ran the
+nine deletions.
 
 `vet` had no witness until this measurement was taken; it passed 18 of 18 with
 the step deleted, and the `vet-violation` scenario exists because of that.

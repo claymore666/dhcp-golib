@@ -431,6 +431,47 @@ func TestParseRefusesAUDPLengthPastTheIPTotalLength(t *testing.T) {
 	}
 }
 
+// TestThePseudoHeaderSumIsBlindToThePayload is the property the whole
+// acceptance rests on, driven rather than asserted in prose: the value that
+// gets an uncompleted datagram through depends on the source, the destination
+// and the length, and on nothing else. Flip a payload octet and the completed
+// checksum moves while the accepting value does not.
+//
+// It is also the check that would have caught a wrong number in a comment:
+// both constants are recomputed here from the fixture's own bytes.
+func TestThePseudoHeaderSumIsBlindToThePayload(t *testing.T) {
+	frame := realOffer(t)
+	var src, dst [4]byte
+	copy(src[:], frame[12:16])
+	copy(dst[:], frame[16:20])
+
+	completed := func(f []byte) uint16 {
+		u := append([]byte(nil), f[20:]...)
+		binary.BigEndian.PutUint16(u[6:8], 0)
+		return udpChecksum(src, dst, u)
+	}
+
+	if got := completed(frame); got != realOfferCompleted {
+		t.Fatalf("completed checksum = %#04x, want %#04x", got, realOfferCompleted)
+	}
+
+	flipped := realOffer(t)
+	flipped[120] ^= 0xFF
+	moved := completed(flipped)
+	if moved == realOfferCompleted {
+		t.Fatal("a flipped payload octet left the completed checksum alone; the fixture cannot show the difference")
+	}
+
+	// The accepting value, over both frames, is the same and is the field.
+	for _, f := range [][]byte{frame, flipped} {
+		if got := pseudoHeaderSum(src, dst, len(f[20:])); got != realOfferField {
+			t.Fatalf("pseudo-header sum = %#04x, want %#04x", got, realOfferField)
+		}
+	}
+	t.Logf("completed checksum moved %#04x -> %#04x while the accepting value stayed %#04x",
+		realOfferCompleted, moved, realOfferField)
+}
+
 // TestParseStillRefusesAWrongChecksum is the preservation control for the
 // case above. Accepting an uncompleted checksum must not become accepting any
 // checksum: a field that is neither zero, nor correct, nor the pseudo-header
@@ -457,20 +498,42 @@ func TestParseStillRefusesAWrongChecksum(t *testing.T) {
 	}
 }
 
-// TestPartialChecksumAcceptsACorruptPayload is the BOUND, pinned as a case
-// rather than left in a comment. A datagram whose payload is corrupt and whose
-// checksum field holds the pseudo-header sum IS accepted, because those bytes
-// are indistinguishable from a kernel that has not finished the sum. This test
-// asserts the wrong answer on purpose; it goes red if anyone ever narrows the
-// acceptance, which is the moment to come back and read it.
-func TestPartialChecksumAcceptsACorruptPayload(t *testing.T) {
-	frame := realOffer(t)
-	frame[100] ^= 0xFF
-	dg, err := ParseIPv4UDP(frame)
-	if err != nil {
-		t.Fatalf("the bound has moved: %v", err)
-	}
-	if dg.Checksum != ChecksumUncompleted {
-		t.Fatalf("parsed as %s, want uncompleted", dg.Checksum)
-	}
+// TestAnUncheckedChecksumAcceptsACorruptPayload is the BOUND, pinned as a case
+// rather than left in a comment — and it covers BOTH unchecked states, because
+// stating only the uncompleted half was itself a half-true bound.
+//
+// These tests assert the wrong answer on purpose. They go red if anyone ever
+// narrows the acceptance, which is the moment to come back and read this.
+func TestAnUncheckedChecksumAcceptsACorruptPayload(t *testing.T) {
+	// The uncompleted case: the field holds the pseudo-header sum, which is a
+	// pure function of source, destination and UDP length — every one of them
+	// in the frame — so it is CONSTRUCTIBLE, not a collision somebody has to
+	// get lucky with.
+	t.Run("uncompleted", func(t *testing.T) {
+		frame := realOffer(t)
+		frame[100] ^= 0xFF
+		dg, err := ParseIPv4UDP(frame)
+		if err != nil {
+			t.Fatalf("the bound has moved: %v", err)
+		}
+		if dg.Checksum != ChecksumUncompleted {
+			t.Fatalf("parsed as %s, want uncompleted", dg.Checksum)
+		}
+	})
+
+	// And the cheaper half: RFC 768's zero needs no computation at all. A
+	// reader who takes the uncompleted case as THE bound would think the
+	// exposure is arithmetic; it is a constant.
+	t.Run("absent", func(t *testing.T) {
+		frame := realOffer(t)
+		frame[100] ^= 0xFF
+		binary.BigEndian.PutUint16(frame[26:28], 0)
+		dg, err := ParseIPv4UDP(frame)
+		if err != nil {
+			t.Fatalf("the bound has moved: %v", err)
+		}
+		if dg.Checksum != ChecksumAbsent {
+			t.Fatalf("parsed as %s, want absent", dg.Checksum)
+		}
+	})
 }

@@ -180,40 +180,71 @@ func transportDropsWhenStalled(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tr.Close() })
 
-	// Nothing ever reads tr.Received(): this test IS the stalled consumer.
+	// Nothing consumes tr.Received() DURING a round: this test is the stalled
+	// consumer. It drains between rounds so the next round starts from an
+	// empty channel.
+	//
+	// It runs the cycle 40 times because one cycle is one sample of a race.
+	// The bumped-on-arrival mutant — the shape that produced the flake this
+	// test was written after — is caught by the invariant assertion below,
+	// but only when the last frame's classification loses the race.
+	//
+	// The count is MEASURED against that mutant, not chosen: 16 of 30 at one
+	// cycle, 10 of 12 at eight, 12 of 12 at forty. Eight was picked first on
+	// the arithmetic of independent trials and the arithmetic was wrong — the
+	// cycles are correlated, because a warm reader wins the race more often
+	// than a cold one. Forty cycles cost about a second. Detection is a rate,
+	// not a guarantee: this catches the mutant, it does not prove it cannot
+	// slip through.
 	const sent = inboundBuffer + 8
-	injectReplies(t, testServerIf, sent)
+	const rounds = 40
+	var consumed uint64
 
-	// The barrier is Reads, spun on rather than slept on. It is exact because
-	// the transport bumps it only after the frame has been classified: an
-	// earlier version of this test spun on it while it was bumped on ARRIVAL
-	// and read Dropped as 7 of 8, one instant too early. MEASURED 2026-08-29
-	// by the mutation harness, whose control-before check caught the flake on
-	// the fourth run of a test that had passed twice. If a frame never arrives
-	// the test hangs into go test's own timeout instead of passing early on a
-	// guess. No duration appears in this file — see the T2 gate.
-	for tr.Stats().Reads < sent {
-		runtime.Gosched()
-	}
+	for round := 1; round <= rounds; round++ {
+		injectReplies(t, testServerIf, sent)
 
-	st := tr.Stats()
-	if st.Reads != sent {
-		t.Fatalf("reads = %d, want %d", st.Reads, sent)
-	}
-	// The invariant Reads bumps last in order to make true, asserted rather
-	// than assumed: every frame read was skipped, dropped or queued.
-	if got := st.Skipped + st.Dropped + uint64(len(tr.Received())); got != st.Reads {
-		t.Fatalf("%d frames accounted for, %d read", got, st.Reads)
-	}
-	if st.Skipped != 0 {
-		t.Fatalf("skipped = %d, want 0: every frame was a well-formed reply to the client port", st.Skipped)
-	}
-	if want := uint64(sent - inboundBuffer); st.Dropped != want {
-		t.Fatalf("dropped = %d, want %d (%d sent, %d fit in the channel)",
-			st.Dropped, want, sent, inboundBuffer)
-	}
-	if got := len(tr.Received()); got != inboundBuffer {
-		t.Fatalf("%d replies are queued, want the channel full at %d", got, inboundBuffer)
+		// The barrier is Reads, spun on rather than slept on. It is exact
+		// because the transport bumps it only after the frame has been
+		// classified: an earlier version of this test span on it while it was
+		// bumped on ARRIVAL and read Dropped as 7 of 8, one instant too early.
+		// MEASURED 2026-08-29 by the mutation harness, whose control-before
+		// check caught the flake on the fourth run of a test that had passed
+		// twice. If a frame never arrives the test hangs into go test's own
+		// timeout instead of passing early on a guess. No duration appears in
+		// this file — see the T2 gate.
+		want := uint64(round) * uint64(sent)
+		for tr.Stats().Reads < want {
+			runtime.Gosched()
+		}
+
+		st := tr.Stats()
+		if st.Reads != want {
+			t.Fatalf("round %d: reads = %d, want %d", round, st.Reads, want)
+		}
+		// The invariant Reads bumps last in order to make true, asserted
+		// rather than assumed: every frame read was skipped, dropped, queued
+		// or already taken.
+		if got := st.Skipped + st.Dropped + consumed + uint64(len(tr.Received())); got != st.Reads {
+			t.Fatalf("round %d: %d frames accounted for, %d read", round, got, st.Reads)
+		}
+		if st.Skipped != 0 {
+			t.Fatalf("round %d: skipped = %d, want 0: every frame was a well-formed reply to the client port",
+				round, st.Skipped)
+		}
+		if wantDropped := uint64(round) * uint64(sent-inboundBuffer); st.Dropped != wantDropped {
+			t.Fatalf("round %d: dropped = %d, want %d (%d sent per round, %d fit in the channel)",
+				round, st.Dropped, wantDropped, sent, inboundBuffer)
+		}
+		if got := len(tr.Received()); got != inboundBuffer {
+			t.Fatalf("round %d: %d replies are queued, want the channel full at %d", round, got, inboundBuffer)
+		}
+
+		// Drain, so the next round measures a fresh fill rather than a channel
+		// that was already full.
+		for len(tr.Received()) > 0 {
+			<-tr.Received()
+			consumed++
+		}
 	}
 }
 

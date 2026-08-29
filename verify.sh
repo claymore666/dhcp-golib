@@ -48,6 +48,22 @@ done
 # has drifted into waiting, not a single test that waits a little.
 SUITE_CEILING_SECONDS=60
 
+# The hang bound, in seconds, passed to `go test -timeout`.
+#
+# The ceiling above CANNOT bound a hang, and that is not a subtlety: it is
+# computed from a clock read AFTER `go test` returns, so a test that never
+# returns never reaches the comparison. Without this line the only bound is
+# Go's own default of ten minutes per test binary — set nowhere in this
+# repository, ten times the ceiling, and removable through GOFLAGS by anyone
+# who never reads this file.
+#
+# It MUST stay strictly greater than the ceiling, and comfortably so: a suite
+# that is slow but finishing should be diagnosed by the ceiling, which says
+# something is waiting, rather than killed by this, which says only that it did
+# not finish. Nothing enforces that ordering — both numbers are printed in the
+# unit-suite row of every run, which is the whole of what checks it.
+SUITE_TIMEOUT_SECONDS=180
+
 # The gates that MUST run. Enumerated here, and cross-checked below against the
 # gates that actually exist, in BOTH directions: a required gate that has been
 # deleted is a FAIL, and a gate present in the tree but absent from this list
@@ -238,7 +254,7 @@ done
 # measured on this tree.
 suite_start=$(date +%s)
 rc=0
-suite_out="$(go test -race -count=1 ./... 2>&1)" || rc=$?
+suite_out="$(go test -race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s" ./... 2>&1)" || rc=$?
 suite_elapsed=$(($(date +%s) - suite_start))
 if [ "$rc" -ne 0 ]; then
 	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"
@@ -254,7 +270,7 @@ elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
 	record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
 	echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
 else
-	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s"
+	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, hang timeout ${SUITE_TIMEOUT_SECONDS}s"
 fi
 
 # ------------------------------------------------------------- self-oracle --

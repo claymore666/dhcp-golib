@@ -55,6 +55,7 @@ SCENARIOS=(
 	unlinted-script
 	unlinted-shebang-script
 	oracle-is-invoked
+	hang-bounded
 )
 
 # ------------------------------------------------------------------ helpers --
@@ -298,7 +299,7 @@ sc_test_cache() {
 	# cache, and a cached PASS is a result that was not measured on this tree.
 	# The first run must still pass — otherwise the second run's failure could
 	# be anything.
-	edit "$d/verify.sh" 'go test -race -count=1 ./...' 'go test -race ./...'
+	edit "$d/verify.sh" 'go test -race -count=1 -timeout' 'go test -race -timeout'
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "the first run of the -count=1-less copy did not pass: exit $RC"
 	run_verify "$d"
@@ -352,6 +353,36 @@ sc_ceiling_control() {
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "a 3s suite failed under the shipped ceiling: exit $RC — the ceiling scenario is measuring something else"
 	[ "$(row unit-suite)" = PASS ] || note "unit-suite did not pass a 3s suite: $(row unit-suite)"
+}
+
+sc_hang_bounded() {
+	# Drives the -timeout on the suite. A test that never returns cannot be
+	# caught by the wall-clock ceiling — the ceiling is computed after go test
+	# returns — so without the flag this scenario would hang the oracle, which
+	# is exactly the failure it exists to make impossible.
+	#
+	# The hang is a receive on a channel with no sender: no time and no context
+	# identifier anywhere, so T2 cannot see it, which is asserted below.
+	local d="$1"
+	copy_tree "$d"
+	cat >"$d/proto/hang_test.go" <<'GO'
+package proto
+
+import "testing"
+
+func TestHangs(t *testing.T) {
+	<-make(chan struct{})
+}
+GO
+	# Only ONE variable moves: the ceiling stays where it ships, so a ceiling
+	# failure cannot be what this scenario measures.
+	edit "$d/verify.sh" 'SUITE_TIMEOUT_SECONDS=180' 'SUITE_TIMEOUT_SECONDS=15'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a suite containing a test that never returns passed"
+	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the hang: $(row unit-suite)"
+	printf '%s
+' "$OUT" | grep -q 'test timed out' || note "the failure does not name the timeout; something else failed this run"
+	[ "$(row t2)" = PASS ] || note "the planted hang tripped T2; the timeout is not what failed this run"
 }
 
 sc_gate_panic() {

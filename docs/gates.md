@@ -154,6 +154,19 @@ they do not wait on it, and T2's subject is waiting.
    `time.Sleep(50 * time.Millisecond)` in a test did not move the suite from
    1s against a 60s ceiling. The ceiling catches a suite that has drifted into
    waiting; it does not catch one test that waits a little.
+3a. **And the ceiling cannot bound a HANG at all.** It is computed from a clock
+   read after `go test` returns, so a test that never returns never reaches the
+   comparison — the check sits behind a branch the failure it would name can
+   never take. That was written here as though the ceiling covered blocking
+   tests; it does not, and never did. What bounds a hang is
+   `SUITE_TIMEOUT_SECONDS` on the `go test` line, added 2026-08-29 and driven
+   by the `hang-bounded` oracle scenario. Two bounds on the bound itself:
+   running `go test` by hand outside `verify.sh` gets Go's default of ten
+   minutes per test binary instead, settable from the environment; and the
+   absence check for this one shows up as the ORACLE hanging rather than as a
+   red row — MEASURED 2026-08-29, the scenario returns in seconds with the flag
+   and had to be killed at 100s without it. Loud to a person watching, silent
+   to any caller that does not impose a timeout of its own.
 4. **A wait inside a helper in non-test code**, called from a test. T2's domain
    is `_test.go` files. That is deliberate — ring 3 has a real clock in it —
    and it means a test can wait by delegating.
@@ -162,8 +175,10 @@ they do not wait on it, and T2's subject is waiting.
    protocol test until M1"; M1 landed on 2026-08-29 and it now checks every
    test file in `wire`, `proto`, `lease` and `runtime`. Two of those tests
    BLOCK — one on a real dnsmasq's log line, one spinning on a counter with
-   `runtime.Gosched` — and T2 sees neither, by bullets (1) and (4). What
-   bounds them is the suite ceiling, and only at the threshold, per (3).
+   `runtime.Gosched` — and T2 sees neither, by bullets (1) and (4). What bounds
+   them is the `go test -timeout` in `verify.sh`, per (3a). It is NOT the suite
+   ceiling: this bullet said the ceiling and the ceiling is unreachable for
+   exactly the tests it was claiming to cover.
 6. **Files under `testdata/`.** Not walked, because the go tool does not
    compile them, so a file there is not part of any test binary. It is also
    where the gates' own deliberate violations live.

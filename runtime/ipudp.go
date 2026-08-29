@@ -105,10 +105,25 @@ const (
 	// ChecksumAbsent: the field was all zeroes. RFC 768 reserves that value
 	// for "no checksum computed", and it is legal over IPv4. A server that
 	// does this is telling you it did not check.
+	//
+	// NOT TRANSFERABLE TO IPv6. RFC 8200 section 8.1 requires an IPv6
+	// receiver to DISCARD a UDP packet with a zero checksum, so copying this
+	// acceptance into a v6 path unchanged is a conformance break, not a
+	// widening. Narrow exceptions exist for tunnelled traffic. Whoever writes
+	// v6 reads that section itself — a summarised RFC has already been
+	// observed in this project asserting the inverse of its own MUST with the
+	// section number intact.
 	ChecksumAbsent
-	// ChecksumUncompleted: the field held the pseudo-header sum alone. That is
-	// Linux CHECKSUM_PARTIAL, and it means the SENDER is on this host: see
-	// acceptUDPChecksum.
+	// ChecksumUncompleted: the field held the pseudo-header sum alone, which
+	// is what Linux leaves in a datagram whose checksum it has deferred to
+	// hardware (CHECKSUM_PARTIAL). See acceptUDPChecksum.
+	//
+	// It does NOT say the sender is on this host, and this comment used to.
+	// All this code sees is a field holding a particular value; the locality
+	// is an INFERENCE about the commonest producer of that value, and the
+	// inference runs one way only. Every observation of it so far has been a
+	// sender on the same host — that is a measurement about our fixtures, not
+	// a property of the state.
 	ChecksumUncompleted
 )
 
@@ -227,18 +242,34 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 //     An AF_PACKET reader on the far side of a veth pair, or on any local
 //     delivery path, sees the frame BEFORE anything completes it.
 //
-//     MEASURED 2026-08-29 against dnsmasq 2.91 over a veth pair: every OFFER
-//     and ACK arrived with checksum 0x24f6 where the completed value was
-//     0x0074, and 0x24f6 is exactly the folded pseudo-header sum for that
-//     source, destination and length. The captured frame is a fixture in
-//     ipudp_test.go. Refusing this case does not produce a stricter client,
-//     it produces a client that cannot lease from a server on the same host.
+//     MEASURED 2026-08-29 against dnsmasq 2.91 over a veth pair: the captured
+//     OFFER carried 0x24f6 in the field where its completed checksum is
+//     0xe58c. Both numbers are in ipudp_test.go as realOfferField and
+//     realOfferCompleted, asserted against those bytes, and 0x24f6 is the
+//     folded pseudo-header sum for that source, destination and length.
 //
-// Case 3 carries NO information about the payload, so it is exactly as trusted
-// as case 1 — which is why it is reported rather than hidden. THE BOUND: a
-// datagram whose payload is corrupt and whose checksum field happens to equal
-// the pseudo-header sum is accepted. Nothing here can distinguish that from a
-// kernel that has not finished the sum yet; the two are the same bytes.
+//     This paragraph used to give the completed value as 0x0074 — a number
+//     computed from a hand-reassembled copy of an EARLIER capture, sitting one
+//     line above a pointer to the fixture that contradicts it. It travelled
+//     two hops before anyone recomputed it. Cite the fixture, never a working
+//     note: the fixture is checked on every run and the note is checked never.
+//
+//     Refusing this case does not produce a stricter client, it produces a
+//     client that cannot lease from a server on the same host.
+//
+// THE BOUND, and it covers case 1 exactly as much as case 3: neither checks
+// the payload, so a corrupt payload is accepted in both — and more cheaply in
+// case 1, where the accepting value is the constant zero. Case 3 is not a
+// lucky collision either: the accepting value is a pure function of the source
+// address, destination address and UDP length, every one of them read from the
+// frame itself, so anyone who can put a frame on the link can compute it.
+// Read both states as "unchecked", never as "probably fine".
+//
+// What would actually close this is PACKET_AUXDATA, whose TP_STATUS_CSUMNOTREADY
+// says outright that the kernel deferred the sum — turning the inference above
+// into a measurement, and letting a frame WITHOUT that flag be held to a
+// correct checksum. That is new I/O with its own failure modes and it belongs
+// to a milestone, not to a comment.
 func acceptUDPChecksum(src, dst [4]byte, u []byte) (state ChecksumState, ok bool) {
 	got := binary.BigEndian.Uint16(u[6:8])
 	switch {
