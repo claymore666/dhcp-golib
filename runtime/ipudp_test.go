@@ -552,10 +552,9 @@ func TestAnUncheckedChecksumAcceptsACorruptPayload(t *testing.T) {
 // It is constructed rather than asserted to be rare: choosing the field and
 // then solving for one 16-bit payload word gives a witness in one pass.
 //
-// The zero arm overlaps too, and the first draft of this comment claimed it
-// did not — "a zero field cannot be a correct checksum", which
-// TestUDPChecksumNeverTransmitsZero refutes two hundred lines up by
-// constructing a datagram whose real checksum is zero. A frame carrying that
+// The zero arm overlaps too. TestUDPChecksumNeverTransmitsZero, two hundred
+// lines up, constructs a datagram whose real checksum is zero. A frame
+// carrying that
 // datagram with a zero field satisfies the zero arm AND the verify arm, and
 // must be reported Absent: RFC 768 reserves zero for "no checksum computed",
 // so the receiver must not treat it as checked. The zero subtest below drives

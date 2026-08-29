@@ -96,7 +96,7 @@ type TransportStats struct {
 	// acceptUDPChecksum — and counting them is what keeps that from being
 	// silent.
 	//
-	// Neither says WHERE the sender is; this said so until 2026-08-29. The
+	// Neither says WHERE the sender is. The
 	// expectation runs the other way and only as an expectation: a client
 	// leasing from a server on this host shows Uncompleted on every reply.
 	Uncompleted uint64

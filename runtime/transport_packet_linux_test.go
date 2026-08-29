@@ -30,7 +30,7 @@ func TestPacketTransportOnARealLink(t *testing.T) {
 		transportOnARealLink(t)
 		return
 	}
-	reexecInNamespaces(t, "TestPacketTransportOnARealLink")
+	reexecInNamespaces(t)
 }
 
 func transportOnARealLink(t *testing.T) {
@@ -166,7 +166,7 @@ func TestPacketTransportDropsWhenTheConsumerStalls(t *testing.T) {
 		transportDropsWhenStalled(t)
 		return
 	}
-	reexecInNamespaces(t, "TestPacketTransportDropsWhenTheConsumerStalls")
+	reexecInNamespaces(t)
 }
 
 func transportDropsWhenStalled(t *testing.T) {

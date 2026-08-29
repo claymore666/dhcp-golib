@@ -18,11 +18,10 @@ func flatten(s string) string {
 // record something no test can execute, so that deleting one goes red instead
 // of going unnoticed.
 //
-// It exists because that failure happened. The 2026-08-29 comment sweep
-// deleted the operator guidance below as a restatement; nothing failed, and it
-// was found only by a reviewer reading the diff. The comment rule says a
-// decision or an unexecutable bound stays — this is the observer that rule did
-// not have.
+// The comment rule says a decision or an unexecutable bound stays; nothing
+// executes that rule, so a sweep can delete one and every check stays green.
+// This is the observer that rule did not have. Each entry's why field says
+// what is lost if the sentence goes.
 //
 // BOUND, and it is a real one: this pins the TEXT, not its truth. It cannot
 // tell a correct sentence from a wrong one, and a legitimate rewording makes
@@ -56,6 +55,18 @@ func TestLoadBearingProseIsStillPresent(t *testing.T) {
 			want: "a summarised RFC has already been observed",
 			why:  "read the section, not a summary of it. Recorded after a summarised RFC 1122 section 4.1.3.4 was observed asserting the inverse of that section's own MUST with the number intact.",
 		},
+	}
+
+	// The same refusal the citations row carries, for the same reason: a
+	// universal over an empty list passes having measured nothing, and this
+	// list is the kind that shrinks — every entry in it is a sentence somebody
+	// already tried to delete once.
+	//
+	// BOUND: refusing at zero cannot see the list going from four entries to
+	// one, and nothing can, short of a count somebody has to maintain. Nor can
+	// anything see this file itself being deleted, which is true of every test.
+	if len(cases) == 0 {
+		t.Fatal("the pin list is empty, so this test asserts nothing; a list that measures no sentence is not a passing list")
 	}
 
 	for _, c := range cases {

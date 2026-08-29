@@ -337,8 +337,9 @@ to be typed into the invocation you are reading.
 ### Two steps added 2026-08-29, and what each cannot see
 
 - **`citations`** fails the run when a Test/Benchmark/Fuzz/Example token
-  appearing after `//` on a `.go` line, or anywhere on a `.md` line, is not
-  DECLARED by some `.go` line beginning `func`/`var`/`const`/`type`. It exists
+  appearing after the first `//` on a `.go` line that is not a URL scheme
+  separator, or anywhere on a `.md` line, is not DECLARED by some `.go` line
+  beginning `func`/`var`/`const`/`type`. It exists
   because converting a fact-comment into a pointer at a test is exactly how an
   invented test name gets written down and believed: one was invented during
   that conversion, and one already in the tree
@@ -355,9 +356,21 @@ to be typed into the invocation you are reading.
   and `stale-citation`, whose plant is INDENTED so that narrowing the match
   back to column 0 kills it. `citation-vacuous` drives the other direction — a
   scan that finds no domain at all must FAIL rather than report that every
-  citation resolved. The six remaining bounds are listed beside the
+  citation resolved. The seven remaining bounds are listed beside the
   implementation in `verify.sh` and not restated here; the first is block
   comments, and none of them is a completeness claim.
+
+  The seventh was added 2026-08-30 after a reviewer measured the direction this
+  bullet had not: `citations` also produces a FALSE POSITIVE. A URL in an
+  ordinary Go string literal was read as a comment, so
+  a documentation URL whose last path segment is spelled like a test name
+  failed the run over a token nobody cited.
+  The `//` chosen is now the first one not preceded by `:`, which covers a
+  scheme and nothing else — a `//` inside a string with no colon before it
+  still reads as a comment. Driven in BOTH directions, because the risk in this
+  fix is that it blinds the gate: `citation-url` plants the reviewer's exact URL
+  and must leave the run green, and `citation-after-url` plants a real stale
+  citation in a comment following a URL on the same line and must still fail.
 - **`bounds`** fails the run unless the `go test` hang timeout exceeds the
   suite ceiling AND the flags the suite actually runs with carry that timeout.
   The second half was missing, which is why this bullet is longer than its
@@ -365,8 +378,46 @@ to be typed into the invocation you are reading.
   `go test` line is adjacency, not a data dependency. MEASURED by a reviewer, a
   hardcoded `-timeout 90s` on the invocation survived both `bounds-ordering`
   and `hang-bounded`. The flags are one array now, the invocation expands it,
-  `suite-timeout-detached` plants exactly that mutant, and the residual bound —
-  an invocation that stops using the array — is stated at the check.
+  `suite-timeout-detached` plants exactly that mutant.
+
+  The residual bound this bullet used to end on — an invocation that stops
+  using the array — is CLOSED as of 2026-08-30 rather than restated. It was
+  wider than it read: such an invocation takes `-count=1` with it too, so it
+  also defeats the cached-result check, and every row stays green while
+  `bounds` prints that the suite runs with the checked flags. The step now
+  reads `verify.sh`'s own source and requires exactly one suite invocation
+  expanding `"${SUITE_ARGS[@]}"`; a check that reads its own source and cannot
+  read it records FAIL rather than falling through to the PASS.
+  `suite-args-detached` plants the detached invocation. What remains is a
+  spelling check over one line: a second `go test` elsewhere in the file, or
+  the array under another name, is outside it.
+- **`unit-suite`** gained a domain check on 2026-08-30, from the same review.
+  MEASURED: `go test ./...` exits 0 on a tree with no test files, so adding
+  `ignore` to the build constraint of all 22 `_test.go` files took the whole
+  script to `VERDICT: PASS (10 steps)` with zero tests executed — `t2` still
+  counted 22 files, because it walks the filesystem, and this row still passed,
+  because a wall-clock ceiling reads absent as fast. The row now requires every
+  directory holding a `_test.go` file to appear in the suite output as having
+  run, and refuses if that population is empty or if the output carries no `ok`
+  line at all. It is keyed on the population rather than on a test-count floor,
+  which is a number somebody has to maintain and which cannot see one package's
+  tests being switched off. `suite-tests-disabled` and
+  `suite-one-package-disabled` plant both, and
+  `suite-domain-unmeasured-module` / `suite-domain-unmeasured-walk` drive the
+  two ways the domain itself can come back empty — the same shape
+  `citation-vacuous` drives for the citation scan.
+
+  One thing this round's own fixes did that is worth recording, because it is
+  the failure the round was called for: asking each new check what it does when
+  it CANNOT do its job found a defect in one of them. `bounds` reads
+  `verify.sh`'s own source, and naming that file `"$0"` names the path the
+  CALLER typed, which stops resolving as soon as the script cd's to its own
+  directory. MEASURED 2026-08-30 on an untouched tree: invoking
+  `library/verify.sh` from the parent directory recorded
+  `bounds FAIL … is not readable`. The path is resolved after the cd now, and
+  `invoked-by-relative-path` is the preservation control — the only scenario
+  that does not invoke the copy as `./verify.sh` from inside it, which is why
+  no other scenario could reach it.
 
 Every scenario named above was driven by its own absence: with the step it
 guards deleted from a copy, or with the widening it drives reverted, each one
@@ -376,11 +427,11 @@ reverted to any non-comment line, the token pattern narrowed back to
 `Test[A-Z]`, the non-vacuity branch deleted, and the flags check deleted. It is
 a statement about those six and about nothing else.
 
-The residual bound on `bounds` is MEASURED, not reasoned: replacing
-`go test "${SUITE_ARGS[@]}"` with a `go test` line carrying its own literal
-`-timeout 300s` leaves `bounds` PASS. The check holds the array honest; it
-cannot hold an invocation that stops reading the array, and nothing else
-does either.
+That the detached invocation was a real escape is MEASURED, not reasoned:
+before 2026-08-30, replacing `go test "${SUITE_ARGS[@]}"` with a `go test` line
+carrying its own literal `-timeout 300s` left `bounds` PASS. With the source
+read added, the same plant records
+`found 0 suite invocation(s) expanding SUITE_ARGS`.
 
 `shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
 `verify.sh`'s own steps. The linted list is enumerated AND cross-checked

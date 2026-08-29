@@ -450,9 +450,8 @@ func sortedKeys[V any](m map[string]V) []string {
 // hex.Dump, time.Kitchen, context.WithValue), against 4 of 4 PACKAGE
 // narrowings dying.
 //
-// That escape is open NOW. Three sentences in this repository used to say a
-// package admitted "later" was unprotected, which read as a hypothesis about
-// the future; it is a description of the present.
+// That escape is open NOW — it is a description of today's tables, not a
+// hypothesis about a package admitted later.
 //
 // Why it is tolerated at M0 rather than closed: an over-narrow allowlist makes
 // the gate REFUSE honest code, loudly, at the point of use, naming the

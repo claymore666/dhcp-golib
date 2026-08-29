@@ -51,6 +51,14 @@ SCENARIOS=(
 	citation-underscore
 	citation-whitewash
 	citation-vacuous
+	citation-url
+	citation-after-url
+	invoked-by-relative-path
+	suite-args-detached
+	suite-tests-disabled
+	suite-one-package-disabled
+	suite-domain-unmeasured-module
+	suite-domain-unmeasured-walk
 )
 
 # ------------------------------------------------------------------ helpers --
@@ -471,6 +479,149 @@ sc_suite_timeout_detached() {
 	[ "$RC" -ne 0 ] || note "a suite whose timeout is detached from the checked constant passed"
 	[ "$(row bounds)" = FAIL ] || note "bounds did not see the detached timeout: $(row bounds)"
 	[ "$(row unit-suite)" = PASS ] || note "the suite itself failed; this run failed for a reason this scenario does not name: $(row unit-suite)"
+}
+
+sc_invoked_by_relative_path() {
+	# PRESERVATION control. The bounds step reads verify.sh's own source, and
+	# the obvious way to name that file — "$0" — is the path the CALLER typed,
+	# which stops resolving the moment the script cd's to its own directory.
+	# MEASURED 2026-08-30 before the fix: `library/verify.sh` run from the
+	# parent recorded "bounds FAIL ... is not readable", on an untouched tree.
+	#
+	# Every other scenario invokes the copy as ./verify.sh from inside it, so
+	# no other scenario can reach this.
+	local d="$1" parent base
+	copy_tree "$d"
+	parent="$(dirname "$d")"
+	base="$(basename "$d")"
+	RC=0
+	OUT="$(cd "$parent" && "$base/verify.sh" --inner 2>&1)" || RC=$?
+	[ "$RC" -eq 0 ] || note "an untouched copy failed when invoked by a relative path from its parent: $OUT"
+	[ "$(row bounds)" = PASS ] || note "bounds could not read its own source under a relative invocation: $(row bounds)"
+}
+
+sc_citation_url() {
+	# PRESERVATION control, and the only scenario here that asserts a GREEN
+	# run. A URL in an ordinary string literal is not a citation: taking
+	# everything after the first "//" read the tail of an https:// literal as a
+	# comment and failed the run over a token nobody wrote down. MEASURED
+	# 2026-08-30 against the pre-fix scanner, which reported
+	# "cited but never declared: TestRevCPhantomFromAURL".
+	#
+	# A one-directional drive would prove nothing here: the risk in the fix is
+	# that it blinds the gate, which is what citation-after-url covers.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'import "fmt"' 'import "fmt"
+
+var probeDocURL = "https://example.invalid/docs/TestRevCPhantomFromAURL"'
+	run_verify "$d"
+	[ "$RC" -eq 0 ] || note "a URL in a string literal failed the run: $OUT"
+	[ "$(row citations)" = PASS ] || note "citations read a URL path segment as a citation: $(row citations)"
+}
+
+sc_citation_after_url() {
+	# The other direction of the same fix. A REAL stale citation, in a real
+	# comment, on a line that also holds a URL — the shape that a naive "skip
+	# lines containing ://" would go blind to.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/proto/state.go" 'import "fmt"' 'import "fmt"
+
+var probeDocURL2 = "https://example.invalid/x" // See TestRevCPhantomAfterAURL.'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a stale citation following a URL on the same line passed"
+	[ "$(row citations)" = FAIL ] || note "citations went blind to the comment after a URL: $(row citations)"
+	printf '%s\n' "$OUT" | grep -q 'TestRevCPhantomAfterAURL' || note "the diagnosis does not name the token after the URL"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+}
+
+sc_suite_args_detached() {
+	# The escape suite-timeout-detached could not reach: an invocation that
+	# stops expanding SUITE_ARGS altogether. It is WIDER than a detached
+	# timeout, because it takes -count=1 with it as well, so the cached-result
+	# check goes with it. MEASURED before the fix: every row stayed green and
+	# bounds printed that the suite runs with the checked flags.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'go test "${SUITE_ARGS[@]}" ./...' 'go test -race -count=1 -timeout 300s ./...'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a suite invocation that stops reading SUITE_ARGS passed"
+	[ "$(row bounds)" = FAIL ] || note "bounds did not see the detached invocation: $(row bounds)"
+	printf '%s\n' "$OUT" | grep -q 'expanding SUITE_ARGS' || note "the diagnosis does not name the missing expansion"
+}
+
+# disable_tests DIR GLOB — add `ignore` to the build constraint of each
+# matching test file, leaving the tree gofmt-clean. Files that already carry a
+# //go:build line get it extended rather than a second line, which would be a
+# gofmt failure and would attribute the run to the wrong row.
+disable_tests() {
+	local d="$1" glob="$2" f n=0
+	while IFS= read -r f; do
+		if head -1 "$f" | grep -q '^//go:build'; then
+			sed -i '1s|$| \&\& ignore|' "$f"
+		else
+			printf '//go:build ignore\n\n' | cat - "$f" >"$f.t" && mv "$f.t" "$f"
+		fi
+		n=$((n + 1))
+	done < <(find "$d" -path "$glob" -name '*_test.go')
+	[ "$n" -gt 0 ] || refuse "disable_tests matched no file under $glob"
+}
+
+sc_suite_tests_disabled() {
+	# The whole library's tests switched off. MEASURED 2026-08-30 before the
+	# domain check: `go test ./...` exits 0 on a tree with no test files, so
+	# this produced "VERDICT: PASS (10 steps)" with zero tests executed. t2
+	# still counted 22 files, because it walks the filesystem; the ceiling
+	# still passed, because it reads absent as fast.
+	local d="$1"
+	copy_tree "$d"
+	disable_tests "$d" '*'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a tree in which no test can run passed"
+	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed over a suite that ran nothing: $(row unit-suite)"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+	[ "$(row t2)" = PASS ] || note "t2 changed verdict; this scenario is then not measuring unit-suite alone: $(row t2)"
+}
+
+sc_suite_one_package_disabled() {
+	# The partial case, and the reason the check is keyed on the population
+	# rather than on a test-count floor: one package's tests switched off
+	# leaves the other eight running, so any global floor still passes.
+	local d="$1"
+	copy_tree "$d"
+	disable_tests "$d" '*/wire/*'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "one package's tests were switched off and the run passed"
+	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with a package's tests disabled: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'dhcplease/wire' || note "the diagnosis does not name the package that ran no test"
+	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
+}
+
+sc_suite_domain_unmeasured_module() {
+	# The unit-suite domain check compares import paths built from `go list -m`.
+	# If that returns nothing the paths are wrong, no package matches, and the
+	# comparison reports no problem having compared nothing — the same shape as
+	# citation-vacuous. It must refuse instead.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" 'module="$(go list -m 2>/dev/null || true)"' 'module="$(false 2>/dev/null || true)"'
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "unit-suite passed with its domain built from an empty module path"
+	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable domain did not fail the row: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
+}
+
+sc_suite_domain_unmeasured_walk() {
+	# The other half of the same refusal: the walk that finds the packages
+	# holding tests. An empty walk is an empty universal.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" "find . -name '*_test.go' -not -path './.git/*' -printf '%h\\n'" "find . -name 'zz_no_such_file' -not -path './.git/*' -printf '%h\\n'"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "unit-suite passed with no package in its domain at all"
+	[ "$(row unit-suite)" = FAIL ] || note "an empty domain walk did not fail the row: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
 sc_gate_panic() {

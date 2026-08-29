@@ -115,9 +115,21 @@ It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
 a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
 that never returns — it is computed after `go test` comes back), a check that
-the flags the suite runs with carry a hang timeout that exceeds that ceiling, a
-check that every Test/Benchmark/Fuzz/Example token named in a comment or a
-document is DECLARED somewhere in the Go source, and its own oracle.
+the flags the suite runs with carry a hang timeout that exceeds that ceiling
+and that the suite invocation expands them, a check that every package holding
+a `_test.go` file actually ran a test, a citation check, and its own oracle.
+
+The citation check is stated here as a BOUND, because the sentence that used to
+stand in its place was a completeness claim and the tree falsifies it. What it
+reads is: a Test/Benchmark/Fuzz/Example token appearing after the first `//` on
+a `.go` line that is not a URL scheme separator, or anywhere on a line of a
+`.md` file; and it requires each one to appear in a top-level `func`, `var`,
+`const` or `type` declaration. It does **not** see block comments, `.sh` files,
+or a token in a `.go` line's ordinary text — there are live examples of all
+three in this tree, `scripts/test-verify.sh` chief among them. The seven
+enumerated escapes, including the one direction in which it produces a false
+positive, are in `docs/gates.md`; they are part of the check, not a caveat
+about it.
 
 "Every check" is bounded, and the bound is worth stating because it is the
 shape of the failure this repository keeps finding: **a check runs only if
@@ -134,6 +146,15 @@ add a detection, never remove one, and nobody re-ran the nine deletions. The
 two steps added after that sweep — the timeout-ordering check and the citation
 check — were each driven by deleting the step from a copy and watching the
 scenario that owns it report ABSENT.
+
+What landed on 2026-08-30 is a different shape and is described as one: three
+checks added INSIDE steps that already existed, so step deletion is not the
+drive for them. Each was driven by the mutant it exists to catch — the suite
+invocation detached from its flag array, one package's tests and then the whole
+library's tests switched off, and a URL in a string literal, that last one in
+both directions because the risk in the fix was that it would blind the check.
+The oracle carries `suite-args-detached`, `suite-one-package-disabled`,
+`suite-tests-disabled`, `citation-url` and `citation-after-url` for them.
 
 `vet` had no witness until this measurement was taken; it passed 18 of the 18
 scenarios that existed then with the step deleted, and the `vet-violation`

@@ -50,6 +50,20 @@ import (
 // namespaces are disabled, or dnsmasq is absent, that is a fact about the
 // machine that must be visible, and the fix is to install the one and enable
 // the other.
+//
+// # And it fails rather than passing when it runs NOTHING
+//
+// The parent process cannot see the exchange; it sees a child's exit status.
+// `go test` exits 0 when its -test.run filter matches no test, so an exit
+// status alone cannot tell a completed exchange from a run that never
+// started. MEASURED 2026-08-30 against the version of this file that passed
+// its own name as a literal: renaming the test function took the run from
+// `ok 3.084s` to `ok 0.006s`, printed `--- PASS`, and put
+// `testing: warning: no tests to run` in a log nobody reads.
+//
+// So the filter is derived from t.Name() rather than written twice, and the
+// parent asserts on the child's own report of the named test. See
+// childReport.
 
 const nsChildEnv = "DHCPLEASE_NETNS_CHILD"
 
@@ -70,13 +84,19 @@ func TestAcquiresFromRealDnsmasq(t *testing.T) {
 		runAgainstDnsmasq(t)
 		return
 	}
-	reexecInNamespaces(t, "TestAcquiresFromRealDnsmasq")
+	reexecInNamespaces(t)
 }
 
-// reexecInNamespaces runs this test binary again, for the named test only,
-// inside a fresh user and network namespace.
-func reexecInNamespaces(t *testing.T, name string) {
+// reexecInNamespaces runs this test binary again, for the CALLING test only,
+// inside a fresh user and network namespace, and fails unless the child's
+// output shows that test reporting its own PASS.
+//
+// The name is taken from t.Name() and never passed in: a name written twice is
+// a filter that stops matching the moment the test is renamed, and the failure
+// mode of that is a silent pass.
+func reexecInNamespaces(t *testing.T) {
 	t.Helper()
+	name := t.Name()
 
 	if _, err := os.Stat("/proc/self/ns/user"); err != nil {
 		t.Fatalf("this kernel has no user namespaces (%v); done-condition (a) cannot be measured here", err)
@@ -113,7 +133,64 @@ func reexecInNamespaces(t *testing.T, name string) {
 	if err != nil {
 		t.Fatalf("the namespaced run failed (%v). Its output follows.\n%s", err, out)
 	}
+	if reportErr := childReport(string(out), name); reportErr != nil {
+		t.Fatalf("the namespaced run exited 0, but %v — so this test measured nothing.\nchild output:\n%s", reportErr, out)
+	}
 	t.Logf("namespaced run output:\n%s", out)
+}
+
+// childReport reports whether out is a test binary's account of having RUN the
+// test called name.
+//
+// It is a pure function of (output, name) so that the thing standing between a
+// green run and a vacuous one is itself driven by a table rather than by a
+// namespace only Linux can enter. See TestChildReportRejectsARunThatRanNothing.
+//
+// It fails closed: empty output, a truncated stream, a child killed before it
+// printed, or a future `go test` that words its summary differently all leave
+// the "--- PASS: name" line unfound, and an unfound line is an error.
+//
+// The "--- PASS" arm is the load-bearing one and deleting it kills a case in
+// that table. The "no tests to run" arm above it is NOT independently driven,
+// and is honest about being a better diagnosis rather than a second check:
+// deleting it leaves every case still correctly judged, one of them with a
+// worse message.
+func childReport(out, name string) error {
+	if strings.Contains(out, "no tests to run") {
+		return fmt.Errorf("the child reported %q, so the -test.run filter matched no test", "testing: warning: no tests to run")
+	}
+	want := "--- PASS: " + name + " ("
+	if !strings.Contains(out, want) {
+		return fmt.Errorf("the child's output carries no %q line", want)
+	}
+	return nil
+}
+
+// TestChildReportRejectsARunThatRanNothing drives childReport over the outputs
+// it has to tell apart, including the one the old exit-status-only check
+// accepted.
+func TestChildReportRejectsARunThatRanNothing(t *testing.T) {
+	const name = "TestAcquiresFromRealDnsmasq"
+	for _, c := range []struct {
+		what string
+		out  string
+		ok   bool
+	}{
+		{"a real pass", "=== RUN   " + name + "\n--- PASS: " + name + " (3.08s)\nPASS\nok  \tpkg\t3.084s\n", true},
+		{"the renamed-test output that used to pass", "testing: warning: no tests to run\nPASS\nok  \tpkg\t0.006s\n", false},
+		{"a pass belonging to a different test", "--- PASS: TestSomethingElse (0.01s)\nPASS\n", false},
+		{"a prefix of the name", "--- PASS: " + name + "Extra (0.01s)\nPASS\n", false},
+		{"nothing at all", "", false},
+		{"a stream cut off mid-run", "=== RUN   " + name + "\n", false},
+	} {
+		err := childReport(c.out, name)
+		if c.ok && err != nil {
+			t.Errorf("%s: childReport refused a run that did happen: %v", c.what, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%s: childReport accepted an output that is not a report of %s having run", c.what, name)
+		}
+	}
 }
 
 func findDnsmasq() (string, error) {

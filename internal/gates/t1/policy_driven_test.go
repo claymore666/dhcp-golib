@@ -183,10 +183,6 @@ func sortedKeys[V any](m map[string]V) []string {
 //
 // TestNarrowingCoverageIsMeasured in internal/gates/rings prints the current
 // number, so this comment cannot be the only place it lives.
-//
-// This sentence used to say "a package admitted LATER", which described an
-// escape that is open today as though it opened in future. That is a
-// completeness claim wearing a bound's clothes.
 func TestRealisticRing1CodeIsAccepted(t *testing.T) {
 	const src = `package proto
 

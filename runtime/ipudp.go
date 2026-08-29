@@ -106,10 +106,9 @@ const (
 	// is what Linux leaves in a datagram whose checksum it has deferred to
 	// hardware (CHECKSUM_PARTIAL). See acceptUDPChecksum.
 	//
-	// It does NOT say the sender is on this host, and this comment said so
-	// until 2026-08-29. The code sees a field holding a value; locality is an
-	// INFERENCE about the commonest producer of that value and runs one way
-	// only.
+	// It does NOT say the sender is on this host. The code sees a field
+	// holding a value; locality is an INFERENCE about the commonest producer
+	// of that value and runs one way only.
 	ChecksumUncompleted
 )
 
@@ -217,9 +216,7 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 // Refusing it would not produce a stricter client, it would produce one that
 // cannot lease from a server on the same host. Measured against a real dnsmasq
 // OFFER in ipudp_test.go: realOfferField, realOfferCompleted,
-// TestParseAcceptsARealServersUncompletedChecksum. (Until 2026-08-29 this said
-// the completed value was 0x0074, a number from a working note rather than
-// from the fixture two lines below it.)
+// TestParseAcceptsARealServersUncompletedChecksum.
 //
 // BOUND: the zero case and the pseudo-header case both accept a corrupt
 // payload, the zero case more cheaply — its accepting value is the constant

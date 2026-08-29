@@ -21,6 +21,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
 
+# This file's own path, resolved AFTER the cd above, because the bounds step
+# reads it. "$0" is what the caller typed and is relative to the caller's
+# directory, not to this one: MEASURED 2026-08-30, invoking `library/verify.sh`
+# from the parent recorded `bounds FAIL … is not readable`, a false negative
+# produced entirely by how the script was invoked. Scenario
+# invoked-by-relative-path.
+SELF="$ROOT/$(basename "$0")"
+
 INNER=0
 for arg in "$@"; do
 	case "$arg" in
@@ -111,12 +119,11 @@ command -v go >/dev/null 2>&1 || {
 }
 
 # ------------------------------------------------------------- citations --
-# The rule, stated as the code implements it rather than as a summary of it —
-# an earlier wording of this comment described a stricter check than the code
-# performed, which is the defect the whole sweep was about:
+# The rule, stated as the code implements it rather than as a summary of it:
 #
 #   CITED  = every Test/Benchmark/Fuzz/Example token in the part of a .go line
-#            that follows "//", or anywhere on a line of a .md file.
+#            that follows the first "//" NOT preceded by ":", or anywhere on a
+#            line of a .md file.
 #   KNOWN  = every such token that a .go line DECLARES, i.e. a line beginning
 #            "func"/"var"/"const"/"type" followed by the token. That admits the
 #            exported maps TestIdents and TestRefusedIdents, which are
@@ -132,10 +139,20 @@ command -v go >/dev/null 2>&1 || {
 #   3. .sh files are outside the domain entirely, because the oracle plants
 #      test bodies into heredocs.
 #   4. Prose cannot use a PLACEHOLDER name: nothing distinguishes one from a
-#      citation. That is the loud direction and it stays.
+#      citation. That is the loud direction and it stays. MEASURED three times
+#      now, each time against a sentence written to DESCRIBE this check —
+#      twice on 2026-08-29 and again on 2026-08-30, when the bound-7 paragraph
+#      quoted an example URL ending in a test-shaped name.
 #   5. Import aliasing and shadowing are not resolved; this is textual.
 #   6. "No unseen shape is present in the tree" is a measurement at one head,
 #      never a property. A new file reintroduces one silently.
+#   7. The ":" rule covers a URL scheme and nothing else. A "//" inside an
+#      ordinary string literal with no colon before it ("a//b") still reads as
+#      a comment, and a token after it is still cited. That direction is a
+#      FALSE POSITIVE — a build that fails for a reason that is not true — and
+#      it is left visible on purpose: narrowing the comment match back toward
+#      column 0 would trade it for the false negatives the widening removed.
+#      Scenarios citation-url, citation-after-url.
 cite_scan() {
 	find . -type f \( -name '*.go' -o -name '*.md' \) -not -path './.git/*' -print0 |
 		xargs -0 awk -v want="$1" '
@@ -147,8 +164,21 @@ cite_scan() {
 			}
 			want == "cited" {
 				if (FILENAME ~ /\.md$/) { emit($0); next }
-				i = index($0, "//")
-				if (i > 0) emit(substr($0, i + 2))
+				# The first "//" that is not a URL scheme separator. Taking
+				# index($0,"//") outright reads the tail of an https:// string
+				# literal as a comment and fails the run on a token nobody
+				# cited (bound 7).
+				rest = $0; off = 0
+				while (match(rest, /\/\//)) {
+					pos = off + RSTART
+					if (pos > 1 && substr($0, pos - 1, 1) == ":") {
+						off = pos + 1
+						rest = substr($0, off + 1)
+						continue
+					}
+					emit(substr($0, pos + 2))
+					break
+				}
 				next
 			}
 			FILENAME ~ /\.go$/ && match($0, /^(func|var|const|type)[ \t]+(Test|Benchmark|Fuzz|Example)[_A-Z][A-Za-z0-9_]*/) {
@@ -180,21 +210,32 @@ else
 	echo "--- citations FAILED: a comment or document names a test that is not declared anywhere ---" >&2
 fi
 
-# Two things, because checking only the first was adjacency dressed as a check:
-# the hang timeout must exceed the ceiling, AND the flags the suite actually
-# runs with must carry that timeout. Without the second, a hardcoded
-# `-timeout 90s` on the go test line left both this step and hang-bounded
-# green while the constant compared here bound nothing.
+# Three things, because any two of them are adjacency rather than a data
+# dependency: the hang timeout must exceed the ceiling, the flags array must
+# carry that timeout, AND the suite invocation must expand that array.
 #
-# BOUND: this reads SUITE_ARGS, so it holds only while the invocation expands
-# SUITE_ARGS. An invocation that stops using the array is invisible here, and
-# nothing else sees it either.
+# The third matters more than it looks: an invocation that stops expanding
+# SUITE_ARGS takes -count=1 with it as well, so it defeats the cached-result
+# check too, and every row stays green while this one reports that the suite
+# runs with the checked flags.
+#
+# BOUND, and it is a real one: this checks the SPELLING of the one invocation
+# below. A second `go test` elsewhere in this file, or the array under another
+# name, is outside it. Scenarios suite-timeout-detached, suite-args-detached.
+bounds_src=""
+if [ -r "$SELF" ]; then bounds_src="$(grep -c 'go test "${SUITE_ARGS\[@\]}" \./\.\.\.' "$SELF" || true)"; fi
 if [ "$SUITE_TIMEOUT_SECONDS" -le "$SUITE_CEILING_SECONDS" ]; then
 	record "bounds" FAIL "hang timeout ${SUITE_TIMEOUT_SECONDS}s does not exceed the ${SUITE_CEILING_SECONDS}s ceiling; a slow suite would be killed before the ceiling could diagnose it"
 elif [[ " ${SUITE_ARGS[*]} " != *" -timeout ${SUITE_TIMEOUT_SECONDS}s "* ]]; then
 	record "bounds" FAIL "the suite flags do not carry -timeout ${SUITE_TIMEOUT_SECONDS}s, so the checked constant is not the one in force: ${SUITE_ARGS[*]}"
+elif [ -z "$bounds_src" ]; then
+	# A check that reads its own source and cannot read it has not measured
+	# anything, and must say so rather than fall through to the PASS.
+	record "bounds" FAIL "$SELF is not readable, so whether the suite runs with these flags is UNMEASURED"
+elif [ "$bounds_src" -ne 1 ]; then
+	record "bounds" FAIL "found $bounds_src suite invocation(s) expanding SUITE_ARGS, expected exactly 1; the checked constants are not the ones in force"
 else
-	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the suite runs with it"
+	record "bounds" PASS "hang timeout ${SUITE_TIMEOUT_SECONDS}s > ceiling ${SUITE_CEILING_SECONDS}s, and the one suite invocation expands SUITE_ARGS"
 fi
 
 # ---------------------------------------------------------------- toolchain --
@@ -307,10 +348,40 @@ done
 # ------------------------------------------------------------- unit suite --
 # -count=1 defeats the test cache: a cached PASS is a result that was not
 # measured on this tree. Scenario test-cache.
+#
+# MEASURED 2026-08-30: `go test ./...` exits 0 on a tree with no test files at
+# all, printing "? pkg [no test files]". So the exit status cannot tell a suite
+# that passed from a suite that did not run, and adding `ignore` to the build
+# constraint of all 22 _test.go files took this whole script to
+# "VERDICT: PASS (10 steps)" with zero tests executed — t2 still counted 22
+# files, because it walks the filesystem, and this row still said 0s, because a
+# ceiling reads absent as fast. Hence the domain check below.
+#
+# It is keyed on the POPULATION rather than on a floor: a floor is a number
+# somebody has to maintain, and it cannot see a single package's tests being
+# disabled. Scenarios suite-tests-disabled, suite-one-package-disabled.
 suite_start=$(date +%s)
 rc=0
 suite_out="$(go test "${SUITE_ARGS[@]}" ./... 2>&1)" || rc=$?
 suite_elapsed=$(($(date +%s) - suite_start))
+# Every directory holding a _test.go file, as the import path go test prints.
+module="$(go list -m 2>/dev/null || true)"
+tested_dirs="$(find . -name '*_test.go' -not -path './.git/*' -printf '%h\n' | sort -u)"
+missing=""
+tested_n=0
+while IFS= read -r d; do
+	[ -n "$d" ] || continue
+	tested_n=$((tested_n + 1))
+	case "$d" in
+	.) ip="$module" ;;
+	*) ip="$module/${d#./}" ;;
+	esac
+	if printf '%s\n' "$suite_out" | grep -qE "^\?[[:space:]]+${ip//./\\.}[[:space:]]+\[no test files\]"; then
+		missing="$missing $ip"
+	fi
+done <<EOF
+$tested_dirs
+EOF
 if [ "$rc" -ne 0 ]; then
 	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"
 	printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
@@ -320,8 +391,19 @@ elif printf '%s' "$suite_out" | grep -q '(cached)'; then
 elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
 	record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
 	echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
+elif [ -z "$module" ] || [ "$tested_n" -eq 0 ]; then
+	# The two ways this row's own domain check can fail to be computed. Both
+	# are a refusal, because a comparison against an empty population passes
+	# for the same reason a suite with no tests does.
+	record "unit-suite" FAIL "the suite exited 0, but its domain is UNMEASURED (module '$module', $tested_n director(ies) holding a _test.go file)"
+elif ! printf '%s\n' "$suite_out" | grep -q '^ok[[:space:]]'; then
+	record "unit-suite" FAIL "the suite exited 0 but reported no 'ok' package line; its output was not the account of a run"
+	printf '\n--- unit-suite produced no ok line ---\n%s\n' "$suite_out" >&2
+elif [ -n "$missing" ]; then
+	record "unit-suite" FAIL "exited 0, but package(s)${missing} hold a _test.go file and ran no test"
+	printf '\n--- unit-suite: these packages have test files that did not run ---\n%s\n%s\n' "$missing" "$suite_out" >&2
 else
-	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, hang timeout ${SUITE_TIMEOUT_SECONDS}s"
+	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $tested_n package(s) with tests all ran"
 fi
 
 # ------------------------------------------------------------- self-oracle --
