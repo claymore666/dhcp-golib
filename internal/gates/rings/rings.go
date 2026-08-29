@@ -97,11 +97,87 @@ var FmtAllowed = map[string]bool{
 	"Stringer":   true,
 }
 
+// HexAllowed is the set of encoding/hex identifiers a pure ring may name.
+//
+// hex earns a restriction for the same reason fmt does, and it was NOT spotted
+// by reading the package over: it was found by the derived closure check in
+// policy_test.go, which reported that encoding/hex reaches os and syscall.
+// Dumper, NewEncoder and NewDecoder take an io.Writer or io.Reader, so a pure
+// ring holding one of those holds a stream. The value-returning half of the
+// package is fine and is what a codec actually wants.
+var HexAllowed = map[string]bool{
+	"AppendDecode":     true,
+	"AppendEncode":     true,
+	"Decode":           true,
+	"DecodeString":     true,
+	"DecodedLen":       true,
+	"Dump":             true,
+	"Encode":           true,
+	"EncodeToString":   true,
+	"EncodedLen":       true,
+	"ErrLength":        true,
+	"InvalidByteError": true,
+}
+
 // PureIdents restricts, per import path, which identifiers a pure ring file
 // may name. A package absent from this map is unrestricted once it is on
 // PureStdlib.
+//
+// policy_test.go enforces the rule that decides membership here: a PureStdlib
+// package whose dependency closure reaches an impure root MUST appear in this
+// map. That is a derivation over the whole allowlist, so it catches a package
+// nobody thought to name — which is how encoding/hex got here.
 var PureIdents = map[string]map[string]bool{
-	"fmt": FmtAllowed,
+	"fmt":          FmtAllowed,
+	"encoding/hex": HexAllowed,
+}
+
+// ---------------------------------------------------------------------------
+// The refusal tables.
+//
+// Everything above says what is ADMITTED. These say what must be REFUSED, and
+// they exist because an allowlist alone is unguarded: a widening is a one-line
+// edit that no test above objects to. MEASURED 2026-08-29, before these
+// existed: of 21 one-line allowlist widenings driven through the whole suite,
+// 12 SURVIVED — including admitting syscall and context into ring 1, and
+// admitting time.Tick and context.WithDeadline into tests.
+//
+// These tables are ENUMERATIONS and are therefore bounded. They are the belt;
+// the derived checks in policy_test.go are the braces, and those are what cover
+// the identifiers nobody listed. Each entry here is additionally driven through
+// the real gate — membership in a map proves nothing about behaviour.
+
+// PureRefusedPkgs are packages that must never be admitted to PureStdlib.
+// The first five are the ones the T1 requirement names by hand; the rest are
+// the obvious neighbours, because two spellings enumerated means a third
+// exists.
+var PureRefusedPkgs = []string{
+	"context", "net", "os", "syscall", "time",
+	"bufio", "io", "log", "math/rand", "net/http", "os/exec", "os/signal",
+	"path/filepath", "reflect", "runtime",
+}
+
+// PureRefusedIdents are identifiers a pure ring must never be able to name,
+// for packages that ARE admitted. Every one is a way to reach a stream.
+var PureRefusedIdents = map[string][]string{
+	"fmt": {
+		"Print", "Printf", "Println",
+		"Fprint", "Fprintf", "Fprintln",
+		"Scan", "Scanf", "Scanln",
+		"Fscan", "Fscanf", "Fscanln",
+	},
+	"encoding/hex": {"Dumper", "NewEncoder", "NewDecoder"},
+}
+
+// TestRefusedIdents are identifiers a _test.go file must never be able to
+// name. Every one either waits on the clock or hands something else a deadline
+// to wait on.
+var TestRefusedIdents = map[string][]string{
+	"time": {"Sleep", "After", "Tick", "NewTimer", "NewTicker", "AfterFunc"},
+	"context": {
+		"WithTimeout", "WithTimeoutCause",
+		"WithDeadline", "WithDeadlineCause",
+	},
 }
 
 // TestIdents restricts, per import path, which identifiers a _test.go file may
@@ -143,7 +219,20 @@ var TestIdents = map[string]map[string]bool{
 	// A deadline on a context is a wall-clock wait wearing a different name:
 	// whatever blocks on ctx.Done() is waiting for a timer to fire.
 	"context": {
-		// AfterFunc is deliberately absent: fail-closed by omission.
+		// context.AfterFunc is absent, and the honest reason is that the
+		// allowlist admits nothing by default — not that it was adjudicated.
+		// It fires on ctx cancellation, not on a clock, so it is not obviously
+		// a T2 violation; it stays out because nothing has argued it in. This
+		// comment used to claim the omission was deliberate and fail-closed,
+		// which read as an enforced decision when nothing enforced anything.
+		//
+		// Neither derivation can reach it either: its signature
+		// (ctx Context, f func()) (stop func() bool) names no time.Duration
+		// or time.Time, so the deadline derivation correctly does not match.
+		// Today's answer — refused — is therefore held by nothing but this
+		// map, so it is pinned as a case in t2/policy_driven_test.go
+		// (TestContextAfterFuncIsRefusedByDefault). Admitting it means
+		// deleting that case and writing down why, not adding a key here.
 		"Background": true, "CancelCauseFunc": true,
 		"CancelFunc": true, "Canceled": true, "Cause": true, "Context": true,
 		"DeadlineExceeded": true, "TODO": true, "WithCancel": true,

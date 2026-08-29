@@ -84,6 +84,19 @@ Two consequences of that, worth stating rather than discovering:
    release gives `strconv` a background goroutine, T1 will not notice.
 7. **The ring layout itself.** Rule D checks that the four roots exist and are
    populated. It cannot check that `proto/` still contains the state machine.
+8. **Files under `testdata/`, `vendor/` and `.git/`.** Both gates share
+   `scan.GoFiles`, which skips them. For `testdata/` the reason is the same one
+   T2 gives: the go tool does not compile it, so nothing there is part of any
+   binary, and it is where the gates' own deliberate violations live. This was
+   documented for T2 and not for T1 until 2026-08-29, although the two gates
+   have always walked the tree with the same function.
+9. **Its live domain at M0 is inert.** MEASURED 2026-08-29: `proto/doc.go` and
+   `wire/doc.go` are doc comments with no imports, so on the real tree rules B
+   and C judge zero import lines and rule A a closure of two packages — the two
+   rings themselves. Rule D is what stops that from being reported as a vacuous
+   pass; the rules are actually exercised in `internal/gates/t1`'s own cases,
+   against planted violations. T2 states the equivalent bound as item 4 below,
+   and T1 did not state it at all until this line was written.
 
 ## T2 — no test waits on wall-clock time
 
@@ -119,34 +132,48 @@ they do not wait on it, and T2's subject is waiting.
 
 ### What T2 cannot see
 
-1. **A wait that is not a `time` or `context` identifier.** `exec.Command("sleep")`,
+1. **A wait that names no restricted package at all.** `exec.Command("sleep")`,
    `syscall.Nanosleep`, a blocking channel receive whose sender is on a timer
-   in non-test code, a busy loop, `runtime.Gosched` in a spin. The wall-clock
-   ceiling is the only instrument that covers these, and see (2).
-2. **The ceiling only holds AT the threshold.** MEASURED 2026-08-29: a planted
+   in non-test code, `runtime.Gosched` in a spin. The identifier allowlist has
+   no opinion about packages it does not restrict.
+2. **A wait built entirely out of ALLOWLISTED identifiers**, which is a
+   different and worse case than (1), because the heading above does not cover
+   it. `for time.Since(start) < 50*time.Millisecond {}` names `time.Since` and
+   `time.Millisecond`, both allowed, and both *correctly* allowed: reading the
+   clock is not waiting on it, right up until the read is a loop condition.
+   Distinguishing the two is control-flow analysis, not an identifier check.
+   MEASURED 2026-08-29: `scripts/test-verify.sh` plants exactly this loop, and
+   T2 passes it — the scenario asserts that it does, because the loop is there
+   to drive the wall-clock ceiling and the ceiling is only being measured if
+   T2 stayed out of the way.
+   This bullet and (1) used to be one bullet headed "a wait that is not a
+   `time` or `context` identifier", with the busy loop listed underneath it.
+   The busy loop is built from nothing but `time` identifiers, so the heading
+   denied the case it was filed under.
+3. **The ceiling only holds AT the threshold.** MEASURED 2026-08-29: a planted
    `time.Sleep(50 * time.Millisecond)` in a test did not move the suite from
    1s against a 60s ceiling. The ceiling catches a suite that has drifted into
    waiting; it does not catch one test that waits a little.
-3. **A wait inside a helper in non-test code**, called from a test. T2's domain
+4. **A wait inside a helper in non-test code**, called from a test. T2's domain
    is `_test.go` files. That is deliberate — ring 3 has a real clock in it —
    and it means a test can wait by delegating.
-4. **Its domain at M0 is the gates' own self-tests.** There is no library code
-   yet, so the three test files T2 checks are the gates testing themselves. The
+5. **Its domain at M0 is the gates' own self-tests.** There is no library code
+   yet, so every `_test.go` file T2 checks is a gate testing itself. The
    gate is proven to work; it is not yet guarding any protocol test, and it
    will not be until M1.
-5. **Files under `testdata/`.** Not walked, because the go tool does not
+6. **Files under `testdata/`.** Not walked, because the go tool does not
    compile them, so a file there is not part of any test binary. It is also
    where the gates' own deliberate violations live.
-6. **Shadowing, in the loud direction.** A local variable named `time` would
+7. **Shadowing, in the loud direction.** A local variable named `time` would
    make the gate report a false positive. That direction is deliberate: a gate
    that refuses something innocent is loud, and one that misses something is
    not.
-7. **A third-party dependency that sleeps.** There are none today; the gate has
+8. **A third-party dependency that sleeps.** There are none today; the gate has
    no view into module cache source.
 
 ## verify.sh
 
-One command, every check, one verdict. Two details that are not incidental:
+One command, every check, one verdict. Details that are not incidental:
 
 - It **builds** the gate binaries and executes them rather than using
   `go run`. MEASURED 2026-08-29: `go run` collapses every non-zero child
@@ -158,19 +185,195 @@ One command, every check, one verdict. Two details that are not incidental:
   that has been deleted is a FAIL; a gate present in the tree but missing from
   the list is also a FAIL. A verifier that discovers its own checklist can be
   silenced by deleting a check.
+- **The verdict is printed by an EXIT trap, not by the last line.** MEASURED
+  2026-08-28 by review: one unprotected assignment took `set -e` with it, so
+  deleting `go.mod` made the verifier exit 1 having printed no verdict at all —
+  silent in the one case where the tree was most broken. That assignment is
+  also fixed, but the promise "one command, one verdict" is a property of the
+  file, so it is now held at a place every exit path passes.
+- **Exit 2 is disambiguated.** A Go panic exits 2 and so does a deliberate
+  REFUSE. Both are a FAIL, so this was never a correctness hole; but a crash
+  reported as "could not measure its domain" sends the reader to the wrong
+  place, so the gates' `REFUSED` line is read before the diagnosis is chosen.
+- **`-count=1` has an observer.** A cached PASS is a result that was not
+  measured on this tree and is indistinguishable from a real one in the exit
+  status, so a `(cached)` marker in the suite output is itself a FAIL.
 
-### What verify.sh cannot see, and one thing owed
+### verify.sh has an oracle
 
-**Its own logic has no automated test.** The roster comparison, the exit-code
-mapping and the ceiling arithmetic were attacked by hand at M0 — a deleted
-gate, an unregistered extra gate, and a gate that does not compile — and all
-three behaved. None of that is repeatable by a check, which is the exact shape
-this project distrusts.
+`scripts/test-verify.sh`. It copies the tree, plants ONE defect in the copy,
+runs the copy's `./verify.sh --inner`, and asserts both that the run failed and
+that **the row which failed is the row that owns the defect**. Attributing the
+failure to the row is the same lesson as the fixture-path finding below: a run
+that fails for the wrong reason looks exactly like one that fails for the right
+one. `verify.sh` runs it as a step, so the verifier is checked by the command
+that runs the verifier.
 
-The obstacle is real rather than an excuse: the obvious test runs `verify.sh`
-against a mutated copy of the tree, and the copy's `verify.sh` would run the
-test again. A non-recursive harness is owed work for M1, and until it exists
-this paragraph is prose, and prose decays silently.
+The scenarios cover: a clean copy passing; a verdict printed on a planted
+abort; a verdict printed with `go.mod` deleted; a required gate deleted; an
+unlisted gate added; a ring-1 impurity; a clock wait in a test; an unformatted
+file; a data race (which drives `-race`); a second run served from the test
+cache (which drives `-count=1`); a gate that panics; a gate that genuinely
+refuses; a shell script absent from the lint list; the oracle itself stubbed
+out, in both directions; a suite over the ceiling; the same suite under the
+shipped ceiling; and the ceiling's declared value.
 
-`shellcheck -S warning` runs on `verify.sh` as one of its own steps, which
-covers shell defects and nothing about whether the verdicts are right.
+**The oracle also checks that `verify.sh` still runs it.** MEASURED 2026-08-29:
+replacing the oracle step with a hardcoded PASS survived every other scenario,
+and had to — this script is the *control* for those mutants, so `verify.sh`
+dropping the step is invisible from inside it. That is the same defect class as
+both blocking findings: a check that cannot see its own domain. It is now
+driven by replacing the copy's oracle with a stub and running the copy's
+`verify.sh` with **no** flag: the stub answers instead of recursing, this
+scenario chooses its answer, and both directions are asserted — a passing stub
+must produce a PASS row that quotes the stub, and a failing stub must fail the
+run.
+
+**This section used to say the opposite, and the reason it gave was wrong.** It
+said verify.sh could have no automated test because the harness would run
+`verify.sh` against a mutated copy and the copy would run the harness again.
+That obstacle is real but specific to writing the harness as a **`go test`**:
+`verify.sh` runs `go test ./...`, so a Go test that ran `verify.sh` re-enters it
+with nowhere to put a flag. As a standalone script with an explicit `--inner`
+on the inner invocation, there is no recursion to break. The correction is on
+the record because a false justification is worse than an admitted gap: the gap
+gets closed, the justification gets believed.
+
+`--inner` is a flag and not an environment variable on purpose. An ambient
+variable silences the oracle for anyone who happens to have it set; a flag has
+to be typed into the invocation you are reading.
+
+### What the oracle cannot see
+
+1. **A defect nobody planted.** It is a list of scenarios, not a proof. The
+   scenario list is cross-checked in both directions against the `sc_*`
+   functions in the file, so removing a name is a REFUSAL rather than a quiet
+   shrinkage — but removing the name **and** its function together is
+   consistent and invisible. The cheap edit is loud; the expensive one is not.
+2. **The ceiling's VALUE, behaviourally.** Driving it needs a suite lasting
+   between the shipped ceiling and a raised one, i.e. minutes of wall clock per
+   run. The oracle instead drives the ceiling's *branch* (a 3s suite against a
+   ceiling lowered in the copy must FAIL, and the same suite against the
+   shipped ceiling must PASS — that second one is the control, without which
+   the first proves only that a busy loop breaks something), and checks the
+   declared value is inside 5..120. The band check is STRUCTURAL and weaker
+   than the rest; it kills "delete the line" and "raise it to 6000" and nothing
+   subtler.
+3. **`--inner` failing to SUPPRESS the oracle.** The other half — that the
+   unflagged invocation still runs it — is driven by the stub scenario above.
+   Suppression is asserted (the clean-copy scenario requires the inner run to
+   have no `verify-oracle` row) but not mutation-driven, because that mutant is
+   unbounded recursion and running it on a shared machine is not worth the
+   evidence. MEASURED 2026-08-29 by hand instead, in both directions:
+   `./verify.sh` reports 9 steps including a `verify-oracle` row;
+   `./verify.sh --inner` reports 8 and no such row.
+4. **Two defensive arms that are unreachable today.** The `*)` unexpected
+   exit-code arm — the gates return only 0/1/2 — and the "gate does not
+   compile" arm, since a gate that fails to build fails `build`, `vet` and
+   `unit-suite` first. Both are correct code and no test is owed; they are
+   named here so a reader does not mistake them for gaps.
+
+`shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
+`verify.sh`'s own steps. The linted list is enumerated AND cross-checked
+against every tracked `.sh` file, for the reason the gate roster is: a list
+that discovers itself is silenced by moving a file, and a list that is only
+enumerated is silenced by adding one. It covers shell defects and says nothing
+about whether the verdicts are right.
+
+## The policy is itself under test
+
+Everything the gates enforce is a table in `internal/gates/rings/rings.go`. A
+gate can be perfect and enforce a widened table, and MEASURED 2026-08-28 by
+review, that was the state: mutating the gate logic killed every mutant, and
+mutating the **policy** — adding `net`, `time`, `os`, `syscall` to the ring-1
+allowlist, adding `Sleep`, `After`, `Tick` to the test allowlist — was never
+attempted by the author. When the reviewer tried it, 7 of 16 widenings
+survived. Re-derived here at 21 widenings, 12 survived.
+
+Two layers now stand behind those tables, and they fail differently on purpose.
+
+**Derived (`internal/gates/rings/policy_test.go`).** These do not read a list of
+names; they compute the answer from the standard library and compare.
+
+| Check | What it derives | Killed by |
+|---|---|---|
+| `TestPureStdlibClosureIsClean` | `go list -deps` of every admitted package; any whose closure reaches `os`, `syscall`, `net`, `time`, `context`, … must carry an identifier restriction | admitting an impure package |
+| `TestAllowlistedIdentifiersExist` | `go doc pkg.Ident` per entry, as an existence oracle | a typo, or an identifier the stdlib removed |
+| `TestAllowlistsExcludeStreamAPIs` | signatures naming `io.Writer`/`io.Reader`/… | admitting a stream API into a pure ring |
+| `TestTimeAllowlistExcludesWaiters` | signatures returning `<-chan Time`, `*Timer`, `*Ticker` | admitting a waiting primitive into tests |
+| `TestContextAllowlistExcludesDeadlines` | constructors whose signature names `time.Duration` or `time.Time` | admitting a deadline constructor into tests |
+
+The derived layer covers identifiers nobody enumerated, which is the point: it
+found a hole neither human pass did. `encoding/hex` was admitted to ring 1
+unrestricted; its dependency closure reaches `os` and `syscall`, and
+`hex.Dumper` takes an `io.Writer`. It now carries a restriction.
+
+**Enumerated, and driven through the real binary**
+(`t1/policy_driven_test.go`, `t2/policy_driven_test.go`). `PureRefusedPkgs`,
+`PureRefusedIdents` and `TestRefusedIdents` are things the tables must never
+admit. Membership in a map proves nothing about behaviour, so each case is
+generated into a fixture and run through the built gate: the gate must exit
+VIOLATION. Widening the allowlist makes it exit PASS and the case goes red.
+
+**Preservation controls.** A guard fails in one direction, and a policy that
+refuses everything passes every refusal test. `TestPureAllowlistIsAccepted`
+imports all 15 admitted packages and names all 25 restricted identifiers in one
+ring-1 fixture and requires PASS. `TestTestAllowlistIsAccepted` names all 77
+allowlisted identifiers across `time` and `context` in a test fixture and
+requires PASS. `TestFakeClockTestIsAccepted` is the realistic one: a
+table-driven lease-lifecycle test built on a `fakeClock` with `Advance`,
+`time.Unix`, and duration arithmetic — the shape M1 will actually write — must
+pass untouched.
+
+### What the policy guards cannot see
+
+1. **A widening that is genuinely correct.** They cannot tell a considered
+   policy change from a careless one; they make the change loud, not illegal.
+   Deleting a case remains available to anyone who means it.
+2. **`time.Sleep`, from the derived side.** MEASURED 2026-08-29: the waiter
+   derivation matches signatures *returning* a channel or a timer, and
+   `func Sleep(d Duration)` returns nothing. It matches 5 of the 6 waiting
+   primitives; `Sleep` is carried by the enumerated layer alone. The two layers
+   are not redundant and neither is a superset of the other.
+3. **A package it does not restrict.** The closure check demands a restriction
+   for an admitted package whose closure is impure. It says nothing about which
+   identifiers that restriction should hold beyond the stream-API rule.
+4. **`context.AfterFunc`, and this is the one place a mutant legitimately
+   survived.** It runs `f` on cancellation, not on a clock, so it is not
+   obviously a T2 violation and it is deliberately NOT listed as refused —
+   claiming otherwise would assert an adjudication nobody made. Its signature
+   `(ctx Context, f func()) (stop func() bool)` names no `time` type, so the
+   deadline derivation correctly does not match it. That left its refusal held
+   by nothing but the absence of a key in a map, so it is **pinned as a case**
+   (`TestContextAfterFuncIsRefusedByDefault`): today's answer is refused,
+   admitting it means deleting the case and writing down why. A pin records a
+   decision that has not been made; it does not make one.
+5. **The stdlib moving under them.** `go doc` is queried at test time against
+   the toolchain in use, so an identifier removed upstream turns the existence
+   probe red — which is correct — but a *newly added* waiting primitive is
+   simply not on the allowlist, and is refused by default rather than noticed.
+
+## Diagnostics name positions relative to the tree root
+
+MEASURED 2026-08-28 by review: six self-test cases asserted a rule had fired by
+looking for a substring in the gate's output, and the output carried the
+fixture's `t.TempDir()` path — which Go names after the subtest. A case named
+`third_party` was satisfied by the words `third_party` in the temp directory,
+not by the diagnosis. Every one of those assertions would have passed with the
+rule deleted.
+
+Fixed twice, on purpose. At the source: `scan.Rel` makes every position
+relative to the tree root, so no diagnostic carries the caller's directory. And
+at the one place every self-test passes through: `gatetest.Run` fails any case
+whose gate output contains the fixture root. A source fix holds only until the
+next diagnostic is written; the choke point holds after that.
+
+`Rel` falls back to the **basename** for a path it cannot relativise, and a
+basename satisfies the choke point perfectly well — it does not contain the
+root either. MEASURED 2026-08-29: mutating `Rel` to take that fallback always
+survived the whole suite. `TestT1DiagnosticsNameTheRing` now plants the same
+basename in two rings and requires the diagnosis to tell them apart, and
+`TestRel` pins both directions of the function itself.
+
+**What this cannot see:** it fixes the shape of a position, not its accuracy. A
+gate emitting a plausible but wrong relative path passes all of it.

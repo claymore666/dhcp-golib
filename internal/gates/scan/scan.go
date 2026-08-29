@@ -72,18 +72,36 @@ func GoFiles(root string) ([]string, error) {
 	return out, nil
 }
 
-// Parse reads and parses one file, comments and all.
-func Parse(path string) (*File, error) {
+// Parse reads and parses one file, naming it RELATIVE to root.
+//
+// The relative name is not cosmetic. Every position this gate prints comes
+// from the FileSet, so naming the file by its absolute path puts the caller's
+// directory into every diagnostic — and when the caller is a test fixture
+// under t.TempDir(), that directory is named after the subtest. An assertion
+// checking the gate said the right thing then matches the SUBTEST NAME instead
+// of the diagnosis. That defect was real here and is why this takes a root.
+func Parse(root, path string) (*File, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	name := Rel(root, path)
 	fset := token.NewFileSet()
-	syn, err := parser.ParseFile(fset, path, src, parser.ParseComments)
+	syn, err := parser.ParseFile(fset, name, src, parser.ParseComments)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
-	return &File{Path: path, Fset: fset, Syntax: syn}, nil
+	return &File{Path: name, Fset: fset, Syntax: syn}, nil
+}
+
+// Rel renders path relative to root, falling back to the base name rather than
+// to the absolute path: a diagnostic must never carry the caller's directory,
+// and a fallback that does would reintroduce exactly the defect Parse guards.
+func Rel(root, path string) string {
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return rel
+	}
+	return filepath.Base(path)
 }
 
 // Imports returns every import in the file with the local name it binds.

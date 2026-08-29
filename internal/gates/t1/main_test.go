@@ -12,7 +12,7 @@ import (
 // must keep passing, because a guard fails in one direction and a gate that
 // refuses everything is as useless as one that refuses nothing.
 func TestT1(t *testing.T) {
-	bin := gatetest.Build(t)
+	bin := bin(t)
 
 	cases := []struct {
 		name  string
@@ -184,5 +184,42 @@ func TestT1(t *testing.T) {
 				t.Errorf("output does not contain %q; the case may be red for the wrong reason\noutput:\n%s", tc.substr, out)
 			}
 		})
+	}
+}
+
+// TestT1DiagnosticsNameTheRing pins the ring-qualified path in the diagnosis.
+//
+// The gates report positions relative to the tree root (scan.Rel) so that a
+// diagnostic never carries the caller's temp directory — see review finding 2
+// and gatetest.Run's guard. Rel has a fallback for a path it cannot relativise
+// that returns the BASENAME, and a basename passes that guard perfectly well:
+// it does not contain the root either.
+//
+// MEASURED 2026-08-29: mutating Rel to take the fallback for every path
+// survived the whole suite. Nothing asserted that a diagnostic distinguishes
+// proto/doc.go from wire/doc.go, and the fix for one finding had quietly
+// created the conditions for an ambiguous one.
+//
+// So this plants the SAME basename in two rings and requires the gate to tell
+// them apart. A basename-only diagnosis cannot: it would name "impure.go"
+// twice and leave the reader to guess which ring is impure.
+//
+// What it CANNOT see: it fixes the shape of the position, not its accuracy —
+// a gate emitting a correct-looking but wrong relative path would pass this.
+func TestT1DiagnosticsNameTheRing(t *testing.T) {
+	root := gatetest.Fixture(t, map[string]string{
+		"proto/impure.go": "package proto\n\nimport \"os\"\n\nvar _ = os.Stdout\n",
+		"wire/impure.go":  "package wire\n\nimport \"os\"\n\nvar _ = os.Stderr\n",
+	})
+	code, out := gatetest.Run(t, bin(t), root)
+	if code != gatetest.Violate {
+		t.Fatalf("exit %d, want %d\noutput:\n%s", code, gatetest.Violate, out)
+	}
+	for _, want := range []string{"proto/impure.go", "wire/impure.go"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the diagnosis does not name %s. Two rings hold a file of that "+
+				"basename; a diagnosis that names only the basename cannot say which "+
+				"ring is impure.\noutput:\n%s", want, out)
+		}
 	}
 }

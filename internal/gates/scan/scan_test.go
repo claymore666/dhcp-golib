@@ -71,8 +71,8 @@ import (
 	_ "os"
 )
 `
-	path := writeTemp(t, src)
-	f, err := Parse(path)
+	root, path := writeTemp(t, src)
+	f, err := Parse(root, path)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -111,11 +111,41 @@ import (
 	}
 }
 
-func writeTemp(t *testing.T, src string) string {
+func writeTemp(t *testing.T, src string) (root, path string) {
 	t.Helper()
-	path := t.TempDir() + "/x.go"
+	root = t.TempDir()
+	path = root + "/x.go"
 	if err := osWriteFile(path, src); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
-	return path
+	return root, path
+}
+
+// TestRel pins both directions of Rel, the function that keeps absolute paths
+// out of gate diagnostics.
+//
+// The fallback matters as much as the happy path: it is reached when a path
+// cannot be expressed relative to root, and it returns a BASENAME. A basename
+// satisfies every guard that looks for the root in the output while telling
+// the reader strictly less than the relative path does. TestT1DiagnosticsNameTheRing
+// is the call-site half of this; a unit test on Rel alone does not cover the
+// line that calls it.
+func TestRel(t *testing.T) {
+	cases := []struct {
+		name, root, path, want string
+	}{
+		{"inside the root keeps the directory", "/a/b", "/a/b/proto/x.go", "proto/x.go"},
+		{"the root itself", "/a/b", "/a/b/x.go", "x.go"},
+		{"below is expressed with ..", "/a/b/c", "/a/b/x.go", "../x.go"},
+		// filepath.Rel returns an error only when one path is absolute and the
+		// other is not; that is the fallback's whole domain.
+		{"unrelatable path falls back to the basename", "/a/b", "relative/x.go", "x.go"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Rel(c.root, c.path); got != c.want {
+				t.Fatalf("Rel(%q, %q) = %q, want %q", c.root, c.path, got, c.want)
+			}
+		})
+	}
 }

@@ -11,7 +11,7 @@ import (
 // could come to wait on the clock, and every control is something a legitimate
 // test must still be allowed to do.
 func TestT2(t *testing.T) {
-	bin := gatetest.Build(t)
+	bin := bin(t)
 
 	// Fixture always writes the four ring packages; T2 needs at least one
 	// _test.go somewhere or it refuses, so the clean baseline supplies one.

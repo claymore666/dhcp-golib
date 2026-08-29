@@ -100,11 +100,11 @@ func run(root string) int {
 	for _, r := range all {
 		dir := filepath.Join(root, r)
 		if _, err := os.Stat(dir); err != nil {
-			refuse("ring root %q does not exist under %s; the domain is empty (%v)", r, root, err)
+			refuse("ring root %q does not exist; the domain is empty", r)
 		}
 		files, err := scan.GoFiles(dir)
 		if err != nil {
-			refuse("ring root %q is not readable, so the domain is empty: %v", r, err)
+			refuse("ring root %q is not readable, so the domain is empty", r)
 		}
 		n := 0
 		for _, f := range files {
@@ -123,7 +123,7 @@ func run(root string) int {
 	for _, r := range pure {
 		files, err := scan.GoFiles(filepath.Join(root, r))
 		if err != nil {
-			refuse("ring root %q is not readable: %v", r, err)
+			refuse("ring root %q is not readable", r)
 		}
 		for _, path := range files {
 			if strings.HasSuffix(path, "_test.go") {
@@ -132,7 +132,7 @@ func run(root string) int {
 				// state machine impure. T2 governs test files.
 				continue
 			}
-			f, err := scan.Parse(path)
+			f, err := scan.Parse(root, path)
 			if err != nil {
 				refuse("%v", err)
 			}
@@ -255,7 +255,7 @@ func run(root string) int {
 func checkModulePath(root string) error {
 	f, err := os.Open(filepath.Join(root, "go.mod"))
 	if err != nil {
-		return fmt.Errorf("cannot read go.mod: %w", err)
+		return fmt.Errorf("cannot read go.mod")
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)

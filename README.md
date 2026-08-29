@@ -53,14 +53,18 @@ weakened to fit the code.
 One command, every check, one verdict. Exit 0 is PASS and is the normal state;
 exit 1 is FAIL. A step that cannot be measured is a FAIL, never a skip.
 
-It runs `go build`, `go vet`, `gofmt`, `shellcheck` on itself, the gate roster
-cross-check, the T1 and T2 gates, and the race-enabled unit suite under a
-wall-clock ceiling.
+It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
+gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
+a wall-clock ceiling, and its own oracle.
 
 There is no CI on this repository and there will not be: the self-hosted
 runners belong to the plugin repository and cannot serve a second private repo
 without an organisation. `verify.sh` is the only arbiter there is, which is why
-it is one command and not a paragraph describing what a developer should run.
+it is one command and not a paragraph describing what a developer should run —
+and why it has an oracle of its own, `scripts/test-verify.sh`, which plants a
+defect in a copy of the tree and requires the row that owns that defect to be
+the row that fails. `verify.sh` runs it as a step, so the arbiter is checked by
+the command that runs the arbiter. What it cannot see is in `docs/gates.md`.
 
 ### The two gates
 
@@ -70,5 +74,7 @@ it is one command and not a paragraph describing what a developer should run.
   allowlist over test files, plus a wall-clock ceiling on the suite.
 
 Both are load-bearing guarantees rather than hygiene, and both are checked
-against a planted violation rather than trusted. What each one **cannot** see
+against a planted violation rather than trusted. The allowlists the gates read
+are checked too, and separately: a correct gate enforcing a widened table is
+the failure a gate test cannot see. What each one **cannot** see
 is written down in `docs/gates.md`; read that before relying on either.

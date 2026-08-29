@@ -78,7 +78,7 @@ type violation struct {
 func run(root string) int {
 	files, err := scan.GoFiles(root)
 	if err != nil {
-		refuse("cannot walk %q: %v", root, err)
+		refuse("the tree is not readable")
 	}
 
 	var tests []string
@@ -88,12 +88,12 @@ func run(root string) int {
 		}
 	}
 	if len(tests) == 0 {
-		refuse("no _test.go file found under %q; the domain is empty", root)
+		refuse("no _test.go file found; the domain is empty")
 	}
 
 	var vs []violation
 	for _, path := range tests {
-		f, err := scan.Parse(path)
+		f, err := scan.Parse(root, path)
 		if err != nil {
 			refuse("%v", err)
 		}
