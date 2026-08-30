@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/dhcplease/internal/gates/gatetest"
+	"github.com/claymore666/dhcp-golib/internal/gates/gatetest"
 )
 
 // TestT1 drives the gate by its absence. Every case names a violation the gate
@@ -65,7 +65,7 @@ func TestT1(t *testing.T) {
 	}, {
 		name: "ring 1 importing ring 3",
 		files: map[string]string{
-			"proto/impure.go": "package proto\n\nimport _ \"github.com/claymore666/dhcplease/runtime\"\n",
+			"proto/impure.go": "package proto\n\nimport _ \"github.com/claymore666/dhcp-golib/runtime\"\n",
 		},
 		want:   gatetest.Violate,
 		substr: "outside the pure rings",
@@ -157,7 +157,7 @@ func TestT1(t *testing.T) {
 	}, {
 		name: "control: ring 1 importing ring 0 passes",
 		files: map[string]string{
-			"proto/ok.go": "package proto\n\nimport _ \"github.com/claymore666/dhcplease/wire\"\n",
+			"proto/ok.go": "package proto\n\nimport _ \"github.com/claymore666/dhcp-golib/wire\"\n",
 		},
 		want:   gatetest.Pass,
 		substr: "T1 PASS",

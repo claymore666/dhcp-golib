@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 func ackMessage(opts wire.Options, yiaddr string) *wire.Message {

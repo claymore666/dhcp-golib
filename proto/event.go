@@ -3,7 +3,7 @@ package proto
 import (
 	"fmt"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // EventKind identifies what happened. It is a closed set: AllEventKinds

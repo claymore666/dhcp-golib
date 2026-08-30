@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/dhcplease/internal/gates/gatetest"
-	"github.com/claymore666/dhcplease/internal/gates/rings"
+	"github.com/claymore666/dhcp-golib/internal/gates/gatetest"
+	"github.com/claymore666/dhcp-golib/internal/gates/rings"
 )
 
 // The tests in this file drive the POLICY TABLES through the real gate binary.

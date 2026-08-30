@@ -1,4 +1,4 @@
-# dhcplease — a managed-lease DHCP client for Go
+# dhcp-golib — a managed-lease DHCP client for Go
 
 **Private. Not published.** See the publication rule in the plugin's
 `vision.md` §5.2 — this repo goes public the day the plugin depends on it,
@@ -218,12 +218,14 @@ arbiter's liveness, not proof of it; what it buys is that blinding the arbiter
 now takes an edit to `verify.sh` too.
 
 The claim is bounded, because a completeness claim here is the sentence this
-project has been wrong about four times: **no edit confined to a single file
-can shrink the arbiter's population.** Editing the manifest and the Go pin
-together still does it, and nothing in a repository can prevent that. What
-changes is that the edit is one line in a file whose whole content is the
-expectation, rather than eleven lines spread through the code that implements
-it — and it has to be made twice, in two languages.
+project has been wrong about four times. What holds is narrower: **the row
+roster and the scenario list cannot be shrunk by an edit confined to a single
+file**, because `internal/manifest` pins them a second time, in Go, and the
+edit then has to be made twice, in two languages. **The escape, named rather
+than left to be found:** the self-drive's own detection set is held by a length
+literal in `verify.manifest.sh` and by nothing else, so deleting entries there
+shrinks it and the run still passes. MEASURED; the plugin's deferred-work
+record carries the reproduction.
 
 The step deletions below were driven rather than assumed.
 MEASURED 2026-08-29, deleting one step at a time from a copy and running

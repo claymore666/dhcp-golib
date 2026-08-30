@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/claymore666/dhcplease/internal/gates/scan"
+	"github.com/claymore666/dhcp-golib/internal/gates/scan"
 )
 
 // testPrefixes are the four prefixes `go test` recognises.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // R2, written BEFORE the happy path on purpose: every action can fail, and the

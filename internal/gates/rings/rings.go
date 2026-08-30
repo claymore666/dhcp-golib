@@ -5,10 +5,16 @@ package rings
 
 // Module is the module path this repository declares. It is hardcoded on
 // purpose rather than read from go.mod: a gate that derives its parameter from
-// its subject cannot refuse the subject. CheckModulePath compares the two and
-// refuses on a mismatch, so a rename fails loudly instead of reclassifying
-// every internal import as third-party.
-const Module = "github.com/claymore666/dhcplease"
+// its subject cannot refuse the subject. checkModulePath, in the T1 gate,
+// compares the two and REFUSES on a mismatch, so a rename fails loudly instead
+// of reclassifying every internal import as third-party.
+//
+// The name in that sentence was wrong until the D7 rename: it said
+// CheckModulePath, exported, which is not in this tree at all. A reader
+// checking whether the guard existed would have grepped for it, found nothing
+// and concluded it did not. MEASURED at the rename: the guard is real, it is
+// t1/main.go's checkModulePath, and it refuses with exit 2.
+const Module = "github.com/claymore666/dhcp-golib"
 
 // The ring roots, relative to the module root. Directories, not import paths.
 //

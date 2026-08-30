@@ -75,7 +75,7 @@ func Fixture(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	base := map[string]string{
-		"go.mod":         "module github.com/claymore666/dhcplease\n\ngo 1.25\n",
+		"go.mod":         "module github.com/claymore666/dhcp-golib\n\ngo 1.25\n",
 		"wire/doc.go":    "package wire\n",
 		"proto/doc.go":   "package proto\n",
 		"lease/doc.go":   "package lease\n",

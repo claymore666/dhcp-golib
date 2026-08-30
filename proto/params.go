@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Params is everything the machine needs that is not an event.

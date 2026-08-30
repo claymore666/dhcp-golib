@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // Timers is the real timer service: one goroutine, one table, Set-replaces

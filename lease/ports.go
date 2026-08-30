@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Clock is the two clocks the design document's section 8.2 requires, and they

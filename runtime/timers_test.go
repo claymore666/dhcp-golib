@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // The timer tests never name a duration to WAIT for. Every one of them arms a

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/claymore666/dhcplease/proto"
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Config is everything the Manager needs. Every effect is an interface, so the

@@ -3,7 +3,7 @@ package runtime
 import (
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // Clock is the two-clock implementation of the design document's section 8.2.

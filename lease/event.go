@@ -5,8 +5,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Lease is what a caller gets. It is about the LEASE, not about the protocol

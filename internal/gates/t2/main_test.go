@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claymore666/dhcplease/internal/gates/gatetest"
+	"github.com/claymore666/dhcp-golib/internal/gates/gatetest"
 )
 
 // TestT2 drives the gate by its absence: every violating case is a way a test

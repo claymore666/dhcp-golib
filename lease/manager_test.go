@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/claymore666/dhcplease/proto"
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 var testCHAddr = []byte{0x02, 0x42, 0xAC, 0x11, 0x00, 0x02}

@@ -43,12 +43,12 @@ func TestDefaultLocal(t *testing.T) {
 // everything else: a dot in the first path element.
 func TestIsStdlib(t *testing.T) {
 	cases := map[string]bool{
-		"time":                                  true,
-		"net/netip":                             true,
-		"encoding/binary":                       true,
-		"github.com/claymore666/dhcplease/wire": false,
-		"example.com/x":                         false,
-		"gopkg.in/yaml.v3":                      false,
+		"time":                                   true,
+		"net/netip":                              true,
+		"encoding/binary":                        true,
+		"github.com/claymore666/dhcp-golib/wire": false,
+		"example.com/x":                          false,
+		"gopkg.in/yaml.v3":                       false,
 	}
 	for path, want := range cases {
 		if got := IsStdlib(path); got != want {

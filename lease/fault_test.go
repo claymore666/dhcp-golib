@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // echoTransport is the inner transport the fault plan wraps: it records sends

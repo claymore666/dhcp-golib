@@ -3,7 +3,7 @@ package proto
 import (
 	"fmt"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Machine is the DHCPv4 client state machine. It is pure.

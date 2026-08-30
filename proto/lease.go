@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // Lease is what the machine derived from an ACK.

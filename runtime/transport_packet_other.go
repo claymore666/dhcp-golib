@@ -5,8 +5,8 @@ package runtime
 import (
 	"errors"
 
-	"github.com/claymore666/dhcplease/lease"
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // ErrUnsupportedPlatform is returned by NewPacketTransport off Linux.

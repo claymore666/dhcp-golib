@@ -5,7 +5,7 @@ package runtime
 import (
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // processStart anchors the fallback monotonic clock.

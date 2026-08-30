@@ -44,8 +44,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/claymore666/dhcplease/internal/gates/rings"
-	"github.com/claymore666/dhcplease/internal/gates/scan"
+	"github.com/claymore666/dhcp-golib/internal/gates/rings"
+	"github.com/claymore666/dhcp-golib/internal/gates/scan"
 )
 
 const (

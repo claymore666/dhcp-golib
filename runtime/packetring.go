@@ -3,7 +3,7 @@ package runtime
 import (
 	"sync"
 
-	"github.com/claymore666/dhcplease/lease"
+	"github.com/claymore666/dhcp-golib/lease"
 )
 
 // PacketRing is the bounded ring of every message in and out (G1, R3).

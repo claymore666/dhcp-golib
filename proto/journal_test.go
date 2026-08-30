@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // recordedRun drives a machine and journals every Step exactly the way the

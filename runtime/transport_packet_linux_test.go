@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // This file tests the AF_PACKET transport against a real link, with no server

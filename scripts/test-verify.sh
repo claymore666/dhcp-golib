@@ -710,7 +710,7 @@ sc_suite_one_package_disabled() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "one package's tests were switched off and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with a package's tests disabled: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'dhcplease/wire' || note "the diagnosis does not name the package that ran no test"
+	printf '%s\n' "$OUT" | grep -q 'dhcp-golib/wire' || note "the diagnosis does not name the package that ran no test"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 

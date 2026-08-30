@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claymore666/dhcplease/proto"
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // The fakes below are what make requirement T3 real: the whole acquisition

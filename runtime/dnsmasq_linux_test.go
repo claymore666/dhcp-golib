@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/claymore666/dhcplease/lease"
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // This file is done-condition (a): a lease acquired from a REAL dnsmasq over a
@@ -65,7 +65,7 @@ import (
 // parent asserts on the child's own report of the named test. See
 // childReport.
 
-const nsChildEnv = "DHCPLEASE_NETNS_CHILD"
+const nsChildEnv = "DHCP_GOLIB_NETNS_CHILD"
 
 const (
 	testClientIf = "cli0"

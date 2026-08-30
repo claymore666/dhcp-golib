@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/claymore666/dhcplease/lease"
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // Client is ring 3's implementations wired into ring 2's manager — the only

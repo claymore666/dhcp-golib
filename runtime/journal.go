@@ -3,7 +3,7 @@ package runtime
 import (
 	"sync"
 
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // Journal is the bounded in-memory journal (requirements G2, R3).

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claymore666/dhcplease/lease"
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 func TestJournalKeepsOrderAndBound(t *testing.T) {

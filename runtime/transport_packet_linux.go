@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/claymore666/dhcplease/lease"
-	"github.com/claymore666/dhcplease/proto"
+	"github.com/claymore666/dhcp-golib/lease"
+	"github.com/claymore666/dhcp-golib/proto"
 )
 
 // ethPIP is ETH_P_IP in host byte order. syscall does not export it.

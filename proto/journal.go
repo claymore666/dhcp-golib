@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/claymore666/dhcplease/wire"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // JournalEntry is one Step, recorded.
