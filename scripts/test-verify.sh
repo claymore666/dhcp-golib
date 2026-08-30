@@ -66,11 +66,33 @@ edit() {
 	[ "$before" != "$(cat "$f")" ] || refuse "planted edit did not change $f"
 }
 
+# ------------------------------------------------------- what was OBSERVED --
+# ROUND 11. The scenario body no longer holds the assertion; the manifest does,
+# as MANIFEST_SCENARIO_CONTRACTS, and verify.sh checks the two against each
+# other. What the body still holds is the WORK, and these three helpers are the
+# only ways to do it: nothing else runs the subject or reads its table.
+#
+# So every invocation and every row read is recorded here rather than in the
+# body, and a body cannot opt out of being observed. An emptied body observes
+# nothing, and no observation is a failure — which is the whole of B14's
+# answer. MEASURED 2026-08-30 by review at the previous head: four bodies
+# emptied with their names kept, plus one comment, produced
+# VERDICT: PASS (12 steps) with a live defect in the tree.
+#
+# It is a FILE and not a variable because `row` is called inside `$( )`, and a
+# subshell's variables do not survive it. A file write does.
+OBSFILE=""
+obs() {
+	[ -n "$OBSFILE" ] || return 0
+	printf '%s\n' "$1" >>"$OBSFILE"
+}
+
 # run_verify DIR — sets RC and OUT. Uses --inner, so the copy does not run
 # this script again.
 run_verify() {
 	RC=0
 	OUT="$(cd "$1" && ./verify.sh --inner 2>&1)" || RC=$?
+	obs "rc:$RC"
 }
 
 # run_verify_outer DIR — the copy's verify.sh with NO flag, i.e. the invocation
@@ -79,6 +101,31 @@ run_verify() {
 run_verify_outer() {
 	RC=0
 	OUT="$(cd "$1" && ./verify.sh 2>&1)" || RC=$?
+	obs "rc:$RC"
+}
+
+# run_verify_inner_from_parent DIR — as above but with --inner. Its one caller
+# is invoked-by-relative-path, which exists because "$0" is what the caller
+# typed: the invocation IS the subject there, so it cannot use run_verify.
+run_verify_inner_from_parent() {
+	local parent base
+	parent="$(dirname "$1")"
+	base="$(basename "$1")"
+	RC=0
+	OUT="$(cd "$parent" && "$base/verify.sh" --inner 2>&1)" || RC=$?
+	obs "rc:$RC"
+}
+
+# run_verify_from_parent DIR — the copy's verify.sh invoked from OUTSIDE the
+# copy, as `<dir>/verify.sh`. Three scenarios open-coded this, which meant three
+# copies of the invocation and three places an observation could go unrecorded.
+run_verify_from_parent() {
+	local parent base
+	parent="$(dirname "$1")"
+	base="$(basename "$1")"
+	RC=0
+	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	obs "rc:$RC"
 }
 
 # table — the step rows of $OUT and nothing else. Diagnostics go to stderr and
@@ -94,8 +141,14 @@ table() {
 
 # row NAME — PASS, FAIL, or ABSENT. ABSENT is distinct on purpose: a step that
 # stopped existing is the quietest way for a verifier to stop checking.
+#
+# Every read is recorded (see obs above). The scenario asks the question; the
+# manifest says which answer it must have got.
 row() {
-	table | awk -v n="$1" '$1 == n { print $2; found = 1 } END { if (!found) print "ABSENT" }'
+	local v
+	v="$(table | awk -v n="$1" '$1 == n { print $2; found = 1 } END { if (!found) print "ABSENT" }')"
+	obs "$1:$v"
+	printf '%s\n' "$v"
 }
 
 # why NAME — the detail column of a row.
@@ -135,6 +188,12 @@ sc_verdict_on_abort() {
 		'oracle_planted_command_that_does_not_exist'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "an aborted verifier exited 0"
+	# The abort is planted AT the gate-roster banner, so gate-roster and
+	# everything after it must not appear. Asserted rather than implied: the
+	# scenario used to read no row at all, which left it with nothing to say
+	# about WHERE the run stopped.
+	[ "$(row gate-roster)" = ABSENT ] ||
+		note "the run aborted but gate-roster is still in the table: $(row gate-roster)"
 	printf '%s\n' "$OUT" | grep -q '^VERDICT: FAIL' ||
 		note "an aborted verifier printed no FAIL verdict (this is the defect the EXIT trap exists for)"
 	printf '%s\n' "$OUT" | grep -q 'aborted before reaching its verdict' ||
@@ -474,12 +533,9 @@ sc_invoked_by_relative_path() {
 	#
 	# Every other scenario invokes the copy as ./verify.sh from inside it, so
 	# no other scenario can reach this.
-	local d="$1" parent base
+	local d="$1"
 	copy_tree "$d"
-	parent="$(dirname "$d")"
-	base="$(basename "$d")"
-	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" --inner 2>&1)" || RC=$?
+	run_verify_inner_from_parent "$d"
 	[ "$RC" -eq 0 ] || note "an untouched copy failed when invoked by a relative path from its parent: $OUT"
 	[ "$(row bounds)" = PASS ] || note "bounds could not read its own source under a relative invocation: $(row bounds)"
 }
@@ -698,6 +754,10 @@ sc_row_added() {
 record "undeclared-row" PASS "invented" 1'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "an undeclared row left the run passing"
+	# The invented row must actually BE in the table — otherwise this scenario
+	# would pass over a run that failed for some other reason entirely.
+	[ "$(row undeclared-row)" = PASS ] ||
+		note "the invented row is not in the table, so this scenario is not measuring an undeclared row: $(row undeclared-row)"
 	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
 }
 
@@ -708,14 +768,11 @@ sc_oracle_stub_total() {
 	#
 	# run_verify_outer is safe here for the reason its comment gives: the
 	# copy's oracle has been replaced by a stub, so nothing recurses.
-	local d="$1" parent base
+	local d="$1"
 	copy_tree "$d"
 	printf '#!/bin/sh\nexit 0\n' >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
-	parent="$(dirname "$d")"
-	base="$(basename "$d")"
-	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "the oracle was replaced by 'exit 0' and the arbiter still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a stubbed oracle did not fail its row: $(row verify-oracle)"
 	printf '%s\n' "$OUT" | grep -q 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
@@ -732,18 +789,11 @@ sc_oracle_stub_partial() {
 	# not closed in round 7 — the expectation moved from the oracle's answer to
 	# a grep over the oracle's source, which is still the subject — and its
 	# survival is exactly what round 8 measured.
-	local d="$1" parent base s
+	local d="$1"
 	copy_tree "$d"
-	{
-		printf '#!/bin/sh\n'
-		for s in "${MANIFEST_SCENARIOS[@]}"; do printf 'echo "  RESULT %s PASS"\n' "$s"; done
-		printf 'echo "ORACLE PASS: 3 scenarios, every planted defect was detected by the row that owns it"\nexit 0\n'
-	} >"$d/scripts/test-verify.sh"
-	chmod +x "$d/scripts/test-verify.sh"
-	parent="$(dirname "$d")"
-	base="$(basename "$d")"
-	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	fabricating_stub "$d/scripts/test-verify.sh" 0 \
+		"every planted defect was detected by the row that owns it" 3
+	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle claiming 3 scenarios against a manifest declaring ${#MANIFEST_SCENARIOS[@]} still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a partial stub did not fail its row: $(row verify-oracle)"
 	printf '%s\n' "$OUT" | grep -q 'verify.manifest.sh declares' || note "the diagnosis does not compare reported against declared"
@@ -758,15 +808,12 @@ sc_oracle_names_fabricated() {
 	# This stub reports the RIGHT number and runs nothing. It passes every
 	# check round 7 added and must fail on the names, which come from the
 	# manifest and are written nowhere in the file it replaced.
-	local d="$1" parent base
+	local d="$1"
 	copy_tree "$d"
 	printf '#!/bin/sh\necho "ORACLE PASS: %s scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' \
 		"${#MANIFEST_SCENARIOS[@]}" >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
-	parent="$(dirname "$d")"
-	base="$(basename "$d")"
-	RC=0
-	OUT="$(cd "$parent" && "$base/verify.sh" 2>&1)" || RC=$?
+	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported the right number and ran nothing still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a name-free stub did not fail its row: $(row verify-oracle)"
 	printf '%s\n' "$OUT" | grep -q 'reported no passing result for scenario' ||
@@ -818,8 +865,13 @@ sc_manifest_row_removed() {
 	# deleter did not also edit, and it fails inside the unit suite.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.manifest.sh" $'\tshellcheck\n\tgate-roster\n' $'\tgate-roster\n'
-	edit "$d/verify.manifest.sh" 'MANIFEST_ROWS_N=12' 'MANIFEST_ROWS_N=11'
+	# The anchor is the row's OWN line, not the pair it used to form with its
+	# neighbour: inserting doc-numbers between them broke the pair, edit()
+	# refused, and this scenario went silent. A neighbour is not an anchor.
+	edit "$d/verify.manifest.sh" $'\tshellcheck\n' ''
+	edit "$d/verify.manifest.sh" \
+		"MANIFEST_ROWS_N=$MANIFEST_ROWS_N" \
+		"MANIFEST_ROWS_N=$((MANIFEST_ROWS_N - 1))"
 	edit "$d/verify.sh" 'step "shellcheck" "${#linted[@]}" shellcheck -S warning "${linted[@]}"' 'true # gate deleted'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a gate was deleted from the arbiter and from its roster together, and the run passed"
@@ -833,7 +885,7 @@ sc_manifest_count_lies() {
 	# whole content is the expectation.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.manifest.sh" $'\tshellcheck\n\tgate-roster\n' $'\tgate-roster\n'
+	edit "$d/verify.manifest.sh" $'\tshellcheck\n' ''
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the manifest disagreed with itself and the run passed"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded over an incoherent manifest: citations is $(row citations)"
@@ -850,8 +902,24 @@ sc_manifest_scenario_removed() {
 	# fires without the deleted scenario's own file being consulted.
 	local d="$1"
 	copy_tree "$d"
+	# The removal is CONSISTENT — name, behaviour contract and both counts —
+	# because an inconsistent one is caught by manifest_check before verify.sh
+	# records a single row, and would leave this scenario proving the weaker
+	# thing. This is the round-9 defeat as its author would have written it.
 	edit "$d/verify.manifest.sh" $'\tcitation-word-start\n' ''
-	edit "$d/verify.manifest.sh" 'MANIFEST_SCENARIOS_N=53' 'MANIFEST_SCENARIOS_N=52'
+	edit "$d/verify.manifest.sh" $'\t"citation-word-start|nonzero|citations:FAIL"\n' ''
+	# DERIVED from the parent's own manifest, not written as a literal. The
+	# literals here were 53 and the population is 57; the anchor stopped
+	# matching, so edit() refused, so this scenario DIED — reporting nothing at
+	# all, which is what a deleted scenario also reports. The oracle's count
+	# guard caught it; nothing else would have, and its diagnosis did not name
+	# which scenario had gone silent until this round.
+	edit "$d/verify.manifest.sh" \
+		"MANIFEST_SCENARIOS_N=$MANIFEST_SCENARIOS_N" \
+		"MANIFEST_SCENARIOS_N=$((MANIFEST_SCENARIOS_N - 1))"
+	edit "$d/verify.manifest.sh" \
+		"MANIFEST_SCENARIO_CONTRACTS_N=$MANIFEST_SCENARIO_CONTRACTS_N" \
+		"MANIFEST_SCENARIO_CONTRACTS_N=$((MANIFEST_SCENARIO_CONTRACTS_N - 1))"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a scenario left the manifest, count and all, and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "the Go floor did not see the scenario population shrink: unit-suite is $(row unit-suite) — $(why unit-suite)"
@@ -952,6 +1020,75 @@ sc_gate_refuses() {
 		note "the refusal was not reported as a refusal: $(table | grep '^t1' || true)"
 }
 
+# kill_scenario_body FILE FN — keep the definition, make the body refuse. This
+# is what a stale anchor does: the plant cannot apply, so the scenario cannot
+# measure anything.
+kill_scenario_body() {
+	python3 - "$1" "$2" <<-'PY'
+		import re, sys
+		p, fn = sys.argv[1], sys.argv[2]
+		s = open(p).read()
+		i = s.index(fn + "() {")
+		j = s.index("\n}\n", i) + 3
+		open(p, "w").write(s[:i] + fn + '() {\n\t: "$1"\n\trefuse "planted death"\n}\n' + s[j:])
+	PY
+	grep -q "^$2() {" "$1" || refuse "kill_scenario_body lost the definition of $2"
+}
+
+sc_scenario_death_is_reported() {
+	# ROUND 11. A scenario whose plant no longer applies used to print nothing,
+	# and nothing is exactly what a DELETED scenario prints. Three scenarios
+	# went silent this way while this round was being written.
+	#
+	# This one runs a single scenario in a copy, so it costs one inner verify
+	# rather than a nested oracle.
+	local d="$1" out
+	copy_tree "$d"
+	kill_scenario_body "$d/scripts/test-verify.sh" sc_control
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario control 2>&1 || true)"
+	printf '%s\n' "$out" | grep -q '^RESULT control FAIL obs=.*died before reporting' ||
+		note "a scenario that died did not report its own death: $out"
+	printf '%s\n' "$out" | grep -q 'not a subject failure' ||
+		note "the death line does not distinguish a broken plant from a broken subject"
+	# BOUND: this token is written here, not derived from the subject, and is
+	# therefore the weakest observation in the manifest. It is not vacuous —
+	# emptying this body removes it — but a body kept down to this one line
+	# would satisfy it. The two greps above are what make that a bad trade.
+	obs "scenario-death:reported"
+}
+
+sc_doc_number_reintroduced() {
+	# ROUND 11, B13-N1. Round 9 argued the derived-number class was "closed by
+	# removal, not by vigilance" — and then, in the same round, wrote a fresh
+	# derived number into the paragraph explaining the removals. A termination
+	# argument about the future needs something that goes red in the future.
+	local d="$1"
+	copy_tree "$d"
+	printf '\nThe narrowing gate covers 16 of 102 allowlisted identifiers.\n' >>"$d/docs/gates.md"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "a number an instrument recomputes came back into prose and the run passed"
+	[ "$(row doc-numbers)" = FAIL ] || note "the doc sweep did not see a removed number return: $(row doc-numbers)"
+	printf '%s\n' "$OUT" | grep -q 'name the instrument' ||
+		note "the diagnosis does not say what to do instead of writing the number"
+}
+
+sc_doc_sweep_deleted() {
+	# The standing question, asked of the newest row: delete the subject
+	# entirely, and does the row still say PASS? The sweep is a separate file,
+	# which is exactly the shape that reported PASS over an absent gate in
+	# round 8.
+	local d="$1"
+	copy_tree "$d"
+	rm -f "$d/scripts/sweep-doc-numbers.sh"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the doc sweep was deleted and the run passed"
+	[ "$(row doc-numbers)" = FAIL ] || note "an absent sweep did not fail its own row: $(row doc-numbers)"
+	# The shellcheck row must ALSO notice, because the manifest still lists a
+	# script that is gone. Two independent operands, neither reachable from the
+	# other's edit.
+	[ "$(row shellcheck)" = FAIL ] || note "the linted-list cross-check did not see the script leave: $(row shellcheck)"
+}
+
 sc_unlinted_script() {
 	# The lint list is enumerated in verify.sh, so it is silenced by adding a
 	# file nobody lists. This drives that direction.
@@ -989,25 +1126,24 @@ sc_oracle_is_invoked() {
 	# Replacing the copy's oracle with a stub bounds that: the stub answers
 	# without calling verify.sh, and this scenario chooses its answer, so both
 	# directions are drivable and neither runs deep.
-	# Since round 9 the stub must account for every scenario the MANIFEST
-	# declares, by name, and report the manifest's count. So the passing stub
-	# below reproduces those names — and that is not a weakening, it is this
-	# file demonstrating the bound verify.sh states on itself: a stub that
-	# reads the manifest defeats the name check. Naming it here, where it is
-	# executed, is worth more than claiming it cannot happen.
+	# Since round 11 the stub must reproduce, for every scenario, the
+	# OBSERVATION the manifest says that scenario must make — and burn the
+	# manifest's wall-clock floor. So the passing stub below writes out the
+	# whole contract table and sleeps.
+	#
+	# That is not a weakening. It is this file EXECUTING the bound verify.sh
+	# states on itself: a fabricator that reads the manifest defeats the
+	# contract check, and the price is that it has to reproduce the expectation
+	# it is faking. Demonstrating that where it runs is worth more than
+	# claiming it cannot happen.
 	#
 	# The two directions this scenario drives are unchanged.
-	local d="$1" stub marker s
+	local d="$1" stub marker
 	marker="oracle-stub-was-invoked"
 	copy_tree "$d"
 	stub="$d/scripts/test-verify.sh"
 
-	{
-		printf '#!/bin/sh\n'
-		for s in "${MANIFEST_SCENARIOS[@]}"; do printf 'echo "  RESULT %s PASS"\n' "$s"; done
-		printf 'echo "ORACLE PASS: %s scenarios, %s"\nexit 0\n' "${#MANIFEST_SCENARIOS[@]}" "$marker"
-	} >"$stub"
-	chmod +x "$stub"
+	fabricating_stub "$stub" "$((ORACLE_MIN_SECONDS + 1))" "$marker"
 	run_verify_outer "$d"
 	[ "$RC" -eq 0 ] || note "verify.sh failed with a passing oracle: exit $RC"
 	[ "$(row verify-oracle)" = PASS ] || note "no passing verify-oracle row: $(row verify-oracle)"
@@ -1037,23 +1173,237 @@ sc_ceiling_band() {
 	}
 	[ "$v" -ge 5 ] && [ "$v" -le 120 ] ||
 		note "SUITE_CEILING_SECONDS=$v is outside 5..120; a ceiling no suite can reach is not a ceiling"
+	# The value READ, not the fact of having looked. This is the only static
+	# contract, and it used to demand nothing at all — an emptied body and a
+	# working one were the same line of output. The manifest names the number,
+	# so raising the ceiling is now a deliberate edit in two files rather than
+	# one, which is what the round-10 instruction asked for.
+	obs "ceiling-seconds:$v"
+}
+
+# fabricating_stub FILE SLEEP MARKER — an oracle that reports a perfect account
+# and runs nothing, deriving each scenario's observation from the manifest's
+# contract for it.
+#
+# It exists as a helper because three scenarios need it and each would
+# otherwise carry its own copy, which is how two of them would quietly drift
+# out of agreement with the contract format. It is also, deliberately, the
+# strongest defeat this design has: see the BOUND in verify.sh's oracle block.
+fabricating_stub() {
+	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" c n rest rc tok o
+	{
+		printf '#!/bin/sh\n'
+		[ "$nap" -gt 0 ] && printf 'sleep %s\n' "$nap"
+		for c in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
+			n="${c%%|*}"
+			rest="${c#*|}"
+			rc="${rest%%|*}"
+			tok="${rest##*|}"
+			case "$rc" in
+			zero) o="rc:0" ;;
+			nonzero) o="rc:1" ;;
+			*) o="static:fabricated" ;;
+			esac
+			[ "$tok" = "-" ] || o="$o,$tok"
+			printf 'echo "  RESULT %s PASS obs=%s"\n' "$n" "$o"
+		done
+		printf 'echo "ORACLE PASS: %s scenarios, %s"\nexit 0\n' "$claim" "$marker"
+	} >"$file"
+	chmod +x "$file"
+}
+
+# empty_scenario_body FILE FN — B14's edit, as a helper: keep the name, keep the
+# definition, delete everything the function does.
+empty_scenario_body() {
+	python3 - "$1" "$2" <<-'PY'
+		import re, sys
+		path, fn = sys.argv[1], sys.argv[2]
+		s = open(path).read()
+		m = re.search(r"^" + re.escape(fn) + r"\(\) \{\n", s, re.M)
+		if not m:
+		    sys.exit(3)
+		# The body ends where the next top-level function is defined.
+		nxt = re.search(r"^[a-z_]+\(\) \{", s[m.end():], re.M)
+		end = m.end() + (nxt.start() if nxt else len(s) - m.end())
+		body = s[m.end():end]
+		if "}\n" not in body:
+		    sys.exit(3)
+		close = body.rindex("}\n")
+		open(path, "w").write(s[:m.end()] + '\t: "$1"\n' + body[close:] + s[end:])
+	PY
+	grep -q "^$2() {" "$1" || refuse "empty_scenario_body lost the definition of $2"
+}
+
+# blank_obs_in_stub FILE [NAME] — blank the observation a fabricating stub
+# reports, for one scenario or (with no NAME) for all of them. This is what an
+# emptied body, or a gutted recorder, actually produces.
+blank_obs_in_stub() {
+	local file="$1" name="${2:-}"
+	if [ -n "$name" ]; then
+		sed -i "s|^echo \"  RESULT $name PASS obs=.*\"$|echo \"  RESULT $name PASS obs=\"|" "$file"
+		grep -q "RESULT $name PASS obs=\"$" "$file" || refuse "blank_obs_in_stub did not blank $name"
+	else
+		sed -i 's|^\(echo "  RESULT [a-z0-9-]* PASS obs=\).*"$|\1"|' "$file"
+	fi
+}
+
+sc_oracle_too_fast() {
+	# ROUND 11. The same perfect account, returning instantly.
+	#
+	# Every content check passes: every scenario accounted for by name, every
+	# contract satisfied, the right count reported. Only the wall-clock floor
+	# separates this from a real run, and that is exactly what the floor is
+	# for — the cheap fake should not also be the quiet one.
+	#
+	# BOUND, and the scenario above it is the proof: a fabricator that sleeps
+	# gets past this. A floor on duration is not proof of work.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" 0 "instant-fabrication"
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "an oracle that reported a perfect account in zero seconds passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "an instant fabrication did not fail its row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'without doing the work' || note "the diagnosis does not say the oracle did not run"
+}
+
+sc_scenario_body_emptied() {
+	# ROUND 11, B14 REPLAYED — the review's own defeat against the design that
+	# answers it. MEASURED 2026-08-30 at the previous head: four scenario
+	# BODIES emptied with their NAMES kept, plus one comment, gave
+	# VERDICT: PASS (12 steps) with a live defect in the tree.
+	#
+	# The name survives, the manifest is untouched, the count is right, the Go
+	# pin is satisfied. What is gone is the OBSERVATION, and that is now the
+	# thing being checked.
+	# Driven in TWO halves, because running the copy's real oracle inside a
+	# scenario is a full nested oracle run and costs minutes. The halves chain:
+	# an emptied body observes nothing, and observing nothing is a failure.
+	local d="$1" out
+	copy_tree "$d"
+	empty_scenario_body "$d/scripts/test-verify.sh" sc_record_refuses_uncounted_pass
+
+	# Half one, end to end: the emptied body reports an EMPTY observation. Note
+	# that it still reports PASS — it has nothing to complain about — which is
+	# precisely why the verdict cannot be left to the body.
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario record-refuses-uncounted-pass 2>&1)"
+	printf '%s\n' "$out" | grep -q '^RESULT record-refuses-uncounted-pass PASS obs=$' ||
+		note "an emptied body did not report an empty observation: $out"
+
+	# Half two: an empty observation fails the row, through verify.sh, against
+	# the manifest's contract.
+	fabricating_stub "$d/scripts/test-verify.sh" 0 "bodies-emptied"
+	blank_obs_in_stub "$d/scripts/test-verify.sh" record-refuses-uncounted-pass
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "a scenario reported PASS having observed nothing and the run passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "an emptied body did not fail the oracle row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+		note "the diagnosis does not say the scenario observed nothing"
+	printf '%s\n' "$OUT" | grep -q 'record-refuses-uncounted-pass' ||
+		note "the diagnosis does not name which scenario stopped working"
+}
+
+sc_observation_recorder_stubbed() {
+	# ROUND 11, D4 from the defeat list: gut the recorder rather than the
+	# scenarios. Every body still does its work and every observation is
+	# discarded.
+	#
+	# It must fail CLOSED, and this is the scenario that says so. A recorder
+	# that silently swallowed everything would turn all fifty-odd contracts
+	# vacuous in one edit, which is the worst failure available to this design.
+	local d="$1" out
+	copy_tree "$d"
+	edit "$d/scripts/test-verify.sh" '	[ -n "$OBSFILE" ] || return 0
+	printf '"'"'%s\n'"'"' "$1" >>"$OBSFILE"' '	return 0'
+
+	# Half one: a scenario that does its whole job reports nothing. This is the
+	# fail-CLOSED check — a recorder that swallowed everything silently would
+	# make every contract vacuous in one edit, which is the worst failure
+	# available to this design.
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario gofmt-violation 2>&1)"
+	printf '%s\n' "$out" | grep -q '^RESULT gofmt-violation PASS obs=$' ||
+		note "a gutted recorder did not produce an empty observation: $out"
+
+	# Half two: all observations empty fails the row, and names scenarios.
+	fabricating_stub "$d/scripts/test-verify.sh" 0 "recorder-gutted"
+	blank_obs_in_stub "$d/scripts/test-verify.sh"
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "every scenario observed nothing and the run passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "a gutted recorder did not fail the oracle row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+		note "the diagnosis does not say the scenarios observed nothing"
+}
+
+sc_min_declared_tests_margin() {
+	# ROUND 11. The direction the floor never had: tests ADDED without the
+	# manifest being updated.
+	#
+	# MEASURED 2026-08-30 by review: as a floor, this was the one manifest
+	# operand that did not force its own maintenance, so its margin — and its
+	# protection — eroded silently with every test added. It is a BAND now, and
+	# this plants MAX_DECLARED_MARGIN + 1 tests: one over the edge, derived from
+	# the manifest rather than written, so widening the band cannot leave this
+	# scenario passing against a stale literal.
+	#
+	# Its preservation control is ceiling-control, which plants exactly one test
+	# and must PASS. Without that pairing this scenario is satisfied by a band
+	# of zero, which is the strict equality that was tried and reverted.
+	local d="$1" i
+	copy_tree "$d"
+	{
+		printf 'package proto\n\nimport "testing"\n\n'
+		for i in $(seq 0 "$MAX_DECLARED_MARGIN"); do
+			printf 'func TestAnExtraDeclarationTheManifestDoesNotKnowAbout%d(t *testing.T) {}\n' "$i"
+		done
+	} >"$d/proto/extra_margin_test.go"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "tests were added past the band, the manifest was not updated, and the run passed"
+	[ "$(row unit-suite)" = FAIL ] || note "the declared-test band did not fire upward: $(row unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
 }
 
 # ------------------------------------------------------------------- driver --
 
+# A scenario that dies mid-body — an anchor that no longer matches, a helper
+# that refuses — used to print NOTHING, which is byte for byte what a deleted
+# scenario prints. MEASURED 2026-08-30: three scenarios went silent this way in
+# one round, each because a literal anchor duplicated a manifest value that had
+# moved; the population count caught them but nothing said which, and nothing
+# said the plant had failed rather than the subject having behaved.
+#
+# So death reports itself, as a FAIL, in the scenario's own name.
+SC_DONE=1
+SC_NAME=""
+run_one_exit() {
+	local rc="$1" d="$2" obsf="$3"
+	if [ "$SC_DONE" -eq 0 ]; then
+		printf 'RESULT %s FAIL obs=%s the scenario died before reporting (exit %s); its plant did not apply, so it measured nothing — this is not a pass and it is not a subject failure\n' \
+			"$SC_NAME" \
+			"$(LC_ALL=C sort -u "$obsf" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" \
+			"$rc"
+	fi
+	rm -rf "$d" "$obsf"
+}
+
 run_one() {
-	local name="$1" fn d
+	local name="$1" fn d observed
 	fn="sc_$(printf '%s' "$name" | tr - _)"
 	command -v "$fn" >/dev/null 2>&1 || refuse "no function $fn for scenario $name"
 	d="$(mktemp -d)"
-	# shellcheck disable=SC2064  # $d must expand now, not at trap time
-	trap "rm -rf '$d'" EXIT
+	OBSFILE="$(mktemp)"
+	SC_DONE=0
+	SC_NAME="$name"
+	# shellcheck disable=SC2064  # both paths must expand now, not at trap time
+	trap "run_one_exit \$? '$d' '$OBSFILE'" EXIT
 	FAILS=()
 	"$fn" "$d"
+	SC_DONE=1
+	# What the scenario actually did to the subject, as opposed to what it is
+	# called. verify.sh reads this against MANIFEST_SCENARIO_CONTRACTS.
+	observed="$(LC_ALL=C sort -u "$OBSFILE" | tr '\n' ',' | sed 's/,$//')"
 	if [ "${#FAILS[@]}" -eq 0 ]; then
-		printf 'RESULT %s PASS\n' "$name"
+		printf 'RESULT %s PASS obs=%s\n' "$name" "$observed"
 	else
-		printf 'RESULT %s FAIL %s\n' "$name" "$(printf '%s; ' "${FAILS[@]}")"
+		printf 'RESULT %s FAIL obs=%s %s\n' "$name" "$observed" "$(printf '%s; ' "${FAILS[@]}")"
 	fi
 }
 
@@ -1089,26 +1439,19 @@ if [ "$declared" != "$defined" ]; then
 	refuse "the SCENARIOS list and the sc_* functions in this file do not match"
 fi
 
-# Every row verify.sh requires must be asserted on by SOME scenario.
+# ROUND 11: the row-coverage check that stood here is DELETED, not repaired.
 #
-# Round 7's design makes a row unable to record PASS without stating how many
-# things it examined, but nothing inside verify.sh can force that number to be
-# DERIVED rather than written. A row with a hard-coded count is caught by
-# emptying its domain and watching it go red — which only happens if a scenario
-# exists. This is the check that a new row arrives with one.
+# It was `grep -q "row $r"` over this file, and its own comment declared the
+# bound two lines above it — a spelling check. MEASURED 2026-08-30 by review:
+# four scenario bodies emptied with their names kept, and ONE COMMENT
+# (`# row self-check`) left inside an emptied body, was the whole distance
+# between caught and `VERDICT: PASS (12 steps)`. Prose satisfied a presence
+# check, which is a defect this project had already named and written down.
 #
-# BOUND: it is a spelling check. A scenario that names a row and asserts
-# nothing useful about it satisfies this, and its own empty case is refused
-# below.
-# ROUND 9: the domain used to be grepped OUT OF verify.sh, so B9's edit —
-# delete the shellcheck step and its roster entry — shrank this check's domain
-# in the same stroke, and the row that stopped being checked also stopped being
-# required. It reads the manifest now.
-unasserted=""
-for r in "${MANIFEST_ROWS[@]}"; do
-	grep -q "row $r" "$ROOT/scripts/test-verify.sh" || unasserted="$unasserted $r"
-done
-[ -z "$unasserted" ] || refuse "verify.sh requires row(s)$unasserted that no scenario in this file asserts on"
+# What replaces it is not a better grep. Every row MANIFEST_ROWS requires must
+# be the subject of at least one entry in MANIFEST_SCENARIO_CONTRACTS, checked
+# in Go (internal/manifest), and a contract is satisfied only by a row verdict
+# the scenario actually OBSERVED. A comment cannot observe anything.
 
 results="$(mktemp)"
 trap 'rm -f "$results"' EXIT
@@ -1118,7 +1461,14 @@ printf '%s\n' "${SCENARIOS[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-veri
 lines="$(grep -c '^RESULT ' "$results" || true)"
 if [ "$lines" != "${#SCENARIOS[@]}" ]; then
 	sed 's/^/  /' "$results" >&2
-	refuse "collected $lines result line(s) for ${#SCENARIOS[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass"
+	missing=""
+	for s in "${SCENARIOS[@]}"; do
+		grep -q "^RESULT $s " "$results" || missing="$missing $s"
+	done
+	# NAME them. The count alone is a true statement that sends the reader to
+	# a diff of two sorted lists; it cost one such diff to find the scenario
+	# whose anchor had gone stale.
+	refuse "collected $lines result line(s) for ${#SCENARIOS[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass. Silent:${missing:-" none by name — a duplicate or malformed RESULT line"}"
 fi
 
 # The RESULT prefix is KEPT, not stripped. verify.sh requires one

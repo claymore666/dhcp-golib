@@ -472,17 +472,23 @@ deletes what it probes.
 **`MANIFEST_ROWS`** is cross-checked against the rows recorded, in both
 directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
 
-- **`verify-oracle`** derives its expected scenario count from the oracle's
-  SOURCE — the `sc_` function definitions — rather than from the oracle's
-  answer. Requiring an `ORACLE PASS: <n> scenarios` line closes a total stub;
-  it does not close the partial stub the review named as its own remedy's
-  bound, and deriving the expectation outside the file closes both. MEASURED
-  2026-08-30 against the final tree: a stub printing `ORACLE PASS: 45
-  scenarios` over a file defining none records
-  `the oracle reported no passing result for scenario(s) …`. Scenarios
-  `oracle-stub-total`, `oracle-stub-partial`. BOUND: this counts DEFINITIONS,
-  so a scenario body emptied of its assertions is defined, counted, and says
-  nothing.
+- **`verify-oracle`** takes its expectation from `verify.manifest.sh` — a file
+  the oracle does not own — and reads the oracle's report against it. This
+  sentence used to say the expectation came from the oracle's own SOURCE, the
+  `sc_` function definitions; that stopped being true when round 9 moved the
+  population into the manifest, and the sentence stayed. Requiring an
+  `ORACLE PASS: <n> scenarios` line closes a total stub; requiring one
+  `RESULT <name> PASS` line per declared scenario closes the partial stub the
+  review named as its own remedy's bound. Scenarios `oracle-stub-total`,
+  `oracle-stub-partial`, `oracle-names-fabricated`.
+
+  **The bound this bullet used to state is now closed, and it is what round 11
+  was about.** It read: *"this counts DEFINITIONS, so a scenario body emptied
+  of its assertions is defined, counted, and says nothing."* Review B14 did
+  exactly that — kept four names, deleted four bodies — and got
+  `VERDICT: PASS` on twelve steps with a live defect in the tree. Every operand
+  answered *is it there*; none answered *does it do anything*. What answers it
+  now is `MANIFEST_SCENARIO_CONTRACTS`: see "Contracts, not names" below.
 - **`build` and `gofmt` had no non-vacuity guard of their own** and were held
   by their neighbours reddening — adjacency, not a data dependency. MEASURED:
   `go build ./...` over zero packages exits **0**, `go vet ./...` exits **1**,
@@ -658,6 +664,135 @@ the regress terminates at a person reading a diff. Two named residuals:
 - A scenario whose body asserts nothing is declared, defined, counted and says
   nothing. The row-coverage check is a spelling check and reads as one.
 
+### Contracts, not names — added 2026-08-30 (round 11)
+
+The second residual above was not a residual. It was the next defeat, and the
+review took it: keep every scenario NAME, delete four scenario BODIES, make
+`record()`'s guard inert while leaving the anchor text its scenario plants on,
+gut `self_check()` to report `PASS` unconditionally, delete one comment — and
+`verify.sh` reports `VERDICT: PASS` with a live defect in the tree. The
+manifest and the Go pin were never touched. Every count was satisfied in full.
+
+**The row-coverage check was the whole distance**, and it was `grep -q` over
+the oracle's own source for the string `row <name>`. One deleted comment
+defeated it. It has been removed rather than tightened: a better pattern is a
+better spelling check, and the fault was not the pattern.
+
+**Rounds 5 through 9 closed shrinking the POPULATION. This closes shrinking
+DETECTION while the population is intact.** Every operand up to here answered
+*is it there*. None answered *does it do anything*.
+
+**`MANIFEST_SCENARIO_CONTRACTS`** states, per scenario, `name|rc-class|token`:
+
+- **rc-class** — `zero`, `nonzero`, or `static`. What the scenario must have
+  seen the subject's process do. `static` means it does not run the subject at
+  all; it does NOT mean it may observe nothing.
+- **token** — `<row>:<PASS|FAIL|ABSENT>`, a verdict the scenario read out of
+  the subject's own table. There is no "demand nothing" escape; the one that
+  existed had a single user, and that user now reports the value it read.
+
+The oracle records an OBSERVATION every time a scenario reads a row verdict or
+a process result, and prints them beside its per-scenario result. `verify.sh`
+reads the report against the manifest. **The comparison is in none of the three
+places somebody would edit to make a scenario stop working** — not the
+scenario, not the manifest, not the oracle's roster.
+
+An emptied body therefore reports `PASS` having observed nothing, and *that* is
+the failure, named by scenario, with what it should have observed. Driven end
+to end by `scenario-body-emptied`, in two halves so it does not cost a nested
+oracle run: an emptied body reports an empty observation, and an empty
+observation fails the row.
+
+**Three further operands, each closing a way to satisfy the check while doing
+nothing:**
+
+- `observation-recorder-stubbed` — gut the recorder and every contract becomes
+  vacuous in one edit. It is the fail-closed drive: no observations at all must
+  fail, not pass.
+- `ORACLE_MIN_SECONDS` — a wall-clock floor under the oracle's own run, checked
+  LAST so a duration can never displace a diagnosis that names a scenario.
+  **BOUND: it is a floor against an INSTANTANEOUS fabricator, not proof of
+  work. A fabricator that sleeps defeats it.** `oracle-too-fast`.
+- `scenario-death-is-reported` — a scenario whose plant no longer applies used
+  to print nothing, which is byte for byte what a deleted scenario prints.
+  Three scenarios went silent that way while this round was being written, each
+  because a literal anchor duplicated a manifest value that had moved. Death is
+  now reported as a FAIL in the scenario's own name, and the population count's
+  refusal names who went silent instead of only how many.
+
+**BOUND on the whole design, stated rather than claimed away:** a contract
+binds a scenario to observing a verdict, not to observing the right thing for
+the right reason. A body reduced to just the lines that produce its observation
+would satisfy it. What the design buys is that every cheap defeat — empty it,
+stub it, keep the name, fake the report, return instantly — fails loudly, and
+the remaining defeat is no longer cheaper than doing the work.
+
+### The declared-test band, and why it is not an equality
+
+`MIN_DECLARED_TESTS` was a floor. MEASURED 2026-08-30 by review: nothing in the
+tree ever raised it, so its margin — and its protection — eroded with every
+test added, and today's margin of zero was the strongest it would ever be. A
+floor whose distance from the tree only grows is a floor on its way to saying
+nothing.
+
+A strict equality was implemented first and reverted, and the reason is worth
+recording because it is not obvious: **oracle scenarios plant Go tests into
+their own copies of the tree**, so under an equality every such scenario fails
+the `unit-suite` row it is not testing. Three of them do, plus the ceiling
+helper.
+
+So it is a BAND: `MIN_DECLARED_TESTS` to `MIN_DECLARED_TESTS +
+MAX_DECLARED_MARGIN`, with the margin at the largest number of tests any single
+scenario plants (MEASURED: one). The lower edge is exactly where it was; the
+erosion is capped instead of unbounded, and the diagnosis names the number to
+write. `min-declared-tests-floor` drives down, `min-declared-tests-margin`
+drives up with `MAX_DECLARED_MARGIN + 1` tests derived from the manifest, and
+`ceiling-control` — which plants exactly one — is the preservation control that
+stops the band collapsing back to an equality.
+
+`MAX_DECLARED_MARGIN` is itself capped from Go, because widening a band is the
+cheapest way to make a row stop saying anything and it looks like maintenance
+while doing it.
+
+### `doc-numbers` — the sweep is a row now
+
+Round 9 removed thirteen numbers from `README.md` and `docs/*.md` that an
+instrument recomputes, and argued the class was closed "by removal, not by
+vigilance". Round 10 measured what that argument was worth with no observer
+behind it: **the same round wrote a fresh derived number into this document, in
+the sentence explaining the deletions.**
+
+`scripts/sweep-doc-numbers.sh` is that sweep, executable, and `verify.sh` runs
+it as a row. Two fixes to the method, not the result:
+
+- **The date filter dropped whole LINES.** A number was invisible to it
+  whenever it shared a line with a date — which is exactly how this project is
+  asked to write a measurement. The domain excluded the thing being swept for.
+  Dates, RFC numbers and section marks are now blanked as TOKENS and the line
+  is kept; that made five previously invisible lines visible, four structural
+  and one a live derived number.
+- **Nothing re-ran it.** `--check` refuses the shapes round 9 removed, so a
+  removed number coming back goes red. `doc-number-reintroduced` drives it and
+  `doc-sweep-deleted` drives the sweep's own absence — the row must not pass
+  when its subject is gone, which is the failure round 8 found one level up.
+
+**BOUND:** `--check` refuses the shapes that were removed, not every derived
+number that could ever be written. A new instrument's number is uncovered until
+its shape is added. The enumeration is what finds those; the check is what
+keeps the found ones gone.
+
+### The contaminated oracle run of round 9, settled
+
+Round 9 reported a scenario failing twice and then passing on a frozen tree,
+and offered wall-clock pressure under parallelism as the mechanism. **That
+mechanism is REFUTED by measurement** (review, 2026-08-30): serial and
+eight-way concurrent inner runs differ by about a tenth against the ceiling,
+all green, and `ceiling-control` — which deliberately burns time and still
+demands a pass — is strictly more exposed than the scenario that fired and did
+not fire. What is supported is the other half: the tree was being edited while
+the oracle was copying it. **The ceiling is not raised.** Do not edit the tree
+while the oracle runs; that is the whole remedy.
+
 ## The policy is itself under test
 
 Everything the gates enforce is a table in `internal/gates/rings/rings.go`. A
@@ -764,13 +899,18 @@ against today's tables were measured by review both surviving and dying;
 PACKAGE narrowings are covered, all of them dying.
 
 **The figures are not written here on purpose, and the reason is a defect this
-document committed twice.** They used to be: `16 of 102`, four per-package
-ratios, and `86`. Every one of them was wrong by 2026-08-30 —
-`TestNarrowingCoverageIsMeasured` prints `22/102` and `80` in 0.2 seconds — and
-the paragraph named that very test as its authority two sentences later. A
-number that an instrument recomputes on every run does not belong in prose
-beside a pointer to the instrument; the pointer is the whole value, and the
-copy beside it can only ever go stale and contradict it.
+document committed three times.** A ratio, four per-package ratios and a count
+stood here as literals; every one was stale, and the paragraph named
+`TestNarrowingCoverageIsMeasured` as its authority two sentences later — the
+test that falsifies all six in a fraction of a second. Round 9 deleted them and
+then, in the same edit, wrote the correcting figures into the sentence that
+explained the deletion. That third instance is why the sweep is now
+`scripts/sweep-doc-numbers.sh` and a `doc-numbers` row rather than a paragraph:
+prose about not writing numbers is still prose.
+
+A number an instrument recomputes on every run does not belong beside a pointer
+to that instrument. The pointer is the whole value; the copy can only go stale
+and contradict it.
 
 Run it:
 

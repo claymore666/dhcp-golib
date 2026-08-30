@@ -474,6 +474,22 @@ else
 	record "shellcheck" FAIL "shellcheck is not installed; the shell scripts were not linted"
 fi
 
+# ------------------------------------------------------------- doc-numbers --
+# Round 9 deleted thirteen numbers from README.md and docs/*.md because an
+# instrument recomputes each of them, and argued the class was closed "by
+# removal, not by vigilance". Round 10 measured what that argument was worth
+# without an observer: the same round wrote a fresh derived number into
+# docs/gates.md, in the very sentence explaining the deletions.
+#
+# So the sweep is a row. The domain is the prose files themselves, counted here
+# so that an empty one is a FAIL rather than a vacuous pass.
+doc_files_n="$(find . -maxdepth 2 \( -name 'README.md' -o -path './docs/*.md' \) -printf 'x\n' | grep -c . || true)"
+if [ ! -x "$ROOT/scripts/sweep-doc-numbers.sh" ]; then
+	record "doc-numbers" FAIL "scripts/sweep-doc-numbers.sh is missing or not executable; the numbers round 9 removed from prose have no observer"
+else
+	step "doc-numbers" "$doc_files_n" "$ROOT/scripts/sweep-doc-numbers.sh" --check
+fi
+
 # -------------------------------------------------------------- gate roster --
 # Structural, not a glob over directory names: ask the go tool which packages
 # under internal/gates are commands. The rc is captured rather than allowed to
@@ -651,6 +667,18 @@ elif [ -n "$undeclared" ]; then
 	record "unit-suite" FAIL "go test listed test(s) the declaration walk did not find: $undeclared"
 elif [ "$declared_n" -lt "$MIN_DECLARED_TESTS" ]; then
 	record "unit-suite" FAIL "$declared_n declared test(s), below the floor of $MIN_DECLARED_TESTS in verify.manifest.sh; tests were deleted, and every check above this one derives its population from the tree and so moved with them"
+elif [ "$declared_n" -gt "$((MIN_DECLARED_TESTS + MAX_DECLARED_MARGIN))" ]; then
+	# ROUND 11. This was a FLOOR with no upper edge, and MEASURED 2026-08-30 by
+	# review: nothing in the tree raised it, so its protection eroded with every
+	# test added and nobody would ever see the decay. Today's margin was zero,
+	# the strongest it would ever be.
+	#
+	# A strict equality was tried first and is what put this comment here: it
+	# fails every oracle scenario that plants a Go test into its own copy, which
+	# is three of them plus the ceiling helper. The band keeps the lower edge
+	# exactly where it was and caps the erosion at MAX_DECLARED_MARGIN instead
+	# of leaving it unbounded. Scenario min-declared-tests-margin.
+	record "unit-suite" FAIL "$declared_n declared test(s) against $MIN_DECLARED_TESTS (+$MAX_DECLARED_MARGIN) in verify.manifest.sh; tests were ADDED — set MIN_DECLARED_TESTS=$declared_n, because a floor with margin is a floor that has started to decay"
 else
 	record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s) all ran across $tested_n package(s)" "$declared_n"
 fi
@@ -688,32 +716,72 @@ fi
 # stops any coordinated edit: somebody reading the diff.
 if [ "$INNER" -eq 0 ]; then
 	if [ -x "$ROOT/scripts/test-verify.sh" ]; then
+		orc_start=$(date +%s)
 		orc_rc=0
 		orc_out="$("$ROOT/scripts/test-verify.sh" 2>&1)" || orc_rc=$?
+		orc_elapsed=$(($(date +%s) - orc_start))
 		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n 's/^ORACLE PASS: \([0-9][0-9]*\) scenarios.*/\1/p' | tail -1)"
 		accounted=0
 		unaccounted=""
-		for s in "${MANIFEST_SCENARIOS[@]}"; do
-			if printf '%s\n' "$orc_out" | grep -qE "^[[:space:]]*RESULT $s PASS[[:space:]]*$"; then
-				accounted=$((accounted + 1))
-			else
-				unaccounted="$unaccounted $s"
+		breached=""
+		# ROUND 11. Each scenario is held to what it must have OBSERVED, not to
+		# its name appearing in a line. The contract comes from the manifest,
+		# the observation from the oracle, and the comparison happens here — so
+		# it is in none of the three places an author would edit to make a
+		# scenario stop working.
+		for contract in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
+			sc_name="${contract%%|*}"
+			sc_rest="${contract#*|}"
+			want_rc="${sc_rest%%|*}"
+			want_tok="${sc_rest##*|}"
+			if ! printf '%s\n' "$orc_out" | grep -qE "^[[:space:]]*RESULT $sc_name PASS obs="; then
+				unaccounted="$unaccounted $sc_name"
+				continue
 			fi
+			accounted=$((accounted + 1))
+			got="$(printf '%s\n' "$orc_out" | sed -n "s/^[[:space:]]*RESULT $sc_name PASS obs=//p" | tail -1)"
+			sc_ok=1
+			case "$want_rc" in
+			zero) printf '%s' ",$got," | grep -q ',rc:0,' || sc_ok=0 ;;
+			nonzero) printf '%s' ",$got," | grep -qE ',rc:[1-9][0-9]*,' || sc_ok=0 ;;
+			static) [ -n "$got" ] || sc_ok=0 ;;
+			*) sc_ok=0 ;;
+			esac
+			# Unconditional. The "-" escape this used to carry meant "demand no
+			# observation", which is one manifest entry away from the defeat
+			# this whole check answers.
+			printf '%s' ",$got," | grep -q ",$want_tok," || sc_ok=0
+			[ "$sc_ok" -eq 1 ] || breached="$breached $sc_name(wants $want_rc,$want_tok; observed [$got])"
 		done
 		if [ "$orc_rc" -ne 0 ]; then
-			record "verify-oracle" FAIL "exit $orc_rc"
+			# The breach list rides along rather than waiting its turn. Both
+			# statements are true at once, and MEASURED 2026-08-30 replaying
+			# B14: the oracle's own exit 1 arrived first and "exit 1" was the
+			# entire diagnosis, while four scenarios had been emptied and were
+			# reporting nothing — the finding the operator most needed.
+			record "verify-oracle" FAIL "exit $orc_rc${breached:+; and scenario(s) reported PASS without observing what verify.manifest.sh says they must:$breached}"
 			printf '\n--- verify-oracle FAILED (exit %s) ---\n%s\n' "$orc_rc" "$orc_out" >&2
 		elif [ -z "$oracle_reported" ]; then
 			record "verify-oracle" FAIL "the oracle exited 0 but printed no 'ORACLE PASS: <n> scenarios' line; its answer is not the account of a run"
 			printf '\n--- verify-oracle produced no verdict line ---\n%s\n' "$orc_out" >&2
 		elif [ -n "$unaccounted" ]; then
-			record "verify-oracle" FAIL "the oracle reported no passing result for scenario(s)$unaccounted, which verify.manifest.sh requires; $accounted of ${#MANIFEST_SCENARIOS[@]} were accounted for by name"
+			record "verify-oracle" FAIL "the oracle reported no passing result for scenario(s)$unaccounted, which verify.manifest.sh requires; $accounted of ${#MANIFEST_SCENARIO_CONTRACTS[@]} were accounted for by name"
 			printf '\n--- verify-oracle did not account for every declared scenario ---\n%s\n' "$orc_out" >&2
+		elif [ -n "$breached" ]; then
+			record "verify-oracle" FAIL "scenario(s) reported PASS without observing what verify.manifest.sh says they must:$breached"
+			printf '\n--- verify-oracle: a scenario passed without doing its job ---\n%s\n' "$orc_out" >&2
 		elif [ "$oracle_reported" != "${#MANIFEST_SCENARIOS[@]}" ]; then
 			record "verify-oracle" FAIL "the oracle reports $oracle_reported scenario(s); verify.manifest.sh declares ${#MANIFEST_SCENARIOS[@]}"
 			printf '\n--- verify-oracle ran a different set than the manifest declares ---\n%s\n' "$orc_out" >&2
+		elif [ "$orc_elapsed" -lt "$ORACLE_MIN_SECONDS" ]; then
+			# LAST on purpose: a duration is the weakest thing said about this
+			# row, and it must never displace a diagnosis that names a specific
+			# scenario. It is here only so that the cheap defeat — a fake that
+			# returns instantly — is not also the quiet one.
+			record "verify-oracle" FAIL "the oracle answered in ${orc_elapsed}s, under the ${ORACLE_MIN_SECONDS}s floor in verify.manifest.sh; it reported the right account without doing the work"
+			printf '\n--- verify-oracle returned too fast to have run ---\n%s\n' "$orc_out" >&2
 		else
-			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1)" "$accounted"
+			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1), ${orc_elapsed}s" "$accounted"
 		fi
 	else
 		record "verify-oracle" FAIL "scripts/test-verify.sh is missing or not executable; verify.sh was not itself checked"

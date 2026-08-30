@@ -177,10 +177,33 @@ invisible in all of them.
 
 What stands now is `verify.manifest.sh`: a file that contains the expectation
 and nothing else — the row names, the gate names, the scenario names, a literal
-count beside each list, and a floor under the declared-test population. Both
+count beside each list, and a band around the declared-test population. Both
 `verify.sh` and the oracle read it, so neither derives its expectation from
 itself or from the other, and `internal/manifest` pins the same names and
 numbers from Go, in another directory, running inside the suite.
+
+**And that, in turn, was defeated — on a different axis, which is why it is
+worth its own paragraph.** MEASURED 2026-08-30 by review: keep every name,
+delete four scenario BODIES, make the arbiter's own guard inert, and the run
+reports `VERDICT: PASS` with a live defect in the tree. The manifest was never
+touched and every count was satisfied in full, because **a name is not a
+behaviour**. Every operand answered *is it there*; none answered *does it do
+anything*.
+
+So the manifest now states, per scenario, what that scenario must be OBSERVED
+to have done — the process result class, and a row verdict it read out of the
+subject's own table. The oracle reports what each scenario actually observed;
+`verify.sh` compares the report against the manifest. The comparison lives in
+none of the three places somebody would edit to make a scenario stop working,
+so an emptied body is not a passing body: it is a scenario that observed
+nothing, named in the diagnosis. A scenario that dies mid-plant reports its own
+death for the same reason — silence and success used to be the same output.
+
+**BOUND, and it is the honest one:** this binds a scenario to observing a
+verdict, not to observing the RIGHT thing for the right reason. A body that
+kept only the lines producing its observation would still satisfy it. What that
+buys is that the cheap defeats — empty it, stub it, keep the name — all fail
+loudly, and the remaining one is no longer cheaper than doing the work.
 
 The claim is bounded, because a completeness claim here is the sentence this
 project has been wrong about four times: **no edit confined to a single file
