@@ -131,9 +131,10 @@ that a command with nothing to do exits 0.
 
 The residual is worth naming beside the claim: nothing inside the script can
 force that count to be DERIVED rather than written. What closes that is
-external — one oracle scenario per row that empties the row's domain and
-requires it to go red, plus a refusal when a required row is asserted on by no
-scenario at all.
+external — a scenario that empties a row's domain and requires the row to go
+red. This paragraph used to say there was one such scenario per row. There was
+one, for one row of eleven; `docs/gates.md` now lists which rows have one,
+which do not, and why the ones that do not cannot.
 
 The citation check is stated here as a BOUND, because the sentence that used to
 stand in its place was a completeness claim and the tree falsifies it. What it
@@ -156,11 +157,38 @@ load-bearing on a guard that dies with its subject**, and the composition was
 never measured: with the oracle stubbed AND a step call deleted, the arbiter
 printed `VERDICT: PASS (10 steps)`.
 
-Both halves are closed now. `REQUIRED_ROWS` is cross-checked against the rows
-actually recorded, in both directions, so a deleted row is a named failure
-rather than a smaller table; and the oracle's expected scenario count is
-derived by `verify.sh` from the oracle's own source, so a stub — total or
-partial — is a mismatch rather than an answer.
+**That fix was defeated too, and the sentence that used to stand here is the
+reason it is worth reading the next one carefully.** It said: the row roster is
+cross-checked against the rows recorded, and the oracle's expected scenario
+count is derived by `verify.sh` from the oracle's own source, so a stub —
+total or partial — is a mismatch rather than an answer. Both halves were true
+and both were defeated in one round, the same way, because **every expectation
+was derived from the thing it was checking.** MEASURED 2026-08-30 by review:
+delete the `shellcheck` gate — its step, its roster entry, its two scenarios —
+and eleven rows became ten with `VERDICT: PASS (10 steps)` and four live
+`SC2034` findings in the tree. Replace the oracle with forty-five empty stub
+functions and one `echo`, and it passes. Delete the count guard together with
+the scenarios that drive it, and it passes.
+
+Four rounds found that same shape, one level up each time, and every guard had
+a non-vacuity floor. **Every floor was at zero.** Zero is the one size a
+population cannot reach by deletion, so shrinking one by a single member was
+invisible in all of them.
+
+What stands now is `verify.manifest.sh`: a file that contains the expectation
+and nothing else — the row names, the gate names, the scenario names, a literal
+count beside each list, and a floor under the declared-test population. Both
+`verify.sh` and the oracle read it, so neither derives its expectation from
+itself or from the other, and `internal/manifest` pins the same names and
+numbers from Go, in another directory, running inside the suite.
+
+The claim is bounded, because a completeness claim here is the sentence this
+project has been wrong about four times: **no edit confined to a single file
+can shrink the arbiter's population.** Editing the manifest and the Go pin
+together still does it, and nothing in a repository can prevent that. What
+changes is that the edit is one line in a file whose whole content is the
+expectation, rather than eleven lines spread through the code that implements
+it — and it has to be made twice, in two languages.
 
 The step deletions below were driven rather than assumed.
 MEASURED 2026-08-29, deleting one step at a time from a copy and running

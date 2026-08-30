@@ -227,11 +227,16 @@ that fails for the wrong reason looks exactly like one that fails for the right
 one. `verify.sh` runs it as a step, so the verifier is checked by the command
 that runs the verifier.
 
-The scenario roster is the `SCENARIOS` list in that script, cross-checked in
-both directions against the `sc_*` functions beside it. Read it there, not
-here: a prose copy of a list the script already enforces is an unrun checklist,
-and this paragraph was one — it enumerated the scenarios as they stood before
-`hang-bounded`, `bounds-ordering` and `stale-citation` were added.
+The scenario roster is `MANIFEST_SCENARIOS` in `verify.manifest.sh`, cross-
+checked in both directions against the `sc_*` functions in the oracle. Read it
+there, not here: a prose copy of a list the script already enforces is an unrun
+checklist, and this paragraph was one — it enumerated the scenarios as they
+stood before `hang-bounded`, `bounds-ordering` and `stale-citation` were added.
+
+It lived in the oracle until 2026-08-30, beside the functions it was checked
+against, which meant deleting a name and its function together was consistent
+and silent. That is the round-9 finding and the manifest section below is the
+answer.
 
 **Every step's DELETION was driven, not assumed.** MEASURED 2026-08-29 by
 removing one step at a time from a copy of `verify.sh` and running the oracle
@@ -429,14 +434,42 @@ contract closes.
 **What the contract does NOT do, stated because it is the whole residual.**
 Nothing inside `verify.sh` can force a count to be DERIVED rather than written;
 `record "build" PASS "ok" 1` satisfies it completely. That is closed from
-outside, and this is where the round's evidence actually is: one oracle
-scenario per row that empties that row's domain and requires it to go red, plus
-a refusal in the oracle when a row named in `REQUIRED_ROWS` is asserted on by no
-scenario. The second is a spelling check over the oracle's own source and is
-worth reading as one — a scenario that names a row and asserts nothing useful
-satisfies it.
+outside, by a scenario that empties a row's domain and requires the row to go
+red.
 
-**`REQUIRED_ROWS`** is cross-checked against the rows recorded, in both
+**This paragraph used to claim there was one such scenario per row. There was
+one, for one row of eleven.** MEASURED 2026-08-30 by review, and it is worth
+recording as a defect in its own right rather than fixing quietly: the sentence
+described the evidence the design *needed*, and nothing checked that the
+evidence existed. The `build` row in particular was named by exactly one
+assertion in the whole oracle, and that assertion was a control inside the
+`vet` scenario.
+
+What exists now, row by row, and what does not:
+
+| row | the scenario that empties its domain |
+|---|---|
+| `build`, `vet`, `gofmt` | `go-domain-empty` — every `.go` file deleted |
+| `t1` | `gate-refuses` — a ring root deleted |
+| `t2` | `go-domain-empty` — the walk finds no `_test.go` file |
+| `citations` | `citation-vacuous` |
+| `unit-suite` | `suite-tests-disabled`, and `min-declared-tests-floor` |
+| `verify-oracle` | `oracle-stub-total`, `oracle-names-fabricated` |
+| `gate-roster` | none — see below |
+| `shellcheck` | none — see below |
+| `bounds` | none — see below |
+| `self-check` | none — its count is a literal, by construction |
+
+The three with none are structural, not outstanding work, and saying so is the
+point of listing them. `shellcheck`'s domain is the shell scripts of the tree,
+and the tree cannot hold none of them — emptying it means deleting `verify.sh`.
+`gate-roster`'s domain is `MANIFEST_GATES`, and emptying that is refused by
+`manifest_check` before any row runs. `bounds` reads constants out of
+`verify.sh`, so its domain is empty only when the file is. `self-check` probes
+a fixed set of four cases; its evidence is `self-check-guard-deleted`, which
+deletes what it probes.
+
+**`MANIFEST_ROWS`** is cross-checked against the rows recorded, in both
 directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
 
 - **`verify-oracle`** derives its expected scenario count from the oracle's
@@ -446,7 +479,7 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   bound, and deriving the expectation outside the file closes both. MEASURED
   2026-08-30 against the final tree: a stub printing `ORACLE PASS: 45
   scenarios` over a file defining none records
-  `the oracle reports 45 scenario(s); its source defines 0`. Scenarios
+  `the oracle reported no passing result for scenario(s) …`. Scenarios
   `oracle-stub-total`, `oracle-stub-partial`. BOUND: this counts DEFINITIONS,
   so a scenario body emptied of its assertions is defined, counted, and says
   nothing.
@@ -482,14 +515,22 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   walking the filesystem and parsing — walking, because `go list` honours the
   build constraints that hid those ten files; parsing, because
   `internal/gates/t2` embeds test bodies inside raw string literals and a grep
-  reports two declarations that do not exist. MEASURED on the final tree: 165
-  declared, 165 listed, the sets identical; with the review's ten-file plant,
-  65 listed and the row names all 100 that did not run. Scenario
-  `suite-files-disabled-partial`; `suite-roster-unmeasured` drives the walk
-  itself failing. BOUNDS: a test DELETED rather than disabled leaves both sides
-  agreeing, which is true of every suite; and `go test -list` honours build
-  constraints while the walk does not, so the comparison is exact only while
-  every `_test.go` builds on the host running it.
+  reports two declarations that do not exist. MEASURED at `16cb791`: declared
+  and listed identical; with the review's ten-file plant, the row named every
+  test that did not run. The live figure is in the row's own detail column on
+  every run — `N declared test(s) all ran across M package(s)` — and is
+  deliberately not copied here. Scenario `suite-files-disabled-partial`;
+  `suite-roster-unmeasured` drives the walk itself failing. BOUND: `go test
+  -list` honours build constraints while the walk does not, so the comparison
+  is exact only while every `_test.go` builds on the host running it.
+
+  **The other bound this bullet used to carry — "a test DELETED rather than
+  disabled leaves both sides agreeing" — is closed, and how it was closed is
+  the round-9 lesson in one sentence.** It was true because both sides were
+  derived from the tree, so a deletion moved both at once. `MIN_DECLARED_TESTS`
+  is a literal in `verify.manifest.sh`, derived from nothing, and a literal
+  does not move when the tree does. Scenario `min-declared-tests-floor`, which
+  deletes a whole test package and requires the row to go red.
 
   The package check is kept beside it for its diagnosis, which names the
   package. `suite-tests-disabled` and
@@ -540,6 +581,82 @@ that file, deliberately WITHOUT an exec bit, since being a shell script is what
 makes it need linting.
 
 It covers shell defects and says nothing about whether the verdicts are right.
+
+**N7, recorded because it is a strength that is easy to over-read.** The
+`shellcheck` row accidentally holds ONE direction of the count guard: if a
+derived count stops being REFERENCED — `go_files_n` computed and then not
+passed to `record` — `SC2034` fires and the row goes red. That is genuinely
+useful and nobody designed it. It is not the direction that matters. The
+failure this project keeps paying for is a count that is still referenced and
+no longer derived, and `shellcheck` cannot see that at all.
+
+### The manifest, added 2026-08-30 (round 9)
+
+The row contract above closed "a row passes on an exit status alone". It did
+not close "a row stops existing", and the two are the same defect at different
+levels.
+
+MEASURED 2026-08-30 by review, against the head that added the row contract:
+delete the `shellcheck` gate — its `step` call, its name in the row roster, and
+its two oracle scenarios — and `verify.sh` printed `VERDICT: PASS (10 steps)`
+with four live `SC2034` findings in the tree the deleted gate would have
+caught. Replacing the whole oracle with forty-five empty `sc_fakeN(){}`
+definitions plus one `echo` also passed. So did deleting the count guard
+together with the two scenarios that drive it and the plant they edit.
+
+**One cause, and it had survived four rounds: every guard derived its domain
+from the thing it guarded.** The oracle's expected count was a `grep` over the
+oracle. The row-coverage check read the row roster out of `verify.sh`. The
+roster cross-check compared the roster against the rows produced under it.
+Every one of them had a non-vacuity floor and every floor was at zero — and
+zero is the one size a population cannot reach by deleting a member, so
+shrinking a domain by one was invisible in all of them.
+
+`verify.manifest.sh` is the answer, and it is a property rather than a
+mechanism: **an expectation the subject cannot shrink.** The file contains
+declarations and nothing else — row names, gate names, shell-script names,
+scenario names, a literal count beside each list, and `MIN_DECLARED_TESTS`, a
+floor under the suite's declared-test population. Four layers rest on it:
+
+1. **It is sourced by both readers.** `verify.sh` and `scripts/test-verify.sh`
+   read the same file, so neither derives its expectation from itself or from
+   the other. Missing or unreadable is a hard refusal before any row is
+   recorded, because a row is something the manifest declares. Scenario
+   `manifest-missing`.
+2. **Each list's length must equal the literal beside it.** Removing a name
+   without editing that number is a refusal — one edit is not enough even
+   inside this file. Checked from the shell by `manifest_check` and, separately,
+   from Go. Scenario `manifest-count-lies`.
+3. **`internal/manifest` pins the same names and numbers in Go**, in another
+   language and another directory, with no derivation shared with the shell. It
+   runs inside the unit suite. Scenarios `manifest-row-removed` (the review's
+   own defeat, replayed) and `manifest-scenario-removed`.
+4. **`MIN_DECLARED_TESTS` is a floor that is not zero.** Deleting the Go pin,
+   or any test file, takes the suite below it. This closes the bound round 7
+   declared unclosable — "a test DELETED rather than disabled leaves both sides
+   agreeing" — which was true only because both sides were derived from the
+   tree. Scenario `min-declared-tests-floor`.
+
+Two more things moved with it. `verify-oracle` now requires the oracle to
+report a passing result for **every scenario name the manifest declares**,
+rather than to report a count matching a `grep` over its own source; and
+`record`'s count guard is driven IN PROCESS by a `self-check` row on every run,
+four probes with a preservation control, so deleting the guard reddens a row in
+the same run with no oracle involved. Scenarios `oracle-names-fabricated`,
+`self-check-guard-deleted`.
+
+**What this does NOT claim, stated in the form the claim has to take here.**
+Not "the arbiter cannot be shrunk". The claim is: **no edit confined to a
+single file can shrink the arbiter's population.** Editing the manifest and the
+Go pin together still does it, and nothing in a repository can prevent that —
+the regress terminates at a person reading a diff. Two named residuals:
+
+- A stub oracle that READS the manifest and prints a correct `RESULT` line per
+  declared name defeats the name check. That is strictly harder than the stub
+  that defeated round 7, which needed to know nothing. `oracle-is-invoked`
+  builds exactly such a stub, so the bound is executed rather than asserted.
+- A scenario whose body asserts nothing is declared, defined, counted and says
+  nothing. The row-coverage check is a spelling check and reads as one.
 
 ## The policy is itself under test
 
@@ -597,8 +714,8 @@ exactly the original green. That is the evidence that neither is decoration.
 2026-08-29, `go doc time.now` exits 0, so it is case-insensitive and a
 lower-cased typo resolves to the unexported original. The existence check
 therefore takes a second signal: the name must also appear as a whole word in
-`go doc -all pkg`, whose output is case-sensitive. Validated over all 102
-allowlisted identifiers with no false miss.
+`go doc -all pkg`, whose output is case-sensitive. Validated over every
+allowlisted identifier with no false miss.
 
 **Enumerated, and driven through the real binary**
 (`t1/policy_driven_test.go`, `t2/policy_driven_test.go`). `PureRefusedPkgs`,
@@ -611,12 +728,17 @@ VIOLATION. Widening the allowlist makes it exit PASS and the case goes red.
 guard fails in one direction, and a policy that refuses everything passes every
 refusal test.
 
-*Generated.* `TestPureAllowlistIsAccepted` imports all 15 admitted packages and
-names all 25 restricted identifiers in one ring-1 fixture and requires PASS.
-`TestTestAllowlistIsAccepted` names all 77 allowlisted identifiers across `time`
+*Generated.* `TestPureAllowlistIsAccepted` imports every admitted package and
+names every restricted identifier in one ring-1 fixture and requires PASS.
+`TestTestAllowlistIsAccepted` names every allowlisted identifier across `time`
 and `context` in a test fixture and requires PASS. Both build their fixture from
 the tables, so they cover a package ADDED to a table that nobody wrote a test
 for.
+
+The sizes of those tables are deliberately not written here. They were, and
+they were three more numbers that an instrument recomputes on every run — the
+same shape as the coverage figures below, which drifted and were caught only by
+a reviewer running the test.
 
 *Hand-written.* `TestRealisticRing1CodeIsAccepted` and
 `TestFakeClockTestIsAccepted` are ordinary code of the shape M1 will contain —
@@ -635,26 +757,38 @@ The two kinds fail in opposite directions and neither subsumes the other. The
 generated ones cover ADDITIONS to a table; the hand-written ones cover
 REMOVALS.
 
-**The bound on the hand-written half is open today, not in future.** MEASURED
-2026-08-29 and confirmed independently by review: **16 of the 102 allowlisted
-identifiers are named in any `_test.go` file at all** — `encoding/hex` 1/11,
-`fmt` 1/14, `context` 2/12, `time` 12/65 — so 86 could be removed from an
-allowlist with nothing going red. Review measured 4 of 8 identifier narrowings
-against today's tables SURVIVING the whole suite (`fmt.Sprintf`, `hex.Dump`,
-`time.Kitchen`, `context.WithValue`) and 4 dying. PACKAGE narrowings are
-covered: 4 of 4 die.
+**The bound on the hand-written half is open today, not in future.** Most
+allowlisted identifiers are named in no `_test.go` file at all, so most of the
+allowlist could be narrowed with nothing going red. Identifier narrowings
+against today's tables were measured by review both surviving and dying;
+PACKAGE narrowings are covered, all of them dying.
 
-This used to read "a package admitted **later** and never written into those
-fixtures", which described a present-tense escape as a future one — a
-completeness claim wearing a bound's clothes. The number is printed by
-`TestNarrowingCoverageIsMeasured`, which refuses rather than reporting zero
-coverage when it cannot find the test files, so it is a measurement a run makes
-rather than a sentence in a document.
+**The figures are not written here on purpose, and the reason is a defect this
+document committed twice.** They used to be: `16 of 102`, four per-package
+ratios, and `86`. Every one of them was wrong by 2026-08-30 —
+`TestNarrowingCoverageIsMeasured` prints `22/102` and `80` in 0.2 seconds — and
+the paragraph named that very test as its authority two sentences later. A
+number that an instrument recomputes on every run does not belong in prose
+beside a pointer to the instrument; the pointer is the whole value, and the
+copy beside it can only ever go stale and contradict it.
+
+Run it:
+
+```
+go test ./internal/gates/... -run TestNarrowingCoverageIsMeasured -v
+```
+
+It refuses rather than reporting zero coverage when it cannot find the test
+files, so it is a measurement a run makes rather than a sentence in a document.
+
+This paragraph also used to read "a package admitted **later** and never
+written into those fixtures", which described a present-tense escape as a
+future one — a completeness claim wearing a bound's clothes.
 
 Why it is tolerated at M0 rather than closed: a narrowing makes the gate REFUSE
 honest code, loudly, at the point of use, naming the identifier — a
 self-announcing failure. A widening is silent, and the widening direction is
-covered. Naming all 102 identifiers in a hand-written fixture would rebuild the
+covered. Naming every identifier in a hand-written fixture would rebuild the
 generated control by hand and misrepresent what M1 needs.
 
 ### What the policy guards cannot see
@@ -680,13 +814,13 @@ generated control by hand and misrepresent what M1 needs.
    (`TestContextAfterFuncIsRefusedByDefault`): today's answer is refused,
    admitting it means deleting the case and writing down why. A pin records a
    decision that has not been made; it does not make one.
-5. **A narrowing of the 86 identifiers no fixture names.** MEASURED
-   2026-08-29: 16 of 102 allowlisted identifiers appear in any test file, so
-   the rest can be removed from an allowlist with nothing going red — the
-   generated controls cannot see it, being derived from the same table, and the
-   hand-written ones name only what realistic code uses. This is open now; the
-   count is printed by `TestNarrowingCoverageIsMeasured` and the reasoning for
-   accepting it at M0 is above.
+5. **A narrowing of the identifiers no fixture names.** Most allowlisted
+   identifiers appear in no test file, so they can be removed from an allowlist
+   with nothing going red — the generated controls cannot see it, being derived
+   from the same table, and the hand-written ones name only what realistic code
+   uses. This is open now. The count is printed by
+   `TestNarrowingCoverageIsMeasured`; it is deliberately not repeated here,
+   because this bullet is where it was repeated and where it went stale.
 6. **The stdlib moving under them.** `go doc` is queried at test time against
    the toolchain in use, so an identifier removed upstream turns the existence
    probe red — which is correct — but a *newly added* waiting primitive is
