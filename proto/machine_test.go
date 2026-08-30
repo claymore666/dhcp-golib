@@ -858,3 +858,96 @@ func TestEveryActionCarriesAUniqueID(t *testing.T) {
 		t.Fatalf("only %d stamped actions were produced; this test measured almost nothing", len(seen))
 	}
 }
+
+// TestBoundArmsExpiryBeforeAnnouncing pins the ORDER of two actions, which is
+// the whole of the assertion: the expiry timer must be armed before the lease
+// is announced.
+//
+// A ring-3 caller executes the action list in order and may act on
+// ActLeaseAcquired the moment it sees it, so anything stamped after the
+// announcement is something the caller can run ahead of. Announcing first left
+// a window in which the caller had been told it holds an address and nothing
+// yet bounded its use of it — RFC 2131 section 4.4.5 requires the client to
+// stop at expiry, and measures the lease from the DHCPREQUEST rather than from
+// the ACK, so that bound is already running when the ACK lands.
+//
+// MEASURED 2026-08-30, against the machine with the announcement first: twelve
+// concurrent `go test -race -count=100 -run TestManagerReportsExpiry ./lease/` gave 2
+// failing processes, all `no expiry timer armed after acquisition`. -race did
+// not flag it and the ring-2 test could only catch it by losing a race, which
+// is why the assertion belongs here, where the order is deterministic.
+func TestBoundArmsExpiryBeforeAnnouncing(t *testing.T) {
+	// Two ACKs whose expiry paths differ, because the arm is on one side of a
+	// branch and the announcement on the other: a lease with time left, and
+	// one that had already run out when the ACK arrived (armed for zero).
+	for _, tc := range []struct {
+		name     string
+		ackAt    int64
+		leaseFor uint32
+	}{
+		{"lease with time left", 2, 3600},
+		{"lease already expired when the ACK landed", 900, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t, testParams())
+			_, acts := m.Step(0, 0xAAAA, Simple(EvStart))
+			disc := mustSend(t, acts, wire.MsgDiscover)
+			_, acts = m.Step(at(1), 0xBBBB, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+			req := mustSend(t, acts, wire.MsgRequest)
+
+			st, acts := m.Step(at(tc.ackAt), 0xCCCC,
+				received(t, ackFor(req, "192.168.99.50", "192.168.99.1", tc.leaseFor)))
+			if st != StateBound {
+				t.Fatalf("after ACK: %s, want BOUND", st)
+			}
+
+			arm, announce := -1, -1
+			for i, a := range acts {
+				if a.Kind == ActSetTimer && a.Timer == TimerExpire && arm < 0 {
+					arm = i
+				}
+				if a.Kind == ActLeaseAcquired && announce < 0 {
+					announce = i
+				}
+			}
+			if arm < 0 {
+				t.Fatalf("no expiry timer armed at all: %v", RenderActions(acts))
+			}
+			if announce < 0 {
+				t.Fatalf("the lease was never announced: %v", RenderActions(acts))
+			}
+			if arm > announce {
+				t.Fatalf("expiry armed at action %d, announced at %d: a caller acting on the "+
+					"announcement can outrun the arm. %v", arm, announce, RenderActions(acts))
+			}
+		})
+	}
+}
+
+// TestBoundAnnouncesAnInfiniteLeaseWithNoTimer is the preservation control for
+// the ordering above. Restructuring enterBound so the arm precedes the
+// announcement puts the announcement after a branch that returns for an
+// infinite lease; if it were left inside that branch, an infinite lease would
+// be installed and never reported, and the ordering test above — which requires
+// an expiry timer — could not see it.
+func TestBoundAnnouncesAnInfiniteLeaseWithNoTimer(t *testing.T) {
+	m := newMachine(t, testParams())
+	_, acts := m.Step(0, 0xAAAA, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 0xBBBB, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+
+	st, acts := m.Step(at(2), 0xCCCC,
+		received(t, ackFor(req, "192.168.99.50", "192.168.99.1", InfiniteSeconds)))
+	if st != StateBound {
+		t.Fatalf("after ACK: %s, want BOUND", st)
+	}
+	if _, ok := find(acts, ActLeaseAcquired); !ok {
+		t.Fatalf("an infinite lease was installed and never announced: %v", RenderActions(acts))
+	}
+	for _, a := range acts {
+		if a.Kind == ActSetTimer && a.Timer == TimerExpire {
+			t.Fatalf("an infinite lease armed an expiry timer for %s (RFC 2132 section 3.3)", a.After)
+		}
+	}
+}

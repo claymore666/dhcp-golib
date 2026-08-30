@@ -379,6 +379,29 @@ func (m *Machine) stop(out *actions) {
 // hand some of it is spent. Arming for the full duration holds the address
 // past its expiry by the round-trip time — invisible on a fixture, real on a
 // slow or retransmitting link.
+//
+// THE EXPIRY TIMER IS ARMED BEFORE THE ACQUISITION IS ANNOUNCED, and the order
+// is the point of TestBoundArmsExpiryBeforeAnnouncing. A ring-3 caller executes
+// this action list in order and may act on ActLeaseAcquired as soon as it sees
+// it — configure the interface, hand the address out — so any action after the
+// announcement is one the caller can run ahead of.
+//
+//	STANDARD: RFC 2131 section 4.4.5 requires the client to stop using the
+//	address when the lease expires, and measures the lease from the moment the
+//	DHCPREQUEST was sent, not from the ACK. So the bound on use is already
+//	running when the ACK lands.
+//	INFERRED: the RFC describes one sequential client and does not order these
+//	two steps as such. What makes the order load-bearing here is this machine's
+//	own invariant — dropLease cancels TimerExpire, so "holding a lease" and
+//	"an expiry armed" are meant to be the same state — and announcing first
+//	opens a window in which a caller is told it holds an address that nothing
+//	yet bounds.
+//
+// MEASURED 2026-08-30: with the announcement first, twelve concurrent
+// `go test -race -count=100 -run TestManagerReportsExpiry ./lease/` gave 2 failing
+// processes, every one of them `no expiry timer armed after acquisition`.
+// -race does not flag it, because the two sides are synchronised; the ordering
+// was simply wrong.
 func (m *Machine) enterBound(now Instant, l Lease, out *actions) {
 	out.cancel(m, TimerRetransmit)
 	m.lease = l
@@ -387,23 +410,22 @@ func (m *Machine) enterBound(now Instant, l Lease, out *actions) {
 	m.offer = nil
 	m.retransmits = 0
 	m.sendFailures = 0
-	out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l})
-	exp, ok := l.Expire()
-	if !ok {
+	if exp, ok := l.Expire(); ok {
+		d := exp.Sub(now)
+		if d < 0 {
+			// The ACK arrived after the lease it grants had already run out.
+			// Arm for zero rather than for a negative delay, so ring 3 fires
+			// it at once and the machine reports the loss, instead of a
+			// negative duration meaning whatever the timer implementation
+			// happens to do with one.
+			d = 0
+			out.journal(m, "DHCPACK grants a lease that has already expired")
+		}
+		out.set(m, TimerExpire, d)
+	} else {
 		out.journal(m, "lease is infinite: no expiry timer armed")
-		return
 	}
-	d := exp.Sub(now)
-	if d < 0 {
-		// The ACK arrived after the lease it grants had already run out. Arm
-		// for zero rather than for a negative delay, so ring 3 fires it at
-		// once and the machine reports the loss, instead of a negative
-		// duration meaning whatever the timer implementation happens to do
-		// with one.
-		d = 0
-		out.journal(m, "DHCPACK grants a lease that has already expired")
-	}
-	out.set(m, TimerExpire, d)
+	out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l})
 }
 
 func (m *Machine) dropLease(out *actions, r Reason) {

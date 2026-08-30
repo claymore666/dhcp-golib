@@ -1390,9 +1390,7 @@ fabricating_stub() {
 			# ROUND 13: the fabricator reproduces the DIAGNOSIS too, because
 			# the manifest now carries it. That is the honest execution of the
 			# bound — the contract table is a specification of exactly what a
-			# terminal fake must print. What it cannot reproduce is the note
-			# the arbiter actually wrote, which is why verify.sh replays one
-			# scenario itself and compares the whole observation string.
+			# terminal fake must print.
 			case "$tok" in
 			*:FAIL | *:PASS | *:ABSENT)
 				srow="${tok%%:*}"
