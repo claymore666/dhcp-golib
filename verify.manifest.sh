@@ -50,9 +50,10 @@ MANIFEST_ROWS=(
 	t1
 	t2
 	unit-suite
+	self-drive
 	verify-oracle
 )
-MANIFEST_ROWS_N=13
+MANIFEST_ROWS_N=14
 
 # The gate commands under internal/gates that must exist and must run.
 MANIFEST_GATES=(
@@ -94,31 +95,99 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # The Go pin holds a separate literal as a low-water mark, `>=` only. That one
 # is NOT maintained in step and is not meant to be: it exists so that lowering
 # the number here cannot go below a level somebody once measured.
-MIN_DECLARED_TESTS=171
+MIN_DECLARED_TESTS=172
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
-# It is not zero, and the reason is a measurement rather than a preference: an
-# oracle scenario plants Go tests into its copy of the tree, so under a strict
-# equality every such scenario fails the unit-suite row it is not testing.
-# MEASURED 2026-08-30 over scripts/test-verify.sh: the largest number of test
-# functions any one scenario plants is 1 (sc_race_detector, sc_hang_bounded,
-# sc_ceiling_tree's TestBusyLoop, sc_min_declared_tests_margin).
+# It is not zero, and it is not a preference: an oracle scenario plants Go
+# tests into its copy of the tree, so under a strict equality every such
+# scenario would fail the unit-suite row it is not testing. The number is
+# therefore exactly the largest number of test functions ANY ONE scenario
+# plants, counting the helpers it calls.
 #
-# BOUND, stated rather than claimed away: erosion is CAPPED at this number, not
-# eliminated. One test may be added without anyone raising MIN_DECLARED_TESTS;
-# the second one fails the row and names the number to write. And a change that
-# adds one test and deletes another is invisible to both edges — the band
-# measures a population size, not its membership.
+# ROUND 13, N11. It used to be a literal sitting at that maximum as measured
+# once, under a Go cap of 4 — so the band could be quadrupled one line at a
+# time, and each of those edits would look exactly like the maintenance this
+# file says it removes. It is now DERIVED and checked:
+# TestDeclaredTestMarginIsDerivedFromWhatScenariosPlant reads the oracle,
+# computes the maximum, and refuses any other value in EITHER direction. The
+# 0..4 caps below and in the Go pin stay as a backstop, not as the check.
+#
+# BOUNDS, stated rather than claimed away: erosion is CAPPED at this number,
+# not eliminated. One test may be added without anyone raising
+# MIN_DECLARED_TESTS; the second one fails the row and names the number to
+# write. A change that adds one test and deletes another is invisible to both
+# edges — the band measures a population size, not its membership. And the
+# derivation is a static read of a shell script: it cannot see a helper
+# reached through a variable, and it counts a commented-out plant. Both of
+# those fail closed, i.e. toward a larger derived number than the truth.
 MAX_DECLARED_MARGIN=1
+
+# The self-drive: the rows the ARBITER plants for itself, and the rows that must
+# survive the same plant untouched.
+#
+# ROUND 13. The oracle's entire report is derivable from this file — every
+# scenario name, its result class, its row verdict and now its diagnosis — so a
+# script that sources this file and prints the contract table back reproduces a
+# passing account without running anything. MEASURED 2026-08-30 by review at the
+# previous head, and re-driven here: 24 lines, one file, clean under the lint
+# gate, all sixty detections gone, whole run green in thirty seconds.
+#
+# Every check verify.sh could perform on the oracle's REPORT is defeatable by a
+# fabricator that knows the check, because the report is the fabricator's own
+# output. A replay that asks the same script again is answered by the same
+# script; that construction was written this round and deleted for being
+# circular. The only non-circular answer is the arbiter doing the work.
+#
+# So verify.sh plants these defects itself, in one copy, and runs one --inner
+# pass. Blinding the arbiter now needs an edit to verify.sh as well as to the
+# oracle — which is the difference between round 10's claim, that no single-file
+# edit can shrink the arbiter's POPULATION, and the claim it does not make, that
+# no single-file edit can BLIND it.
+#
+# BOUND, and it is a large one: these are seven rows of fourteen with one plant
+# each, in ONE tree, chosen so no plant cascades into a row on the survivors
+# list. The self-drive is a lower bound on the arbiter's liveness, not a
+# substitute for the oracle's sixty-three, and it does not become one. The
+# seven rows it does not plant stay blindable by an edit the oracle can no
+# longer object to.
+#
+# MEASURED 2026-08-30, both halves, against the finished tree: fabricate the
+# oracle by injection (one file, all sixty-three of its detections gone) AND
+# blind the gofmt row in verify.sh AND plant a live unformatted file — the
+# shape that gave VERDICT: PASS before this round — and the run ends
+# VERDICT: FAIL on `gofmt=PASS (planted, did not redden)`. The fabrication is
+# not what the self-drive stops; it is what the fabrication BUYS.
+SELF_DRIVE_REDDENS=(
+	gofmt
+	shellcheck
+	citations
+	doc-numbers
+	vet
+	t1
+	t2
+)
+SELF_DRIVE_REDDENS_N=7
+
+# The preservation control, in the same run and against the same plant. Without
+# it the self-drive is satisfied by an arbiter that reddens everything, which is
+# a check with one possible verdict.
+SELF_DRIVE_SURVIVES=(
+	self-check
+	bounds
+	build
+	gate-roster
+	unit-suite
+)
+SELF_DRIVE_SURVIVES_N=5
 
 # The wall-clock floor, in seconds, under the oracle's own run.
 #
 # ROUND 11, and it is the only operand here that binds WORK rather than
 # reporting. Everything else in this file asks "is it there" or "did you say
 # so". A fake oracle that prints a correct-looking account returns instantly;
-# a real one copies the tree fifty-three times and runs a race-enabled suite in
-# each copy. MEASURED 2026-08-30: 2m55s on this box.
+# a real one copies the tree once per scenario and runs a race-enabled suite in
+# each copy. MEASURED 2026-08-30 on this box, this tree: 262s.
 #
 # BOUND, and it is weak on purpose: this is a floor against an INSTANTANEOUS
 # stub, not proof of work. A fabricator that sleeps defeats it. It is here
@@ -127,7 +196,39 @@ MAX_DECLARED_MARGIN=1
 #
 # verify.sh checks it LAST, after every content check, so it can never displace
 # a truer diagnosis. Scenario oracle-too-fast.
-ORACLE_MIN_SECONDS=8
+#
+# ROUND 13, N12. The floor was the literal 8 standing two lines under a
+# measurement of 175 — a number with no stated relationship to the thing it
+# bounds, which is §0.2 with the measurement sitting right there. It is now
+# DERIVED from that measurement at a stated fraction, and manifest_check
+# refuses the two drifting apart.
+#
+# Why 5% and not more, stated as a trade rather than a preference: the floor is
+# paid, in wall clock, by every scenario that has to sleep past it — three of
+# them today, each sleeping the floor plus one second. Raising the fraction
+# raises that cost linearly, to catch a fabricator that is already free to
+# sleep for as long as the floor demands. The floor buys "the cheap edit is not
+# the quiet one"; it does not buy proof of work, and no fraction of a
+# measurement can.
+# How many lines of prose in README.md and docs/*.md may carry a bare number.
+#
+# ROUND 13, N13. `doc-numbers --check` used to print this count and compare it
+# to nothing, so a new derived number — one no pattern in the sweep
+# recognises — moved the count and was seen by nobody. MEASURED 2026-08-30 by
+# review: a line carrying four live instrument-owned numbers passed.
+#
+# It is a CEILING, not an equality: prose that says "two" in words, a version
+# pin, or a quoted sample can be added without an edit here, and the count
+# falling is not a failure. Going over it prints the whole enumeration.
+#
+# The Go pin holds it from above (docNumberCeilingCap), because the cheap way
+# to make this row stop saying anything is to raise the ceiling rather than
+# delete the number.
+DOC_NUMBER_CEILING=64
+
+ORACLE_MEASURED_SECONDS=262
+ORACLE_MIN_PERCENT=5
+ORACLE_MIN_SECONDS=$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))
 
 # The oracle's scenarios. The oracle no longer holds this list; it cross-checks
 # its sc_* functions against this file, and verify.sh requires the oracle's
@@ -149,6 +250,8 @@ MANIFEST_SCENARIOS=(
 	ceiling-band
 	gate-panic
 	gate-refuses
+	self-drive-blinded
+	self-drive-reddens-everything
 	scenario-death-is-reported
 	doc-number-reintroduced
 	doc-sweep-deleted
@@ -193,8 +296,9 @@ MANIFEST_SCENARIOS=(
 	scenario-body-emptied
 	observation-recorder-stubbed
 	min-declared-tests-margin
+	silent-scenario-named
 )
-MANIFEST_SCENARIOS_N=60
+MANIFEST_SCENARIOS_N=63
 
 # What each scenario must OBSERVE. One entry per scenario, same order.
 #
@@ -208,12 +312,21 @@ MANIFEST_SCENARIOS_N=60
 # The diagnosis is one line: A NAME IS NOT A BEHAVIOUR. Everything above
 # answers "is it there"; nothing answered "does it do anything".
 #
-# Format:  name|rc-class|observation-token
+# Format:  name|rc-class|observation-token|diagnosis
 #   rc-class    zero     the subject must have exited 0 in this scenario
 #               nonzero  the subject must have exited non-zero
 #               static   the scenario runs the subject not at all (see below)
 #   token       <row>:<PASS|FAIL|ABSENT> — a row the scenario must have READ,
 #               in that state, in the subject's verdict table.
+#   diagnosis   a substring of the NOTE the arbiter wrote beside that row,
+#               squashed to letters, spaces and # (see `squash` in the
+#               oracle). "no row" for a static contract, which reads none.
+#
+# ROUND 13, B15. The token names the row that must go red; the diagnosis names
+# WHY it went red, and the arbiter — not the scenario — writes it. That is the
+# whole of the round: a contract that pins the outcome and not the cause is
+# satisfied by a scenario reddening the right row for the wrong reason, which
+# is how four bodies were substituted in round 12 and still passed.
 #
 # The tokens come from the helpers — `row`, `run_verify`, `run_verify_outer` —
 # which are the only ways to run the subject or read its table, so a body
@@ -228,77 +341,108 @@ MANIFEST_SCENARIOS_N=60
 #
 # BOUNDS, stated because a completeness claim here would be this project's
 # fifth in five rounds:
-#   - The contract pins the OUTCOME, not the PLANT. Two scenarios that redden
-#     the same row by different routes are indistinguishable here.
+#   - The contract pins the outcome AND the diagnosis, but the diagnosis is a
+#     SUBSTRING of the arbiter's note. Two plants the arbiter describes with
+#     the same words are still indistinguishable here — how narrow that is
+#     depends on how specific the arbiter's notes are, which is why round 13
+#     rewrote the generic ones (`exit $rc` alone, the roster mismatch) rather
+#     than tightening the contract around them.
 #   - A driver rewritten to FABRICATE these strings defeats it. To do that it
 #     must read this table, i.e. reproduce the expectation it is faking. That
 #     is the terminus, and it is a person reading a diff.
-#   - `static` is an escape hatch and is capped at ONE by the Go pin, because
-#     an uncapped exemption is how a class spreads. Its one member is
-#     ceiling-band, which reads a constant out of verify.sh and runs nothing.
+#   - `static` is an escape hatch, and its membership is ENUMERATED below in
+#     MANIFEST_STATIC_CONTRACTS rather than described here, because an
+#     uncapped exemption is how a class spreads and a described one drifts.
+#     This paragraph used to read "capped at ONE, its one member
+#     ceiling-band" while the Go pin said 2 and the table held two: it was
+#     wrong from the moment the second member landed, and nothing could see
+#     it, because it was prose. The list below is checked for set equality
+#     against the contracts, so adding a static contract without declaring it
+#     now fails the suite instead of falsifying a sentence.
 MANIFEST_SCENARIO_CONTRACTS=(
-	"control|zero|verify-oracle:ABSENT"
-	"verdict-on-abort|nonzero|gate-roster:ABSENT"
-	"verdict-without-gomod|nonzero|gate-roster:FAIL"
-	"roster-gate-deleted|nonzero|gate-roster:FAIL"
-	"roster-gate-added|nonzero|gate-roster:FAIL"
-	"t1-violation|nonzero|t1:FAIL"
-	"t2-violation|nonzero|t2:FAIL"
-	"gofmt-violation|nonzero|gofmt:FAIL"
-	"vet-violation|nonzero|vet:FAIL"
-	"race-detector|nonzero|unit-suite:FAIL"
-	"test-cache|nonzero|unit-suite:FAIL"
-	"ceiling-fires|nonzero|unit-suite:FAIL"
-	"ceiling-control|zero|unit-suite:PASS"
-	"ceiling-band|static|ceiling-seconds:60"
-	"gate-panic|nonzero|t2:FAIL"
-	"gate-refuses|nonzero|t1:FAIL"
-	"scenario-death-is-reported|static|scenario-death:reported"
-	"doc-number-reintroduced|nonzero|doc-numbers:FAIL"
-	"doc-sweep-deleted|nonzero|doc-numbers:FAIL"
-	"unlinted-script|nonzero|shellcheck:FAIL"
-	"unlinted-shebang-script|nonzero|shellcheck:FAIL"
-	"oracle-is-invoked|nonzero|verify-oracle:FAIL"
-	"hang-bounded|nonzero|unit-suite:FAIL"
-	"bounds-ordering|nonzero|bounds:FAIL"
-	"suite-timeout-detached|nonzero|bounds:FAIL"
-	"stale-citation|nonzero|citations:FAIL"
-	"citation-trailing|nonzero|citations:FAIL"
-	"citation-underscore|nonzero|citations:FAIL"
-	"citation-whitewash|nonzero|citations:FAIL"
-	"citation-vacuous|nonzero|citations:FAIL"
-	"citation-url|zero|citations:PASS"
-	"citation-after-url|nonzero|citations:FAIL"
-	"invoked-by-relative-path|zero|bounds:PASS"
-	"suite-args-detached|nonzero|bounds:FAIL"
-	"suite-tests-disabled|nonzero|unit-suite:FAIL"
-	"suite-one-package-disabled|nonzero|unit-suite:FAIL"
-	"suite-domain-unmeasured-module|nonzero|unit-suite:FAIL"
-	"suite-domain-unmeasured-walk|nonzero|unit-suite:FAIL"
-	"suite-files-disabled-partial|nonzero|unit-suite:FAIL"
-	"suite-roster-unmeasured|nonzero|unit-suite:FAIL"
-	"record-refuses-uncounted-pass|nonzero|gofmt:FAIL"
-	"record-refuses-zero-count|nonzero|gofmt:FAIL"
-	"row-deleted|nonzero|vet:ABSENT"
-	"row-added|nonzero|undeclared-row:PASS"
-	"oracle-stub-total|nonzero|verify-oracle:FAIL"
-	"oracle-stub-partial|nonzero|verify-oracle:FAIL"
-	"citation-embedded-identifier|zero|citations:PASS"
-	"citation-word-start|nonzero|citations:FAIL"
-	"go-domain-empty|nonzero|build:FAIL"
-	"manifest-missing|nonzero|citations:ABSENT"
-	"manifest-row-removed|nonzero|unit-suite:FAIL"
-	"manifest-count-lies|nonzero|citations:ABSENT"
-	"manifest-scenario-removed|nonzero|unit-suite:FAIL"
-	"self-check-guard-deleted|nonzero|self-check:FAIL"
-	"min-declared-tests-floor|nonzero|unit-suite:FAIL"
-	"oracle-names-fabricated|nonzero|verify-oracle:FAIL"
-	"oracle-too-fast|nonzero|verify-oracle:FAIL"
-	"scenario-body-emptied|nonzero|verify-oracle:FAIL"
-	"observation-recorder-stubbed|nonzero|verify-oracle:FAIL"
-	"min-declared-tests-margin|nonzero|unit-suite:FAIL"
+	"control|zero|verify-oracle:ABSENT|row absent"
+	"verdict-on-abort|nonzero|gate-roster:ABSENT|row absent"
+	"verdict-without-gomod|nonzero|gate-roster:FAIL|go list could not enumerate the gates"
+	"roster-gate-deleted|nonzero|gate-roster:FAIL|MISSING from the tree"
+	"roster-gate-added|nonzero|gate-roster:FAIL|UNDECLARED in the manifest"
+	"t1-violation|nonzero|t1:FAIL|VIOLATION"
+	"t2-violation|nonzero|t2:FAIL|VIOLATION"
+	"gofmt-violation|nonzero|gofmt:FAIL|unformatted proto ugly go"
+	"vet-violation|nonzero|vet:FAIL|unreachable code"
+	"race-detector|nonzero|unit-suite:FAIL|WARNING DATA RACE"
+	"test-cache|nonzero|unit-suite:FAIL|go test reported a cached result"
+	"ceiling-fires|nonzero|unit-suite:FAIL|passed but took"
+	"ceiling-control|zero|unit-suite:PASS|declared test s all ran across"
+	"ceiling-band|static|ceiling-seconds:60|no row"
+	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
+	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
+	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"
+	"self-drive-reddens-everything|nonzero|self-drive:FAIL|build FAIL unplanted went red"
+	"scenario-death-is-reported|static|scenario-death:died before reporting and not a subject failure|no row"
+	"doc-number-reintroduced|nonzero|doc-numbers:FAIL|Delete the number and name the instrument"
+	"doc-sweep-deleted|nonzero|doc-numbers:FAIL|is missing or not executable"
+	"unlinted-script|nonzero|shellcheck:FAIL|scripts extra sh"
+	"unlinted-shebang-script|nonzero|shellcheck:FAIL|scripts preflight"
+	"oracle-is-invoked|nonzero|verify-oracle:FAIL|oracle stub was invoked"
+	"hang-bounded|nonzero|unit-suite:FAIL|test timed out"
+	"bounds-ordering|nonzero|bounds:FAIL|does not exceed the"
+	"suite-timeout-detached|nonzero|bounds:FAIL|the suite flags do not carry timeout"
+	"stale-citation|nonzero|citations:FAIL|TestThisCitationWasNeverWritten"
+	"citation-trailing|nonzero|citations:FAIL|TestTrailingCitationNeverWritten"
+	"citation-underscore|nonzero|citations:FAIL|BenchmarkNeverWrittenEither"
+	"citation-whitewash|nonzero|citations:FAIL|TestWhitewashedByAStringLiteral"
+	"citation-vacuous|nonzero|citations:FAIL|a scan that finds no domain is not a passing scan"
+	"citation-url|zero|citations:PASS|cited token s all declared among"
+	"citation-after-url|nonzero|citations:FAIL|TestRevCPhantomAfterAURL"
+	"invoked-by-relative-path|zero|bounds:PASS|and the one suite invocation expands SUITE ARGS"
+	"suite-args-detached|nonzero|bounds:FAIL|suite invocation s expanding SUITE ARGS expected exactly"
+	"suite-tests-disabled|nonzero|unit-suite:FAIL|reported no ok package line"
+	"suite-one-package-disabled|nonzero|unit-suite:FAIL|hold a test go file and ran no test"
+	"suite-domain-unmeasured-module|nonzero|unit-suite:FAIL|its domain is UNMEASURED module ##"
+	"suite-domain-unmeasured-walk|nonzero|unit-suite:FAIL|its domain is UNMEASURED module github"
+	"suite-files-disabled-partial|nonzero|unit-suite:FAIL|declared but never run"
+	"suite-roster-unmeasured|nonzero|unit-suite:FAIL|the declared test roster is UNMEASURED"
+	"record-refuses-uncounted-pass|nonzero|gofmt:FAIL|no numeric domain size"
+	"record-refuses-zero-count|nonzero|gofmt:FAIL|examined # items an empty domain"
+	"row-deleted|nonzero|vet:ABSENT|row absent"
+	"row-added|nonzero|undeclared-row:PASS|invented"
+	"oracle-stub-total|nonzero|verify-oracle:FAIL|printed no ORACLE PASS"
+	"oracle-stub-partial|nonzero|verify-oracle:FAIL|verify manifest sh declares"
+	"citation-embedded-identifier|zero|citations:PASS|cited token s all declared among"
+	"citation-word-start|nonzero|citations:FAIL|TestRevCWordStartNeverWritten"
+	"go-domain-empty|nonzero|build:FAIL|an empty domain is not a passing domain"
+	"manifest-missing|nonzero|citations:ABSENT|row absent"
+	"manifest-row-removed|nonzero|unit-suite:FAIL|TestManifestRowsAreTheRowsPinnedHere"
+	"manifest-count-lies|nonzero|citations:ABSENT|row absent"
+	"manifest-scenario-removed|nonzero|unit-suite:FAIL|TestManifestFloorsAreNotBelowTheirPins"
+	"self-check-guard-deleted|nonzero|self-check:FAIL|record is not enforcing its contract"
+	"min-declared-tests-floor|nonzero|unit-suite:FAIL|below the floor of"
+	"oracle-names-fabricated|nonzero|verify-oracle:FAIL|reported no passing result for scenario"
+	"oracle-too-fast|nonzero|verify-oracle:FAIL|floor in verify manifest sh it reported the right account without doing the work"
+	"scenario-body-emptied|nonzero|verify-oracle:FAIL|record refuses uncounted pass wants nonzero"
+	"observation-recorder-stubbed|nonzero|verify-oracle:FAIL|control wants zero verify oracle ABSENT"
+	"min-declared-tests-margin|nonzero|unit-suite:FAIL|tests were ADDED"
+	"silent-scenario-named|nonzero|verify-oracle:FAIL|Silent control"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=60
+MANIFEST_SCENARIO_CONTRACTS_N=63
+
+# The `static` exemption, enumerated. A scenario is static when it does not run
+# verify.sh at all, so it can read no row of the subject's table; both members
+# still have to observe something derived from what they DID run.
+#
+#   ceiling-band                reads SUITE_CEILING_SECONDS out of verify.sh
+#                               and observes the value.
+#   scenario-death-is-reported  runs the ORACLE in a copy, not verify.sh, and
+#                               observes the child's own death line.
+#
+# Set equality against the contract table is pinned from Go, so this list
+# cannot describe a membership the table does not have.
+MANIFEST_STATIC_CONTRACTS=(
+	ceiling-band
+	scenario-death-is-reported
+)
+MANIFEST_STATIC_CONTRACTS_N=2
+
 
 # manifest_check — layer 2, run by every reader of this file BEFORE it is
 # trusted. A list that has been shortened without its count being edited, or a
@@ -318,6 +462,8 @@ manifest_check() {
 		bad="$bad MANIFEST_SCENARIOS has ${#MANIFEST_SCENARIOS[@]} name(s), MANIFEST_SCENARIOS_N says $MANIFEST_SCENARIOS_N;"
 	[ "${#MANIFEST_SCENARIO_CONTRACTS[@]}" -eq "$MANIFEST_SCENARIO_CONTRACTS_N" ] ||
 		bad="$bad MANIFEST_SCENARIO_CONTRACTS has ${#MANIFEST_SCENARIO_CONTRACTS[@]} entr(ies), MANIFEST_SCENARIO_CONTRACTS_N says $MANIFEST_SCENARIO_CONTRACTS_N;"
+	[ "${#MANIFEST_STATIC_CONTRACTS[@]}" -eq "$MANIFEST_STATIC_CONTRACTS_N" ] ||
+		bad="$bad MANIFEST_STATIC_CONTRACTS has ${#MANIFEST_STATIC_CONTRACTS[@]} name(s), MANIFEST_STATIC_CONTRACTS_N says $MANIFEST_STATIC_CONTRACTS_N;"
 	[ "${#MANIFEST_SCENARIO_CONTRACTS[@]}" -eq "${#MANIFEST_SCENARIOS[@]}" ] ||
 		bad="$bad ${#MANIFEST_SCENARIOS[@]} scenario(s) but ${#MANIFEST_SCENARIO_CONTRACTS[@]} contract(s); a scenario with no contract is a name with no behaviour, which is exactly what round 11 closed;"
 	# An empty list is the shape every one of the four rounds above ended in.
@@ -326,11 +472,22 @@ manifest_check() {
 	[ "$MANIFEST_SHELL_SCRIPTS_N" -ge 1 ] || bad="$bad MANIFEST_SHELL_SCRIPTS_N is not positive;"
 	[ "$MANIFEST_SCENARIOS_N" -ge 1 ] || bad="$bad MANIFEST_SCENARIOS_N is not positive;"
 	[ "$MIN_DECLARED_TESTS" -ge 1 ] || bad="$bad MIN_DECLARED_TESTS is not positive;"
+	# The floor and the measurement it comes from, held together. A literal
+	# reinstated here in place of the derivation fails as soon as it drifts.
+	[ "$ORACLE_MIN_SECONDS" -eq "$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))" ] ||
+		bad="$bad ORACLE_MIN_SECONDS is $ORACLE_MIN_SECONDS but ORACLE_MEASURED_SECONDS=$ORACLE_MEASURED_SECONDS at $ORACLE_MIN_PERCENT percent is $((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100)); the floor no longer derives from the measurement printed beside it;"
 	# A margin the tree can widen at will is a floor with no upper edge, which
 	# is the state round 11 was sent to fix.
+	[ "${#SELF_DRIVE_REDDENS[@]}" -eq "$SELF_DRIVE_REDDENS_N" ] ||
+		bad="$bad SELF_DRIVE_REDDENS has ${#SELF_DRIVE_REDDENS[@]} name(s), SELF_DRIVE_REDDENS_N says $SELF_DRIVE_REDDENS_N;"
+	[ "${#SELF_DRIVE_SURVIVES[@]}" -eq "$SELF_DRIVE_SURVIVES_N" ] ||
+		bad="$bad SELF_DRIVE_SURVIVES has ${#SELF_DRIVE_SURVIVES[@]} name(s), SELF_DRIVE_SURVIVES_N says $SELF_DRIVE_SURVIVES_N;"
+	[ "$SELF_DRIVE_REDDENS_N" -ge 1 ] && [ "$SELF_DRIVE_SURVIVES_N" -ge 1 ] ||
+		bad="$bad a self-drive with an empty half is a check with one possible verdict;"
 	[ "$MAX_DECLARED_MARGIN" -ge 0 ] && [ "$MAX_DECLARED_MARGIN" -le 4 ] ||
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
+	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
 	[ "$MANIFEST_SCENARIO_CONTRACTS_N" -ge 1 ] || bad="$bad MANIFEST_SCENARIO_CONTRACTS_N is not positive;"
 	if [ -n "$bad" ]; then
 		printf 'the manifest does not agree with itself:%s\n' "$bad"

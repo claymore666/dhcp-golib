@@ -199,11 +199,23 @@ so an emptied body is not a passing body: it is a scenario that observed
 nothing, named in the diagnosis. A scenario that dies mid-plant reports its own
 death for the same reason — silence and success used to be the same output.
 
-**BOUND, and it is the honest one:** this binds a scenario to observing a
-verdict, not to observing the RIGHT thing for the right reason. A body that
-kept only the lines producing its observation would still satisfy it. What that
-buys is that the cheap defeats — empty it, stub it, keep the name — all fail
-loudly, and the remaining one is no longer cheaper than doing the work.
+That bound was taken. A review built exactly the body described above — kept
+only the lines producing the observation, dropped every assertion, planted a
+different defect reaching the same row — composed it with the bound beside it,
+and got a passing verdict over a live defect with four scenarios testing
+nothing. So a contract now names the DEFECT as well as the row: its fourth
+field is a fragment of the note the ARBITER wrote beside that row, and the
+arbiter is not the scenario that planted anything. Reddening the right row for
+the wrong reason produces a different note.
+
+**BOUND, and it is the honest one:** the diagnosis is matched as a substring,
+so two plants the arbiter describes in the same words are still
+indistinguishable. And every check on the oracle's report is defeatable by a
+fabricator that reproduces the report — which is why `verify.sh` also plants
+seven defects for ITSELF before calling the oracle, and requires each to redden
+its own row while the unplanted rows stay green. That is a lower bound on the
+arbiter's liveness, not proof of it; what it buys is that blinding the arbiter
+now takes an edit to `verify.sh` too.
 
 The claim is bounded, because a completeness claim here is the sentence this
 project has been wrong about four times: **no edit confined to a single file

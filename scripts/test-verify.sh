@@ -59,8 +59,14 @@ edit() {
 		import sys
 		p, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
 		s = open(p).read()
-		if a not in s:
-		    sys.exit(3)
+		# ROUND 13. The anchor must occur EXACTLY once. Replacing the first of
+		# several is not a plant, it is a plant somewhere: this file grew a
+		# scenario whose anchor was the dispatcher line, and the copy of that
+		# line inside the scenario's own `edit` call came first in the file, so
+		# the plant landed in a string literal and the run measured nothing
+		# while reporting a verdict.
+		if s.count(a) != 1:
+		    sys.exit(3 if s.count(a) == 0 else 4)
 		open(p, "w").write(s.replace(a, b, 1))
 	PY
 	[ "$before" != "$(cat "$f")" ] || refuse "planted edit did not change $f"
@@ -82,6 +88,32 @@ edit() {
 # It is a FILE and not a variable because `row` is called inside `$( )`, and a
 # subshell's variables do not survive it. A file write does.
 OBSFILE=""
+# drop_from_array FILE ARRAY NAME — remove one element from a named bash array.
+#
+# ROUND 13. The two scenarios that delete a row from the manifest anchored on
+# the LINE `\tshellcheck\n`, which was unique until this round put `shellcheck`
+# in SELF_DRIVE_REDDENS as well. Round 11 already learned that a neighbour is
+# not an anchor; a longer neighbour anchor would not have helped here either,
+# because MANIFEST_ROWS and SELF_DRIVE_REDDENS share the three-line sequence
+# gofmt/shellcheck/doc-numbers verbatim. The fix is not a better literal: it is
+# to name the ARRAY, which is a structural fact no reordering can duplicate.
+drop_from_array() {
+	python3 - "$1" "$2" "$3" <<-'PY'
+		import sys
+		p, arr, name = sys.argv[1], sys.argv[2], sys.argv[3]
+		s = open(p).read()
+		start = s.index(arr + "=(\n") + len(arr) + 3
+		end = s.index("\n)\n", start) + 1
+		block, line = s[start:end], "\t" + name + "\n"
+		if block.count(line) != 1:
+		    sys.exit(3 if block.count(line) == 0 else 4)
+		open(p, "w").write(s[:start] + block.replace(line, "", 1) + s[end:])
+	PY
+	grep -q "^$3\$" <<<"$(sed -n "/^$2=(/,/^)/p" "$1" | sed 's/^\t//')" &&
+		refuse "drop_from_array left $3 in $2"
+	return 0
+}
+
 obs() {
 	[ -n "$OBSFILE" ] || return 0
 	printf '%s\n' "$1" >>"$OBSFILE"
@@ -131,11 +163,20 @@ run_verify_from_parent() {
 # table — the step rows of $OUT and nothing else. Diagnostics go to stderr and
 # are merged into OUT, so matching a step name anywhere in the output would let
 # a diagnostic line satisfy an assertion about a row.
+# The subject's OWN table, which is the LAST one in its output.
+#
+# ROUND 13. A run can quote an inner run's report — the self-drive row does
+# exactly that when it fails. Taking the FIRST table read the quoted one and
+# every row of the real table came back ABSENT, which is a scenario silently
+# measuring the wrong run. verify.sh indents its quotation so it cannot be
+# mistaken for a table at all; this is the second half of that fix, and it
+# holds for any future quotation whether or not somebody remembers to indent.
 table() {
 	printf '%s\n' "$OUT" | awk '
-		/^----[ ]+------/ { in_table = 1; next }
-		in_table && NF == 0 { exit }
-		in_table { print }
+		/^----[ ]+------/ { in_table = 1; n = 0; next }
+		in_table && NF == 0 { in_table = 0; next }
+		in_table { buf[++n] = $0 }
+		END { for (i = 1; i <= n; i++) print buf[i] }
 	'
 }
 
@@ -144,10 +185,23 @@ table() {
 #
 # Every read is recorded (see obs above). The scenario asks the question; the
 # manifest says which answer it must have got.
+# squash — the normal form every recorded diagnosis is reduced to. Punctuation
+# goes because the observation set is comma-joined; digits collapse to # so the
+# same diagnosis reads identically across runs, which is what lets verify.sh
+# compare two independent runs of one scenario byte for byte.
+squash() { tr -c 'A-Za-z0-9 ' ' ' | tr '0-9' '#' | tr -s ' '; }
+
 row() {
 	local v
 	v="$(table | awk -v n="$1" '$1 == n { print $2; found = 1 } END { if (!found) print "ABSENT" }')"
 	obs "$1:$v"
+	# The row's own DIAGNOSIS, recorded beside its verdict.
+	#
+	# ROUND 13, B15. A verdict says the row went red. Only the note says WHY,
+	# and the note is written by the ARBITER, not by the scenario that planted
+	# the defect — so a scenario that reddens the right row by planting the
+	# wrong defect reports a different note and no longer passes for it.
+	obs "why:$1:$(why "$1" | head -c 240 | squash)"
 	printf '%s\n' "$v"
 }
 
@@ -342,6 +396,22 @@ sc_test_cache() {
 	printf '%s\n' "$OUT" | grep -q 'cached' || note "the cached-result failure does not say it was cached"
 }
 
+# verify_const NAME FILE — the value FILE declares for a numeric constant.
+#
+# ROUND 13, N10. Three scenarios anchored their `edit` on a LITERAL copy of a
+# shipped constant, so "the anchors are derived" was true of the manifest and
+# false here. Editing the constant in verify.sh made the anchor stale, and a
+# stale anchor does not fail loudly — it kills the scenario, which is what
+# silenced three of them in round 11. Refusing is deliberate: an anchor that
+# cannot be derived is a scenario that cannot measure anything, and the death
+# reporter turns a refusal into a named FAIL.
+verify_const() {
+	local v
+	v="$(sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" "$2")"
+	[ -n "$v" ] || refuse "$2 declares no numeric $1; this scenario's anchor cannot be derived"
+	printf '%s\n' "$v"
+}
+
 # ceiling_tree DEST — a copy whose suite genuinely takes a few seconds.
 #
 # A busy loop and not time.Sleep: T2 would refuse the sleep, and the row under
@@ -368,7 +438,9 @@ GO
 sc_ceiling_fires() {
 	local d="$1"
 	ceiling_tree "$d"
-	edit "$d/verify.sh" 'SUITE_CEILING_SECONDS=60' 'SUITE_CEILING_SECONDS=1'
+	edit "$d/verify.sh" \
+		"SUITE_CEILING_SECONDS=$(verify_const SUITE_CEILING_SECONDS "$d/verify.sh")" \
+		'SUITE_CEILING_SECONDS=1'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite over the ceiling passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the ceiling: $(row unit-suite) — $(why unit-suite)"
@@ -406,7 +478,9 @@ func TestHangs(t *testing.T) {
 GO
 	# Only ONE variable moves: the ceiling stays where it ships, so a ceiling
 	# failure cannot be what this scenario measures.
-	edit "$d/verify.sh" 'SUITE_TIMEOUT_SECONDS=180' 'SUITE_TIMEOUT_SECONDS=15'
+	edit "$d/verify.sh" \
+		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
+		'SUITE_TIMEOUT_SECONDS=15'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite containing a test that never returns passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the hang: $(row unit-suite) — $(why unit-suite)"
@@ -420,7 +494,9 @@ sc_bounds_ordering() {
 	# ceiling failure cannot be what this scenario measures.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.sh" 'SUITE_TIMEOUT_SECONDS=180' 'SUITE_TIMEOUT_SECONDS=30'
+	edit "$d/verify.sh" \
+		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
+		'SUITE_TIMEOUT_SECONDS=30'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a hang timeout below the ceiling passed"
 	[ "$(row bounds)" = FAIL ] || note "the bounds step did not catch it: $(row bounds)"
@@ -865,10 +941,7 @@ sc_manifest_row_removed() {
 	# deleter did not also edit, and it fails inside the unit suite.
 	local d="$1"
 	copy_tree "$d"
-	# The anchor is the row's OWN line, not the pair it used to form with its
-	# neighbour: inserting doc-numbers between them broke the pair, edit()
-	# refused, and this scenario went silent. A neighbour is not an anchor.
-	edit "$d/verify.manifest.sh" $'\tshellcheck\n' ''
+	drop_from_array "$d/verify.manifest.sh" MANIFEST_ROWS shellcheck
 	edit "$d/verify.manifest.sh" \
 		"MANIFEST_ROWS_N=$MANIFEST_ROWS_N" \
 		"MANIFEST_ROWS_N=$((MANIFEST_ROWS_N - 1))"
@@ -885,7 +958,7 @@ sc_manifest_count_lies() {
 	# whole content is the expectation.
 	local d="$1"
 	copy_tree "$d"
-	edit "$d/verify.manifest.sh" $'\tshellcheck\n' ''
+	drop_from_array "$d/verify.manifest.sh" MANIFEST_ROWS shellcheck
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the manifest disagreed with itself and the run passed"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded over an incoherent manifest: citations is $(row citations)"
@@ -907,7 +980,13 @@ sc_manifest_scenario_removed() {
 	# records a single row, and would leave this scenario proving the weaker
 	# thing. This is the round-9 defeat as its author would have written it.
 	edit "$d/verify.manifest.sh" $'\tcitation-word-start\n' ''
-	edit "$d/verify.manifest.sh" $'\t"citation-word-start|nonzero|citations:FAIL"\n' ''
+	# DERIVED from the parent's own contract table. Written as a literal it
+	# went stale twice — once when round 11 grew the population and once when
+	# round 13 added the diagnosis field — and a stale anchor kills the
+	# scenario silently.
+	local cw
+	cw="$(printf '%s\n' "${MANIFEST_SCENARIO_CONTRACTS[@]}" | grep '^citation-word-start|')"
+	edit "$d/verify.manifest.sh" $'\t"'"$cw"$'"\n' ''
 	# DERIVED from the parent's own manifest, not written as a literal. The
 	# literals here were 53 and the population is 57; the anchor stopped
 	# matching, so edit() refused, so this scenario DIED — reporting nothing at
@@ -1050,11 +1129,51 @@ sc_scenario_death_is_reported() {
 		note "a scenario that died did not report its own death: $out"
 	printf '%s\n' "$out" | grep -q 'not a subject failure' ||
 		note "the death line does not distinguish a broken plant from a broken subject"
-	# BOUND: this token is written here, not derived from the subject, and is
-	# therefore the weakest observation in the manifest. It is not vacuous —
-	# emptying this body removes it — but a body kept down to this one line
-	# would satisfy it. The two greps above are what make that a bad trade.
-	obs "scenario-death:reported"
+	# ROUND 13, N8. The token used to be the literal string "reported", written
+	# here rather than read from the child: a body cut down to that one line
+	# satisfied it without running anything. It is now EXTRACTED from the
+	# child's own death line, and the extraction fails closed — if either
+	# phrase is missing the sed leaves the whole line in place and the token
+	# no longer matches the manifest.
+	obs "scenario-death:$(printf '%s\n' "$out" |
+		sed -n 's/^RESULT control FAIL obs=//p' | squash |
+		sed 's/.*\(died before reporting\).*\(not a subject failure\).*/\1 and \2/')"
+}
+
+# A cheap outer run: the self-drive rows only exist outside --inner, and outside
+# --inner the oracle runs too. The fabricating stub stands in for it so these
+# scenarios cost one self-drive rather than a nested oracle run.
+self_drive_tree() {
+	copy_tree "$1"
+	fabricating_stub "$1/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "self-drive-scenario-stub"
+}
+
+sc_self_drive_blinded() {
+	# ROUND 13, M3. The arbiter plants defects for itself precisely so that a
+	# fabricated oracle cannot remove every detection in one file. Here the
+	# arbiter's ability to detect its OWN plant is removed: the gofmt row can no
+	# longer go red, so the self-drive's planted unformatted file goes unnoticed.
+	local d="$1"
+	self_drive_tree "$d"
+	edit "$d/verify.sh" \
+		'record "gofmt" FAIL "unformatted: $(printf '"'"'%s'"'"' "$fmt_out" | tr '"'"'\n'"'"' '"'"' '"'"')"' \
+		'record "gofmt" PASS "all $go_files_n .go file(s) formatted" "$go_files_n"'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "a row that can no longer go red passed the run"
+	[ "$(row self-drive)" = FAIL ] || note "the self-drive did not notice its own plant went undetected: $(row self-drive)"
+}
+
+sc_self_drive_reddens_everything() {
+	# The preservation half, driven. A self-drive satisfied by an arbiter that
+	# reddens everything is a check with one possible verdict — so an UNPLANTED
+	# row going red must fail it too.
+	local d="$1"
+	self_drive_tree "$d"
+	edit "$d/verify.sh" 'step "build" "$go_pkgs_n" go build ./...' \
+		'record "build" FAIL "self-drive control: this row is red for no planted reason"'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "a row red for no reason passed the run"
+	[ "$(row self-drive)" = FAIL ] || note "the self-drive accepted a red row it did not plant: $(row self-drive)"
 }
 
 sc_doc_number_reintroduced() {
@@ -1152,11 +1271,67 @@ sc_oracle_is_invoked() {
 
 	# The other direction: a failing oracle must fail the run. Without this,
 	# verify.sh could invoke the oracle and ignore its answer.
-	printf '#!/bin/sh\necho "ORACLE FAIL: %s"\nexit 1\n' "$marker" >"$stub"
+	printf '#!/bin/sh\necho "  RESULT %s FAIL obs= planted"\necho "ORACLE FAIL: %s"\nexit 1\n' \
+		"a-scenario-that-did-not-behave" "$marker" >"$stub"
 	chmod +x "$stub"
 	run_verify_outer "$d"
 	[ "$RC" -ne 0 ] || note "verify.sh passed with a FAILING oracle; the oracle's answer is not read"
 	[ "$(row verify-oracle)" = FAIL ] || note "a failing oracle did not produce a FAIL row: $(row verify-oracle)"
+	# The ROW must name WHICH scenario failed. A count in the row and the names
+	# only in a stderr dump is a diagnosis the reader loses by capturing the
+	# table, which is what a reader captures.
+	why verify-oracle | grep -q 'a-scenario-that-did-not-behave' ||
+		note "the verify-oracle row does not name the scenario that failed: $(why verify-oracle)"
+}
+
+sc_silent_scenario_named() {
+	# ROUND 13, N14. A scenario that dies LOUDLY is caught by the death
+	# reporter — that was round 11. A scenario that dies SILENTLY, killed
+	# before it can print anything, is caught only by the count, and the count
+	# alone sends the reader to a diff of two sorted lists. The oracle names
+	# the silent scenarios; nothing asserted that it does, so the naming was
+	# reachable, correct and unobserved.
+	#
+	# Every body is emptied so the run costs one pass rather than a nested
+	# oracle; one body is then SIGKILLed, which is the only way to produce a
+	# scenario that prints no RESULT line at all.
+	local d="$1"
+	copy_tree "$d"
+	# The bodies are REDEFINED just before the dispatcher rather than rewritten
+	# in place. Rewriting them textually was tried and was wrong: a scenario
+	# body containing a Go heredoc has a `}` at column zero inside the heredoc,
+	# so "the function ends at the next line that is }" cut four bodies in the
+	# middle of a heredoc and left the terminator behind. A later definition of
+	# a shell function simply wins; no parse is needed.
+	# The anchor is READ from the copy, not written here — and the PATTERN
+	# that reads it must not itself be a line the pattern matches.
+	#
+	# MEASURED 2026-08-30, twice, in this one scenario. First the anchor was
+	# the dispatcher line written out literally; that literal then existed
+	# twice in the file, this scenario's copy first, and the plant landed in a
+	# string. Then the anchor was read with a fixed-string grep for a fragment
+	# of the dispatcher — and the grep call CONTAINED that fragment, so it
+	# found itself, seven hundred lines early, and the plant landed in a string
+	# again. A pattern is anchored to a shape here, which no line of this file
+	# has.
+	local anchor
+	anchor="$(grep -m1 -E '^if \[ .*--scenario.* \]; then$' "$d/scripts/test-verify.sh" || true)"
+	[ -n "$anchor" ] || refuse "the copy has no scenario dispatcher to insert before"
+	edit "$d/scripts/test-verify.sh" "$anchor" 'for _sc in "${SCENARIOS[@]}"; do
+	eval "sc_$(printf "%s" "$_sc" | tr - _)() { : \"\$1\"; }"
+done
+sc_control() {
+	: "$1"
+	kill -9 $$
+}
+
+'"$anchor"
+	grep -q 'kill -9' "$d/scripts/test-verify.sh" || refuse "the silencing plant did not apply"
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "an oracle that lost a scenario without a word still passed"
+	[ "$(row verify-oracle)" = FAIL ] || note "a silent scenario did not fail the oracle row: $(row verify-oracle)"
+	printf '%s\n' "$OUT" | grep -q 'Silent: control' ||
+		note "the refusal does not NAME the scenario that went silent; the count alone is a diff of two sorted lists"
 }
 
 sc_ceiling_band() {
@@ -1189,26 +1364,52 @@ sc_ceiling_band() {
 # otherwise carry its own copy, which is how two of them would quietly drift
 # out of agreement with the contract format. It is also, deliberately, the
 # strongest defeat this design has: see the BOUND in verify.sh's oracle block.
+# It is INJECTED before the dispatcher rather than overwriting the file.
+#
+# ROUND 13, and the reason is not cosmetic. Overwriting the oracle with a
+# sixty-line shell script leaves a tree whose scripts/test-verify.sh defines no
+# scenario at all, and this round added a Go pin that DERIVES a manifest number
+# by reading those definitions — so every stubbed copy started failing the unit
+# suite for a reason the scenario was not testing, and one scenario that
+# legitimately needs a stub plus a passing run could no longer exist. Injecting
+# keeps the file the oracle it was: still a single-file edit, still fabricating
+# everything, still the strongest defeat this design has.
 fabricating_stub() {
-	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" c n rest rc tok o
-	{
+	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" c n rc tok dg o srow block anchor
+	block="$(
 		printf '#!/bin/sh\n'
 		[ "$nap" -gt 0 ] && printf 'sleep %s\n' "$nap"
 		for c in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
-			n="${c%%|*}"
-			rest="${c#*|}"
-			rc="${rest%%|*}"
-			tok="${rest##*|}"
+			IFS='|' read -r n rc tok dg <<<"$c"
 			case "$rc" in
 			zero) o="rc:0" ;;
 			nonzero) o="rc:1" ;;
 			*) o="static:fabricated" ;;
 			esac
-			[ "$tok" = "-" ] || o="$o,$tok"
+			o="$o,$tok"
+			# ROUND 13: the fabricator reproduces the DIAGNOSIS too, because
+			# the manifest now carries it. That is the honest execution of the
+			# bound — the contract table is a specification of exactly what a
+			# terminal fake must print. What it cannot reproduce is the note
+			# the arbiter actually wrote, which is why verify.sh replays one
+			# scenario itself and compares the whole observation string.
+			case "$tok" in
+			*:FAIL | *:PASS | *:ABSENT)
+				srow="${tok%%:*}"
+				o="$o,why:$srow:$dg"
+				;;
+			esac
 			printf 'echo "  RESULT %s PASS obs=%s"\n' "$n" "$o"
 		done
 		printf 'echo "ORACLE PASS: %s scenarios, %s"\nexit 0\n' "$claim" "$marker"
-	} >"$file"
+	)"
+	# The shebang belongs to the file, not to the injected block.
+	block="${block#\#!/bin/sh}"
+	anchor="$(grep -m1 -E '^if \[ .*--scenario.* \]; then$' "$file" || true)"
+	[ -n "$anchor" ] || refuse "$file has no scenario dispatcher to fabricate in front of"
+	edit "$file" "$anchor" "$block
+
+$anchor"
 	chmod +x "$file"
 }
 

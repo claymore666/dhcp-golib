@@ -198,6 +198,16 @@ record() { # name result note [count]
 # nothing. B7's measurement is why: a stubbed oracle produced `verify-oracle
 # PASS` with an EMPTY detail column, and an empty cell is the quietest thing a
 # table can contain.
+# quote_block TEXT — another run's output, quoted into this one's, INDENTED.
+#
+# ROUND 13. An unindented copy of an inner run's report is indistinguishable
+# from this run's own report to anything that parses the stream — and the
+# oracle parses the stream. It cost every row of a scenario's reading coming
+# back ABSENT, because the scenario read the quoted table instead of the real
+# one. Indentation is the half of that fix that lives here; the other half is
+# table() in scripts/test-verify.sh taking the LAST table rather than the first.
+quote_block() { printf '%s\n' "$1" | sed 's/^/  /'; }
+
 step() { # name count -- command...
 	local name="$1" count="$2"
 	shift 2
@@ -208,7 +218,13 @@ step() { # name count -- command...
 		[ -n "$detail" ] || detail="$count item(s) in domain"
 		record "$name" PASS "$detail" "$count"
 	else
-		record "$name" FAIL "exit $rc"
+		# ROUND 13, B15. What the command SAID, not only that it exited
+		# non-zero. A row whose entire diagnosis is "exit 1" names no defect,
+		# so two scenarios planting different defects into it are
+		# indistinguishable at every instrument in the tree — which is exactly
+		# how a scenario is substituted for another and nothing notices.
+		detail="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+		record "$name" FAIL "exit $rc: ${detail:-the command printed nothing}"
 		printf '\n--- %s FAILED (exit %s) ---\n%s\n' "$name" "$rc" "$out" >&2
 	fi
 }
@@ -511,7 +527,14 @@ if [ "$roster_rc" -ne 0 ]; then
 elif [ "$discovered" = "$expected" ]; then
 	record "gate-roster" PASS "gates present: $discovered" "${#REQUIRED_GATES[@]}"
 else
-	record "gate-roster" FAIL "required [$expected] but tree has [$discovered]"
+	# ROUND 13, B15. Naming the DIRECTION, not only the mismatch. "required
+	# [a b] but tree has [a]" and "… but tree has [a b c]" differ by one token
+	# in a list, so a deleted gate and an invented one read almost alike — and
+	# two scenarios whose diagnoses read alike are interchangeable, which is
+	# the finding this round exists to close.
+	roster_missing="$(comm -23 <(printf '%s\n' $expected | sort) <(printf '%s\n' $discovered | sort) | tr '\n' ' ' | sed 's/ $//')"
+	roster_extra="$(comm -13 <(printf '%s\n' $expected | sort) <(printf '%s\n' $discovered | sort) | tr '\n' ' ' | sed 's/ $//')"
+	record "gate-roster" FAIL "required [$expected] but tree has [$discovered]${roster_missing:+; MISSING from the tree: $roster_missing}${roster_extra:+; UNDECLARED in the manifest: $roster_extra}"
 	echo "--- gate-roster FAILED: the set of gate commands does not match MANIFEST_GATES in verify.manifest.sh ---" >&2
 fi
 
@@ -636,7 +659,7 @@ if [ "$roster_rc2" -eq 0 ]; then
 fi
 
 if [ "$rc" -ne 0 ]; then
-	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s"
+	record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s: $(printf '%s\n' "$suite_out" | grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE|.*test timed out)' | head -1 | sed 's/^[[:space:]]*//')"
 	printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
 elif printf '%s' "$suite_out" | grep -q '(cached)'; then
 	record "unit-suite" FAIL "go test reported a cached result; -count=1 was not in force, so the suite was not measured on this tree"
@@ -656,7 +679,14 @@ elif [ -n "$missing" ]; then
 	record "unit-suite" FAIL "exited 0, but package(s)${missing} hold a _test.go file and ran no test"
 	printf '\n--- unit-suite: these packages have test files that did not run ---\n%s\n%s\n' "$missing" "$suite_out" >&2
 elif [ "$roster_rc2" -ne 0 ]; then
-	record "unit-suite" FAIL "the declared-test roster is UNMEASURED (testroster exit $roster_rc2): $(printf '%s' "$roster_out" | tail -1)"
+	# The tail is rewritten relative to the tree root before it is recorded.
+	# docs/gates.md already requires diagnostics to name positions relative to
+	# the root, and this one carried the absolute path of whatever directory it
+	# was run in — which, under the oracle, is a fresh mktemp name. MEASURED
+	# 2026-08-30 running the oracle twice: this was the ONE observation in
+	# sixty that differed between runs, and it is the one thing that would have
+	# made the replay above unusable.
+	record "unit-suite" FAIL "the declared-test roster is UNMEASURED (testroster exit $roster_rc2): $(printf '%s' "$roster_out" | tail -1 | sed "s|$ROOT/\{0,1\}|<root>/|g")"
 elif [ -n "$unlisted" ]; then
 	record "unit-suite" FAIL "declared but never run: $unlisted"
 	printf '\n--- unit-suite: these tests are declared in a _test.go file and go test did not list them ---\n%s\n' "$unlisted" >&2
@@ -714,6 +744,51 @@ fi
 # defeated round 7 — which needed no knowledge of anything — and it is named
 # here rather than argued away. What actually stops it is the same thing that
 # stops any coordinated edit: somebody reading the diff.
+# --------------------------------------------------------------- self-drive --
+# The arbiter detecting planted defects END TO END, itself, without the oracle.
+# See SELF_DRIVE_REDDENS in verify.manifest.sh for why this exists.
+if [ "$INNER" -eq 0 ]; then
+	sd_dir="$(mktemp -d)"
+	sd_bad=""
+	mkdir -p "$sd_dir/tree"
+	tar -cf - -C "$ROOT" --exclude=./.git . | tar -xf - -C "$sd_dir/tree"
+
+	# One plant per row in SELF_DRIVE_REDDENS, each chosen so it cannot cascade
+	# into the rows in SELF_DRIVE_SURVIVES: an unformatted but compiling file,
+	# an unused variable appended to a script that is already linted, a comment
+	# citing a test that does not exist, and a number an instrument owns.
+	printf 'package wire\n\nfunc  selfDriveIsNotFormatted( ) {}\n' >"$sd_dir/tree/wire/selfdrive_plant.go"
+	printf '\nself_drive_unused_variable=1\n' >>"$sd_dir/tree/scripts/sweep-doc-numbers.sh"
+	printf '\n// See TestSelfDriveCitedButNeverWritten.\n' >>"$sd_dir/tree/wire/selfdrive_plant.go"
+	printf '\nCoverage today is 22 of the 102 allowlisted identifiers.\n' >>"$sd_dir/tree/README.md"
+	printf 'package proto\n\nfunc selfDriveUnreachable() int {\n\treturn 0\n\treturn 1\n}\n' >"$sd_dir/tree/proto/selfdrive_vet.go"
+	printf 'package proto\n\nimport _ "net"\n' >"$sd_dir/tree/proto/selfdrive_import.go"
+	# A _test.go that names the clock without DECLARING a test: T2 must see it,
+	# and the declared-test count must not move, or this plant would redden the
+	# unit-suite row it is not testing.
+	printf 'package proto\n\nimport "time"\n\nvar selfDriveClockBait = time.Sleep\n' >"$sd_dir/tree/proto/selfdrive_clock_test.go"
+
+	sd_out="$(cd "$sd_dir/tree" && ./verify.sh --inner 2>&1 || true)"
+	sd_row() { printf '%s\n' "$sd_out" | awk -v n="$1" '$1 == n { print $2; f = 1 } END { if (!f) print "ABSENT" }'; }
+
+	for r in "${SELF_DRIVE_REDDENS[@]}"; do
+		[ "$(sd_row "$r")" = FAIL ] || sd_bad="$sd_bad $r=$(sd_row "$r") (planted, did not redden);"
+	done
+	# The preservation half. An arbiter that reddens everything detects nothing.
+	for r in "${SELF_DRIVE_SURVIVES[@]}"; do
+		[ "$(sd_row "$r")" = PASS ] || sd_bad="$sd_bad $r=$(sd_row "$r") (unplanted, went red);"
+	done
+	rm -rf "$sd_dir"
+
+	if [ -n "$sd_bad" ]; then
+		record "self-drive" FAIL "the arbiter did not detect what it planted for itself:$sd_bad"
+		printf '\n--- self-drive FAILED, the planted run said: ---\n' >&2
+		quote_block "$sd_out" >&2
+	else
+		record "self-drive" PASS "planted ${#SELF_DRIVE_REDDENS[@]} defect(s), each reddened its own row; ${#SELF_DRIVE_SURVIVES[@]} unplanted row(s) stayed green" "$((SELF_DRIVE_REDDENS_N + SELF_DRIVE_SURVIVES_N))"
+	fi
+fi
+
 if [ "$INNER" -eq 0 ]; then
 	if [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		orc_start=$(date +%s)
@@ -730,10 +805,7 @@ if [ "$INNER" -eq 0 ]; then
 		# it is in none of the three places an author would edit to make a
 		# scenario stop working.
 		for contract in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
-			sc_name="${contract%%|*}"
-			sc_rest="${contract#*|}"
-			want_rc="${sc_rest%%|*}"
-			want_tok="${sc_rest##*|}"
+			IFS='|' read -r sc_name want_rc want_tok want_diag <<<"$contract"
 			if ! printf '%s\n' "$orc_out" | grep -qE "^[[:space:]]*RESULT $sc_name PASS obs="; then
 				unaccounted="$unaccounted $sc_name"
 				continue
@@ -751,6 +823,26 @@ if [ "$INNER" -eq 0 ]; then
 			# observation", which is one manifest entry away from the defeat
 			# this whole check answers.
 			printf '%s' ",$got," | grep -q ",$want_tok," || sc_ok=0
+			# ROUND 13, B15. The row's own ACCOUNT of what it found, not only
+			# that it went red. A scenario cut down to the lines producing its
+			# contracted observation, planting whatever reaches the same row,
+			# satisfied everything up to here — because a verdict names a row
+			# and nothing named the defect. The note is written by the arbiter,
+			# so the scenario cannot supply it by planting something else.
+			case "$want_tok" in
+			*:FAIL | *:PASS | *:ABSENT)
+				sc_row="${want_tok%%:*}"
+				# Every note recorded for that row, not the first: a scenario
+				# may run the subject more than once (oracle-is-invoked runs a
+				# stub and then the real thing), and the reading that carries
+				# the diagnosis is not always the first one.
+				sc_note="$(printf '%s' "$got" | tr ',' '\n' | sed -n "s/^why:$sc_row://p")"
+				printf '%s\n' "$sc_note" | grep -qF -- "$want_diag" || {
+					sc_ok=0
+					want_tok="$want_tok/$want_diag"
+				}
+				;;
+			esac
 			[ "$sc_ok" -eq 1 ] || breached="$breached $sc_name(wants $want_rc,$want_tok; observed [$got])"
 		done
 		if [ "$orc_rc" -ne 0 ]; then
@@ -759,27 +851,49 @@ if [ "$INNER" -eq 0 ]; then
 			# B14: the oracle's own exit 1 arrived first and "exit 1" was the
 			# entire diagnosis, while four scenarios had been emptied and were
 			# reporting nothing — the finding the operator most needed.
-			record "verify-oracle" FAIL "exit $orc_rc${breached:+; and scenario(s) reported PASS without observing what verify.manifest.sh says they must:$breached}"
-			printf '\n--- verify-oracle FAILED (exit %s) ---\n%s\n' "$orc_rc" "$orc_out" >&2
+			# ROUND 13, N14. "exit 137" is not a diagnosis. The oracle's own
+			# refusal line names WHICH scenario went silent, and dropping it
+			# here left that naming reachable, correct and unread.
+			# `|| true`, and it is not cosmetic: pipefail plus set -e means a
+			# grep that matches nothing ABORTS the run, and an aborted run
+			# records no row at all. That is how this line first shipped, and
+			# the scenario below caught it as verify-oracle:ABSENT.
+			orc_detail="$(printf '%s\n' "$orc_out" | grep -E '^ORACLE (REFUSED|FAIL)' | tail -1 || true)"
+			# NAME them in the ROW, not only in the dump. "1 of 63 scenarios
+			# did not behave" is the same defect as the population count that
+			# would not say which scenario went silent: it is true, and it
+			# sends the reader to a diff. MEASURED 2026-08-30: one such run
+			# happened here and the name was unrecoverable afterwards, because
+			# the reader had captured the table and not the dump.
+			orc_failed="$(printf '%s\n' "$orc_out" |
+				sed -n 's/^[[:space:]]*RESULT \([^ ]*\) FAIL.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+			record "verify-oracle" FAIL "exit $orc_rc${orc_detail:+: $orc_detail}${orc_failed:+; the scenario(s) that did not behave: $orc_failed}${breached:+; and scenario(s) reported PASS without observing what verify.manifest.sh says they must:$breached}"
+			printf '\n--- verify-oracle FAILED (exit %s) ---\n' "$orc_rc" >&2
+			quote_block "$orc_out" >&2
 		elif [ -z "$oracle_reported" ]; then
 			record "verify-oracle" FAIL "the oracle exited 0 but printed no 'ORACLE PASS: <n> scenarios' line; its answer is not the account of a run"
-			printf '\n--- verify-oracle produced no verdict line ---\n%s\n' "$orc_out" >&2
+			printf '\n--- verify-oracle produced no verdict line ---\n' >&2
+			quote_block "$orc_out" >&2
 		elif [ -n "$unaccounted" ]; then
 			record "verify-oracle" FAIL "the oracle reported no passing result for scenario(s)$unaccounted, which verify.manifest.sh requires; $accounted of ${#MANIFEST_SCENARIO_CONTRACTS[@]} were accounted for by name"
-			printf '\n--- verify-oracle did not account for every declared scenario ---\n%s\n' "$orc_out" >&2
+			printf '\n--- verify-oracle did not account for every declared scenario ---\n' >&2
+			quote_block "$orc_out" >&2
 		elif [ -n "$breached" ]; then
 			record "verify-oracle" FAIL "scenario(s) reported PASS without observing what verify.manifest.sh says they must:$breached"
-			printf '\n--- verify-oracle: a scenario passed without doing its job ---\n%s\n' "$orc_out" >&2
+			printf '\n--- verify-oracle: a scenario passed without doing its job ---\n' >&2
+			quote_block "$orc_out" >&2
 		elif [ "$oracle_reported" != "${#MANIFEST_SCENARIOS[@]}" ]; then
 			record "verify-oracle" FAIL "the oracle reports $oracle_reported scenario(s); verify.manifest.sh declares ${#MANIFEST_SCENARIOS[@]}"
-			printf '\n--- verify-oracle ran a different set than the manifest declares ---\n%s\n' "$orc_out" >&2
+			printf '\n--- verify-oracle ran a different set than the manifest declares ---\n' >&2
+			quote_block "$orc_out" >&2
 		elif [ "$orc_elapsed" -lt "$ORACLE_MIN_SECONDS" ]; then
 			# LAST on purpose: a duration is the weakest thing said about this
 			# row, and it must never displace a diagnosis that names a specific
 			# scenario. It is here only so that the cheap defeat — a fake that
 			# returns instantly — is not also the quiet one.
 			record "verify-oracle" FAIL "the oracle answered in ${orc_elapsed}s, under the ${ORACLE_MIN_SECONDS}s floor in verify.manifest.sh; it reported the right account without doing the work"
-			printf '\n--- verify-oracle returned too fast to have run ---\n%s\n' "$orc_out" >&2
+			printf '\n--- verify-oracle returned too fast to have run ---\n' >&2
+			quote_block "$orc_out" >&2
 		else
 			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1), ${orc_elapsed}s" "$accounted"
 		fi
@@ -802,7 +916,9 @@ echo
 # exactly when it is meant to have run.
 expected_rows=()
 for r in "${REQUIRED_ROWS[@]}"; do
-	if [ "$r" = verify-oracle ] && [ "$INNER" -eq 1 ]; then continue; fi
+	case "$r" in
+	verify-oracle | self-drive) [ "$INNER" -eq 0 ] || continue ;;
+	esac
 	expected_rows+=("$r")
 done
 rows_expected="$(printf '%s\n' "${expected_rows[@]}" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"

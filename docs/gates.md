@@ -682,7 +682,8 @@ better spelling check, and the fault was not the pattern.
 DETECTION while the population is intact.** Every operand up to here answered
 *is it there*. None answered *does it do anything*.
 
-**`MANIFEST_SCENARIO_CONTRACTS`** states, per scenario, `name|rc-class|token`:
+**`MANIFEST_SCENARIO_CONTRACTS`** states, per scenario,
+`name|rc-class|token|diagnosis` (the fourth field was added in round 13, below):
 
 - **rc-class** — `zero`, `nonzero`, or `static`. What the scenario must have
   seen the subject's process do. `static` means it does not run the subject at
@@ -727,6 +728,13 @@ would satisfy it. What the design buys is that every cheap defeat — empty it,
 stub it, keep the name, fake the report, return instantly — fails loudly, and
 the remaining defeat is no longer cheaper than doing the work.
 
+**That bound was taken, and the section below is the answer.** It is worth
+naming what happened rather than quietly editing the paragraph: the review
+built the body this paragraph describes, composed it with the *other* bound
+stated three paragraphs up — that the contract pins the outcome and not the
+plant — and got `VERDICT: PASS` with a live defect and four scenarios testing
+nothing. Two bounds stated separately are not two residuals. They compose.
+
 ### The declared-test band, and why it is not an equality
 
 `MIN_DECLARED_TESTS` was a floor. MEASURED 2026-08-30 by review: nothing in the
@@ -743,16 +751,26 @@ helper.
 
 So it is a BAND: `MIN_DECLARED_TESTS` to `MIN_DECLARED_TESTS +
 MAX_DECLARED_MARGIN`, with the margin at the largest number of tests any single
-scenario plants (MEASURED: one). The lower edge is exactly where it was; the
-erosion is capped instead of unbounded, and the diagnosis names the number to
-write. `min-declared-tests-floor` drives down, `min-declared-tests-margin`
-drives up with `MAX_DECLARED_MARGIN + 1` tests derived from the manifest, and
+scenario plants. The lower edge is exactly where it was; the erosion is capped
+instead of unbounded, and the diagnosis names the number to write.
+`min-declared-tests-floor` drives down, `min-declared-tests-margin` drives up
+with `MAX_DECLARED_MARGIN + 1` tests derived from the manifest, and
 `ceiling-control` — which plants exactly one — is the preservation control that
 stops the band collapsing back to an equality.
 
-`MAX_DECLARED_MARGIN` is itself capped from Go, because widening a band is the
-cheapest way to make a row stop saying anything and it looks like maintenance
-while doing it.
+**The margin is DERIVED, not measured once.** Round 12's review pointed out
+that a literal sitting at today's maximum under a cap of four could be
+quadrupled one line at a time, each edit looking exactly like the maintenance
+this design claims to remove.
+`TestDeclaredTestMarginIsDerivedFromWhatScenariosPlant` reads the oracle,
+walks each scenario into the helpers it calls, counts the test functions each
+one plants, and refuses any other value in either direction. The Go cap stays
+as a backstop rather than as the check.
+
+**BOUND on the derivation:** it is a static read of a shell script. A helper
+reached through a variable is invisible to it, and a commented-out plant still
+counts. Both fail toward a larger number than the truth, which is the direction
+that goes red rather than the direction that goes quiet.
 
 ### `doc-numbers` — the sweep is a row now
 
@@ -778,8 +796,104 @@ it as a row. Two fixes to the method, not the result:
 
 **BOUND:** `--check` refuses the shapes that were removed, not every derived
 number that could ever be written. A new instrument's number is uncovered until
-its shape is added. The enumeration is what finds those; the check is what
-keeps the found ones gone.
+its shape is added.
+
+Round 12's review drove that bound: one added line carrying four live
+instrument-owned numbers passed, and the only thing that moved was the
+population count — printed by `--check`, compared to nothing. So it is compared
+now. `DOC_NUMBER_CEILING` holds the population from above, going over it prints
+the whole enumeration rather than the count, and the four shapes from the
+review's own probe line are refused by name.
+
+**BOUND on the ceiling:** it is a size, not a membership. Deleting one bare
+number and adding another is invisible to it, exactly as the declared-test band
+is blind to a swap.
+
+### Naming the DEFECT, not only the row — added 2026-08-30 (round 13)
+
+Round 11's contracts pinned, per scenario, which row must go red. Round 12's
+review took the two bounds round 11 stated — *a body reduced to just the lines
+that produce its observation would satisfy it*, and *the contract pins the
+outcome, not the plant* — **built both, composed them, and got `VERDICT: PASS`
+on thirteen steps with a live defect in the tree and four scenarios testing
+nothing they were written to test.** The preservation control is what makes it
+bite: *emptying* one of those same bodies still fails and names itself, so the
+machinery works and the substitution is precisely what passes.
+
+**The missing property in one sentence: the design named the row a scenario
+must redden, and nothing named the defect it must plant.**
+
+**The fourth contract field is the diagnosis, and the ARBITER writes it.** A
+verdict says a row went red; only the note says why. The note is emitted by
+`verify.sh`, not by the scenario that planted the defect, so a scenario that
+reddens the right row by planting a different defect now reports a different
+note and no longer passes for it. Where the arbiter's own note was generic —
+`exit N` with no output, a roster mismatch that did not say which direction —
+the ARBITER was improved rather than the contract loosened.
+
+**BOUND:** the diagnosis is matched as a SUBSTRING of the arbiter's note. Two
+plants the arbiter describes in the same words are still indistinguishable, and
+how narrow that is depends on how specific its notes are.
+
+**`self-drive` — the arbiter plants defects for itself.** Every check on the
+oracle's REPORT is defeatable by a fabricator that knows the check; that is the
+terminus round 11 named. Round 12's review executed it: a short
+single-file fabricator that sources the manifest and sleeps past the wall-clock
+floor removes all sixty detections and passes in thirty seconds. The only
+non-circular answer is the arbiter doing detection work ITSELF, so before it
+calls the oracle it copies the tree, plants seven defects it chose, runs one
+`--inner` pass, and requires each planted row to redden — with a preservation
+half in the same run requiring the unplanted rows to stay green, because a
+self-drive satisfied by an arbiter that reddens everything is a check with one
+possible verdict. `self-drive-blinded` and `self-drive-reddens-everything`
+drive both halves.
+
+**BOUND:** seven rows of fourteen, in one tree, with plants chosen not to
+cascade into the rows on the preservation list. It is a lower bound on the
+arbiter's liveness, not proof of it, and the seven rows it does not plant stay
+blindable. What it changes is the price: blinding one of those seven now needs
+an edit to `verify.sh` as well as to the oracle.
+
+**And the fabrication itself is NOT stopped, which the tree says out loud.**
+MEASURED: a single-file fabricator that *injects* before the oracle's
+dispatcher, rather than overwriting the file, still gives `VERDICT: PASS` in
+thirty-six seconds with all sixty-three of the oracle's detections gone. What
+the self-drive removes is what that buys: fabricate the oracle AND blind the
+`gofmt` row AND plant a live unformatted file — the combination that passed
+before this round — and the run ends `VERDICT: FAIL`.
+
+**Numbers that were literals sitting at today's value.** Three, all raised by
+the review as the same defect one level in: `MAX_DECLARED_MARGIN` is now
+derived from what the scenarios actually plant (above); `ORACLE_MIN_SECONDS` is
+derived from the measurement written beside it at a stated percentage, with
+`manifest_check` refusing the two drifting apart; and the `static` contract
+exemption is enumerated in `MANIFEST_STATIC_CONTRACTS` and held to set equality
+from Go, after the comment describing it turned out to have been wrong since
+the second member landed — it said "capped at ONE, its one member" while the
+pin said two and the table held two.
+
+**Anchors.** Three scenarios still anchored their plant on a literal copy of a
+constant in `verify.sh`; they read it from the copy now. `edit()` refuses an
+anchor that occurs more than once instead of silently patching the first —
+which immediately caught two scenarios whose row-name anchor had stopped being
+unique, and those two now delete from a NAMED ARRAY rather than matching a
+line. Round 11 learned that a neighbour is not an anchor; round 13 adds that a
+LITERAL is not an anchor either, and that a pattern used to find an anchor must
+not match the line that contains the pattern.
+
+**Quoted output is indented.** When the self-drive fails it prints the planted
+run's report. Unindented, that report's table is indistinguishable from the
+run's own table to anything parsing the stream — and the oracle parses the
+stream. It cost every row of two scenarios' readings coming back `ABSENT`.
+`verify.sh` indents every quoted sub-report and the oracle reads the LAST table
+rather than the first; either alone would have fixed it, and both are cheap.
+
+**`silent-scenario-named`.** A scenario that dies loudly is caught by the death
+reporter. A scenario that dies SILENTLY — killed before it can print — is
+caught only by the population count, and the oracle's refusal names which one
+went quiet. That naming was reachable, correct, and asserted on by nothing;
+`verify.sh` now also carries the oracle's own refusal line into the
+`verify-oracle` row, because `exit 137` is not a diagnosis.
 
 ### The contaminated oracle run of round 9, settled
 
