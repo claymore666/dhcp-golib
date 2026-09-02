@@ -46,6 +46,11 @@ type Manager struct {
 
 	events chan Event
 
+	// requests carries the caller's own events — Release and ReportConflict —
+	// into Run's loop, because the Machine is owned by that goroutine and a
+	// method that touched it directly would race every Step.
+	requests chan proto.Event
+
 	// stopping is set on the Run goroutine before the shutdown Stop is
 	// dispatched, and is read only there. It switches emit from blocking to
 	// best-effort — see emit for why that is required and why it does not
@@ -80,6 +85,9 @@ type Stats struct {
 	EventsDropped    uint64
 	ActionsExecuted  uint64
 	ActionsFailedFed uint64
+	DeclinesSent     uint64
+	ReleasesSent     uint64
+	RequestsDropped  uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -118,6 +126,10 @@ func NewManager(cfg Config) (*Manager, error) {
 		journal: cfg.Journal,
 		packets: cfg.Packets,
 		events:  make(chan Event, buf),
+		// Four is enough for every distinct request that can be outstanding
+		// at once and then some: the two kinds are idempotent, so a second
+		// copy of one already queued would change nothing.
+		requests: make(chan proto.Event, 4),
 	}
 	if mg.journal == nil {
 		mg.journal = discardJournal{}
@@ -169,6 +181,9 @@ func (mg *Manager) Run(ctx context.Context) error {
 
 	for {
 		select {
+		case req := <-mg.requests:
+			mg.dispatch(ctx, req)
+
 		case <-ctx.Done():
 			mg.shutdown()
 			return ctx.Err()
@@ -190,6 +205,34 @@ func (mg *Manager) Run(ctx context.Context) error {
 			mg.bump(func(s *Stats) { s.TimerFires++ })
 			mg.dispatch(ctx, proto.TimerFired(id))
 		}
+	}
+}
+
+// Release asks the client to give the lease back: a DHCPRELEASE to the server
+// and then STOPPED (RFC 2131 section 4.4.6).
+//
+// It does not block and it does not report success. Neither message in that
+// section is answered by the server, so there is nothing to wait for; the
+// confirmation a caller can have is the Lost event carrying
+// proto.ReasonReleased, which arrives on Events. Calling it with no Run in
+// flight, or twice, does nothing the second time.
+func (mg *Manager) Release() { mg.request(proto.Simple(proto.EvRelease)) }
+
+// ReportConflict tells the client that something else is using the address it
+// holds, which obliges a DHCPRELEASE's counterpart — a DHCPDECLINE (RFC 2131
+// section 3.1(5), a MUST).
+//
+// THE DETECTION IS NOT IN THIS LIBRARY. Nothing here runs an ARP probe or
+// duplicate address detection; a conflict reaches the machine only because a
+// caller called this. Until a probe exists, a real conflict on a real host
+// produces no DHCPDECLINE, because nothing notices it.
+func (mg *Manager) ReportConflict() { mg.request(proto.Simple(proto.EvConflictDetected)) }
+
+func (mg *Manager) request(ev proto.Event) {
+	select {
+	case mg.requests <- ev:
+	default:
+		mg.bump(func(s *Stats) { s.RequestsDropped++ })
 	}
 }
 
@@ -283,6 +326,7 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 				continue
 			}
 			mg.bump(func(s *Stats) { s.Sent++ })
+			mg.countSent(a.Msg)
 			mg.packets.Record(CapturedPacket{
 				At: bridgeAt.wall, Dir: DirOut, Raw: raw, Msg: a.Msg,
 			})
@@ -368,6 +412,25 @@ func (mg *Manager) emit(ctx context.Context, e Event) {
 	case mg.events <- e:
 	case <-ctx.Done():
 		mg.bump(func(s *Stats) { s.EventsDropped++ })
+	}
+}
+
+// countSent counts the two messages that are never answered.
+//
+// Counted where the send SUCCEEDED rather than where the machine decided to
+// send, because these two are the library's only outputs with no reply and no
+// retransmission: "we decided to decline" and "a DHCPDECLINE left the host"
+// are different facts, and only the second one is worth a counter.
+func (mg *Manager) countSent(msg *wire.Message) {
+	t, ok := msg.Type()
+	if !ok {
+		return
+	}
+	switch t {
+	case wire.MsgDecline:
+		mg.bump(func(s *Stats) { s.DeclinesSent++ })
+	case wire.MsgRelease:
+		mg.bump(func(s *Stats) { s.ReleasesSent++ })
 	}
 }
 

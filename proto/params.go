@@ -77,6 +77,18 @@ type Params struct {
 	DesyncMin Duration
 	DesyncMax Duration
 
+	// RestartDelay is the wait after a DHCPDECLINE before the configuration
+	// process restarts (RFC 2131 section 3.1(5)).
+	//
+	// DECISION 2026-08-30: zero means DefaultRestartDelay, NOT "no wait" —
+	// deliberately unlike DesyncMin/DesyncMax, where both zero disables the
+	// delay. A desync window has nothing to do when one container acquires one
+	// lease. This wait is the opposite case: it exists precisely because a
+	// single client whose address is permanently in use is the thing that
+	// loops, so the configuration that most wants it is the one a caller is
+	// most likely to leave at zero.
+	RestartDelay Duration
+
 	// MaxSendFailures is how many consecutive failed sends are tolerated
 	// before the machine gives up on the transport and reports
 	// ReasonTransport.
@@ -86,6 +98,11 @@ type Params struct {
 	// exactly like one waiting for a slow server.
 	MaxSendFailures int
 }
+
+// DefaultRestartDelay is RFC 2131 section 3.1(5)'s "minimum of ten seconds"
+// before restarting the configuration process after a DHCPDECLINE. Pinned by
+// TestRestartDelayMeetsTheRFCMinimum.
+const DefaultRestartDelay = 10 * Second
 
 // DefaultParameterList is option 55's default contents: the options this
 // library can actually turn into a lease, plus the two the plugin's resolver
@@ -114,6 +131,7 @@ func DefaultParams(chaddr []byte) Params {
 		Request:         DefaultBackoff(),
 		DesyncMin:       1 * Second,
 		DesyncMax:       10 * Second,
+		RestartDelay:    DefaultRestartDelay,
 		MaxSendFailures: 5,
 	}
 }
@@ -128,6 +146,11 @@ var ErrCHAddrTooLong = errors.New("proto: Params.CHAddr is longer than 16 octets
 // ErrBadDesync is returned by New when the desync window is inverted.
 var ErrBadDesync = errors.New("proto: Params.DesyncMin is greater than Params.DesyncMax")
 
+// ErrBadRestartDelay is returned by New for a negative restart delay. A
+// negative delay is refused rather than clamped: it is a caller error, and
+// clamping it to the default would hide the mistake behind correct behaviour.
+var ErrBadRestartDelay = errors.New("proto: Params.RestartDelay is negative")
+
 func (p Params) validate() error {
 	if len(p.CHAddr) == 0 {
 		return ErrNoCHAddr
@@ -138,7 +161,17 @@ func (p Params) validate() error {
 	if p.DesyncMin < 0 || p.DesyncMax < 0 || p.DesyncMin > p.DesyncMax {
 		return fmt.Errorf("%w: [%s, %s]", ErrBadDesync, p.DesyncMin, p.DesyncMax)
 	}
+	if p.RestartDelay < 0 {
+		return fmt.Errorf("%w: %s", ErrBadRestartDelay, p.RestartDelay)
+	}
 	return nil
+}
+
+func (p Params) restartDelay() Duration {
+	if p.RestartDelay <= 0 {
+		return DefaultRestartDelay
+	}
+	return p.RestartDelay
 }
 
 // desync returns the startup delay for this entropy value.

@@ -44,6 +44,16 @@ const (
 	// because it is unretrofittable — every transition that emits an action
 	// has to have decided what happens when that action fails.
 	EvActionFailed
+	// EvRelease says the caller no longer requires the address and wants the
+	// lease given back: RFC 2131 section 4.4.6's "the client no longer
+	// requires use of its assigned network address (e.g., the client is
+	// gracefully shut down)".
+	//
+	// It is an input rather than a method because the machine is pure and
+	// because a release must serialise with everything else the machine is
+	// doing. It is NOT EvStop: Stop ends the client and keeps the binding at
+	// the server, release gives the binding back.
+	EvRelease
 )
 
 func (k EventKind) String() string {
@@ -66,6 +76,8 @@ func (k EventKind) String() string {
 		return "AddressLost"
 	case EvActionFailed:
 		return "ActionFailed"
+	case EvRelease:
+		return "Release"
 	default:
 		return fmt.Sprintf("event(%d)", uint8(k))
 	}
@@ -75,7 +87,7 @@ func (k EventKind) String() string {
 func AllEventKinds() []EventKind {
 	return []EventKind{
 		EvStart, EvStop, EvReceived, EvTimerFired, EvLinkDown, EvLinkUp,
-		EvConflictDetected, EvAddressLost, EvActionFailed,
+		EvConflictDetected, EvAddressLost, EvActionFailed, EvRelease,
 	}
 }
 

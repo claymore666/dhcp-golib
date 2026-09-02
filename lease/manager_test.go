@@ -700,3 +700,148 @@ func TestNilJournalAndPacketsAreDiscarding(t *testing.T) {
 		t.Fatalf("Packets() = %v, want nil from the discarding default", got)
 	}
 }
+
+// ------------------------------------------------- decline and release --
+
+// lastSent returns the last message the server decoded, and whether it is of
+// the wanted type.
+//
+// It reads the fake SERVER's record, not the manager's, and the server holds
+// what came off the wire: it decodes the payload the transport handed it. An
+// assertion here is on the bytes, where an assertion on a.Msg would be on the
+// machine's opinion of them.
+func lastSent(t *testing.T, r *rig, want wire.MessageType) *wire.Message {
+	t.Helper()
+	sent := r.server.sentMessages()
+	if len(sent) == 0 {
+		t.Fatal("the server saw nothing")
+	}
+	msg := sent[len(sent)-1]
+	got, ok := msg.Type()
+	if !ok {
+		t.Fatalf("the last message the server saw carries no DHCP message type")
+	}
+	if got != want {
+		t.Fatalf("the last message the server saw is %s, want %s", got, want)
+	}
+	return msg
+}
+
+// TestManagerReleaseGivesTheLeaseBack drives RFC 2131 section 4.4.6 end to end
+// through the manager: the caller asks, the server sees a DHCPRELEASE off the
+// wire, and the caller is told the lease is gone with a reason it can branch on.
+//
+// The Lost event is also the BARRIER, and that is not a convenience: the
+// machine emits the send before the announcement, so a Lost in hand proves the
+// send already returned. A test that read the server's record without one
+// would be racing the manager's goroutine.
+func TestManagerReleaseGivesTheLeaseBack(t *testing.T) {
+	r := newRig(t, testParams(), answerNormally, Fault{})
+	if ev := r.nextEvent(t); ev.Kind != Acquired {
+		t.Fatalf("first event is %s", ev)
+	}
+
+	r.mgr.Release()
+
+	ev := r.nextEvent(t)
+	if ev.Kind != Lost || ev.Reason != proto.ReasonReleased {
+		t.Fatalf("event after Release is %s, want lost/released", ev)
+	}
+	if _, held := r.mgr.Lease(); held {
+		t.Fatal("the manager still reports a held lease after releasing it")
+	}
+
+	msg := lastSent(t, r, wire.MsgRelease)
+	if msg.CIAddr.String() != testYIAddr {
+		t.Errorf("ciaddr = %s, want %s (RFC 2131 Table 5 carries the released address in the field, not in option 50)", msg.CIAddr, testYIAddr)
+	}
+	if _, ok := msg.Options[wire.OptRequestedIP]; ok {
+		t.Error("the DHCPRELEASE off the wire carries a requested-ip option, a MUST NOT")
+	}
+	if sid, ok := msg.Addr4(wire.OptServerID); !ok || sid.String() != testServerID {
+		t.Errorf("server-id = %v/%v, want %s (a MUST)", sid, ok, testServerID)
+	}
+
+	if s := r.mgr.Stats(); s.ReleasesSent != 1 || s.DeclinesSent != 0 {
+		t.Fatalf("stats = %+v, want exactly one release sent and no decline", s)
+	}
+}
+
+// TestManagerReportConflictDeclinesAndReacquires is RFC 2131 section 3.1(5)
+// end to end: the MUST, the wait, and the restart.
+//
+// THE TRIGGER IS STUBBED. Nothing in this library detects an address
+// conflict — no ARP, no duplicate address detection — so the conflict enters
+// through ReportConflict, which is a caller's call. The DECLINE path below is
+// real; what produces the conflict is not.
+func TestManagerReportConflictDeclinesAndReacquires(t *testing.T) {
+	r := newRig(t, testParams(), answerNormally, Fault{})
+	if ev := r.nextEvent(t); ev.Kind != Acquired {
+		t.Fatalf("first event is %s", ev)
+	}
+
+	r.mgr.ReportConflict()
+
+	ev := r.nextEvent(t)
+	if ev.Kind != Lost || ev.Reason != proto.ReasonConflict {
+		t.Fatalf("event after ReportConflict is %s, want lost/conflict", ev)
+	}
+
+	msg := lastSent(t, r, wire.MsgDecline)
+	if got, ok := msg.Addr4(wire.OptRequestedIP); !ok || got.String() != testYIAddr {
+		t.Errorf("requested-ip = %v/%v, want %s (RFC 2131 Table 5 carries the declined address in option 50)", got, ok, testYIAddr)
+	}
+	if msg.CIAddr.IsValid() && !msg.CIAddr.IsUnspecified() {
+		t.Errorf("ciaddr = %s, Table 5 says 0 for a DHCPDECLINE", msg.CIAddr)
+	}
+
+	// The wait, and then the restart. Waiting is the whole point of section
+	// 3.1(5); a client that redistributed straight back into DISCOVER is the
+	// loop it exists to stop.
+	if !r.timers.waitArmed(proto.TimerRestart) {
+		t.Fatal("no restart timer armed after the DHCPDECLINE")
+	}
+	d, ok := r.timers.armedAt(proto.TimerRestart)
+	if !ok || d < 10*proto.Second {
+		t.Fatalf("restart armed for %s/%v, RFC 2131 section 3.1(5) says a minimum of ten seconds", d, ok)
+	}
+
+	r.clock.advance(d)
+	r.timers.fire(proto.TimerRestart)
+
+	if ev := r.nextEvent(t); ev.Kind != Acquired {
+		t.Fatalf("event after the restart wait is %s, want a fresh acquisition", ev)
+	}
+	if s := r.mgr.Stats(); s.DeclinesSent != 1 || s.ReleasesSent != 0 {
+		t.Fatalf("stats = %+v, want exactly one decline sent and no release", s)
+	}
+}
+
+// TestManagerReleaseWithNoLeaseSendsNothing is the preservation control's
+// other half: a request the machine has nothing to act on must not put a
+// message on the wire.
+//
+// The rig's server never answers the DISCOVER here, so the manager is in
+// SELECTING when the release arrives. The barrier is the retransmit timer
+// being re-armed, which only happens after the release has been stepped.
+func TestManagerReleaseWithNoLeaseSendsNothing(t *testing.T) {
+	silent := func(*wire.Message, int) []*wire.Message { return nil }
+	r := newRig(t, testParams(), silent, Fault{})
+	if !r.timers.waitArmed(proto.TimerRetransmit) {
+		t.Fatal("no retransmit timer armed after the first DISCOVER")
+	}
+
+	r.mgr.Release()
+	r.journal.waitAppended(t, "the release", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvRelease
+	})
+
+	for _, msg := range r.server.sentMessages() {
+		if got, ok := msg.Type(); ok && (got == wire.MsgRelease || got == wire.MsgDecline) {
+			t.Fatalf("a %s went out with no lease held", got)
+		}
+	}
+	if s := r.mgr.Stats(); s.ReleasesSent != 0 {
+		t.Fatalf("stats = %+v, want no release sent", s)
+	}
+}

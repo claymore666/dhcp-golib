@@ -2,6 +2,7 @@ package proto
 
 import (
 	"fmt"
+	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/wire"
 )
@@ -138,11 +139,13 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 	case EvStop:
 		m.stop(out)
 	case EvTimerFired:
-		if ev.Timer == TimerDesync {
+		switch ev.Timer {
+		case TimerDesync:
 			m.sendDiscover(now, rnd, out)
-			return
+
+		default:
+			out.journal(m, fmt.Sprintf("timer %s fired in INIT: ignored", ev.Timer))
 		}
-		out.journal(m, fmt.Sprintf("timer %s fired in INIT: ignored", ev.Timer))
 	case EvLinkUp:
 		// The link came back after a LinkDown dropped us here. Start again.
 		m.beginAcquisition(now, rnd, out, true)
@@ -294,13 +297,9 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 		m.dropLease(out, ReasonAddressLost)
 		m.beginAcquisition(now, rnd, out, false)
 	case EvConflictDetected:
-		// M4 sends a DHCPDECLINE here — RFC 2131 section 3.1(5) makes it a
-		// MUST once a conflict is detected, and the v1.x plugin's failure to
-		// send one is design decision D6. M1 detects nothing and sends
-		// nothing; the lease is dropped and re-acquired, which is the honest
-		// behaviour for a machine that cannot yet decline.
-		m.dropLease(out, ReasonConflict)
-		m.beginAcquisition(now, rnd, out, false)
+		m.declineAndRestart(rnd, out)
+	case EvRelease:
+		m.release(rnd, out)
 	case EvStart:
 		out.journal(m, "Start in BOUND: already running")
 	case EvReceived:
@@ -329,9 +328,7 @@ func (m *Machine) beginAcquisition(now Instant, rnd uint64, out *actions, withDe
 	m.offer = nil
 	m.xid = uint32(split(rnd, 0))
 	m.state = StateInit
-	out.cancel(m, TimerRetransmit)
-	out.cancel(m, TimerDesync)
-	out.cancel(m, TimerExpire)
+	out.cancelAll(m)
 
 	d := Duration(0)
 	if withDesync {
@@ -350,9 +347,7 @@ func (m *Machine) toInitIdle(out *actions) {
 	m.state = StateInit
 	m.offer = nil
 	m.retransmits = 0
-	out.cancel(m, TimerRetransmit)
-	out.cancel(m, TimerDesync)
-	out.cancel(m, TimerExpire)
+	out.cancelAll(m)
 }
 
 func (m *Machine) linkDown(out *actions) {
@@ -360,16 +355,56 @@ func (m *Machine) linkDown(out *actions) {
 	m.toInitIdle(out)
 }
 
-func (m *Machine) stop(out *actions) {
-	m.dropLease(out, ReasonStopped)
-	out.cancel(m, TimerRetransmit)
-	out.cancel(m, TimerDesync)
-	out.cancel(m, TimerExpire)
+func (m *Machine) stop(out *actions) { m.halt(out, ReasonStopped) }
+
+// halt gives up whatever is held, cancels everything and parks in STOPPED.
+func (m *Machine) halt(out *actions, r Reason) {
+	m.dropLease(out, r)
+	out.cancelAll(m)
 	m.state = StateStopped
 	m.started = false
 	m.offer = nil
 	m.retransmits = 0
 	m.sendFailures = 0
+}
+
+// declineAndRestart is RFC 2131 section 3.1(5): send a DHCPDECLINE, give up
+// the address, and wait before restarting the configuration process.
+//
+// THE DECLINE IS SENT BEFORE THE LOSS IS ANNOUNCED, for the reason enterBound
+// gives about the reverse order: a ring-3 caller drains this list in order and
+// may tear the interface down the moment it sees ActLeaseLost.
+// TestDeclineIsSentBeforeTheLossIsAnnounced holds the order.
+//
+// The machine lands in INIT, not STOPPED: RFC 2131 section 3.2(3), "This
+// action corresponds to the client moving to the INIT state in the DHCP state
+// diagram."
+func (m *Machine) declineAndRestart(rnd uint64, out *actions) {
+	m.sendDecline(rnd, out)
+	m.dropLease(out, ReasonConflict)
+	m.toInitIdle(out)
+	d := m.params.restartDelay()
+	out.set(m, TimerRestart, d)
+	out.journal(m, fmt.Sprintf("INIT: waiting %s before restarting after DHCPDECLINE (RFC 2131 3.1)", d))
+}
+
+// release is RFC 2131 section 4.4.6: the caller no longer requires the address.
+//
+// Sent before the loss is announced, and here the ordering is not only about
+// what the caller might do: a DHCPRELEASE is unicast FROM the released address
+// (section 4.4.4), so a caller that removed the address on ActLeaseLost would
+// leave the message with no source. TestReleaseIsSentBeforeTheLossIsAnnounced
+// holds the order.
+//
+// DECISION 2026-08-30, because RFC 2131 does not settle it: the machine lands
+// in STOPPED. Figure 5 has no DHCPRELEASE edge and section 4.4.6 names no
+// state. INIT was the alternative and it is wrong for this library — a
+// released machine in INIT re-acquires on the next EvLinkUp, silently undoing
+// what the caller asked for. STOPPED is reversible with EvStart, which is the
+// caller saying so a second time.
+func (m *Machine) release(rnd uint64, out *actions) {
+	m.sendRelease(rnd, out)
+	m.halt(out, ReasonReleased)
 }
 
 // enterBound installs the lease and arms the expiry timer.
@@ -506,6 +541,106 @@ func (m *Machine) sendRequest(now Instant, rnd uint64, out *actions) {
 	out.send(m, msg, Dest{Broadcast: true})
 	out.set(m, TimerRetransmit, m.params.Request.Delay(m.retransmits, rnd))
 }
+
+// terminalFields returns the address and the server identifier a DHCPDECLINE
+// or DHCPRELEASE must carry, or a note naming what the held lease lacks.
+//
+// RFC 2131 Table 5 makes the server identifier a MUST in both messages, so a
+// lease without one cannot produce a conformant message at all. Neither
+// message is answered, so an unusable one would be indistinguishable from a
+// correct one on the wire; it is not sent, and the note says why.
+func (m *Machine) terminalFields() (addr, sid netip.Addr, why string) {
+	addr = m.lease.Addr.Addr()
+	sid = m.lease.ServerID
+	switch {
+	case !addr.Is4() || addr.IsUnspecified():
+		return addr, sid, "the held lease carries no IPv4 address"
+	case !sid.Is4() || sid.IsUnspecified():
+		return addr, sid, "the held lease carries no server identifier (RFC 2131 Table 5 makes it a MUST)"
+	}
+	return addr, sid, ""
+}
+
+// terminalBase builds the part of a DHCPDECLINE or DHCPRELEASE that is common
+// to both.
+//
+// It does NOT call base(). RFC 2131 Table 5 gives these two messages their own
+// column, and six of base()'s outputs are wrong in it: 'secs' is 0 rather than
+// the elapsed time, 'flags' is 0 so the BROADCAST bit stays clear, and the
+// host name, vendor class, parameter request list and requested lease time are
+// all forbidden by the column's "All others: MUST NOT".
+// TestDeclineAndReleaseCarryNoForbiddenOption is what holds that apart from
+// base(), which is otherwise the natural thing to reuse.
+//
+// xid is drawn fresh because Table 5's cell for this column reads "selected by
+// client", where the DHCPREQUEST column reuses the DHCPOFFER's.
+func (m *Machine) terminalBase(t wire.MessageType, xid uint32) *wire.Message {
+	msg := &wire.Message{
+		Op:      wire.BootRequest,
+		HType:   wire.HTypeEthernet,
+		XID:     xid,
+		CHAddr:  append([]byte(nil), m.params.CHAddr...),
+		Options: wire.Options{},
+	}
+	msg.SetType(t)
+	// Table 5 says MAY; RFC 2131 section 3.1(6) upgrades it to a MUST for a
+	// client that used a client identifier to obtain the lease. One builder
+	// for both messages is what makes that MUST unbreakable by editing a
+	// single call site.
+	if len(m.params.ClientID) > 0 {
+		msg.Options[wire.OptClientID] = append([]byte(nil), m.params.ClientID...)
+	}
+	return msg
+}
+
+// sendDecline emits the DHCPDECLINE for the held lease.
+func (m *Machine) sendDecline(rnd uint64, out *actions) {
+	addr, sid, why := m.terminalFields()
+	if why != "" {
+		out.journal(m, "DHCPDECLINE not sent: "+why)
+		return
+	}
+	msg := m.terminalBase(wire.MsgDecline, uint32(split(rnd, 4)))
+	// Table 5: the declined address is the 'requested IP address' option
+	// (MUST) and 'ciaddr' is 0. The DHCPRELEASE column reverses BOTH cells;
+	// TestDeclineAndReleaseCarryTheAddressInTheRightPlace holds them apart.
+	v := addr.As4()
+	msg.Options[wire.OptRequestedIP] = v[:]
+	sv := sid.As4()
+	msg.Options[wire.OptServerID] = sv[:]
+	msg.Options[wire.OptMessage] = []byte(declineMessage)
+	// RFC 2131 section 4.4.4: "Because the client is declining the use of the
+	// IP address supplied by the server, the client broadcasts DHCPDECLINE
+	// messages."
+	out.send(m, msg, Dest{Broadcast: true})
+}
+
+// sendRelease emits the DHCPRELEASE for the held lease.
+func (m *Machine) sendRelease(rnd uint64, out *actions) {
+	addr, sid, why := m.terminalFields()
+	if why != "" {
+		out.journal(m, "DHCPRELEASE not sent: "+why)
+		return
+	}
+	msg := m.terminalBase(wire.MsgRelease, uint32(split(rnd, 5)))
+	// Table 5, the other way round from the DHCPDECLINE above: the released
+	// address is the 'ciaddr' FIELD, and the 'requested IP address' option is
+	// a MUST NOT here.
+	msg.CIAddr = addr
+	sv := sid.As4()
+	msg.Options[wire.OptServerID] = sv[:]
+	msg.Options[wire.OptMessage] = []byte(releaseMessage)
+	// RFC 2131 section 4.4.4: "The client unicasts DHCPRELEASE messages to the
+	// server."
+	out.send(m, msg, Dest{Addr: sid})
+}
+
+// The option 56 text of the two messages. Table 5 makes 'message' a SHOULD for
+// both, and it is the only place a server's log can say why the client did it.
+const (
+	declineMessage = "address already in use"
+	releaseMessage = "no longer required"
+)
 
 // base builds the common part of a client message.
 func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
@@ -644,6 +779,15 @@ func (a *actions) set(m *Machine, t TimerID, d Duration) {
 
 func (a *actions) cancel(m *Machine, t TimerID) {
 	a.stamp(m, Action{Kind: ActCancelTimer, Timer: t})
+}
+
+// cancelAll disarms every timer, enumerated from AllTimerIDs rather than
+// hand-listed. It replaced three hand-lists that all had to be edited together;
+// TestEveryPathToInitCancelsEveryTimer drives the property they were keeping.
+func (a *actions) cancelAll(m *Machine) {
+	for _, t := range AllTimerIDs() {
+		a.cancel(m, t)
+	}
 }
 
 func (a *actions) journal(m *Machine, note string) {

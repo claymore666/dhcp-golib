@@ -21,6 +21,17 @@ const (
 	TimerDesync
 	// TimerExpire is the lease expiry, live in BOUND.
 	TimerExpire
+	// TimerRestart is the wait before restarting the configuration process
+	// after a DHCPDECLINE: RFC 2131 section 3.1(5), "The client SHOULD wait a
+	// minimum of ten seconds before restarting the configuration process to
+	// avoid excessive network traffic in case of looping."
+	//
+	// Separate from TimerDesync because the two obligations differ in both
+	// value and reason: desync is a RANDOM one-to-ten-second draw that
+	// spreads a fleet booting together, this is a MINIMUM of ten seconds that
+	// keeps a client whose address is permanently in use from looping. Nine
+	// draws in ten of a desync window are shorter than this floor.
+	TimerRestart
 )
 
 func (t TimerID) String() string {
@@ -31,13 +42,17 @@ func (t TimerID) String() string {
 		return "desync"
 	case TimerExpire:
 		return "expire"
+	case TimerRestart:
+		return "restart"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
 }
 
 // AllTimerIDs is every TimerID.
-func AllTimerIDs() []TimerID { return []TimerID{TimerRetransmit, TimerDesync, TimerExpire} }
+func AllTimerIDs() []TimerID {
+	return []TimerID{TimerRetransmit, TimerDesync, TimerExpire, TimerRestart}
+}
 
 // ActionKind is what an action asks the caller to do.
 type ActionKind uint8
@@ -147,6 +162,11 @@ const (
 	// R2's visible consequence: without it a machine whose sends all fail sits
 	// in SELECTING forever looking healthy.
 	ReasonTransport
+	// ReasonReleased means the caller asked for the lease to be given back and
+	// a DHCPRELEASE was sent. Distinct from ReasonStopped: a stopped client
+	// still holds its binding at the server until the lease runs out, a
+	// released one does not (RFC 2131 section 4.3.4).
+	ReasonReleased
 )
 
 func (r Reason) String() string {
@@ -169,6 +189,8 @@ func (r Reason) String() string {
 		return "conflict"
 	case ReasonTransport:
 		return "transport"
+	case ReasonReleased:
+		return "released"
 	default:
 		return fmt.Sprintf("reason(%d)", uint8(r))
 	}

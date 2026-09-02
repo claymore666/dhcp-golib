@@ -951,3 +951,438 @@ func TestBoundAnnouncesAnInfiniteLeaseWithNoTimer(t *testing.T) {
 		}
 	}
 }
+
+// ------------------------------------------------- decline and release --
+
+// terminalParams turns on every option base() adds, so the tests below cannot
+// pass vacuously. A DHCPDECLINE built from a Params with no host name and no
+// vendor class carries neither for the wrong reason.
+func terminalParams() Params {
+	p := testParams()
+	p.Hostname = "container-a"
+	p.VendorClass = "docker-net-dhcp"
+	p.ClientID = []byte{0xFF, 0x01, 0x02, 0x03}
+	p.RequestedLease = 3600 * Second
+	p.Broadcast = true
+	return p
+}
+
+// boundWith reaches BOUND with the given Params, the way machineIn does for
+// the default ones.
+func boundWith(t *testing.T, p Params) *Machine {
+	t.Helper()
+	m := newMachine(t, p)
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	m.Step(at(2), 3, received(t, ackFor(req, "192.168.99.50", "192.168.99.1", 3600)))
+	if m.State() != StateBound {
+		t.Fatalf("fixture reached %s, want BOUND", m.State())
+	}
+	return m
+}
+
+// TestDeclineAndReleaseCarryOnlyThePermittedOptions is RFC 2131 Table 5's
+// DHCPDECLINE/DHCPRELEASE column, checked as a WHITELIST rather than as a list
+// of forbidden codes.
+//
+// A test that enumerated the six options base() adds would be satisfied the day
+// a seventh is added to base() — the shape this project keeps paying for. The
+// permitted set is closed by the table's "All others: MUST NOT", so the
+// whitelist is the honest form and it catches an option nobody thought of.
+func TestDeclineAndReleaseCarryOnlyThePermittedOptions(t *testing.T) {
+	permitted := map[wire.MessageType]map[wire.OptionCode]bool{
+		wire.MsgDecline: {
+			wire.OptMessageType: true, // MUST, and RFC 2131 section 2 for every message
+			wire.OptRequestedIP: true, // MUST (DHCPDECLINE)
+			wire.OptServerID:    true, // MUST
+			wire.OptMessage:     true, // SHOULD
+			wire.OptClientID:    true, // MAY, and section 3.1(6)
+		},
+		wire.MsgRelease: {
+			wire.OptMessageType: true,
+			wire.OptServerID:    true,
+			wire.OptMessage:     true,
+			wire.OptClientID:    true,
+		},
+	}
+
+	for _, tc := range []struct {
+		want wire.MessageType
+		ev   EventKind
+	}{
+		{wire.MsgDecline, EvConflictDetected},
+		{wire.MsgRelease, EvRelease},
+	} {
+		t.Run(tc.want.String(), func(t *testing.T) {
+			m := boundWith(t, terminalParams())
+			_, acts := m.Step(at(10), 0xFEED, Simple(tc.ev))
+			msg := mustSend(t, acts, tc.want)
+
+			for _, c := range msg.Options.Codes() {
+				if !permitted[tc.want][c] {
+					t.Errorf("%s carries option %s, which RFC 2131 Table 5 forbids", tc.want, c)
+				}
+			}
+			for c := range permitted[tc.want] {
+				if c == wire.OptClientID {
+					continue
+				}
+				if _, ok := msg.Options[c]; !ok {
+					t.Errorf("%s does not carry option %s", tc.want, c)
+				}
+			}
+			if msg.Secs != 0 {
+				t.Errorf("secs = %d, Table 5 says 0 for this column", msg.Secs)
+			}
+			if msg.Flags != 0 {
+				t.Errorf("flags = %#04x, Table 5 says 0 — the BROADCAST bit is not set here even for a client that sets it everywhere else", msg.Flags)
+			}
+			if msg.Op != wire.BootRequest || msg.Hops != 0 {
+				t.Errorf("op/hops = %s/%d, want BOOTREQUEST/0", msg.Op, msg.Hops)
+			}
+			for _, f := range []struct {
+				name string
+				a    netip.Addr
+			}{{"yiaddr", msg.YIAddr}, {"siaddr", msg.SIAddr}, {"giaddr", msg.GIAddr}} {
+				if f.a.IsValid() && !f.a.IsUnspecified() {
+					t.Errorf("%s = %s, Table 5 says 0", f.name, f.a)
+				}
+			}
+		})
+	}
+}
+
+// TestBaseMessagesStillCarryEverythingTheyShould is the preservation control
+// for the test above: the terminal builder must not have been achieved by
+// stripping base(). A DISCOVER and a REQUEST built from the same Params still
+// carry the options Table 5 permits them.
+func TestBaseMessagesStillCarryEverythingTheyShould(t *testing.T) {
+	p := terminalParams()
+	m := newMachine(t, p)
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+
+	for _, c := range []wire.OptionCode{
+		wire.OptHostName, wire.OptVendorClassID, wire.OptParameterList,
+		wire.OptLeaseTime, wire.OptClientID,
+	} {
+		if _, ok := disc.Options[c]; !ok {
+			t.Errorf("DHCPDISCOVER lost option %s", c)
+		}
+	}
+	if disc.Flags&wire.FlagBroadcast == 0 {
+		t.Error("DHCPDISCOVER lost the BROADCAST flag, which Params.Broadcast asks for")
+	}
+}
+
+// TestDeclineAndReleaseCarryTheAddressInTheRightPlace is the cell of RFC 2131
+// Table 5 that differs between the two messages, driven in both directions.
+//
+// A DHCPDECLINE puts the address in the 'requested IP address' option with
+// 'ciaddr' 0; a DHCPRELEASE puts it in 'ciaddr' and MUST NOT carry the option.
+// Neither message is answered, so getting this the wrong way round is
+// invisible on the wire — the server simply cannot match the binding.
+func TestDeclineAndReleaseCarryTheAddressInTheRightPlace(t *testing.T) {
+	want := netip.MustParseAddr("192.168.99.50")
+
+	t.Run("decline", func(t *testing.T) {
+		m := boundWith(t, terminalParams())
+		_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+		msg := mustSend(t, acts, wire.MsgDecline)
+		got, ok := msg.Addr4(wire.OptRequestedIP)
+		if !ok || got != want {
+			t.Errorf("requested-ip = %v/%v, want %s", got, ok, want)
+		}
+		if msg.CIAddr.IsValid() && !msg.CIAddr.IsUnspecified() {
+			t.Errorf("ciaddr = %s, Table 5 says 0 for a DHCPDECLINE", msg.CIAddr)
+		}
+	})
+
+	t.Run("release", func(t *testing.T) {
+		m := boundWith(t, terminalParams())
+		_, acts := m.Step(at(10), 0xFEED, Simple(EvRelease))
+		msg := mustSend(t, acts, wire.MsgRelease)
+		if msg.CIAddr != want {
+			t.Errorf("ciaddr = %s, want %s", msg.CIAddr, want)
+		}
+		if _, ok := msg.Options[wire.OptRequestedIP]; ok {
+			t.Error("DHCPRELEASE carries a requested-ip option, which Table 5 makes a MUST NOT")
+		}
+	})
+}
+
+// TestDeclineIsBroadcastAndReleaseIsUnicast is RFC 2131 section 4.4.4, whose
+// one sentence answers the question DIFFERENTLY for the two messages. The
+// symmetric guess is wrong on exactly one of them.
+func TestDeclineIsBroadcastAndReleaseIsUnicast(t *testing.T) {
+	m := boundWith(t, terminalParams())
+	_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	a, _ := find(acts, ActSend)
+	if !a.Dest.Broadcast {
+		t.Errorf("DHCPDECLINE sent to %s, RFC 2131 section 4.4.4 broadcasts it", a.Dest)
+	}
+
+	m = boundWith(t, terminalParams())
+	_, acts = m.Step(at(10), 0xFEED, Simple(EvRelease))
+	a, _ = find(acts, ActSend)
+	if a.Dest.Broadcast || a.Dest.Addr != netip.MustParseAddr("192.168.99.1") {
+		t.Errorf("DHCPRELEASE sent to %s, RFC 2131 section 4.4.4 unicasts it to the server", a.Dest)
+	}
+}
+
+// TestDeclineAndReleaseAreSentBeforeTheLossIsAnnounced is B18's ordering
+// invariant on the two new paths.
+//
+// A ring-3 caller drains this list in order and may act on ActLeaseLost the
+// moment it sees it — removing the address, tearing the interface down. Any
+// send after the announcement is one the caller can outrun, and for the
+// DHCPRELEASE it is worse than a race: section 4.4.4 unicasts it FROM the
+// released address, so a torn-down interface leaves it with no source.
+func TestDeclineAndReleaseAreSentBeforeTheLossIsAnnounced(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   EventKind
+		want wire.MessageType
+	}{
+		{"decline", EvConflictDetected, wire.MsgDecline},
+		{"release", EvRelease, wire.MsgRelease},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := boundWith(t, terminalParams())
+			_, acts := m.Step(at(10), 0xFEED, Simple(tc.ev))
+			sent, lost := -1, -1
+			for i, a := range acts {
+				if a.Kind == ActSend && sent < 0 {
+					if got, ok := a.Msg.Type(); ok && got == tc.want {
+						sent = i
+					}
+				}
+				if a.Kind == ActLeaseLost && lost < 0 {
+					lost = i
+				}
+			}
+			if sent < 0 || lost < 0 {
+				t.Fatalf("send=%d lost=%d in %v", sent, lost, RenderActions(acts))
+			}
+			if sent > lost {
+				t.Fatalf("%s emitted at action %d, loss announced at %d: a caller acting on the announcement can outrun the send", tc.want, sent, lost)
+			}
+		})
+	}
+}
+
+// TestDeclineWaitsBeforeRestarting is RFC 2131 section 3.1(5): "The client
+// SHOULD wait a minimum of ten seconds before restarting the configuration
+// process to avoid excessive network traffic in case of looping."
+//
+// The wait is asserted as a FLOOR, not as an equality, because the RFC states
+// a minimum and a client that waits longer is conformant.
+func TestDeclineWaitsBeforeRestarting(t *testing.T) {
+	m := boundWith(t, terminalParams())
+	st, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	if st != StateInit {
+		t.Fatalf("after DHCPDECLINE: %s, want INIT (RFC 2131 section 3.2(3))", st)
+	}
+	if count(acts, ActSend) != 1 {
+		t.Fatalf("the decline step sent %d message(s); a DHCPDISCOVER before the wait is the loop the wait exists to stop: %v",
+			count(acts, ActSend), RenderActions(acts))
+	}
+	var armed *Action
+	for i := range acts {
+		if acts[i].Kind == ActSetTimer && acts[i].Timer == TimerRestart {
+			armed = &acts[i]
+		}
+	}
+	if armed == nil {
+		t.Fatalf("no restart timer armed; the machine is parked in INIT with nothing to wake it: %v", RenderActions(acts))
+	}
+	if armed.After < 10*Second {
+		t.Fatalf("restart timer armed for %s, RFC 2131 section 3.1(5) says a minimum of ten seconds", armed.After)
+	}
+}
+
+// TestRestartFiresAFreshTransaction drives the other half of the wait: a timer
+// nothing handles parks the machine in INIT forever, which looks exactly like
+// an idle client.
+func TestRestartFiresAFreshTransaction(t *testing.T) {
+	m := boundWith(t, terminalParams())
+	_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	declined := mustSend(t, acts, wire.MsgDecline)
+
+	st, acts := m.Step(at(30), 0xBEEF, TimerFired(TimerRestart))
+	if st != StateSelecting {
+		t.Fatalf("after the restart wait: %s, want SELECTING", st)
+	}
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	if disc.XID == declined.XID {
+		t.Errorf("the restarted DHCPDISCOVER reuses the DHCPDECLINE's xid %#08x; RFC 2131 Table 5 selects a new one per transaction", disc.XID)
+	}
+}
+
+// TestRestartDelayMeetsTheRFCMinimum pins DefaultRestartDelay to the floor its
+// own citation names. Cited from proto.DefaultRestartDelay.
+func TestRestartDelayMeetsTheRFCMinimum(t *testing.T) {
+	if DefaultRestartDelay < 10*Second {
+		t.Fatalf("DefaultRestartDelay is %s, RFC 2131 section 3.1(5) says a minimum of ten seconds", DefaultRestartDelay)
+	}
+	if got := DefaultParams(testCHAddr).RestartDelay; got != DefaultRestartDelay {
+		t.Fatalf("DefaultParams.RestartDelay = %s, want %s", got, DefaultRestartDelay)
+	}
+	var zero Params
+	zero.CHAddr = testCHAddr
+	if got := zero.restartDelay(); got != DefaultRestartDelay {
+		t.Fatalf("an unset RestartDelay resolves to %s; zero means the default here, not 'no wait'", got)
+	}
+}
+
+// TestReleaseLeavesTheMachineStopped pins the decision RFC 2131 does not make.
+//
+// Figure 5 has no DHCPRELEASE edge and section 4.4.6 names no state. INIT was
+// the alternative: it is wrong here because a released machine in INIT
+// re-acquires on the next EvLinkUp, undoing what the caller asked for. The
+// second half of this test is what makes that concrete.
+func TestReleaseLeavesTheMachineStopped(t *testing.T) {
+	m := boundWith(t, terminalParams())
+	st, acts := m.Step(at(10), 0xFEED, Simple(EvRelease))
+	if st != StateStopped {
+		t.Fatalf("after DHCPRELEASE: %s, want STOPPED", st)
+	}
+	lost, ok := find(acts, ActLeaseLost)
+	if !ok || lost.Reason != ReasonReleased {
+		t.Fatalf("release did not report the lease lost as released: %v", RenderActions(acts))
+	}
+
+	st, acts = m.Step(at(20), 1, Simple(EvLinkUp))
+	if st != StateStopped {
+		t.Fatalf("a link event after a release moved the machine to %s; it must not re-acquire what the caller gave back", st)
+	}
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("a link event after a release sent something: %v", RenderActions(acts))
+	}
+
+	// The preservation control: EvStart still resumes. STOPPED is a parked
+	// state, not a dead one.
+	st, acts = m.Step(at(30), 2, Simple(EvStart))
+	if st != StateSelecting {
+		t.Fatalf("Start after a release reached %s, want SELECTING", st)
+	}
+	mustSend(t, acts, wire.MsgDiscover)
+}
+
+// TestReleaseWithNoLeaseSendsNothing, with the BOUND case beside it as the
+// control: a release must mean a lease was actually given back.
+func TestReleaseWithNoLeaseSendsNothing(t *testing.T) {
+	for _, st := range []State{StateStopped, StateInit, StateSelecting, StateRequesting} {
+		t.Run(st.String(), func(t *testing.T) {
+			m := machineIn(t, st)
+			_, acts := m.Step(at(10), 1, Simple(EvRelease))
+			if _, ok := find(acts, ActSend); ok {
+				t.Fatalf("release in %s sent a message with no lease held: %v", st, RenderActions(acts))
+			}
+			if _, ok := find(acts, ActLeaseLost); ok {
+				t.Fatalf("release in %s announced a loss with no lease held: %v", st, RenderActions(acts))
+			}
+		})
+	}
+	t.Run("BOUND", func(t *testing.T) {
+		m := machineIn(t, StateBound)
+		_, acts := m.Step(at(10), 1, Simple(EvRelease))
+		mustSend(t, acts, wire.MsgRelease)
+	})
+	t.Run("twice", func(t *testing.T) {
+		m := machineIn(t, StateBound)
+		m.Step(at(10), 1, Simple(EvRelease))
+		_, acts := m.Step(at(11), 2, Simple(EvRelease))
+		if _, ok := find(acts, ActSend); ok {
+			t.Fatalf("a second release sent another DHCPRELEASE for a lease already given back: %v", RenderActions(acts))
+		}
+	})
+}
+
+// TestNoServerIdentifierMeansNoTerminalMessage is the case where the MUST
+// cannot be met.
+//
+// RFC 2131 Table 5 makes the server identifier a MUST in both messages, and an
+// ACK is not obliged to carry one, so this lease is reachable. Sending a
+// message without it would be indistinguishable from a correct one — nothing
+// answers either — so it is not sent, and the lease is still given up.
+func TestNoServerIdentifierMeansNoTerminalMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   EventKind
+		want Reason
+	}{
+		{"decline", EvConflictDetected, ReasonConflict},
+		{"release", EvRelease, ReasonReleased},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t, terminalParams())
+			_, acts := m.Step(0, 1, Simple(EvStart))
+			disc := mustSend(t, acts, wire.MsgDiscover)
+			_, acts = m.Step(at(1), 2, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+			req := mustSend(t, acts, wire.MsgRequest)
+			ack := ackFor(req, "192.168.99.50", "192.168.99.1", 3600)
+			delete(ack.Options, wire.OptServerID)
+			if _, acts = m.Step(at(2), 3, received(t, ack)); m.State() != StateBound {
+				t.Fatalf("fixture is in %s, want BOUND: %v", m.State(), RenderActions(acts))
+			}
+
+			_, acts = m.Step(at(10), 4, Simple(tc.ev))
+			if _, ok := find(acts, ActSend); ok {
+				t.Fatalf("a message was sent for a lease with no server identifier: %v", RenderActions(acts))
+			}
+			lost, ok := find(acts, ActLeaseLost)
+			if !ok || lost.Reason != tc.want {
+				t.Fatalf("the lease was not given up: %v", RenderActions(acts))
+			}
+		})
+	}
+}
+
+// TestEveryPathToIdleCancelsEveryTimer is what replaced three hand-written
+// cancel lists.
+//
+// The lists were identical, had to be edited together, and nothing checked
+// that they were. Only one of the three sat under a test that enumerated
+// AllTimerIDs, so adding a timer would have left two of them short, and a
+// stale timer firing in a state that does not expect it is silent.
+func TestEveryPathToIdleCancelsEveryTimer(t *testing.T) {
+	paths := []struct {
+		name string
+		from State
+		ev   Event
+	}{
+		{"stop from BOUND", StateBound, Simple(EvStop)},
+		{"stop from SELECTING", StateSelecting, Simple(EvStop)},
+		{"link down in BOUND", StateBound, Simple(EvLinkDown)},
+		{"link down in SELECTING", StateSelecting, Simple(EvLinkDown)},
+		{"address lost in BOUND", StateBound, Simple(EvAddressLost)},
+		{"conflict in BOUND", StateBound, Simple(EvConflictDetected)},
+		{"release in BOUND", StateBound, Simple(EvRelease)},
+		{"restart from INIT", StateInit, Simple(EvStart)},
+		{"lease expiry", StateBound, TimerFired(TimerExpire)},
+	}
+	ids := AllTimerIDs()
+	if len(ids) == 0 {
+		t.Fatal("AllTimerIDs is empty; this test would measure nothing")
+	}
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			m := machineIn(t, p.from)
+			_, acts := m.Step(at(10), 0x99, p.ev)
+			for _, id := range ids {
+				found := false
+				for _, a := range acts {
+					if a.Kind == ActCancelTimer && a.Timer == id {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("timer %s was never cancelled: %v", id, RenderActions(acts))
+				}
+			}
+		})
+	}
+}
