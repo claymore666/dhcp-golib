@@ -13,12 +13,15 @@ type OptionCode uint8
 const (
 	OptPad                OptionCode = 0
 	OptSubnetMask         OptionCode = 1
+	OptTimeOffset         OptionCode = 2 // RFC 2132 section 3.4
 	OptRouter             OptionCode = 3
 	OptDNSServer          OptionCode = 6
 	OptHostName           OptionCode = 12
 	OptDomainName         OptionCode = 15
 	OptInterfaceMTU       OptionCode = 26
 	OptBroadcastAddress   OptionCode = 28
+	OptStaticRoute        OptionCode = 33 // RFC 2132 section 5.8
+	OptNTPServer          OptionCode = 42 // RFC 2132 section 8.3
 	OptRequestedIP        OptionCode = 50
 	OptLeaseTime          OptionCode = 51
 	OptOverload           OptionCode = 52
@@ -31,9 +34,20 @@ const (
 	OptRebindingTime      OptionCode = 59 // T2
 	OptVendorClassID      OptionCode = 60
 	OptClientID           OptionCode = 61
-	OptDomainSearch       OptionCode = 119
-	OptClasslessStaticRte OptionCode = 121
-	OptEnd                OptionCode = 255
+	OptTFTPServer         OptionCode = 66  // RFC 2132 section 9.4
+	OptBootfileName       OptionCode = 67  // RFC 2132 section 9.5
+	OptFQDN               OptionCode = 81  // RFC 4702
+	OptPosixTimezone      OptionCode = 100 // RFC 4833, PCode
+	OptTZDatabase         OptionCode = 101 // RFC 4833, TCode
+	OptDomainSearch       OptionCode = 119 // RFC 3397
+	OptClasslessStaticRte OptionCode = 121 // RFC 3442
+	// OptWPAD is the de-facto Web Proxy Auto-Discovery option. It sits in
+	// RFC 2132's site-specific range and NO standards document defines it;
+	// the name is what deployments call it, not what an RFC calls it. It is
+	// named here so a decoded message reports "wpad" rather than
+	// "option(252)", and this library gives it no meaning beyond the bytes.
+	OptWPAD OptionCode = 252
+	OptEnd  OptionCode = 255
 )
 
 func (c OptionCode) String() string {
@@ -46,12 +60,15 @@ func (c OptionCode) String() string {
 var optionNames = map[OptionCode]string{
 	OptPad:                "pad",
 	OptSubnetMask:         "subnet-mask",
+	OptTimeOffset:         "time-offset",
 	OptRouter:             "router",
 	OptDNSServer:          "dns-server",
 	OptHostName:           "host-name",
 	OptDomainName:         "domain-name",
 	OptInterfaceMTU:       "interface-mtu",
 	OptBroadcastAddress:   "broadcast-address",
+	OptStaticRoute:        "static-route",
+	OptNTPServer:          "ntp-server",
 	OptRequestedIP:        "requested-ip",
 	OptLeaseTime:          "lease-time",
 	OptOverload:           "overload",
@@ -64,8 +81,14 @@ var optionNames = map[OptionCode]string{
 	OptRebindingTime:      "rebinding-time",
 	OptVendorClassID:      "vendor-class-id",
 	OptClientID:           "client-id",
+	OptTFTPServer:         "tftp-server",
+	OptBootfileName:       "bootfile-name",
+	OptFQDN:               "fqdn",
+	OptPosixTimezone:      "posix-timezone",
+	OptTZDatabase:         "tz-database",
 	OptDomainSearch:       "domain-search",
 	OptClasslessStaticRte: "classless-static-route",
+	OptWPAD:               "wpad",
 	OptEnd:                "end",
 }
 

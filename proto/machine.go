@@ -74,6 +74,19 @@ func New(p Params) (*Machine, error) {
 	p.CHAddr = append([]byte(nil), p.CHAddr...)
 	p.ClientID = append([]byte(nil), p.ClientID...)
 	p.ParameterList = append([]wire.OptionCode(nil), p.parameterList()...)
+	if p.FQDN.Name != "" {
+		// validate() has already run this and refused a name or flag
+		// combination that cannot be encoded, so the error here is
+		// unreachable. Encoding ONCE, here, is what keeps base() free of an
+		// error path it could only swallow: a base() that dropped option 81
+		// on an encoding failure would send a conformant-looking message
+		// missing the one option the caller asked for, and say nothing.
+		v, err := wire.EncodeFQDN(p.FQDN.flags(), p.FQDN.Name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrBadFQDN, err)
+		}
+		p.fqdn = v
+	}
 	return &Machine{params: p, state: StateStopped}, nil
 }
 
@@ -106,6 +119,8 @@ func (m *Machine) Step(now Instant, rnd uint64, ev Event) (State, []Action) {
 		m.stepRequesting(now, rnd, ev, &out)
 	case StateBound:
 		m.stepBound(now, rnd, ev, &out)
+	case StateRenewing, StateRebinding:
+		m.stepRenewal(now, rnd, ev, &out)
 	default:
 		// Unreachable through the exported API — State is not settable from
 		// outside — and handled anyway, because "unreachable" is a claim about
@@ -176,7 +191,7 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 		// The link came back after a LinkDown dropped us here. Start again.
 		m.beginAcquisition(now, rnd, out, true)
 	case EvActionFailed:
-		m.noteActionFailed(rnd, ev, out)
+		m.noteActionFailed(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in INIT", ev.Kind))
 	}
@@ -236,7 +251,7 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 	case EvLinkDown:
 		m.linkDown(out)
 	case EvActionFailed:
-		m.noteActionFailed(rnd, ev, out)
+		m.noteActionFailed(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in SELECTING", ev.Kind))
 	}
@@ -267,7 +282,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 			if note != "" {
 				out.journal(m, note)
 			}
-			m.enterBound(now, lse, out)
+			m.enterBound(now, lse, out, false)
 		case wire.MsgNak:
 			// RFC 2131 section 3.1(5): "If the client receives a DHCPNAK
 			// message, the client restarts the configuration process."
@@ -295,7 +310,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 	case EvLinkDown:
 		m.linkDown(out)
 	case EvActionFailed:
-		m.noteActionFailed(rnd, ev, out)
+		m.noteActionFailed(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in REQUESTING", ev.Kind))
 	}
@@ -306,20 +321,28 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 	case EvStop:
 		m.stop(out)
 	case EvTimerFired:
-		if ev.Timer != TimerExpire {
+		switch ev.Timer {
+		case TimerExpire:
+			// RFC 2131 section 4.4.5: "If the lease expires ... the client moves
+			// to INIT state, MUST immediately stop any other network processing
+			// and requests network initialization parameters as if the client
+			// were uninitialized." LeaseLost is how the caller is told to stop.
+			m.dropLease(out, ReasonExpired)
+			// No desync wait here. Section 4.4.1's one-to-ten-second delay is
+			// about desynchronising hosts BOOTING together; a lease that has just
+			// expired needs re-acquiring now, and adding the delay would extend
+			// every outage by up to ten seconds for no benefit.
+			m.beginAcquisition(now, rnd, out, false)
+		case TimerRenew:
+			m.enterRenewing(now, rnd, out)
+		case TimerRebind:
+			// T2 reached straight from BOUND. This is the ordinary path when
+			// T1 could not be used — a lease with no server identifier — and
+			// the safety net when the renewal timer never fired at all.
+			m.enterRebinding(now, rnd, out, true)
+		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in BOUND: ignored", ev.Timer))
-			return
 		}
-		// RFC 2131 section 4.4.5: "If the lease expires ... the client moves
-		// to INIT state, MUST immediately stop any other network processing
-		// and requests network initialization parameters as if the client
-		// were uninitialized." LeaseLost is how the caller is told to stop.
-		m.dropLease(out, ReasonExpired)
-		// No desync wait here. Section 4.4.1's one-to-ten-second delay is
-		// about desynchronising hosts BOOTING together; a lease that has just
-		// expired needs re-acquiring now, and adding the delay would extend
-		// every outage by up to ten seconds for no benefit.
-		m.beginAcquisition(now, rnd, out, false)
 	case EvLinkDown:
 		m.dropLease(out, ReasonLinkDown)
 		m.toInitIdle(out)
@@ -333,13 +356,114 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 	case EvStart:
 		out.journal(m, "Start in BOUND: already running")
 	case EvReceived:
-		// M1 has no transaction open in BOUND — there is no RENEWING state
-		// yet — so anything arriving here is unsolicited.
+		// BOUND has no transaction open: the renewal transaction is opened at
+		// T1, in RENEWING. Anything arriving here is unsolicited — including
+		// a DHCPACK for the transaction that produced this lease, which the
+		// server may retransmit and which must not restart the timers.
 		out.journal(m, "message in BOUND with no transaction open: discarded")
 	case EvActionFailed:
-		m.noteActionFailed(rnd, ev, out)
+		m.noteActionFailed(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in BOUND", ev.Kind))
+	}
+}
+
+// stepRenewal is RENEWING and REBINDING, both, in one function.
+//
+// The two states differ in exactly three places — where the DHCPREQUEST goes,
+// which timer promotes the machine, and what the retransmission delay is
+// measured against — and RFC 2131 section 4.4.5 requires everything else of
+// them to be identical: the same DHCPACK ends both, the same DHCPNAK halts
+// both, the same expiry loses the address in both. Two functions drift on the
+// parts that must not; this one cannot, and a mutant that changes an arm
+// changes it for both states at once, where a test on either kills it.
+func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
+	switch ev.Kind {
+	case EvStop:
+		m.stop(out)
+	case EvStart:
+		out.journal(m, fmt.Sprintf("Start in %s: already running", m.state))
+	case EvRelease:
+		// A lease IS held here, so this is section 4.4.6's real DHCPRELEASE
+		// and not releaseBeforeBound's silent halt. The renewal in flight is
+		// abandoned; release halts, which cancels every timer.
+		m.release(rnd, out)
+	case EvConflictDetected:
+		m.declineAndRestart(rnd, out)
+	case EvReceived:
+		msg, ok := m.acceptable(ev.Msg, out)
+		if !ok {
+			return
+		}
+		t, _ := msg.Type()
+		switch t {
+		case wire.MsgAck:
+			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
+			if !ok {
+				// The retransmission timer is still armed and so are T2 and
+				// the expiry, so this is not a dead end: the machine keeps
+				// asking on the lease it still holds.
+				out.journal(m, "DHCPACK without a usable yiaddr and lease time: discarded")
+				return
+			}
+			if note != "" {
+				out.journal(m, note)
+			}
+			m.enterBound(now, lse, out, true)
+		case wire.MsgNak:
+			// RFC 2131 Figure 5: the edges leaving RENEWING and REBINDING on
+			// a DHCPNAK are both labelled "DHCPNAK / Halt network" and both
+			// land in INIT. Section 4.4.5's prose says only that the client
+			// "restarts the ... process"; Figure 5 is where GIVING THE
+			// ADDRESS UP FIRST is written, and it is the difference that
+			// matters — a NAK during renewal means the server no longer
+			// holds this binding, so continuing to use the address puts a
+			// host on the network with an address somebody else may have.
+			//
+			// The loss is announced before the new acquisition begins, for
+			// the reason enterBound gives about ordering: a caller draining
+			// this list tears the interface down when it sees ActLeaseLost.
+			m.dropLease(out, ReasonNak)
+			out.failed(m, ReasonNak, m.nakText(msg))
+			m.beginAcquisition(now, split(rnd, 1), out, false)
+		default:
+			// A DHCPOFFER, most likely: some server answering the broadcast
+			// REBINDING request as though it were a DISCOVER.
+			out.journal(m, fmt.Sprintf("%s in %s: discarded", t, m.state))
+		}
+	case EvTimerFired:
+		switch ev.Timer {
+		case TimerRetransmit:
+			m.sendRenewal(now, out)
+		case TimerRebind:
+			if m.state != StateRenewing {
+				out.journal(m, "timer rebind fired in REBINDING: ignored")
+				return
+			}
+			// Section 4.4.5: "If no DHCPACK arrives before time T2, the
+			// client moves to REBINDING state". The transaction carries over
+			// rather than restarting; enterRebinding says why.
+			m.enterRebinding(now, rnd, out, false)
+		case TimerExpire:
+			// Section 4.4.5: "If the lease expires before the client receives
+			// a DHCPACK, the client moves to INIT state, MUST immediately
+			// stop any other network processing and requests network
+			// initialization parameters as if the client were uninitialized."
+			m.dropLease(out, ReasonExpired)
+			m.beginAcquisition(now, rnd, out, false)
+		default:
+			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
+		}
+	case EvLinkDown:
+		m.dropLease(out, ReasonLinkDown)
+		m.toInitIdle(out)
+	case EvAddressLost:
+		m.dropLease(out, ReasonAddressLost)
+		m.beginAcquisition(now, rnd, out, false)
+	case EvActionFailed:
+		m.noteActionFailed(now, rnd, ev, out)
+	default:
+		out.journal(m, fmt.Sprintf("%s ignored in %s", ev.Kind, m.state))
 	}
 }
 
@@ -498,7 +622,8 @@ func (m *Machine) releaseBeforeBound(out *actions) {
 // processes, every one of them `no expiry timer armed after acquisition`.
 // -race does not flag it, because the two sides are synchronised; the ordering
 // was simply wrong.
-func (m *Machine) enterBound(now Instant, l Lease, out *actions) {
+func (m *Machine) enterBound(now Instant, l Lease, out *actions, renewal bool) {
+	prev, hadPrev := m.lease, m.haveLse
 	out.cancel(m, TimerRetransmit)
 	m.lease = l
 	m.haveLse = true
@@ -506,22 +631,75 @@ func (m *Machine) enterBound(now Instant, l Lease, out *actions) {
 	m.offer = nil
 	m.retransmits = 0
 	m.sendFailures = 0
-	if exp, ok := l.Expire(); ok {
-		d := exp.Sub(now)
-		if d < 0 {
-			// The ACK arrived after the lease it grants had already run out.
-			// Arm for zero rather than for a negative delay, so ring 3 fires
-			// it at once and the machine reports the loss, instead of a
-			// negative duration meaning whatever the timer implementation
-			// happens to do with one.
-			d = 0
-			out.journal(m, "DHCPACK grants a lease that has already expired")
-		}
-		out.set(m, TimerExpire, d)
-	} else {
+
+	d := l.Deadlines()
+	if d.Note != "" {
+		out.journal(m, d.Note)
+	}
+	if d.HasExpire && d.Expire.Sub(now) < 0 {
+		// The ACK arrived after the lease it grants had already run out.
+		// armDeadline arms for zero rather than for a negative delay, so ring
+		// 3 fires it at once and the machine reports the loss, instead of a
+		// negative duration meaning whatever the timer implementation happens
+		// to do with one.
+		out.journal(m, "DHCPACK grants a lease that has already expired")
+	}
+	if !d.HasExpire {
 		out.journal(m, "lease is infinite: no expiry timer armed")
 	}
-	out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l})
+	m.armDeadline(now, TimerExpire, d.Expire, d.HasExpire, out)
+	m.armDeadline(now, TimerRenew, d.Renew, d.HasRenew, out)
+	m.armDeadline(now, TimerRebind, d.Rebind, d.HasRebind, out)
+
+	if !renewal {
+		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l})
+		return
+	}
+	// G-3: a Renewed action on EVERY ACK that extends a held lease, whether
+	// or not the contents changed. What the chassis has to record is that the
+	// lease is still ours and now runs to a later moment, and that fact is
+	// invisible in a diff of the contents — the contents are precisely what
+	// did not change. A caller that only saw Changed would log nothing for a
+	// year of successful renewals and could not tell a renewing client from a
+	// silently stuck one.
+	out.stamp(m, Action{Kind: ActLeaseRenewed, Lease: l})
+	if hadPrev && !prev.Equal(l) {
+		if prev.Addr != l.Addr {
+			// The server extended the lease onto a DIFFERENT address. RFC
+			// 2131 does not forbid it — section 4.4.5's DHCPACK carries a
+			// 'yiaddr' like any other — and the honest reading is that the
+			// binding moved. Journalled by name because it is the one lease
+			// change that invalidates everything the caller configured, and
+			// because a server doing it by accident is worth seeing.
+			out.journal(m, "renewal moved the address from "+prev.Addr.String()+" to "+l.Addr.String())
+		}
+		// AFTER the renewal, not before: ActLeaseRenewed carries the new
+		// lease and is the caller's record of it, and ActLeaseChanged is the
+		// instruction to act on the difference. A caller reconfiguring on
+		// Changed must already hold what it is reconfiguring to.
+		out.stamp(m, Action{Kind: ActLeaseChanged, Lease: l})
+	}
+}
+
+// armDeadline arms t for the deadline at ts, or CANCELS t when there is none.
+//
+// The cancel is emitted rather than nothing, because enterBound is reached two
+// ways. From a fresh acquisition, beginAcquisition has already disarmed
+// everything and the cancel is redundant. From a renewal, the previous lease's
+// timers are still armed: a lease whose successor carries no T2 would keep the
+// old one's, and rebind at a moment computed from a lease that no longer
+// exists. Emitting set-or-cancel for all three makes "armed" a function of the
+// lease in hand and of nothing else.
+func (m *Machine) armDeadline(now Instant, t TimerID, ts Instant, has bool, out *actions) {
+	if !has {
+		out.cancel(m, t)
+		return
+	}
+	d := ts.Sub(now)
+	if d < 0 {
+		d = 0
+	}
+	out.set(m, t, d)
 }
 
 func (m *Machine) dropLease(out *actions, r Reason) {
@@ -530,7 +708,14 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 	}
 	m.haveLse = false
 	m.lease = Lease{}
+	// All three lease timers, not only the expiry. "Holding a lease" and
+	// "the deadlines of that lease are armed" are meant to be the same state,
+	// and after M3 a lease has three deadlines. Every caller happens to reach
+	// cancelAll afterwards today; that is a fact about the callers, and this
+	// is the invariant.
 	out.cancel(m, TimerExpire)
+	out.cancel(m, TimerRenew)
+	out.cancel(m, TimerRebind)
 	// stamp, not add: every action carries a unique id so an EvActionFailed
 	// can name exactly which one did not happen (R2). An unstamped action
 	// carries id 0, which collides with the first stamped action of the
@@ -545,10 +730,29 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 // re-armed at the current attempt's delay. After MaxSendFailures consecutive
 // failures the transport is reported broken with a typed reason, instead of
 // the machine sitting in SELECTING looking healthy.
-func (m *Machine) noteActionFailed(rnd uint64, ev Event, out *actions) {
+func (m *Machine) noteActionFailed(now Instant, rnd uint64, ev Event, out *actions) {
 	m.sendFailures++
 	out.journal(m, fmt.Sprintf("%s failed (%s), consecutive failures %d",
 		ev.Action, ev.Reason, m.sendFailures))
+	if m.state == StateRenewing || m.state == StateRebinding {
+		// A HELD LEASE IS NEVER GIVEN UP FOR A SEND FAILURE. MaxSendFailures
+		// exists so a machine with a broken transport does not sit in
+		// SELECTING looking healthy; in RENEWING there is nothing to look
+		// healthy about, because the lease already has a deadline and the
+		// expiry timer is already armed to report the loss when it arrives.
+		//
+		// This is the answer to the relay case (runtime.PacketTransport's
+		// BOUNDS): a unicast the transport refuses because the server is
+		// behind a relay fails EVERY time, so escalating on a count would
+		// drop a perfectly good lease within seconds of T1. Instead the
+		// machine keeps retransmitting on section 4.4.5's schedule until T2
+		// promotes it to REBINDING, where the DHCPREQUEST is broadcast and
+		// reaches the relay. TestRenewalSurvivesATransportThatRefusesUnicast
+		// drives exactly that: every unicast refused, the lease still held,
+		// and a broadcast on the wire at T2.
+		out.set(m, TimerRetransmit, m.renewalDelay(now))
+		return
+	}
 	if m.params.MaxSendFailures > 0 && m.sendFailures >= m.params.MaxSendFailures {
 		out.failed(m, ReasonTransport, fmt.Sprintf("%d consecutive send failures: %s",
 			m.sendFailures, ev.Reason))
@@ -573,8 +777,150 @@ func (m *Machine) noteActionFailed(rnd uint64, ev Event, out *actions) {
 	}
 }
 
+// enterRenewing is T1. RFC 2131 section 4.4.5: "the client moves to RENEWING
+// state and sends (via unicast) a DHCPREQUEST message to the server to extend
+// its lease".
+//
+// A FRESH TRANSACTION IS OPENED HERE AND SPANS RENEWING AND REBINDING BOTH.
+// Section 2 defines 'secs' as "seconds elapsed since client began address
+// acquisition OR RENEWAL process", which names the renewal as one process with
+// one start; and drawing a second xid at T2 would make unacceptable every
+// DHCPACK the server had already sent to the RENEWING transaction, throwing
+// away an answer that was on its way. TestRenewalKeepsOneTransactionAcrossT2
+// holds it.
+func (m *Machine) enterRenewing(now Instant, rnd uint64, out *actions) {
+	sid := m.lease.ServerID
+	if !sid.Is4() || sid.IsUnspecified() {
+		// Section 4.4.5 unicasts the renewal "to the server", and the server
+		// is the lease's server identifier. Without one there is no unicast
+		// to address, so the machine STAYS IN BOUND and waits for T2, where
+		// the same DHCPREQUEST is broadcast and needs no server identifier.
+		//
+		// Nothing is at risk in waiting: T2 and the expiry are both armed, so
+		// this costs the renewal attempt between T1 and T2 and not the lease.
+		// The alternative — rebinding immediately at T1 — would broadcast
+		// during the window RFC 2131 reserves for the leasing server alone.
+		out.journal(m, "T1 reached with no server identifier in the lease: staying in BOUND until T2, where the DHCPREQUEST is broadcast (RFC 2131 4.4.5)")
+		return
+	}
+	m.beginRenewalTransaction(now, rnd)
+	m.state = StateRenewing
+	m.sendRenewal(now, out)
+}
+
+// enterRebinding is T2. RFC 2131 section 4.4.5: "the client moves to REBINDING
+// state and sends (via broadcast) a DHCPREQUEST message to extend its lease".
+//
+// fresh distinguishes the two ways in. From BOUND — a lease with no server
+// identifier, so RENEWING was never entered — the transaction starts here.
+// From RENEWING it does NOT: see enterRenewing on why one transaction spans
+// both.
+func (m *Machine) enterRebinding(now Instant, rnd uint64, out *actions, fresh bool) {
+	if fresh {
+		m.beginRenewalTransaction(now, rnd)
+	}
+	m.state = StateRebinding
+	m.sendRenewal(now, out)
+}
+
+// beginRenewalTransaction opens the renewal transaction: a new xid and a new
+// 'secs' origin, counters cleared.
+//
+// It does NOT touch the lease. That is the whole difference from
+// beginAcquisition, which is the same reset for a machine that holds nothing.
+func (m *Machine) beginRenewalTransaction(now Instant, rnd uint64) {
+	m.xid = uint32(split(rnd, 0))
+	m.startedAt = now
+	m.started = true
+	m.retransmits = 0
+	m.sendFailures = 0
+	m.offer = nil
+}
+
+// RenewRetransmitFloor is the floor RFC 2131 section 4.4.5 puts under the wait
+// between renewal retransmissions, in both RENEWING and REBINDING: "one-half
+// of the remaining time until T2 ..., down to a minimum of 60 seconds".
+const RenewRetransmitFloor = 60 * Second
+
+// renewalDelay is section 4.4.5's retransmission schedule: half the time
+// remaining to the deadline that ends the current state, floored.
+//
+// The deadline is T2 in RENEWING and the lease expiry in REBINDING, which is
+// the section's own wording twice over — "one-half of the remaining time until
+// T2" and "one-half of the remaining lease time".
+//
+// IT IS THE ONE SCHEDULE IN THIS MACHINE THAT IS NOT Backoff. Params.Discover
+// and Params.Request are budgeted retransmissions: jittered, doubling, with an
+// exhaustion point. This one has no budget — the T2 and expiry deadlines end
+// it, not a count — and must not jitter, because the halving is exactly what
+// converges the last attempt onto the deadline instead of past it.
+func (m *Machine) renewalDelay(now Instant) Duration {
+	d := m.lease.Deadlines()
+	var until Instant
+	switch {
+	case m.state == StateRenewing && d.HasRebind:
+		until = d.Rebind
+	case d.HasExpire:
+		until = d.Expire
+	default:
+		// REBINDING on an infinite lease, or RENEWING on one whose T2 the
+		// server did not send: there is no deadline to converge on, so the
+		// floor is the whole schedule. Retransmitting once a minute forever
+		// is the right shape for a lease that never ends.
+		return RenewRetransmitFloor
+	}
+	half := until.Sub(now) / 2
+	if half < RenewRetransmitFloor {
+		return RenewRetransmitFloor
+	}
+	return half
+}
+
 // -------------------------------------------------------------- messages --
 
+// sendRenewal builds and sends the DHCPREQUEST of RENEWING and REBINDING.
+//
+// RFC 2131 Table 5's "DHCPREQUEST generated during RENEWING state" column:
+// 'ciaddr' is the client's IP address (MUST), the 'requested IP address'
+// option MUST NOT be filled in, and the 'server identifier' option MUST NOT be
+// filled in. Section 4.3.2 is why the last one matters most: a server reads a
+// DHCPREQUEST carrying a server identifier as one "generated during SELECTING
+// state" and answers a different question entirely — it checks the identifier
+// against itself and stays silent if it does not match, so a renewal sent with
+// one to a server that has since changed its identifier is never answered at
+// all.
+//
+// base() adds neither option: they are added at sendDiscover's and
+// sendRequest's own call sites. TestRenewalOmitsTheRequestedAddressAndServerIdentifier
+// is what holds that, because "base adds neither" is a fact about today's
+// base() and the MUST NOT is about every future one.
+//
+// The BROADCAST FLAG follows Params.Broadcast here as everywhere else, and
+// that is a deliberate bound rather than an oversight. Section 4.4.5 says the
+// RENEWING request is unicast "so no relay agents will be involved", which
+// makes the flag's stated purpose — telling a relay how to return the reply —
+// moot; a server that honours it broadcasts the DHCPACK, which this library's
+// AF_PACKET transport reads either way. MEASURED 2026-09-02 against dnsmasq
+// 2.91: it ignores the flag once 'ciaddr' is set and unicasts the ACK to the
+// address in it.
+func (m *Machine) sendRenewal(now Instant, out *actions) {
+	msg := m.base(now, wire.MsgRequest)
+	msg.CIAddr = m.lease.Addr.Addr()
+	// Section 4.4.5 measures the new lease from the moment the DHCPREQUEST is
+	// SENT, and a retransmitted request is the one the server answered, so
+	// this is re-set on every attempt and not only the first.
+	m.requestSentAt = now
+	if m.state == StateRenewing {
+		// Section 4.4.5: unicast to the server. Src is the leased address —
+		// the datagram carries it in 'ciaddr' and must come FROM it, or the
+		// server has no return path and ring 3 has nothing to build an IP
+		// header from. Same reason as the DHCPRELEASE above.
+		out.send(m, msg, Dest{Addr: m.lease.ServerID, Src: msg.CIAddr})
+	} else {
+		out.send(m, msg, Dest{Broadcast: true})
+	}
+	out.set(m, TimerRetransmit, m.renewalDelay(now))
+}
 func (m *Machine) sendDiscover(now Instant, rnd uint64, out *actions) {
 	msg := m.base(now, wire.MsgDiscover)
 	if m.params.RequestedIP.Is4() && !m.params.RequestedIP.IsUnspecified() {
@@ -731,7 +1077,14 @@ func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
 	if len(m.params.ClientID) > 0 {
 		msg.Options[wire.OptClientID] = append([]byte(nil), m.params.ClientID...)
 	}
-	if m.params.Hostname != "" {
+	if len(m.params.fqdn) > 0 {
+		// RFC 4702 section 3.1: a client sending option 81 "MUST NOT also
+		// send the Host Name option". The two carry the same name, and a
+		// server that got both would have to choose (section 4 tells it to
+		// ignore option 12) — so the choice is made here, where the caller's
+		// intent is known, and option 12 is not sent at all.
+		msg.Options[wire.OptFQDN] = append([]byte(nil), m.params.fqdn...)
+	} else if m.params.Hostname != "" {
 		msg.Options[wire.OptHostName] = []byte(m.params.Hostname)
 	}
 	if m.params.VendorClass != "" {
@@ -798,6 +1151,17 @@ func (m *Machine) acceptable(msg *wire.Message, out *actions) (*wire.Message, bo
 	}
 	if msg.XID != m.xid {
 		out.journal(m, fmt.Sprintf("xid %#08x does not match %#08x: discarded", msg.XID, m.xid))
+		return nil, false
+	}
+	sid, hasSID := msg.Addr4(wire.OptServerID)
+	if ok, why := m.params.Servers.permits(sid, hasSID); !ok {
+		// P-4. Applied HERE, in the one predicate every inbound message
+		// passes through, rather than at the three places a server
+		// identifier is read. A filter attached to the DHCPOFFER alone would
+		// let a denied server NAK this client out of its lease, and one
+		// attached to OFFER and ACK would still let it do so during a
+		// renewal.
+		out.journal(m, why+": discarded")
 		return nil, false
 	}
 	if !m.chaddrMatches(msg) {

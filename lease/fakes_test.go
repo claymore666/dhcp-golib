@@ -1,8 +1,10 @@
 package lease
 
 import (
+	"context"
 	"net/netip"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -311,4 +313,201 @@ func answerNormally(req *wire.Message, _ int) []*wire.Message {
 		return []*wire.Message{ackFor(req, 3600)}
 	}
 	return nil
+}
+
+// The rig and the recorders live here, beside the fakes they drive, so that
+// switching off a test file never takes the fixtures its neighbours are built
+// on with it.
+var testCHAddr = []byte{0x02, 0x42, 0xAC, 0x11, 0x00, 0x02}
+
+func testParams() proto.Params {
+	p := proto.DefaultParams(testCHAddr)
+	// Desync off: the delay is ring 1's and is tested there. Leaving it on
+	// would make every manager test start by firing a timer that has nothing
+	// to do with what it asserts.
+	p.DesyncMin, p.DesyncMax = 0, 0
+	return p
+}
+
+// journalRecorder is a Journal that keeps everything, so a test can replay it.
+//
+// Locked, because the manager appends from its own goroutine while the test
+// reads. An unlocked recorder is a data race, and -race reports it against
+// whichever test happens to be running.
+type journalRecorder struct {
+	mu       sync.Mutex
+	entries  []proto.JournalEntry
+	appended chan proto.JournalEntry
+}
+
+func newJournalRecorder() *journalRecorder {
+	return &journalRecorder{appended: make(chan proto.JournalEntry, 64)}
+}
+
+func (j *journalRecorder) Append(e proto.JournalEntry) {
+	j.mu.Lock()
+	j.entries = append(j.entries, e)
+	j.mu.Unlock()
+	select {
+	case j.appended <- e:
+	default:
+	}
+}
+
+// waitAppended blocks until a journalled Step satisfies want.
+//
+// It is a DIFFERENT barrier from packetRecorder.waitRecorded, and the
+// difference is the whole reason it exists: a packet is recorded BEFORE it is
+// fed to ring 1 (manager.go, onInbound), so waiting on the packet ring proves
+// only that the packet arrived. A journal entry is appended AFTER Step and
+// after the previous event's actions have drained, so it is the only barrier
+// in this package that proves the machine has SEEN something.
+func (j *journalRecorder) waitAppended(t *testing.T, what string, want func(proto.JournalEntry) bool) {
+	t.Helper()
+	for e := range j.appended {
+		if want(e) {
+			return
+		}
+	}
+	t.Fatalf("the journal closed before %s was recorded", what)
+}
+
+func (j *journalRecorder) Entries() []proto.JournalEntry {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]proto.JournalEntry(nil), j.entries...)
+}
+
+// packetRecorder is a PacketRing that also announces what it recorded.
+//
+// The announcement is the barrier the inbound tests need, and it is not a
+// convenience. The manager selects over TWO channels — inbound packets and
+// timer fires — so "push a packet, then fire a timer" does not order the two:
+// the manager may take the timer first. A test that ordered them that way
+// passes alone and fails in a suite, which is exactly how this one was found.
+type packetRecorder struct {
+	mu       sync.Mutex
+	packets  []CapturedPacket
+	recorded chan CapturedPacket
+}
+
+func newPacketRecorder() *packetRecorder {
+	return &packetRecorder{recorded: make(chan CapturedPacket, 64)}
+}
+
+func (p *packetRecorder) Record(c CapturedPacket) {
+	p.mu.Lock()
+	p.packets = append(p.packets, c)
+	p.mu.Unlock()
+	select {
+	case p.recorded <- c:
+	default:
+	}
+}
+
+func (p *packetRecorder) Packets() []CapturedPacket {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]CapturedPacket(nil), p.packets...)
+}
+
+// waitRecorded blocks until a captured packet satisfies want.
+func (p *packetRecorder) waitRecorded(t *testing.T, what string, want func(CapturedPacket) bool) {
+	t.Helper()
+	for c := range p.recorded {
+		if want(c) {
+			return
+		}
+	}
+	t.Fatalf("the packet ring closed before %s was recorded", what)
+}
+
+type rig struct {
+	mgr     *Manager
+	server  *fakeServer
+	fault   *FaultTransport
+	timers  *fakeTimers
+	clock   *fakeClock
+	journal *journalRecorder
+	packets *packetRecorder
+	cancel  context.CancelFunc
+	done    chan error
+
+	// Run's result is read exactly once, through wait, and cached. A test
+	// that stops the manager itself AND a Cleanup that stops it again is the
+	// ordinary case, and a second receive on a one-shot channel is a deadlock
+	// that presents as a whole-package timeout with no failing assertion.
+	waitOnce sync.Once
+	runErr   error
+}
+
+// wait returns Run's result, reading it from the channel at most once.
+func (r *rig) wait() error {
+	r.waitOnce.Do(func() { r.runErr = <-r.done })
+	return r.runErr
+}
+
+// stop cancels the context and waits for Run to return.
+func (r *rig) stop() error {
+	r.cancel()
+	return r.wait()
+}
+
+// newRig assembles a manager over the fakes and starts Run.
+func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault) *rig {
+	t.Helper()
+
+	srv := newFakeServer(behaviour)
+	// The fault transport is ALWAYS in the path, even with an empty plan.
+	// R2 says the failure path is not a special mode, and a wrapper only
+	// present in the fault tests is a wrapper the happy-path tests never
+	// exercise.
+	ft := NewFaultTransport(srv, plan)
+
+	r := &rig{
+		server:  srv,
+		fault:   ft,
+		timers:  newFakeTimers(),
+		clock:   newFakeClock(),
+		journal: newJournalRecorder(),
+		packets: newPacketRecorder(),
+		done:    make(chan error, 1),
+	}
+
+	mgr, err := NewManager(Config{
+		Params:      p,
+		Transport:   ft,
+		Clock:       r.clock,
+		Timers:      r.timers,
+		Entropy:     &fakeEntropy{},
+		Journal:     r.journal,
+		Packets:     r.packets,
+		EventBuffer: 16,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	r.mgr = mgr
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
+	go func() { r.done <- mgr.Run(ctx) }()
+
+	t.Cleanup(func() {
+		_ = r.stop()
+		_ = ft.Close()
+		_ = r.timers.Close()
+	})
+	return r
+}
+
+// nextEvent reads one outward event. It blocks on the channel, which is the
+// barrier the whole suite is built on — no duration appears anywhere.
+func (r *rig) nextEvent(t *testing.T) Event {
+	t.Helper()
+	e, ok := <-r.mgr.Events()
+	if !ok {
+		t.Fatal("the event channel closed before the expected event arrived")
+	}
+	return e
 }

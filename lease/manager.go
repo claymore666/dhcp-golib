@@ -88,6 +88,22 @@ type Stats struct {
 	DeclinesSent     uint64
 	ReleasesSent     uint64
 	RequestsDropped  uint64
+
+	// RenewalsSent counts DHCPREQUESTs sent to extend a held lease, in
+	// RENEWING and REBINDING together, retransmissions included.
+	// RenewalsCompleted counts the DHCPACKs that ended one. The difference is
+	// how hard this client is working to keep its address.
+	RenewalsSent      uint64
+	RenewalsCompleted uint64
+
+	// NaksSeen counts every DHCPNAK that decoded, NaksAccepted the ones the
+	// machine acted on. TWO COUNTERS, because their difference is the
+	// diagnostic: a NAK discarded for a stale xid, a foreign chaddr or a
+	// server outside Params.Servers is invisible in either number alone, and
+	// on a LAN with two DHCP servers it is the number that explains the
+	// behaviour.
+	NaksSeen     uint64
+	NaksAccepted uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -231,6 +247,15 @@ func (mg *Manager) Run(ctx context.Context) error {
 // dropped Release from a delivered one. That distinction is why the sentence
 // here used to be wrong — it named calling again as the remedy for a missing
 // Lost, which for a client still acquiring was an unbounded loop.
+//
+// THAT READING IS SOUND FOR A SINGLE CALLER ONLY. Stats.RequestsDropped is one
+// counter over both request kinds and over every caller, so "it went up" means
+// SOME request was dropped, not that THIS one was: a second goroutine calling
+// Release or ReportConflict raises it too, and two callers racing can each see
+// a rise the other caused. There is no per-call receipt, deliberately —
+// returning one would make a fire-and-forget call something every caller has
+// to check — so a program with more than one caller has to serialise them if
+// it wants to read the counter this way.
 func (mg *Manager) Release() { mg.request(proto.Simple(proto.EvRelease)) }
 
 // ReportConflict tells the client that something else is using the address it
@@ -275,6 +300,13 @@ func (mg *Manager) onInbound(ctx context.Context, in Inbound) {
 	}
 	mg.bump(func(s *Stats) { s.Received++ })
 	msg, err := wire.Decode(in.Payload)
+	if err == nil {
+		if t, ok := msg.Type(); ok && t == wire.MsgNak {
+			// Counted here, before ring 1 sees it, so NaksSeen measures the
+			// wire and not the machine's opinion of the wire.
+			mg.bump(func(s *Stats) { s.NaksSeen++ })
+		}
+	}
 	mg.packets.Record(CapturedPacket{
 		At:        mg.cfg.Clock.Wall(),
 		Dir:       DirIn,
@@ -363,6 +395,14 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			mg.mu.Unlock()
 			mg.emit(ctx, Event{Kind: Acquired, Lease: l})
 
+		case proto.ActLeaseRenewed:
+			l := toLease(a.Lease, bridgeAt)
+			mg.mu.Lock()
+			mg.lease, mg.held = l, true
+			mg.stats.RenewalsCompleted++
+			mg.mu.Unlock()
+			mg.emit(ctx, Event{Kind: Renewed, Lease: l})
+
 		case proto.ActLeaseChanged:
 			l := toLease(a.Lease, bridgeAt)
 			mg.mu.Lock()
@@ -379,7 +419,12 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			mg.emit(ctx, Event{Kind: Lost, Lease: lost, Reason: a.Reason})
 
 		case proto.ActFailed:
-			mg.bump(func(s *Stats) { s.AcquireFailures++ })
+			mg.bump(func(s *Stats) {
+				s.AcquireFailures++
+				if a.Reason == proto.ReasonNak {
+					s.NaksAccepted++
+				}
+			})
 			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})
 
 		case proto.ActJournal:
@@ -449,6 +494,16 @@ func (mg *Manager) countSent(msg *wire.Message) {
 		mg.bump(func(s *Stats) { s.DeclinesSent++ })
 	case wire.MsgRelease:
 		mg.bump(func(s *Stats) { s.ReleasesSent++ })
+	case wire.MsgRequest:
+		// A DHCPREQUEST with 'ciaddr' filled in is a renewal, and only a
+		// renewal. RFC 2131 Table 5 gives ciaddr as zero in the SELECTING and
+		// INIT-REBOOT columns and as the client's address in the RENEWING and
+		// REBINDING ones, so this reads the message rather than asking the
+		// machine what state it was in — which is what keeps the counter
+		// right when INIT-REBOOT arrives in M5.
+		if msg.CIAddr.Is4() && !msg.CIAddr.IsUnspecified() {
+			mg.bump(func(s *Stats) { s.RenewalsSent++ })
+		}
 	}
 }
 

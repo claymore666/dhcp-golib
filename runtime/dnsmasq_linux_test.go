@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -411,7 +412,8 @@ func mustRun(t *testing.T, name string, args ...string) {
 // receives, so the test is as fast as the exchange and never faster than the
 // truth.
 type dnsmasqServer struct {
-	cmd *exec.Cmd
+	cmd  *exec.Cmd
+	once sync.Once
 
 	mu  sync.Mutex
 	buf []string
@@ -419,8 +421,42 @@ type dnsmasqServer struct {
 	arrived chan string
 }
 
+// count returns how many log lines contain want.
+//
+// A COUNT and not a presence check, because the question M3 asks of this log
+// is "did the DHCPDISCOVER count stay where it was while the DHCPREQUEST
+// count moved" — which is what tells a renewal apart from a client that lost
+// its lease and acquired a new one, and which no containsLine can answer.
+func (s *dnsmasqServer) count(want string) int {
+	n := 0
+	for _, l := range s.lines() {
+		if strings.Contains(l, want) {
+			n++
+		}
+	}
+	return n
+}
+
+// dnsmasqConfig is what a test varies about the server. The zero value is the
+// acquisition fixture every test before M3 used.
+type dnsmasqConfig struct {
+	// rangeLo and rangeHi default to testRangeLo and testRangeHi.
+	rangeLo, rangeHi string
+	// extra is appended to the command line.
+	extra []string
+}
+
 func startDnsmasq(t *testing.T) *dnsmasqServer {
 	t.Helper()
+	return startDnsmasqCfg(t, dnsmasqConfig{})
+}
+
+func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
+	t.Helper()
+
+	if cfg.rangeLo == "" {
+		cfg.rangeLo, cfg.rangeHi = testRangeLo, testRangeHi
+	}
 
 	bin, err := findDnsmasq()
 	if err != nil {
@@ -450,7 +486,7 @@ func startDnsmasq(t *testing.T) *dnsmasqServer {
 		"--interface="+testServerIf,
 		"--bind-interfaces",
 		"--except-interface=lo",
-		"--dhcp-range="+testRangeLo+","+testRangeHi+","+testSubnet+","+fmt.Sprint(testLeaseSec),
+		"--dhcp-range="+cfg.rangeLo+","+cfg.rangeHi+","+testSubnet+","+fmt.Sprint(testLeaseSec),
 		"--dhcp-option=3,"+testServerIP,
 		"--dhcp-option=6,"+testServerIP,
 		"--dhcp-option=15,"+testDomain,
@@ -460,7 +496,16 @@ func startDnsmasq(t *testing.T) *dnsmasqServer {
 		"--pid-file="+filepath.Join(dir, "pid"),
 		"--no-resolv",
 		"--no-hosts",
+		// MEASURED 2026-09-02: without this, every DHCPDISCOVER costs THREE
+		// SECONDS. dnsmasq ICMP-pings a candidate address before offering it
+		// and waits for the silence to prove nothing is using it; in an empty
+		// namespace the silence is guaranteed and the wait is pure cost.
+		// Removing it weakens no assertion here — no test in this file is
+		// about dnsmasq's conflict detection — and it takes six seconds off
+		// the two tests that acquire twice.
+		"--no-ping",
 	)
+	cmd.Args = append(cmd.Args, cfg.extra...)
 	// C locale: dnsmasq translates its startup messages, and a German or
 	// French box would otherwise fail this test on a string nobody changed.
 	// The DHCP transaction lines are protocol keywords and are not
@@ -481,15 +526,23 @@ func startDnsmasq(t *testing.T) *dnsmasqServer {
 	go s.read(stderr)
 
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		s.stop()
 		t.Logf("dnsmasq log:\n%s", strings.Join(s.lines(), "\n"))
 	})
 
 	// Readiness, as a line rather than as a wait: dnsmasq announces the range
 	// once its DHCP socket is up.
-	s.waitFor(t, "DHCP, IP range "+testRangeLo)
+	s.waitFor(t, "DHCP, IP range "+cfg.rangeLo)
 	return s
+}
+
+// stop kills the server and waits for it. Idempotent, because the test that
+// replaces a server mid-run calls it and so does the Cleanup.
+func (s *dnsmasqServer) stop() {
+	s.once.Do(func() {
+		_ = s.cmd.Process.Kill()
+		_ = s.cmd.Wait()
+	})
 }
 
 func (s *dnsmasqServer) read(r io.Reader) {
@@ -705,6 +758,263 @@ func awaitEvent(t *testing.T, c *Client, kind lease.EventKind) lease.Event {
 			return ev
 		}
 		if ev.Kind == lease.Failed {
+			t.Fatalf("the client failed while waiting for %s: %s", kind, ev)
+		}
+	}
+	t.Fatalf("the event stream ended before %s arrived", kind)
+	return lease.Event{}
+}
+
+// The M3 fixture's own constants. Two SMALL pools, so every address in either
+// one can be given a static neighbour entry before anything runs (see
+// renewalAgainstDnsmasq on why that is necessary), and the second pool is
+// disjoint from the first so that a renewal of the first pool's address is an
+// address the replacement server cannot serve.
+const (
+	testRenewLo = "192.168.99.100"
+	testRenewHi = "192.168.99.102"
+	testNakLo   = "192.168.99.200"
+	testNakHi   = "192.168.99.202"
+	// testRenewSec is what dnsmasq is told to put in option 58, so T1 arrives
+	// three seconds after each DHCPACK instead of at half of a two-minute
+	// lease. It is a PROTOCOL VALUE the server sends, not a wait in this
+	// file: every barrier below is still a channel receive, and the client
+	// renews when the server told it to.
+	//
+	// Three rather than one: the DHCPNAK half has to replace the running
+	// server between two renewals, and killing one dnsmasq and waiting for
+	// the next one's readiness line takes a fraction of a second. One second
+	// would still pass, until a loaded CI box made it not.
+	testRenewSec = 3
+)
+
+// TestRenewalAndNakReachRealDnsmasq is M3's proof standard: RENEWING and the
+// DHCPNAK that ends a lease, read out of a real server's log.
+//
+// IT IS THE ONLY EVIDENCE THAT MEANS ANYTHING FOR A RENEWAL. RFC 2131 Table 5
+// makes 'ciaddr' a MUST and options 50 and 54 a MUST NOT in the RENEWING
+// column, and section 4.3.2 says what a server does with a DHCPREQUEST that
+// gets that wrong: it reads the message as one generated during SELECTING,
+// compares the server identifier with its own, and STAYS SILENT when it does
+// not match. Silence is also what a message that never left the host produces.
+// So every unit assertion about the renewal message is an assertion about this
+// library's opinion of itself; dnsmasq writing DHCPREQUEST and DHCPACK for an
+// address it had already leased is not.
+//
+// The DHCPNAK half is driven by a SERVER-SIDE change — dnsmasq restarted with
+// a pool that no longer contains the leased address — because a NAK the client
+// manufactures for itself proves nothing about what a server sends.
+func TestRenewalAndNakReachRealDnsmasq(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		renewalAgainstDnsmasq(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func renewalAgainstDnsmasq(t *testing.T) {
+	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
+	mustRun(t, "ip", "addr", "add", testServerIP+"/24", "dev", testServerIf)
+	mustRun(t, "ip", "link", "set", testServerIf, "up")
+	mustRun(t, "ip", "link", "set", testClientIf, "up")
+
+	iface, err := net.InterfaceByName(testClientIf)
+	if err != nil {
+		t.Fatalf("InterfaceByName(%s): %v", testClientIf, err)
+	}
+	clientMAC := iface.HardwareAddr.String()
+
+	// THE RENEWAL DHCPACK IS UNICAST, and this fixture has to make that
+	// deliverable.
+	//
+	// dnsmasq sends a reply to a DHCPREQUEST with 'ciaddr' set to that
+	// address (dhcp.c: "else if (mess->ciaddr.s_addr)"), whatever the
+	// BROADCAST flag says. On a real host the leased address belongs to the
+	// client's kernel, which answers the ARP the server's kernel sends
+	// first. Here nothing owns it: this client is an AF_PACKET socket and
+	// this library does not answer ARP until M6. So the server's kernel would
+	// ARP into silence and drop the DHCPACK, and the test would hang into go
+	// test's timeout with a correct client and a correct server.
+	//
+	// The entries go in for the WHOLE of both pools, BEFORE the client
+	// starts, rather than for the leased address once it is known. Adding one
+	// on the Acquired event would work most of the time and would be a race
+	// against T1 the rest of it — the sort that passes here and fails on a
+	// loaded CI box.
+	for _, a := range append(addrRange(t, testRenewLo, testRenewHi), addrRange(t, testNakLo, testNakHi)...) {
+		mustRun(t, "ip", "neigh", "replace", a, "lladdr", clientMAC, "dev", testServerIf, "nud", "permanent")
+	}
+
+	srv := startDnsmasqCfg(t, dnsmasqConfig{
+		rangeLo: testRenewLo, rangeHi: testRenewHi,
+		extra: []string{"--dhcp-option=58," + fmt.Sprint(testRenewSec)},
+	})
+
+	params := proto.DefaultParams(iface.HardwareAddr)
+	params.DesyncMin, params.DesyncMax = 0, 0
+	params.Hostname = "m3-client"
+
+	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- c.Run(ctx) }()
+
+	acquired := awaitAcquired(t, c)
+	leased := acquired.Lease.Addr.Addr().String()
+	if !inRange(leased, testRenewLo, testRenewHi) {
+		t.Fatalf("leased %s, outside the pool %s..%s", leased, testRenewLo, testRenewHi)
+	}
+	srv.waitFor(t, "DHCPACK("+testServerIf+") "+leased+" "+clientMAC)
+
+	// The server said "renew in three seconds", and the client has to have
+	// heard it. Read from the lease rather than from the option, because it
+	// is the DEADLINE the machine arms a timer for and a client that decoded
+	// option 58 and then ignored it would pass an assertion on the option.
+	if got := acquired.Lease.Renew.Sub(acquired.Lease.Acquired); int(got.Seconds()) != testRenewSec {
+		t.Fatalf("T1 is %s after the lease began, want %ds from the server's option 58", got, testRenewSec)
+	}
+	if !acquired.Lease.Rebind.After(acquired.Lease.Renew) {
+		t.Fatalf("T2 %s is not after T1 %s", acquired.Lease.Rebind, acquired.Lease.Renew)
+	}
+
+	// ---------------------------------------------------------- RENEWING --
+
+	discoversBefore := srv.count("DHCPDISCOVER(")
+	requestsBefore := srv.count("DHCPREQUEST(" + testServerIf + ") " + leased)
+	acksBefore := srv.count("DHCPACK(" + testServerIf + ") " + leased)
+	closeWindow := watchSendFailures(t, c)
+
+	renewed := awaitEvent(t, c, lease.Renewed)
+	closeWindow("renewal DHCPREQUEST")
+
+	if renewed.Lease.Addr != acquired.Lease.Addr {
+		t.Fatalf("renewed onto %s, want the same address %s", renewed.Lease.Addr, acquired.Lease.Addr)
+	}
+	if !renewed.Lease.Expire.After(acquired.Lease.Expire) {
+		t.Fatalf("the renewed lease expires at %s, no later than the old %s",
+			renewed.Lease.Expire, acquired.Lease.Expire)
+	}
+
+	srv.waitFor(t, "DHCPACK("+testServerIf+") "+leased+" "+clientMAC)
+	if got := srv.count("DHCPREQUEST(" + testServerIf + ") " + leased); got <= requestsBefore {
+		t.Fatalf("the server logged %d DHCPREQUEST lines for %s, %d before the renewal: the renewal never reached it.\nServer log:\n%s",
+			got, leased, requestsBefore, strings.Join(srv.lines(), "\n"))
+	}
+	if got := srv.count("DHCPACK(" + testServerIf + ") " + leased); got <= acksBefore {
+		t.Fatalf("the server logged %d DHCPACK lines for %s, %d before the renewal.\nServer log:\n%s",
+			got, leased, acksBefore, strings.Join(srv.lines(), "\n"))
+	}
+	// THE DISCOVER COUNT IS WHAT MAKES THIS A RENEWAL. A client that lost its
+	// lease and acquired the same address again would satisfy every
+	// assertion above; it could not leave this one unmoved.
+	if got := srv.count("DHCPDISCOVER("); got != discoversBefore {
+		t.Fatalf("the server logged %d DHCPDISCOVER lines, %d before the renewal: this was a re-acquisition, not a renewal.\nServer log:\n%s",
+			got, discoversBefore, strings.Join(srv.lines(), "\n"))
+	}
+
+	// ------------------------------------------------------------ DHCPNAK --
+	//
+	// The server-side change: a pool that no longer holds the leased address.
+	// dnsmasq's rfc2131.c reaches "address not available" for a renewal of an
+	// address address_available() rejects, and broadcasts the DHCPNAK because
+	// the client's ciaddr is on the same net as the server's own address.
+	srv.stop()
+	srv2 := startDnsmasqCfg(t, dnsmasqConfig{
+		rangeLo: testNakLo, rangeHi: testNakHi,
+		extra: []string{"--dhcp-option=58," + fmt.Sprint(testRenewSec)},
+	})
+
+	lost := awaitEventTolerating(t, c, lease.Lost)
+	if lost.Reason != proto.ReasonNak {
+		t.Fatalf("the lease was lost for %s, want %s", lost.Reason, proto.ReasonNak)
+	}
+	if _, held := c.Lease(); held {
+		t.Fatal("the client still holds a lease after a DHCPNAK")
+	}
+
+	srv2.waitFor(t, "DHCPNAK("+testServerIf+") "+leased+" "+clientMAC)
+	nak := ""
+	for _, l := range srv2.lines() {
+		if strings.Contains(l, "DHCPNAK("+testServerIf+") "+leased) {
+			nak = l
+		}
+	}
+	if !strings.Contains(nak, "address not available") {
+		t.Fatalf("the DHCPNAK line is %q; want dnsmasq's reason for refusing a renewal outside its pool.\nServer log:\n%s",
+			nak, strings.Join(srv2.lines(), "\n"))
+	}
+
+	// And RFC 2131 Figure 5's other half: the client restarts the
+	// configuration process and takes an address from the new pool.
+	second := awaitEventTolerating(t, c, lease.Acquired)
+	if !inRange(second.Lease.Addr.Addr().String(), testNakLo, testNakHi) {
+		t.Fatalf("after the DHCPNAK the client took %s, outside the replacement pool %s..%s",
+			second.Lease.Addr, testNakLo, testNakHi)
+	}
+	srv2.waitFor(t, "DHCPACK("+testServerIf+") "+second.Lease.Addr.Addr().String()+" "+clientMAC)
+
+	st := c.Stats()
+	if st.RenewalsCompleted < 1 {
+		t.Fatalf("Stats.RenewalsCompleted = %d, want at least the one dnsmasq acked", st.RenewalsCompleted)
+	}
+	if st.RenewalsSent < 2 {
+		t.Fatalf("Stats.RenewalsSent = %d, want the renewal dnsmasq acked and the one it nakked", st.RenewalsSent)
+	}
+	if st.NaksSeen < 1 || st.NaksAccepted < 1 {
+		t.Fatalf("NAK counters = %d seen / %d accepted, want at least one of each", st.NaksSeen, st.NaksAccepted)
+	}
+	if st.LeasesAcquired != 2 {
+		t.Fatalf("Stats.LeasesAcquired = %d, want 2: the first lease and the one after the DHCPNAK", st.LeasesAcquired)
+	}
+
+	cancel()
+	<-runErr
+}
+
+// addrRange enumerates the IPv4 addresses from lo to hi inclusive.
+func addrRange(t *testing.T, lo, hi string) []string {
+	t.Helper()
+	a, err := netip.ParseAddr(lo)
+	if err != nil {
+		t.Fatalf("ParseAddr(%s): %v", lo, err)
+	}
+	end, err := netip.ParseAddr(hi)
+	if err != nil {
+		t.Fatalf("ParseAddr(%s): %v", hi, err)
+	}
+	var out []string
+	for {
+		out = append(out, a.String())
+		if a == end {
+			return out
+		}
+		a = a.Next()
+		if len(out) > 64 {
+			t.Fatalf("the range %s..%s is larger than this fixture will enumerate", lo, hi)
+		}
+	}
+}
+
+// awaitEventTolerating is awaitEvent for the one case that has to see a Failed
+// event go past: a DHCPNAK produces Lost AND Failed, in that order, and
+// awaitEvent treats every Failed as the end of the world.
+//
+// It tolerates a NAK and NOTHING ELSE. A blanket tolerance would turn any
+// other failure — a transport that stopped sending, a retransmission budget
+// exhausted — into a hang until go test's timeout, with the reason sitting
+// unread in the event stream.
+func awaitEventTolerating(t *testing.T, c *Client, kind lease.EventKind) lease.Event {
+	t.Helper()
+	for ev := range c.Events() {
+		t.Logf("client event: %s", ev)
+		if ev.Kind == kind {
+			return ev
+		}
+		if ev.Kind == lease.Failed && ev.Reason != proto.ReasonNak {
 			t.Fatalf("the client failed while waiting for %s: %s", kind, ev)
 		}
 	}

@@ -5,17 +5,15 @@ import "fmt"
 // State is a DHCPv4 client state, named as RFC 2131 section 4.4 names them.
 type State uint8
 
-// The states this milestone implements, plus Stopped. RENEWING, REBINDING and
-// INIT-REBOOT are absent: naming them without their transitions would put
-// three unreachable values into the exhaustive totality test and make it look
-// like more was covered than is.
+// The states this machine implements, plus Stopped. INIT-REBOOT and REBOOTING
+// are still absent: naming them without their transitions would put
+// unreachable values into the exhaustive totality test and make it look like
+// more was covered than is.
 //
-// CONSEQUENCE: a lease acquired by this machine is NOT renewed. At expiry it
-// returns to INIT and re-acquires from scratch, which RFC 2131 section 4.4.5
-// requires on expiry ("the client moves to INIT state, MUST immediately stop
-// any other network processing") — conformant, but below the PRODUCT bar,
-// because the address can change at every expiry. Nothing depends on this
-// library until M7.
+// CONSEQUENCE: a client restarted with a remembered address re-acquires from
+// INIT rather than verifying the address it had, so the address can change
+// across a restart. RFC 2131 section 4.3.2's INIT-REBOOT DHCPREQUEST is what
+// closes that, and it needs somewhere to remember the address from.
 const (
 	// StateStopped is the state before Start and after Stop. It is not an RFC
 	// state; it exists so that Step is total over "events that arrive when we
@@ -30,6 +28,14 @@ const (
 	StateRequesting
 	// StateBound is RFC 2131's BOUND: the lease is held.
 	StateBound
+	// StateRenewing is RFC 2131's RENEWING, entered at T1: the lease is still
+	// held and a DHCPREQUEST is in flight, unicast to the server that issued
+	// it (section 4.4.5).
+	StateRenewing
+	// StateRebinding is RFC 2131's REBINDING, entered at T2: the lease is
+	// still held and the DHCPREQUEST is broadcast, so that ANY server may
+	// answer (section 4.4.5).
+	StateRebinding
 )
 
 func (s State) String() string {
@@ -44,6 +50,10 @@ func (s State) String() string {
 		return "REQUESTING"
 	case StateBound:
 		return "BOUND"
+	case StateRenewing:
+		return "RENEWING"
+	case StateRebinding:
+		return "REBINDING"
 	default:
 		return fmt.Sprintf("state(%d)", uint8(s))
 	}
@@ -54,5 +64,8 @@ func (s State) String() string {
 // drifts the day one is added, in the direction that reports a smaller domain
 // as fully covered.
 func AllStates() []State {
-	return []State{StateStopped, StateInit, StateSelecting, StateRequesting, StateBound}
+	return []State{
+		StateStopped, StateInit, StateSelecting, StateRequesting, StateBound,
+		StateRenewing, StateRebinding,
+	}
 }

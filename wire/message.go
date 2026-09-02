@@ -128,66 +128,25 @@ func (m *Message) SetType(t MessageType) {
 	m.Options[OptMessageType] = []byte{byte(t)}
 }
 
+// The typed option readers delegate to Options, which is where they live now:
+// a Lease carries its Options and no Message, and a caller asking what the
+// server sent had nothing to ask them of. These four are kept as methods so
+// every existing call site reads the same.
+
 // Addr4 returns an option's value as a single IPv4 address.
-func (m *Message) Addr4(c OptionCode) (netip.Addr, bool) {
-	v, ok := m.Options[c]
-	if !ok || len(v) != 4 {
-		return netip.Addr{}, false
-	}
-	return netip.AddrFrom4([4]byte(v[:4])), true
-}
+func (m *Message) Addr4(c OptionCode) (netip.Addr, bool) { return m.Options.Addr4(c) }
 
 // Addrs4 returns an option's value as a list of IPv4 addresses.
-//
-// A value whose length is not a multiple of four is rejected outright rather
-// than truncated to the whole addresses it contains: a router option with five
-// octets is a malformed message, and quietly using the first address in it
-// hands the caller a configuration nobody sent.
-func (m *Message) Addrs4(c OptionCode) ([]netip.Addr, bool) {
-	v, ok := m.Options[c]
-	if !ok || len(v) == 0 || len(v)%4 != 0 {
-		return nil, false
-	}
-	out := make([]netip.Addr, 0, len(v)/4)
-	for i := 0; i+4 <= len(v); i += 4 {
-		out = append(out, netip.AddrFrom4([4]byte(v[i:i+4])))
-	}
-	return out, true
-}
+func (m *Message) Addrs4(c OptionCode) ([]netip.Addr, bool) { return m.Options.Addrs4(c) }
 
 // Uint32 returns an option's value as a big-endian uint32.
-func (m *Message) Uint32(c OptionCode) (uint32, bool) {
-	v, ok := m.Options[c]
-	if !ok || len(v) != 4 {
-		return 0, false
-	}
-	return uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3]), true
-}
+func (m *Message) Uint32(c OptionCode) (uint32, bool) { return m.Options.Uint32(c) }
 
 // Uint16 returns an option's value as a big-endian uint16.
-func (m *Message) Uint16(c OptionCode) (uint16, bool) {
-	v, ok := m.Options[c]
-	if !ok || len(v) != 2 {
-		return 0, false
-	}
-	return uint16(v[0])<<8 | uint16(v[1]), true
-}
+func (m *Message) Uint16(c OptionCode) (uint16, bool) { return m.Options.Uint16(c) }
 
-// Text returns an option's value as text.
-//
-// A trailing NUL is stripped: some servers NUL-terminate the domain-name and
-// host-name options, and a caller that writes the raw bytes into resolv.conf
-// writes the NUL with them.
-func (m *Message) Text(c OptionCode) (string, bool) {
-	v, ok := m.Options[c]
-	if !ok {
-		return "", false
-	}
-	for len(v) > 0 && v[len(v)-1] == 0 {
-		v = v[:len(v)-1]
-	}
-	return string(v), true
-}
+// Text returns an option's value as text, with a trailing NUL stripped.
+func (m *Message) Text(c OptionCode) (string, bool) { return m.Options.Text(c) }
 
 // Clone returns a deep copy.
 func (m *Message) Clone() *Message {

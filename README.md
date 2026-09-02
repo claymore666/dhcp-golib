@@ -43,33 +43,43 @@ All four were empty at M0 on purpose: the gates below were built and proven
 against an empty package, because a gate added after the code it guards gets
 weakened to fit the code. M1 filled all four.
 
-## What works today — M1
+## What works today — through M3
 
-One IPv4 lease, INIT to BOUND, over a real socket. Three things are true of it,
-and each is a test rather than a claim:
+One IPv4 lease, taken and KEPT: INIT to BOUND over a real socket, renewed at T1
+and rebound at T2, given back with a DHCPRELEASE or refused with a DHCPDECLINE.
+Three things are true of it, and each is a test rather than a claim:
 
 - **A lease from a real server.** `runtime` re-executes itself into a user and
   network namespace, wires a veth pair, runs dnsmasq on one end and this
   library on the other, and asserts the exchange against **dnsmasq's own log** —
-  DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK — not against the library's
-  opinion of what happened. No root, no password, no host state touched.
+  DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK, and for the renewal a second
+  DHCPREQUEST and DHCPACK with the DHCPDISCOVER count unmoved, and a DHCPNAK
+  driven by restarting the server with a pool that no longer holds the leased
+  address — not against the library's opinion of what happened. No root, no
+  password, no host state touched.
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
 - **The whole acquisition path in milliseconds.** `proto` tables the path with
   no root, no namespace and no network at all.
 
-### What M1 does NOT do
+### What it does NOT do
 
 Stated because a bound nobody writes down is read as a guarantee:
 
-- **No renewal.** T1 and T2 are computed and the timers are armed, but
-  RENEWING, REBINDING, the unicast that renewal needs, and expiry back to INIT
-  are the next milestone. A lease acquired here is not yet a lease *kept*.
-- **No RELEASE, no DECLINE, no INFORM, and no address-in-use probe.**
+- **No INIT-REBOOT.** A client that restarts asks from INIT with a
+  DHCPDISCOVER rather than confirming the address it had, so a reboot costs a
+  round trip the RFC does not require. The state and its message are a later
+  milestone.
+- **No INFORM, and no address-in-use probe.** `ReportConflict` sends the
+  DHCPDECLINE, but nothing in this library notices a conflict on its own: a
+  real one on a real host produces no DHCPDECLINE, because nothing looks.
 - **IPv4 only.** No DHCPv6, no Router Advertisement, no SLAAC.
-- **Broadcast only, so no ARP.** `Send` REFUSES a unicast destination rather
-  than broadcasting it anyway.
+- **No ARP.** The transport unicasts only to a peer whose hardware address it
+  learned from a frame that peer sent; a unicast it cannot address is REFUSED
+  rather than broadcast anyway. RENEWING is what that refusal falls on, and it
+  is why a renewal behind a relay agent waits for T2 and its broadcast instead
+  of losing the lease.
 - **No fragment reassembly and no BPF filter.** A fragmented reply is dropped;
   every IPv4 frame on the link is read and filtered in user space, and the cost
   is counted as `Skipped` rather than assumed away.

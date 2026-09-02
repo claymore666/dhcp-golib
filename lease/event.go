@@ -20,6 +20,16 @@ type Lease struct {
 	MTU      int
 	ServerID netip.Addr
 
+	// Routes is the classless static routes of option 121, or option 33's
+	// when the server sent no 121 (RFC 3442). Gateway is the default route
+	// among them, so a caller that only wants a gateway can ignore this.
+	Routes []wire.Route
+
+	// DomainSearch is option 119's search list (RFC 3397). Separate from
+	// Domain, which is option 15's single name: a resolver configuration
+	// needs both and they are not the same field.
+	DomainSearch []string
+
 	// Acquired is when the REQUEST that produced this lease was sent, not
 	// when its ACK arrived — RFC 2131 section 4.4.5. Renew and Rebind are T1
 	// and T2, defaulted to 0.5 and 0.875 of the lease when the server sent
@@ -51,6 +61,14 @@ const (
 	Acquired EventKind = iota
 	// Changed: a lease whose contents differ from the one the caller had.
 	Changed
+	// Renewed: the lease was EXTENDED. Emitted on every DHCPACK that answers
+	// a renewal, whether or not anything in the lease changed — a Changed
+	// arrives beside it when something did.
+	//
+	// It is what makes a client that is renewing distinguishable from one
+	// that is stuck: a caller watching only Changed sees nothing at all
+	// through a year of successful renewals.
+	Renewed
 	// Lost: the lease is gone. Reason says why.
 	Lost
 	// Failed: acquisition failed. Reason says why; the client keeps trying
@@ -66,6 +84,8 @@ func (k EventKind) String() string {
 		return "acquired"
 	case Changed:
 		return "changed"
+	case Renewed:
+		return "renewed"
 	case Lost:
 		return "lost"
 	case Failed:
@@ -89,7 +109,7 @@ type Event struct {
 
 func (e Event) String() string {
 	switch e.Kind {
-	case Acquired, Changed:
+	case Acquired, Changed, Renewed:
 		return fmt.Sprintf("%s %s", e.Kind, e.Lease)
 	default:
 		return fmt.Sprintf("%s %s: %s", e.Kind, e.Reason, e.Note)
@@ -121,16 +141,22 @@ func (b clockBridge) at(i proto.Instant) time.Time {
 // toLease converts ring 1's Lease into the outward one.
 func toLease(l proto.Lease, b clockBridge) Lease {
 	out := Lease{
-		Addr:     l.Addr,
-		DNS:      append([]netip.Addr(nil), l.DNS...),
-		Domain:   l.Domain,
-		MTU:      l.MTU,
-		ServerID: l.ServerID,
-		Acquired: b.at(l.Start),
-		Options:  l.Options.Clone(),
+		Addr:         l.Addr,
+		DNS:          append([]netip.Addr(nil), l.DNS...),
+		Domain:       l.Domain,
+		MTU:          l.MTU,
+		ServerID:     l.ServerID,
+		Routes:       append([]wire.Route(nil), l.Routes...),
+		DomainSearch: append([]string(nil), l.DomainSearch...),
+		Acquired:     b.at(l.Start),
+		Options:      l.Options.Clone(),
 	}
-	if len(l.Router) > 0 {
-		out.Gateway = l.Router[0]
+	// proto.Lease.Gateway, not Router[0]: after RFC 3442 the default route can
+	// come from option 121, and a server sending 121 is required to have its
+	// router option ignored. Reading Router here would give the gateway the
+	// RFC says to discard.
+	if g, ok := l.Gateway(); ok {
+		out.Gateway = g
 	}
 	if t, ok := l.Expire(); ok {
 		out.Expire = b.at(t)

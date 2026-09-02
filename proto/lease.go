@@ -24,10 +24,24 @@ type Lease struct {
 	Addr netip.Prefix
 
 	ServerID netip.Addr
-	Router   []netip.Addr
-	DNS      []netip.Addr
-	Domain   string
-	MTU      int
+
+	// Router is option 3, AFTER RFC 3442's supersession: it is empty when a
+	// usable option 121 arrived, because RFC 3442 says "if the DHCP server
+	// returns both a Classless Static Routes option and a Router option, the
+	// DHCP client MUST ignore the Router option". The raw option is still in
+	// Options for anything that wants to see what was sent.
+	Router []netip.Addr
+
+	// Routes is the routing table the server supplied, already resolved: the
+	// option 121 routes when there are any, otherwise the option 33 ones.
+	// RFC 3442 supersedes 33 as well as 3.
+	Routes []wire.Route
+
+	DNS []netip.Addr
+	// Domain is option 15; DomainSearch is option 119 (RFC 3397), decoded.
+	Domain       string
+	DomainSearch []string
+	MTU          int
 
 	// Start is the Instant at which the REQUEST that produced this lease was
 	// SENT, not the Instant its ACK arrived.
@@ -62,41 +76,128 @@ func (l Lease) Expire() (Instant, bool) {
 	return l.Start.Add(l.LeaseTime), true
 }
 
-// RenewAt and RebindAt apply RFC 2131 section 4.4.5's defaults: "T1 defaults
-// to (0.5 * duration_of_lease). T2 defaults to (0.875 * duration_of_lease)."
+// Deadlines are the three moments the machine arms timers for.
 //
-// M1 arms neither timer — there is no RENEWING state to enter — but the values
-// are computed and carried, because ring 2 reports them outward and because
-// the next milestone must not have to rediscover where the defaults live.
-func (l Lease) RenewAt() (Instant, bool) {
-	d := l.T1
-	if d <= 0 {
-		if l.LeaseTime.IsInfinite() {
-			return 0, false
-		}
-		d = l.LeaseTime / 2
-	}
-	if d <= 0 {
-		return 0, false
-	}
-	return l.Start.Add(d), true
+// One derivation, because the alternative was two: RenewAt, RebindAt and
+// Expire each computed their own answer, and only one of them could enforce an
+// ordering between them. A caller that reads the three separately and a
+// machine that arms three timers must not be able to disagree.
+type Deadlines struct {
+	Renew  Instant
+	Rebind Instant
+	Expire Instant
+
+	HasRenew  bool
+	HasRebind bool
+	HasExpire bool
+
+	// Note is empty unless a value was clamped, and says which and why. It
+	// goes into the journal: a server sending T1 after T2 is a real
+	// misconfiguration and the client silently working around it is how it
+	// stays unfixed.
+	Note string
 }
 
-// RebindAt returns T2. See RenewAt.
-func (l Lease) RebindAt() (Instant, bool) {
-	d := l.T2
-	if d <= 0 {
-		if l.LeaseTime.IsInfinite() {
-			return 0, false
-		}
-		// 0.875 == 7/8. Computed as (d/8)*7 rather than (d*7)/8 to keep the
+// Deadlines applies RFC 2131 section 4.4.5's defaults — "T1 defaults to (0.5 *
+// duration_of_lease). T2 defaults to (0.875 * duration_of_lease)" — and
+// enforces its ordering: "T1 MUST be earlier than T2, which, in turn, MUST be
+// earlier than the time at which the client's lease will expire."
+//
+// THAT MUST IS ADDRESSED TO WHOEVER SETS THE VALUES, NOT TO THIS CLIENT. A
+// client that trusted it would arm a rebind before a renew, or a renew after
+// the address is gone, on nothing worse than a mistyped server config. So the
+// values are CLAMPED and the clamp is journalled, rather than the ACK being
+// refused: refusing trades a working lease for a conformance point only the
+// server can fix.
+//
+// The fallback for an out-of-order T1 is half of T2 and not the RFC's 0.5 *
+// lease, because the server's explicit T2 is evidence about this lease that
+// the default is not, and 0.5 * lease can itself be later than a short T2.
+func (l Lease) Deadlines() Deadlines {
+	var d Deadlines
+	infinite := l.LeaseTime.IsInfinite()
+	if !infinite {
+		d.Expire, d.HasExpire = l.Start.Add(l.LeaseTime), true
+	}
+	if !infinite && l.LeaseTime <= 0 {
+		// A lease of zero seconds, which a server is free to send and which
+		// leaseFromAck accepts. It expires at the moment it was granted, so
+		// there is no interval in which to renew or rebind: no T1, no T2, and
+		// no clamp note about values that were never going to be used.
+		//
+		// The expiry above is still armed, for zero, so the machine reports
+		// the loss at once instead of holding an address with no bound on it.
+		return d
+	}
+
+	rebind := l.T2
+	if rebind <= 0 && !infinite {
+		// 0.875 == 7/8. Computed as (x/8)*7 rather than (x*7)/8 to keep the
 		// intermediate away from the top of int64 for a near-infinite lease.
-		d = (l.LeaseTime / 8) * 7
+		rebind = (l.LeaseTime / 8) * 7
 	}
-	if d <= 0 {
-		return 0, false
+	if !infinite && rebind >= l.LeaseTime {
+		was := rebind
+		rebind = (l.LeaseTime / 8) * 7
+		d.Note = "T2 (" + was.String() + ") is not earlier than the lease (" + l.LeaseTime.String() +
+			"): using RFC 2131 4.4.5's 0.875 default of " + rebind.String()
 	}
-	return l.Start.Add(d), true
+
+	renew := l.T1
+	if renew <= 0 && !infinite {
+		renew = l.LeaseTime / 2
+	}
+	if rebind > 0 && renew >= rebind {
+		was := renew
+		renew = rebind / 2
+		note := "T1 (" + was.String() + ") is not earlier than T2 (" + rebind.String() +
+			"): using half of T2, " + renew.String()
+		if d.Note == "" {
+			d.Note = note
+		} else {
+			d.Note += "; " + note
+		}
+	}
+
+	if renew > 0 {
+		d.Renew, d.HasRenew = l.Start.Add(renew), true
+	}
+	if rebind > 0 {
+		d.Rebind, d.HasRebind = l.Start.Add(rebind), true
+	}
+	return d
+}
+
+// RenewAt is T1 as an Instant. It derives from Deadlines so a caller reading
+// it cannot get an answer the machine's timers disagree with.
+func (l Lease) RenewAt() (Instant, bool) {
+	d := l.Deadlines()
+	return d.Renew, d.HasRenew
+}
+
+// RebindAt is T2 as an Instant. See RenewAt.
+func (l Lease) RebindAt() (Instant, bool) {
+	d := l.Deadlines()
+	return d.Rebind, d.HasRebind
+}
+
+// Gateway is the default route this lease gives, and whether it gives one.
+//
+// It reads Routes first because RFC 3442's supersession has already been
+// applied when Routes came from option 121: a lease carrying classless routes
+// has an empty Router, and a classless route set with no 0.0.0.0/0 entry means
+// the server deliberately gave no default route. Falling back to option 3
+// there would reinstate exactly the option RFC 3442 says to ignore.
+func (l Lease) Gateway() (netip.Addr, bool) {
+	for _, r := range l.Routes {
+		if r.IsDefault() && !r.OnLink() {
+			return r.Router, true
+		}
+	}
+	if len(l.Router) > 0 {
+		return l.Router[0], true
+	}
+	return netip.Addr{}, false
 }
 
 // Equal reports whether two leases would configure an interface identically.
@@ -110,7 +211,37 @@ func (l Lease) Equal(o Lease) bool {
 	if l.Addr != o.Addr || l.ServerID != o.ServerID || l.Domain != o.Domain || l.MTU != o.MTU {
 		return false
 	}
-	return addrsEqual(l.Router, o.Router) && addrsEqual(l.DNS, o.DNS)
+	if !addrsEqual(l.Router, o.Router) || !addrsEqual(l.DNS, o.DNS) {
+		return false
+	}
+	if !stringsEqual(l.DomainSearch, o.DomainSearch) {
+		return false
+	}
+	return routesEqual(l.Routes, o.Routes)
+}
+
+func routesEqual(a, b []wire.Route) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func addrsEqual(a, b []netip.Addr) bool {
@@ -188,7 +319,79 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 	if t2, ok := m.Uint32(wire.OptRebindingTime); ok {
 		l.T2 = SecondsToDuration(t2)
 	}
+	note = joinNotes(note, l.takeRoutes(m.Options))
+	note = joinNotes(note, l.takeDomainSearch(m.Options))
 	return l, note, true
+}
+
+// takeRoutes applies RFC 3442's precedence: option 121 supersedes both the
+// router option (3) and the static-route option (33).
+//
+// A malformed option 121 FALLS BACK to 3 and 33 rather than superseding them,
+// and the note says so. The supersession rule in RFC 3442 is written about a
+// server that "returns both a Classless Static Routes option and a Router
+// option"; a value that does not decode is not a route list, and a host with
+// no default route at all is a worse answer than one with the route the older
+// option gave. The fallback is journalled because the two outcomes are
+// otherwise indistinguishable from the outside.
+func (l *Lease) takeRoutes(o wire.Options) string {
+	classless, err := o.ClasslessRoutes()
+	if err != nil {
+		l.takeStaticRoutes(o)
+		return err.Error() + ": falling back to the router and static-route options (RFC 3442 supersession does not apply to a value that does not decode)"
+	}
+	if len(classless) > 0 {
+		l.Routes = classless
+		note := ""
+		if len(l.Router) > 0 {
+			note = "option 121 supersedes the router option (RFC 3442): ignoring " + addrsText(l.Router)
+			l.Router = nil
+		}
+		if _, ok := o[wire.OptStaticRoute]; ok {
+			note = joinNotes(note, "option 121 supersedes the static-route option (RFC 3442)")
+		}
+		return note
+	}
+	return l.takeStaticRoutes(o)
+}
+
+func (l *Lease) takeStaticRoutes(o wire.Options) string {
+	static, err := o.StaticRoutes()
+	if err != nil {
+		return err.Error() + ": no static routes taken from it"
+	}
+	l.Routes = static
+	return ""
+}
+
+func (l *Lease) takeDomainSearch(o wire.Options) string {
+	names, err := o.DomainSearch()
+	if err != nil {
+		return err.Error() + ": the search list is left empty"
+	}
+	l.DomainSearch = names
+	return ""
+}
+
+func joinNotes(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}
+
+func addrsText(a []netip.Addr) string {
+	out := ""
+	for i, x := range a {
+		if i > 0 {
+			out += ","
+		}
+		out += x.String()
+	}
+	return out
 }
 
 // maskBits converts a dotted subnet mask to a prefix length, refusing a

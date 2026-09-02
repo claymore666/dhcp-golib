@@ -32,6 +32,21 @@ const (
 	// keeps a client whose address is permanently in use from looping. Nine
 	// draws in ten of a desync window are shorter than this floor.
 	TimerRestart
+	// TimerRenew is T1, the moment the client enters RENEWING: RFC 2131
+	// section 4.4.5, "T1 is the time at which the client enters the RENEWING
+	// state and attempts to contact the server that originally issued the
+	// client's network address."
+	TimerRenew
+	// TimerRebind is T2, the moment the client enters REBINDING: same
+	// section, "T2 is the time at which the client enters the REBINDING state
+	// and attempts to contact any server."
+	//
+	// It is a SEPARATE timer from TimerRenew and not a rearm of it, because
+	// both are live at once while the machine is in RENEWING: T2 is what ends
+	// a renewal that is getting no answer, and a machine that reused one
+	// timer id for both would cancel its own deadline every time it
+	// retransmitted.
+	TimerRebind
 )
 
 func (t TimerID) String() string {
@@ -44,6 +59,10 @@ func (t TimerID) String() string {
 		return "expire"
 	case TimerRestart:
 		return "restart"
+	case TimerRenew:
+		return "renew"
+	case TimerRebind:
+		return "rebind"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
@@ -51,7 +70,7 @@ func (t TimerID) String() string {
 
 // AllTimerIDs is every TimerID.
 func AllTimerIDs() []TimerID {
-	return []TimerID{TimerRetransmit, TimerDesync, TimerExpire, TimerRestart}
+	return []TimerID{TimerRetransmit, TimerDesync, TimerExpire, TimerRestart, TimerRenew, TimerRebind}
 }
 
 // ActionKind is what an action asks the caller to do.
@@ -70,10 +89,20 @@ const (
 	// ActLeaseAcquired reports a lease the caller did not have.
 	ActLeaseAcquired
 	// ActLeaseChanged reports a lease whose contents differ from the one the
-	// caller already had. Unused at M1 — nothing here re-acquires without
-	// first losing — and present so ring 2's switch is written over the whole
-	// set from the start.
+	// caller already had: a renewal that came back with a different router,
+	// resolver, MTU or prefix.
 	ActLeaseChanged
+	// ActLeaseRenewed reports that the lease was EXTENDED — a DHCPACK
+	// accepted in RENEWING or REBINDING — whether or not anything in it
+	// changed.
+	//
+	// Separate from ActLeaseChanged, and emitted even when the contents are
+	// identical, because the two answer different questions. "Reconfigure the
+	// interface" is Changed; "the lease is still ours and now runs until T"
+	// is this, and it is the ordinary case, the one with no other evidence
+	// anywhere. A caller told only about changes cannot tell a lease being
+	// renewed every T1 from a client that has silently stopped renewing.
+	ActLeaseRenewed
 	// ActLeaseLost reports that the lease is gone, with a reason.
 	ActLeaseLost
 	// ActFailed reports that acquisition failed in a way the caller should
@@ -98,6 +127,8 @@ func (k ActionKind) String() string {
 		return "LeaseAcquired"
 	case ActLeaseChanged:
 		return "LeaseChanged"
+	case ActLeaseRenewed:
+		return "LeaseRenewed"
 	case ActLeaseLost:
 		return "LeaseLost"
 	case ActFailed:
@@ -222,7 +253,7 @@ type Action struct {
 	Timer TimerID  // ActSetTimer, ActCancelTimer
 	After Duration // ActSetTimer
 
-	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged
+	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed
 	Reason Reason // ActLeaseLost, ActFailed
 	Note   string // ActJournal, and detail beside Reason
 }
@@ -239,6 +270,8 @@ func (a Action) String() string {
 		return fmt.Sprintf("LeaseAcquired %s", a.Lease)
 	case ActLeaseChanged:
 		return fmt.Sprintf("LeaseChanged %s", a.Lease)
+	case ActLeaseRenewed:
+		return fmt.Sprintf("LeaseRenewed %s", a.Lease)
 	case ActLeaseLost:
 		return fmt.Sprintf("LeaseLost %s", a.Reason)
 	case ActFailed:
