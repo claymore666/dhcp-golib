@@ -516,17 +516,40 @@ func TestT1WithNoServerIdentifierWaitsForT2(t *testing.T) {
 		t.Fatalf("nothing in the journal says why T1 did nothing:\n%v", RenderActions(acts))
 	}
 
+	// The xid the acquisition ran under. It is the one that went out on the
+	// wire: the fixture's ACK copies the REQUEST's xid, and a machine that
+	// took an ACK under a different one would have discarded it
+	// (TestXidMismatchIsDiscarded).
+	acqXid := m.xid
+
 	t2, _ := m.lease.RebindAt()
 	_, acts = m.Step(t2, 0x22, TimerFired(TimerRebind))
 	if m.State() != StateRebinding {
 		t.Fatalf("state = %s at T2, want REBINDING", m.State())
 	}
-	_, dest := sent(t, acts, wire.MsgRequest)
+	msg, dest := sent(t, acts, wire.MsgRequest)
 	if !dest.Broadcast {
 		t.Fatal("T2 did not broadcast")
 	}
 	if !m.haveLse {
 		t.Fatal("the lease was dropped rather than rebound")
+	}
+
+	// THIS DOOR OPENS A NEW TRANSACTION, and the two fields that say so are
+	// on the wire. RENEWING to REBINDING does not (one renewal spans both
+	// states, TestRenewalKeepsOneTransactionAcrossT2); BOUND straight to
+	// REBINDING is a renewal that never began, so it begins here.
+	//
+	// Both assertions are needed. The xid alone would pass a machine that
+	// reset the transaction but kept counting 'secs' from the acquisition,
+	// and 'secs' alone would pass one that reset the clock and reused the
+	// xid — either of which offers a server a request it can match to
+	// something the client is not doing.
+	if msg.XID == acqXid {
+		t.Fatalf("the rebind reused the acquisition xid %#08x; T2 out of BOUND is a new transaction", acqXid)
+	}
+	if msg.Secs != 0 {
+		t.Fatalf("secs = %d in the first message of a new transaction, want 0: RFC 2131 section 2 counts it from the moment the client began this acquisition or renewal, and this one began now", msg.Secs)
 	}
 }
 
@@ -1068,6 +1091,15 @@ func TestNewRefusesAnUnencodableFqdn(t *testing.T) {
 	p.FQDN = FQDN{Name: "host.", Flags: wire.FQDNFlagO}
 	if _, err := New(p); err == nil {
 		t.Fatal("New accepted the O bit, which RFC 4702 2.1 says a client MUST set to 0")
+	}
+	// The ASCII form, E clear: the case review round 1 found reaching the
+	// transport. ErrBadFQDN's doc says "refused at construction rather than
+	// at the first DHCPDISCOVER", and this is the row that holds it — a name
+	// this long used to build a machine that failed every send and reported
+	// a broken transport.
+	p.FQDN = FQDN{Name: strings.Repeat("abcdefghij.", 30), Flags: wire.FQDNFlagS}
+	if _, err := New(p); err == nil {
+		t.Fatal("New accepted a 330-octet name with the E bit clear; every send it makes would be refused by Encode instead")
 	}
 }
 

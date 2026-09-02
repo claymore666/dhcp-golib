@@ -343,13 +343,28 @@ func EncodeFQDN(flags uint8, name string) ([]byte, error) {
 	}
 	out := []byte{flags, 0, 0}
 	if flags&FQDNFlagE == 0 {
-		return append(out, []byte(strings.TrimSuffix(name, "."))...), nil
+		out = append(out, []byte(strings.TrimSuffix(name, "."))...)
+	} else {
+		body, err := encodeName(name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, body...)
 	}
-	body, err := encodeName(name)
-	if err != nil {
-		return nil, err
+	// The length bound is on the ASSEMBLED OPTION, not on one branch of it.
+	// It sat inside encodeName until review round 1, which left the ASCII
+	// form (E clear) unbounded: a long name was accepted by proto.New,
+	// refused by Encode on every outgoing message, and reported as a broken
+	// transport after the send budget ran out. A value refused here is
+	// refused at construction, which is what ErrBadFQDN promises.
+	//
+	// 255 is what a single option instance carries; the flags octet and the
+	// two RCODEs are three of them, so no caller has to know about RFC 3396
+	// concatenation to send a hostname.
+	if len(out) > 255 {
+		return nil, fmt.Errorf("%w: %q makes a %d-octet option 81, over the 255 a single option carries", ErrBadName, name, len(out))
 	}
-	return append(out, body...), nil
+	return out, nil
 }
 
 // ErrBadName is returned for a name that cannot be put in RFC 1035 wire form.
@@ -379,12 +394,6 @@ func encodeName(name string) ([]byte, error) {
 	}
 	if root {
 		out = append(out, 0)
-	}
-	if len(out) > 252 {
-		// 255 minus the flags and the two RCODEs, so the whole option fits a
-		// single instance and no caller has to know about RFC 3396
-		// concatenation to send a hostname.
-		return nil, fmt.Errorf("%w: %q encodes to %d octets, over the 252 that fit option 81", ErrBadName, name, len(out))
 	}
 	return out, nil
 }

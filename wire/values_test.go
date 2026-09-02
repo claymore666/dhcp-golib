@@ -3,6 +3,7 @@ package wire
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -150,23 +151,46 @@ func TestClasslessRoutesCarriesOnLinkRoutes(t *testing.T) {
 // option 121 yields NO routes rather than the ones that happened to parse.
 // The first route in each case is well formed, so a decoder that returned what
 // it had would pass every one of these.
+//
+// Each row also names the guard that must refuse it, and that is not
+// decoration. The row called "width over 32" was, before review round 1, a
+// width of 33 followed by eight octets — and a /33 needs nine, so the
+// TRUNCATION guard refused it and the width bound could have been raised to 64
+// with this test still green. A row whose length is COMPLETE is the only kind
+// that isolates the width bound.
 func TestClasslessRoutesRefusesAPartialList(t *testing.T) {
 	good := append([]byte{24, 10, 0, 0}, p4("192.168.99.1")...)
-	cases := map[string][]byte{
-		"empty option":        {},
-		"width over 32":       append(append([]byte(nil), good...), 33, 10, 0, 0, 0, 192, 168, 99, 1),
-		"truncated router":    append(append([]byte(nil), good...), 24, 10, 1, 0, 192, 168),
-		"truncated subnet":    append(append([]byte(nil), good...), 24, 10),
-		"trailing width byte": append(append([]byte(nil), good...), 16),
+	cases := map[string]struct {
+		v      []byte
+		refusa string
+	}{
+		"empty option": {[]byte{}, "option 121 is empty"},
+		// Width 40, and then the nine octets a /40 would need: five
+		// significant subnet octets and a four-octet router. Nothing about
+		// its LENGTH is wrong, so only the width bound can refuse it.
+		"width over 32, complete length": {
+			append(append([]byte(nil), good...), 40, 10, 0, 0, 0, 0, 192, 168, 99, 1),
+			"mask width 40 exceeds 32",
+		},
+		"width over 32, and short with it": {
+			append(append([]byte(nil), good...), 33, 10, 0, 0, 0, 192, 168, 99, 1),
+			"mask width 33 exceeds 32",
+		},
+		"truncated router":    {append(append([]byte(nil), good...), 24, 10, 1, 0, 192, 168), "truncated"},
+		"truncated subnet":    {append(append([]byte(nil), good...), 24, 10), "truncated"},
+		"trailing width byte": {append(append([]byte(nil), good...), 16), "truncated"},
 	}
-	for name, v := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := Options{OptClasslessStaticRte: v}.ClasslessRoutes()
+			got, err := Options{OptClasslessStaticRte: c.v}.ClasslessRoutes()
 			if !errors.Is(err, ErrMalformedRoutes) {
 				t.Fatalf("err = %v, want ErrMalformedRoutes", err)
 			}
 			if got != nil {
 				t.Fatalf("got %v routes back from a malformed option; a partial routing table is a host that silently cannot reach one destination", got)
+			}
+			if !strings.Contains(err.Error(), c.refusa) {
+				t.Fatalf("err = %q, want the refusal to come from the guard this row is about (%q)", err, c.refusa)
 			}
 		})
 	}
@@ -302,6 +326,49 @@ func TestEncodeFQDNRefusesFlagsAClientMayNotSend(t *testing.T) {
 }
 
 // TestEncodeFQDNRefusesUnencodableNames.
+// TestEncodeFQDNBoundsBothForms is review round 1's third finding: the length
+// bound lived inside the canonical encoder, so with the E bit CLEAR nothing
+// bounded the option at all. A name of 299 octets was accepted here, accepted
+// by proto.New, and then refused by Encode on every outgoing message — a
+// client that reports a broken transport rather than a bad name.
+//
+// The rows are the same name under both forms, and the preservation control
+// below them is a name that still fits: a bound that refuses everything would
+// pass the first half of this test.
+func TestEncodeFQDNBoundsBothForms(t *testing.T) {
+	over := strings.Repeat("abcdefghij.", 30) // 330 octets before either encoding
+	for name, flags := range map[string]uint8{
+		"canonical":      FQDNFlagE | FQDNFlagS,
+		"ascii, E clear": FQDNFlagS,
+	} {
+		t.Run(name, func(t *testing.T) {
+			v, err := EncodeFQDN(flags, over)
+			if !errors.Is(err, ErrBadName) {
+				t.Fatalf("err = %v, want ErrBadName for a %d-octet name that cannot fit option 81", err, len(over))
+			}
+			if v != nil {
+				t.Fatalf("got %d octets back beside the error", len(v))
+			}
+		})
+	}
+
+	fits := strings.Repeat("abcdefghij.", 20) + "example.test."
+	for name, flags := range map[string]uint8{
+		"canonical":      FQDNFlagE | FQDNFlagS,
+		"ascii, E clear": FQDNFlagS,
+	} {
+		t.Run("still encodes/"+name, func(t *testing.T) {
+			v, err := EncodeFQDN(flags, fits)
+			if err != nil {
+				t.Fatalf("EncodeFQDN: %v", err)
+			}
+			if len(v) > 255 {
+				t.Fatalf("the option is %d octets, over the 255 a single instance carries", len(v))
+			}
+		})
+	}
+}
+
 func TestEncodeFQDNRefusesUnencodableNames(t *testing.T) {
 	long := ""
 	for i := 0; i < 64; i++ {
