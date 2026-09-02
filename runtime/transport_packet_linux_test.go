@@ -230,6 +230,116 @@ func transportOnARealLink(t *testing.T) {
 	}
 }
 
+// TestPacketTransportFollowsAPeerToANewHardwareAddress drives the property the
+// peer map's own comment states and nothing held: the LAST frame from an IPv4
+// source wins.
+//
+// It is not a detail of a map literal. A server that comes back on a different
+// NIC keeps its address and changes its hardware address, and a transport that
+// learned write-once would go on unicasting every DHCPRELEASE to a machine
+// that is no longer there — silently, because nothing answers a release.
+// MEASURED 2026-09-02 by review: with the map made write-once, the whole
+// runtime suite stayed green.
+//
+// The peer's hardware address is really changed rather than faked, because the
+// witness for "the unicast followed it" is the kernel's own packet class:
+// PACKET_HOST on the far end means the frame was addressed to the address that
+// interface has NOW.
+func TestPacketTransportFollowsAPeerToANewHardwareAddress(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		transportFollowsAPeer(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func transportFollowsAPeer(t *testing.T) {
+	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
+	mustRun(t, "ip", "link", "set", testServerIf, "up")
+	mustRun(t, "ip", "link", "set", testClientIf, "up")
+
+	tr, err := NewPacketTransport(testClientIf)
+	if err != nil {
+		t.Fatalf("NewPacketTransport: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+
+	const peerIP = "192.168.99.1"
+	source := netip.MustParseAddr(peerIP)
+
+	// Round one: whatever hardware address the peer interface happens to have.
+	injectFromPeer(t, peerIP)
+	for tr.Stats().Reads < 1 {
+		runtime.Gosched()
+	}
+	firstHW, ok := tr.peerHardwareAddr(source)
+	if !ok {
+		t.Fatal("nothing was learned from a frame the transport accepted")
+	}
+	if got := hardwareAddrOf(t, testServerIf); firstHW.String() != got.String() {
+		t.Fatalf("learned %s, the sender's address is %s", firstHW, got)
+	}
+
+	// The peer moves. Same IPv4 address, different NIC.
+	mustRun(t, "ip", "link", "set", testServerIf, "down")
+	mustRun(t, "ip", "link", "set", testServerIf, "address", "02:00:00:00:99:01")
+	mustRun(t, "ip", "link", "set", testServerIf, "up")
+	secondWant := hardwareAddrOf(t, testServerIf)
+	if secondWant.String() == firstHW.String() {
+		t.Fatalf("the peer's hardware address did not change (%s); this test would measure nothing", secondWant)
+	}
+
+	witness := peerSocket(t, testServerIf)
+	injectFromPeer(t, peerIP)
+	for tr.Stats().Reads < 2 {
+		runtime.Gosched()
+	}
+	secondHW, ok := tr.peerHardwareAddr(source)
+	if !ok {
+		t.Fatal("the peer entry disappeared after the second frame")
+	}
+	if secondHW.String() != secondWant.String() {
+		t.Fatalf("the peer moved to %s and the transport still holds %s: a write-once map sends every DHCPRELEASE to a machine that is no longer there",
+			secondWant, secondHW)
+	}
+
+	// The consequence, on the wire: a unicast now reaches the peer at its new
+	// address. Reading the map alone would assert on the transport's own
+	// bookkeeping; PACKET_HOST is the kernel on the far end agreeing.
+	if err := tr.Send(proto.Dest{
+		Addr: source,
+		Src:  netip.MustParseAddr("192.168.99.100"),
+	}, []byte("this stands in for a DHCPRELEASE")); err != nil {
+		t.Fatalf("unicast to the moved peer: %v", err)
+	}
+	if _, class := awaitFrameToServerPort(t, witness); class != syscall.PACKET_HOST {
+		t.Fatalf("the unicast arrived as packet class %d, want PACKET_HOST (%d): it was addressed to the hardware address the peer no longer has",
+			class, syscall.PACKET_HOST)
+	}
+}
+
+// injectFromPeer puts one well-formed reply to the client port on the link,
+// from ifName's CURRENT hardware address.
+func injectFromPeer(t *testing.T, srcIP string) {
+	t.Helper()
+	frame, err := BuildIPv4UDP(
+		netip.MustParseAddr(srcIP), netip.MustParseAddr("255.255.255.255"),
+		ServerPort, ClientPort, 1, 1, []byte("a reply"))
+	if err != nil {
+		t.Fatalf("BuildIPv4UDP: %v", err)
+	}
+	injectFrames(t, testServerIf, frame)
+}
+
+func hardwareAddrOf(t *testing.T, ifName string) net.HardwareAddr {
+	t.Helper()
+	iface, err := net.InterfaceByName(ifName)
+	if err != nil {
+		t.Fatalf("%s: %v", ifName, err)
+	}
+	return iface.HardwareAddr
+}
+
 // TestPacketTransportDropsWhenTheConsumerStalls drives the one path in the
 // reader that throws a valid DHCP reply away.
 //

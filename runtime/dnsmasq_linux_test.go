@@ -597,11 +597,12 @@ func declineAndReleaseAgainstDnsmasq(t *testing.T) {
 	declined := first.Lease.Addr.Addr().String()
 	t.Logf("acquired %s, declining it", declined)
 
+	declineLeftTheHost := watchSendFailures(t, c)
 	c.ReportConflict()
 	if ev := awaitEvent(t, c, lease.Lost); ev.Reason != proto.ReasonConflict {
 		t.Fatalf("lease lost for %s, want conflict", ev.Reason)
 	}
-	mustHaveLeftTheHost(t, c, "DHCPDECLINE")
+	declineLeftTheHost("DHCPDECLINE")
 	srv.waitFor(t, "DHCPDECLINE("+testServerIf+") "+declined)
 
 	// The restart, on the server's evidence rather than the client's: after
@@ -616,11 +617,12 @@ func declineAndReleaseAgainstDnsmasq(t *testing.T) {
 	}
 
 	// ------------------------------------------------------ the DHCPRELEASE --
+	releaseLeftTheHost := watchSendFailures(t, c)
 	c.Release()
 	if ev := awaitEvent(t, c, lease.Lost); ev.Reason != proto.ReasonReleased {
 		t.Fatalf("lease lost for %s, want released", ev.Reason)
 	}
-	mustHaveLeftTheHost(t, c, "DHCPRELEASE")
+	releaseLeftTheHost("DHCPRELEASE")
 	srv.waitFor(t, "DHCPRELEASE("+testServerIf+") "+leased)
 
 	// Read back as a set, so the two lines are asserted against the same log
@@ -647,11 +649,20 @@ func declineAndReleaseAgainstDnsmasq(t *testing.T) {
 	}
 }
 
-// mustHaveLeftTheHost fails NOW if the transport refused the send, instead of
+// watchSendFailures opens a window on the send-failure counter and returns the
+// close, which fails NOW if the transport refused THIS step's send — instead of
 // leaving the log assertion below to discover it by never being satisfied.
 //
+// It is a DELTA and not a reading of the total, because the total answers a
+// different question. This client has already sent a DISCOVER and a REQUEST by
+// the time the DECLINE goes out, and it acquires a second lease between the
+// two windows; a cumulative counter that had moved for any of those reasons
+// would fail here and name the DECLINE, which did nothing wrong. Opening the
+// window before the trigger makes the step being guarded a data dependency of
+// the guard rather than a convention about where the call sits.
+//
 // It is not the evidence and does not replace it: the server's log line is
-// still what proves the message arrived, and this counter would say 1 for a
+// still what proves the message arrived, and this counter would say 0 for a
 // message that left correctly formed and was dropped on the way. What it
 // separates is the two failures — "the transport would not send it" from "the
 // server never saw it" — which are one 90-second hang apart otherwise.
@@ -663,12 +674,16 @@ func declineAndReleaseAgainstDnsmasq(t *testing.T) {
 // send before it announces the loss, drain executes an action list in order,
 // and emit blocks until the caller takes the event. So a Lost in hand means
 // the Send call has already returned and its counter has already moved.
-func mustHaveLeftTheHost(t *testing.T, c *Client, what string) {
+func watchSendFailures(t *testing.T, c *Client) func(what string) {
 	t.Helper()
-	st := c.Stats()
-	if st.SendFailures > 0 {
-		t.Fatalf("the %s was not transmitted: %d send failure(s) — the transport refused or could not send it. Stats: %+v",
-			what, st.SendFailures, st)
+	before := c.Stats().SendFailures
+	return func(what string) {
+		t.Helper()
+		st := c.Stats()
+		if st.SendFailures > before {
+			t.Fatalf("the %s was not transmitted: %d send failure(s) during this step (%d before it) — the transport refused or could not send it. Stats: %+v",
+				what, st.SendFailures-before, before, st)
+		}
 	}
 }
 

@@ -62,13 +62,22 @@ var (
 //     Stats.Skipped. An LSF program is the fix; not at M1, because a wrong
 //     filter drops the packet you are debugging and is invisible when it does.
 //   - No ARP. A unicast is sent to the link-layer address the peer was last
-//     HEARD from (see peers), never resolved. That is enough for the one
-//     unicast RFC 2131 defines for a client with a lease in hand — the
-//     DHCPRELEASE of section 4.4.4, whose destination is the server that just
-//     answered us — and it is not enough for anything else: a destination
-//     never heard from is refused with ErrUnicastUnresolved rather than
-//     broadcast anyway. RENEWING arrives in a later milestone, where an
-//     address on the interface makes an ordinary UDP socket possible.
+//     HEARD from (see peers), never resolved. A destination never heard from
+//     is refused with ErrUnicastUnresolved rather than broadcast anyway.
+//   - THE RELAY CASE, and it is a real hole rather than a caveat. The map is
+//     keyed on the datagram's IPv4 SOURCE; the lookup key is the server
+//     identifier ring 1 read out of the reply. On a link with no relay agent
+//     those are the same address and RFC 2131 section 4.4.4's DHCPRELEASE can
+//     be addressed. Behind a relay they are not: RFC 1542 section 5.4 has the
+//     relay forward the reply itself, so the source is the relay's address,
+//     nothing is ever learned for the server identifier, and EVERY release on
+//     that link is refused. The refusal is correct — it never mis-delivers,
+//     and it is journalled and counted — but a client behind a relay cannot
+//     release at all, and that is not a case this transport handles.
+//     INFERRED, from RFC 1542: no relay has been run against this code.
+//     RENEWING arrives in a later milestone, where an address on the
+//     interface makes an ordinary UDP socket possible and this whole
+//     mechanism goes away.
 //   - No fragment reassembly (see ParseIPv4UDP).
 type PacketTransport struct {
 	f       *os.File
@@ -81,10 +90,17 @@ type PacketTransport struct {
 	// which is what stands in for ARP. It is written by the reader goroutine
 	// and read by Send from the caller's, so it is locked.
 	//
-	// A learned address is not an authenticated one: anything on the link that
-	// answers from the server's IP moves this entry. That is the same trust an
-	// unauthenticated DHCP client already places in whatever answered its
-	// broadcast, and it is stated rather than implied.
+	// KEYED ON THE DATAGRAM'S SOURCE, which is not always the address a
+	// release is sent to — see the relay bound on PacketTransport.
+	//
+	// The LAST frame wins: a learned address is not an authenticated one, and
+	// anything on the link answering from that IP moves the entry. That is the
+	// same trust an unauthenticated DHCP client already places in whatever
+	// answered its broadcast, and it is stated rather than implied. Moving is
+	// also the behaviour the legitimate case needs — a server that came back
+	// on a different NIC — so it is driven by
+	// TestPacketTransportFollowsAPeerToANewHardwareAddress rather than left as
+	// a property of a map literal.
 	peerMu sync.Mutex
 	peers  map[netip.Addr]net.HardwareAddr
 
@@ -203,10 +219,13 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 // on this interface.
 //
 // The link-layer destination is the address the peer was last heard from, not
-// a resolved one. There is no ARP here, and a destination never heard from is
-// refused rather than broadcast: broadcasting a message addressed to one
-// server would put a DHCPRELEASE naming this client's binding in front of
-// every server on the link.
+// a resolved one, and dst.Addr is therefore refused unless something has
+// already been heard from exactly that address — which behind a relay agent is
+// never the server identifier. See the relay bound on PacketTransport.
+//
+// A destination never heard from is refused rather than broadcast:
+// broadcasting a message addressed to one server would put a DHCPRELEASE
+// naming this client's binding in front of every server on the link.
 //
 // TTL 64, not the broadcast path's 1: a unicast to the server identifier is an
 // ordinary datagram and is not link-local by definition.
