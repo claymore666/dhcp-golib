@@ -567,6 +567,25 @@ func (s *dnsmasqServer) lines() []string {
 }
 
 // waitFor blocks until a log line contains want.
+// waitCount blocks until at least n of the lines logged so far contain want.
+//
+// It is waitFor's answer to a barrier that has to be about a line the log may
+// ALREADY hold a copy of: a renewal's DHCPACK looks exactly like the
+// acquisition's, so the thing to wait for is not the line but the count.
+func (s *dnsmasqServer) waitCount(t *testing.T, want string, n int, why string) {
+	t.Helper()
+	if s.count(want) >= n {
+		return
+	}
+	for range s.arrived {
+		if s.count(want) >= n {
+			return
+		}
+	}
+	t.Fatalf("%s: dnsmasq exited with %d line(s) containing %q, want %d.\nLog:\n%s",
+		why, s.count(want), want, n, strings.Join(s.lines(), "\n"))
+}
+
 func (s *dnsmasqServer) waitFor(t *testing.T, want string) {
 	t.Helper()
 	// Anything already read counts: the line may have arrived before this
@@ -899,15 +918,24 @@ func renewalAgainstDnsmasq(t *testing.T) {
 			renewed.Lease.Expire, acquired.Lease.Expire)
 	}
 
-	srv.waitFor(t, "DHCPACK("+testServerIf+") "+leased+" "+clientMAC)
-	if got := srv.count("DHCPREQUEST(" + testServerIf + ") " + leased); got <= requestsBefore {
-		t.Fatalf("the server logged %d DHCPREQUEST lines for %s, %d before the renewal: the renewal never reached it.\nServer log:\n%s",
-			got, leased, requestsBefore, strings.Join(srv.lines(), "\n"))
-	}
-	if got := srv.count("DHCPACK(" + testServerIf + ") " + leased); got <= acksBefore {
-		t.Fatalf("the server logged %d DHCPACK lines for %s, %d before the renewal.\nServer log:\n%s",
-			got, leased, acksBefore, strings.Join(srv.lines(), "\n"))
-	}
+	// THE BARRIER HAS TO NAME THE RENEWAL'S OWN LINES, not lines the
+	// acquisition already put in the log. Waiting for
+	// "DHCPACK(srv0) <ip> <mac>" here — the string the acquisition waited for
+	// at the top of this function — returns from the buffer without waiting
+	// for anything, and the counts below then read the log before the
+	// scanner goroutine has appended what it is being asked about. That is
+	// what made this test false-red under load: the client had its renewal
+	// event in hand, the server had answered, and the log had not caught up.
+	//
+	// A count that must EXCEED what it was before the renewal cannot be
+	// satisfied by a line that was already there. These two waits carry the
+	// assertions the counts used to make: if the renewal never reaches the
+	// server, or the server never answers it, the wait ends when dnsmasq
+	// exits and says so.
+	srv.waitCount(t, "DHCPREQUEST("+testServerIf+") "+leased, requestsBefore+1,
+		"the renewal never reached the server")
+	srv.waitCount(t, "DHCPACK("+testServerIf+") "+leased, acksBefore+1,
+		"the server never answered the renewal")
 	// THE DISCOVER COUNT IS WHAT MAKES THIS A RENEWAL. A client that lost its
 	// lease and acquired the same address again would satisfy every
 	// assertion above; it could not leave this one unmoved.
@@ -932,8 +960,21 @@ func renewalAgainstDnsmasq(t *testing.T) {
 	if lost.Reason != proto.ReasonNak {
 		t.Fatalf("the lease was lost for %s, want %s", lost.Reason, proto.ReasonNak)
 	}
-	if _, held := c.Lease(); held {
-		t.Fatal("the client still holds a lease after a DHCPNAK")
+	// THE EVENT'S OWN PAYLOAD, not a later Lease() snapshot. The Lost event
+	// carries the lease that was given up, and the client is free to have
+	// completed the post-NAK re-acquisition before this line runs — the
+	// event channel is eight deep, so emit does not block and the reader is
+	// not a barrier. Asking Lease() here answers a question about NOW; the
+	// question this test has is what the client gave up, and only the event
+	// answers that.
+	//
+	// That the manager holds nothing AT THE MOMENT it announces the loss is
+	// the manager's contract, and it is pinned where the answer is
+	// deterministic: TestNakDuringRenewalEndsTheHeldLease in package lease,
+	// against a server that goes silent after the DHCPNAK so nothing can
+	// re-acquire behind the assertion.
+	if lost.Lease.Addr.Addr().String() != leased {
+		t.Fatalf("the lost lease names %s, want the address the server nakked, %s", lost.Lease.Addr, leased)
 	}
 
 	srv2.waitFor(t, "DHCPNAK("+testServerIf+") "+leased+" "+clientMAC)

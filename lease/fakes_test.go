@@ -315,6 +315,35 @@ func answerNormally(req *wire.Message, _ int) []*wire.Message {
 	return nil
 }
 
+// nakTheRenewalThenGoSilent answers the acquisition, refuses the renewal, and
+// then says nothing at all.
+//
+// The silence is the point. A server that kept answering would let the client
+// finish its post-NAK re-acquisition while the test was still asking what the
+// DHCPNAK cost it, and the answer would depend on which goroutine won — which
+// is exactly the race review round 3 found in the netns test. With no answer
+// coming, "the manager holds nothing" is a question with one answer.
+//
+// The renewal is recognised by its ciaddr, not by a message count: a renewal
+// is the DHCPREQUEST that names the address it already holds (RFC 2131
+// section 4.3.2), and keying on the count would keep passing if the client
+// started sending a different number of messages first.
+func nakTheRenewalThenGoSilent(req *wire.Message, n int) []*wire.Message {
+	t, ok := req.Type()
+	if !ok {
+		return nil
+	}
+	switch {
+	case t == wire.MsgDiscover && n == 1:
+		return []*wire.Message{offerFor(req)}
+	case t == wire.MsgRequest && req.CIAddr.IsValid() && !req.CIAddr.IsUnspecified():
+		return []*wire.Message{nakFor(req)}
+	case t == wire.MsgRequest:
+		return []*wire.Message{ackFor(req, 3600)}
+	}
+	return nil
+}
+
 // The rig and the recorders live here, beside the fakes they drive, so that
 // switching off a test file never takes the fixtures its neighbours are built
 // on with it.

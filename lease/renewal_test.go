@@ -169,3 +169,53 @@ func TestRenewedEventKindRendersItself(t *testing.T) {
 		t.Fatalf("Event.String() = %q, want it to begin with the kind", got)
 	}
 }
+
+// TestNakDuringRenewalEndsTheHeldLease is where the netns test's question
+// about a DHCPNAK is answered deterministically: at the moment the manager
+// announces the loss, it holds nothing.
+//
+// The netns test cannot ask this. Its event channel is eight deep, so the
+// client is free to complete the post-NAK re-acquisition before the reader
+// gets to the next line, and a Lease() read there answers a question about
+// NOW rather than about what the DHCPNAK cost. Here the server goes silent
+// after the refusal, so nothing can re-acquire behind the assertion.
+func TestNakDuringRenewalEndsTheHeldLease(t *testing.T) {
+	r := newRig(t, testParams(), nakTheRenewalThenGoSilent, Fault{})
+
+	if ev := r.nextEvent(t); ev.Kind != Acquired {
+		t.Fatalf("first event is %s, want acquired", ev)
+	}
+	held, ok := r.mgr.Lease()
+	if !ok {
+		t.Fatal("nothing held after the acquisition")
+	}
+	if !r.timers.waitArmed(proto.TimerRenew) {
+		t.Fatal("no renewal timer was armed after acquisition")
+	}
+	renewAt, ok := r.timers.armedAt(proto.TimerRenew)
+	if !ok {
+		t.Fatal("the renewal timer is not armed")
+	}
+	r.clock.advance(renewAt)
+	r.timers.fire(proto.TimerRenew)
+
+	lost := r.nextEvent(t)
+	if lost.Kind != Lost || lost.Reason != proto.ReasonNak {
+		t.Fatalf("event after the DHCPNAK is %s, want lost/nak", lost)
+	}
+	if lost.Lease.Addr != held.Addr {
+		t.Fatalf("the lost lease names %s, want the address that was held, %s", lost.Lease.Addr, held.Addr)
+	}
+	if l, ok := r.mgr.Lease(); ok {
+		t.Fatalf("the manager still reports holding %s while announcing that it lost it", l.Addr)
+	}
+
+	s := r.mgr.Stats()
+	if s.NaksSeen != 1 || s.NaksAccepted != 1 {
+		t.Fatalf("NAK counters = %d seen / %d accepted, want 1 and 1: this NAK was on the wire AND cost the lease",
+			s.NaksSeen, s.NaksAccepted)
+	}
+	if s.LeasesLost != 1 {
+		t.Fatalf("Stats.LeasesLost = %d, want 1", s.LeasesLost)
+	}
+}
