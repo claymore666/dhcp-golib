@@ -2,6 +2,7 @@ package proto
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/wire"
@@ -1206,9 +1207,26 @@ func TestDeclineWaitsBeforeRestarting(t *testing.T) {
 // TestRestartFiresAFreshTransaction drives the other half of the wait: a timer
 // nothing handles parks the machine in INIT forever, which looks exactly like
 // an idle client.
+//
+// It also drives WHICH restart, because "a DHCPDISCOVER follows" is satisfied
+// by continuing the declined transaction. RFC 2131 section 3.1(5) restarts the
+// CONFIGURATION PROCESS, which section 4.4.1 begins by generating a new
+// transaction identifier, and section 2 has 'secs' count from the moment the
+// client began the acquisition. So both are observable on the wire and both
+// are asserted: reusing the acquisition's xid, or its start time, is the
+// cheap wrong version and neither is visible in the state alone.
 func TestRestartFiresAFreshTransaction(t *testing.T) {
-	m := boundWith(t, terminalParams())
-	_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	m := newMachine(t, terminalParams())
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	first := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(first, "192.168.99.50", "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	m.Step(at(2), 3, received(t, ackFor(req, "192.168.99.50", "192.168.99.1", 3600)))
+	if m.State() != StateBound {
+		t.Fatalf("fixture reached %s, want BOUND", m.State())
+	}
+
+	_, acts = m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
 	declined := mustSend(t, acts, wire.MsgDecline)
 
 	st, acts := m.Step(at(30), 0xBEEF, TimerFired(TimerRestart))
@@ -1218,6 +1236,62 @@ func TestRestartFiresAFreshTransaction(t *testing.T) {
 	disc := mustSend(t, acts, wire.MsgDiscover)
 	if disc.XID == declined.XID {
 		t.Errorf("the restarted DHCPDISCOVER reuses the DHCPDECLINE's xid %#08x; RFC 2131 Table 5 selects a new one per transaction", disc.XID)
+	}
+	if disc.XID == first.XID {
+		t.Errorf("the restarted DHCPDISCOVER reuses the declined acquisition's xid %#08x; RFC 2131 section 4.4.1 generates one per configuration process", disc.XID)
+	}
+	if disc.Secs != 0 {
+		t.Errorf("the restarted DHCPDISCOVER carries secs=%d; RFC 2131 section 2 counts from when the client began THIS acquisition, and a restarted process began now", disc.Secs)
+	}
+	// The wait is over, so nothing may still be armed to fire it again.
+	for _, a := range acts {
+		if a.Kind == ActSetTimer && a.Timer == TimerRestart {
+			t.Errorf("the restart re-armed the restart timer: %v", RenderActions(acts))
+		}
+	}
+}
+
+// TestRestartDoesNotWaitTwice drives the restart under a LIVE desync window.
+//
+// Every other test in this file turns the window off, and a zero window
+// resolves to no delay at all — so under those fixtures a restart that also
+// applied RFC 2131 section 4.4.1's startup draw is indistinguishable from one
+// that does not. DefaultParams ships the window ON, which makes the fixture
+// the only reason the difference is invisible.
+//
+// The two waits are different obligations: section 4.4.1's one-to-ten-second
+// draw desynchronises hosts starting together, section 3.1(5)'s ten seconds
+// keeps a client whose address is permanently in use from looping. The second
+// has just elapsed, so serving the first as well delays the restart again for
+// a reason that does not apply.
+func TestRestartDoesNotWaitTwice(t *testing.T) {
+	p := terminalParams()
+	p.DesyncMin, p.DesyncMax = 1*Second, 10*Second
+
+	m := newMachine(t, p)
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("the fixture's desync window is not in force: %v", RenderActions(acts))
+	}
+	_, acts = m.Step(at(5), 1, TimerFired(TimerDesync))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(6), 2, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	m.Step(at(7), 3, received(t, ackFor(req, "192.168.99.50", "192.168.99.1", 3600)))
+	if m.State() != StateBound {
+		t.Fatalf("fixture reached %s, want BOUND", m.State())
+	}
+
+	m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	st, acts := m.Step(at(30), 0xBEEF, TimerFired(TimerRestart))
+	if st != StateSelecting {
+		t.Fatalf("after the restart wait: %s, want SELECTING — the restart served a second wait", st)
+	}
+	mustSend(t, acts, wire.MsgDiscover)
+	for _, a := range acts {
+		if a.Kind == ActSetTimer && a.Timer == TimerDesync {
+			t.Fatalf("the restart armed a desync wait on top of the section 3.1(5) one: %v", RenderActions(acts))
+		}
 	}
 }
 
@@ -1336,6 +1410,19 @@ func TestNoServerIdentifierMeansNoTerminalMessage(t *testing.T) {
 			lost, ok := find(acts, ActLeaseLost)
 			if !ok || lost.Reason != tc.want {
 				t.Fatalf("the lease was not given up: %v", RenderActions(acts))
+			}
+			// The silence has to be accounted for. Not sending is correct
+			// here and it is also what a broken builder looks like; the
+			// journal note is the only thing that tells an operator which of
+			// the two happened.
+			said := false
+			for _, a := range acts {
+				if a.Kind == ActJournal && strings.Contains(a.Note, "server identifier") {
+					said = true
+				}
+			}
+			if !said {
+				t.Fatalf("nothing was sent and nothing said why: %v", RenderActions(acts))
 			}
 		})
 	}

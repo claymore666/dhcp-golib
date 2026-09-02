@@ -845,3 +845,54 @@ func TestManagerReleaseWithNoLeaseSendsNothing(t *testing.T) {
 		t.Fatalf("stats = %+v, want no release sent", s)
 	}
 }
+
+// TestManagerConcurrentRequestsAreSerialisedByTheLoop is defeat-list row 10.
+//
+// Release and ReportConflict are called from the caller's goroutine while Run
+// owns the Machine, so an implementation that stepped the machine directly
+// would race every Step. The race detector only reports a race a test actually
+// drives, and every other test here calls one request once, from one
+// goroutine, at a moment the loop is parked between events. This one calls
+// both, many times, from many goroutines.
+//
+// It also drives the idempotency the request channel's depth assumes: whichever
+// request wins, the machine has no lease afterwards, so EXACTLY ONE terminal
+// message may reach the wire no matter how many callers asked.
+func TestManagerConcurrentRequestsAreSerialisedByTheLoop(t *testing.T) {
+	r := newRig(t, testParams(), answerNormally, Fault{})
+	if ev := r.nextEvent(t); ev.Kind != Acquired {
+		t.Fatalf("first event is %s", ev)
+	}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	wg.Add(2 * callers)
+	for i := 0; i < callers; i++ {
+		go func() { defer wg.Done(); r.mgr.Release() }()
+		go func() { defer wg.Done(); r.mgr.ReportConflict() }()
+	}
+	wg.Wait()
+
+	// Which of the two wins is a scheduling outcome and is not asserted; that
+	// only one of them puts a message on the wire is the invariant.
+	ev := r.nextEvent(t)
+	if ev.Kind != Lost || (ev.Reason != proto.ReasonReleased && ev.Reason != proto.ReasonConflict) {
+		t.Fatalf("event after the requests is %s, want lost/released or lost/conflict", ev)
+	}
+	if _, held := r.mgr.Lease(); held {
+		t.Fatal("the manager still reports a held lease")
+	}
+
+	terminal := 0
+	for _, msg := range r.server.sentMessages() {
+		if got, ok := msg.Type(); ok && (got == wire.MsgRelease || got == wire.MsgDecline) {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("%d terminal message(s) on the wire from %d callers; the lease can only be given up once", terminal, 2*callers)
+	}
+	if s := r.mgr.Stats(); s.ReleasesSent+s.DeclinesSent != 1 {
+		t.Fatalf("stats = %+v, want exactly one terminal message counted", s)
+	}
+}

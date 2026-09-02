@@ -143,6 +143,20 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 		case TimerDesync:
 			m.sendDiscover(now, rnd, out)
 
+		case TimerRestart:
+			// RFC 2131 section 3.1(5): the client "restarts the configuration
+			// process", which begins at INIT with a transaction of its own —
+			// section 4.4.1, "The client generates and records a random
+			// transaction identifier". So this is a fresh acquisition, not a
+			// DHCPDISCOVER on the declined transaction's xid and elapsed time.
+			// TestRestartFiresAFreshTransaction drives the difference.
+			//
+			// withDesync is false: section 4.4.1's one-to-ten-second draw
+			// desynchronises hosts booting together, and the wait that has
+			// just elapsed is section 3.1(5)'s own. Both would be two waits
+			// for two different reasons on one restart.
+			m.beginAcquisition(now, rnd, out, false)
+
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in INIT: ignored", ev.Timer))
 		}
@@ -374,7 +388,7 @@ func (m *Machine) halt(out *actions, r Reason) {
 // THE DECLINE IS SENT BEFORE THE LOSS IS ANNOUNCED, for the reason enterBound
 // gives about the reverse order: a ring-3 caller drains this list in order and
 // may tear the interface down the moment it sees ActLeaseLost.
-// TestDeclineIsSentBeforeTheLossIsAnnounced holds the order.
+// TestDeclineAndReleaseAreSentBeforeTheLossIsAnnounced holds the order.
 //
 // The machine lands in INIT, not STOPPED: RFC 2131 section 3.2(3), "This
 // action corresponds to the client moving to the INIT state in the DHCP state
@@ -393,8 +407,8 @@ func (m *Machine) declineAndRestart(rnd uint64, out *actions) {
 // Sent before the loss is announced, and here the ordering is not only about
 // what the caller might do: a DHCPRELEASE is unicast FROM the released address
 // (section 4.4.4), so a caller that removed the address on ActLeaseLost would
-// leave the message with no source. TestReleaseIsSentBeforeTheLossIsAnnounced
-// holds the order.
+// leave the message with no source.
+// TestDeclineAndReleaseAreSentBeforeTheLossIsAnnounced holds the order.
 //
 // DECISION 2026-08-30, because RFC 2131 does not settle it: the machine lands
 // in STOPPED. Figure 5 has no DHCPRELEASE edge and section 4.4.6 names no
@@ -569,7 +583,7 @@ func (m *Machine) terminalFields() (addr, sid netip.Addr, why string) {
 // the elapsed time, 'flags' is 0 so the BROADCAST bit stays clear, and the
 // host name, vendor class, parameter request list and requested lease time are
 // all forbidden by the column's "All others: MUST NOT".
-// TestDeclineAndReleaseCarryNoForbiddenOption is what holds that apart from
+// TestDeclineAndReleaseCarryOnlyThePermittedOptions is what holds that apart from
 // base(), which is otherwise the natural thing to reuse.
 //
 // xid is drawn fresh because Table 5's cell for this column reads "selected by
@@ -783,7 +797,7 @@ func (a *actions) cancel(m *Machine, t TimerID) {
 
 // cancelAll disarms every timer, enumerated from AllTimerIDs rather than
 // hand-listed. It replaced three hand-lists that all had to be edited together;
-// TestEveryPathToInitCancelsEveryTimer drives the property they were keeping.
+// TestEveryPathToIdleCancelsEveryTimer drives the property they were keeping.
 func (a *actions) cancelAll(m *Machine) {
 	for _, t := range AllTimerIDs() {
 		a.cancel(m, t)
