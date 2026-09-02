@@ -37,8 +37,16 @@ var broadcastMAC = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 var (
 	// ErrTransportClosed is returned by Send after Close.
 	ErrTransportClosed = errors.New("runtime: transport closed")
-	// ErrUnicastUnsupported is returned for a unicast Dest. See Send.
-	ErrUnicastUnsupported = errors.New("runtime: unicast send needs a resolved link-layer address")
+	// ErrUnicastUnresolved is returned for a unicast Dest whose link-layer
+	// address this transport has not seen. See sendUnicast.
+	ErrUnicastUnresolved = errors.New("runtime: unicast send needs a resolved link-layer address")
+	// ErrUnicastNoSource is returned for a unicast Dest carrying no source
+	// address. RFC 2131 section 4.4.4's DHCPRELEASE is sent FROM the released
+	// address; there is no address on the interface to fall back to.
+	ErrUnicastNoSource = errors.New("runtime: unicast send needs a source address")
+	// ErrNotUnicast is returned for a unicast Dest that is not a usable IPv4
+	// destination.
+	ErrNotUnicast = errors.New("runtime: unicast send needs an IPv4 destination")
 )
 
 // PacketTransport is the raw AF_PACKET transport.
@@ -53,10 +61,14 @@ var (
 //     space by ParseIPv4UDP — real wasted wakeups on a busy link, measured as
 //     Stats.Skipped. An LSF program is the fix; not at M1, because a wrong
 //     filter drops the packet you are debugging and is invisible when it does.
-//   - No ARP, therefore no unicast: Send refuses a unicast Dest with
-//     ErrUnicastUnsupported rather than broadcasting it anyway. RENEWING
-//     arrives in a later milestone, where an address on the interface makes an
-//     ordinary UDP socket possible.
+//   - No ARP. A unicast is sent to the link-layer address the peer was last
+//     HEARD from (see peers), never resolved. That is enough for the one
+//     unicast RFC 2131 defines for a client with a lease in hand — the
+//     DHCPRELEASE of section 4.4.4, whose destination is the server that just
+//     answered us — and it is not enough for anything else: a destination
+//     never heard from is refused with ErrUnicastUnresolved rather than
+//     broadcast anyway. RENEWING arrives in a later milestone, where an
+//     address on the interface makes an ordinary UDP socket possible.
 //   - No fragment reassembly (see ParseIPv4UDP).
 type PacketTransport struct {
 	f       *os.File
@@ -64,6 +76,17 @@ type PacketTransport struct {
 	src     netip.Addr
 
 	inbound chan lease.Inbound
+
+	// peers is the link-layer address each IPv4 source has been HEARD from,
+	// which is what stands in for ARP. It is written by the reader goroutine
+	// and read by Send from the caller's, so it is locked.
+	//
+	// A learned address is not an authenticated one: anything on the link that
+	// answers from the server's IP moves this entry. That is the same trust an
+	// unauthenticated DHCP client already places in whatever answered its
+	// broadcast, and it is stated rather than implied.
+	peerMu sync.Mutex
+	peers  map[netip.Addr]net.HardwareAddr
 
 	ident atomic.Uint32
 
@@ -144,6 +167,7 @@ func NewPacketTransport(ifName string) (*PacketTransport, error) {
 		ifIndex: iface.Index,
 		src:     netip.AddrFrom4([4]byte{0, 0, 0, 0}),
 		inbound: make(chan lease.Inbound, inboundBuffer),
+		peers:   make(map[netip.Addr]net.HardwareAddr),
 	}
 	t.wg.Add(1)
 	go t.read()
@@ -156,7 +180,7 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 		return ErrTransportClosed
 	}
 	if !dst.Broadcast {
-		return fmt.Errorf("%w: %s", ErrUnicastUnsupported, dst.Addr)
+		return t.sendUnicast(dst, payload)
 	}
 
 	// TTL 1 rather than 64: a broadcast to 255.255.255.255 is link-local by
@@ -167,13 +191,52 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 	if err != nil {
 		return err
 	}
+	return t.transmit(frame, broadcastMAC)
+}
 
+// sendUnicast transmits one payload to a single host, from a single address.
+//
+// RFC 2131 section 4.4.4 makes the DHCPRELEASE a unicast, and section 4.4.6's
+// message identifies the binding by the address being given back, so the
+// datagram must also come FROM that address — both halves arrive in dst,
+// because nothing below ring 1 knows the client's address: the kernel has none
+// on this interface.
+//
+// The link-layer destination is the address the peer was last heard from, not
+// a resolved one. There is no ARP here, and a destination never heard from is
+// refused rather than broadcast: broadcasting a message addressed to one
+// server would put a DHCPRELEASE naming this client's binding in front of
+// every server on the link.
+//
+// TTL 64, not the broadcast path's 1: a unicast to the server identifier is an
+// ordinary datagram and is not link-local by definition.
+func (t *PacketTransport) sendUnicast(dst proto.Dest, payload []byte) error {
+	if !dst.Addr.Is4() || dst.Addr.IsUnspecified() {
+		return fmt.Errorf("%w: %s", ErrNotUnicast, dst.Addr)
+	}
+	if !dst.Src.Is4() || dst.Src.IsUnspecified() {
+		return fmt.Errorf("%w: %s", ErrUnicastNoSource, dst)
+	}
+	hw, ok := t.peerHardwareAddr(dst.Addr)
+	if !ok {
+		return fmt.Errorf("%w: %s has not been heard from and this transport sends no ARP", ErrUnicastUnresolved, dst.Addr)
+	}
+	frame, err := BuildIPv4UDP(dst.Src, dst.Addr,
+		ClientPort, ServerPort, uint16(t.ident.Add(1)), 64, payload)
+	if err != nil {
+		return err
+	}
+	return t.transmit(frame, hw)
+}
+
+// transmit puts one built frame on the wire, addressed to hw.
+func (t *PacketTransport) transmit(frame []byte, hw net.HardwareAddr) error {
 	lla := &syscall.SockaddrLinklayer{
 		Protocol: htons(ethPIP),
 		Ifindex:  t.ifIndex,
-		Halen:    uint8(len(broadcastMAC)),
+		Halen:    uint8(len(hw)),
 	}
-	copy(lla.Addr[:], broadcastMAC)
+	copy(lla.Addr[:], hw)
 
 	rc, err := t.f.SyscallConn()
 	if err != nil {
@@ -194,6 +257,24 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 	}
 	t.sends.Add(1)
 	return nil
+}
+
+// peerHardwareAddr returns the link-layer address src was last heard from.
+func (t *PacketTransport) peerHardwareAddr(src netip.Addr) (net.HardwareAddr, bool) {
+	t.peerMu.Lock()
+	defer t.peerMu.Unlock()
+	hw, ok := t.peers[src]
+	return hw, ok
+}
+
+// learnPeer records the link-layer address an IPv4 source was heard from.
+func (t *PacketTransport) learnPeer(src netip.Addr, hw net.HardwareAddr) {
+	if !src.Is4() || src.IsUnspecified() || len(hw) == 0 {
+		return
+	}
+	t.peerMu.Lock()
+	t.peers[src] = append(net.HardwareAddr(nil), hw...)
+	t.peerMu.Unlock()
 }
 
 // Received is the stream of DHCP payloads addressed to the client port.
@@ -223,12 +304,42 @@ func (t *PacketTransport) Stats() TransportStats {
 	}
 }
 
+// read is the receive loop.
+//
+// It goes through SyscallConn and recvfrom rather than f.Read, and the reason
+// is the sockaddr: on a SOCK_DGRAM AF_PACKET socket the kernel strips the
+// Ethernet header, so the sender's link-layer address survives ONLY in the
+// sockaddr recvfrom fills in. f.Read discards it, and without it the transport
+// cannot address a unicast to the server that just answered — which, with no
+// ARP here, means it cannot send RFC 2131 section 4.4.4's DHCPRELEASE at all.
+//
+// SyscallConn keeps the descriptor on the runtime poller, which is what makes
+// Close able to unblock this loop; f.Fd() would take it off, and a blocking
+// raw-socket read cannot be interrupted by closing the fd from another
+// goroutine. Returning false from the callback parks on the poller and retries
+// when the socket is readable.
 func (t *PacketTransport) read() {
 	defer t.wg.Done()
 	buf := make([]byte, maxFrame)
+	rc, err := t.f.SyscallConn()
+	if err != nil {
+		select {
+		case t.inbound <- lease.Inbound{Err: fmt.Errorf("runtime: syscallconn: %w", err)}:
+		default:
+		}
+		return
+	}
 	for {
-		n, err := t.f.Read(buf)
-		if err != nil {
+		var (
+			n    int
+			from syscall.Sockaddr
+			rerr error
+		)
+		cerr := rc.Read(func(fd uintptr) bool {
+			n, from, rerr = syscall.Recvfrom(int(fd), buf, 0)
+			return rerr != syscall.EAGAIN
+		})
+		if err := firstErr(cerr, rerr); err != nil {
 			if t.closed.Load() {
 				return
 			}
@@ -241,8 +352,30 @@ func (t *PacketTransport) read() {
 			}
 			return
 		}
-		t.deliver(buf[:n])
+		t.deliver(buf[:n], senderHardwareAddr(from))
 	}
+}
+
+// firstErr returns the first non-nil of the two, so the poller's error and the
+// syscall's are not conflated into one and neither is dropped.
+func firstErr(a, b error) error {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// senderHardwareAddr extracts the sender's link-layer address from the
+// sockaddr recvfrom filled in, or nil when there is none to extract.
+func senderHardwareAddr(sa syscall.Sockaddr) net.HardwareAddr {
+	ll, ok := sa.(*syscall.SockaddrLinklayer)
+	if !ok {
+		return nil
+	}
+	if int(ll.Halen) == 0 || int(ll.Halen) > len(ll.Addr) {
+		return nil
+	}
+	return append(net.HardwareAddr(nil), ll.Addr[:ll.Halen]...)
 }
 
 // deliver classifies one frame and, if it is a reply for us, queues it.
@@ -252,7 +385,7 @@ func (t *PacketTransport) read() {
 // queued. Bumping it on arrival instead left the last frame classified a few
 // instructions later, a race a test cannot wait out.
 // TestPacketTransportDropsWhenTheConsumerStalls.
-func (t *PacketTransport) deliver(frame []byte) {
+func (t *PacketTransport) deliver(frame []byte, hw net.HardwareAddr) {
 	defer t.reads.Add(1)
 	dg, perr := ParseIPv4UDP(frame)
 	if perr != nil {
@@ -273,6 +406,11 @@ func (t *PacketTransport) deliver(frame []byte) {
 			t.absent.Add(1)
 		}
 	}
+	// Learned HERE and not on arrival: only a frame that parsed as an IPv4 UDP
+	// datagram for the client port has an IPv4 source to key on, and only
+	// something that answered a DHCP broadcast has any claim to be the server.
+	t.learnPeer(dg.Src, hw)
+
 	// The payload aliases buf, which the next read overwrites.
 	p := make([]byte, len(dg.Payload))
 	copy(p, dg.Payload)

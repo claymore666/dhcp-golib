@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"net/netip"
 	"strings"
 	"testing"
@@ -1017,7 +1018,8 @@ func TestDeclineAndReleaseCarryOnlyThePermittedOptions(t *testing.T) {
 		{wire.MsgRelease, EvRelease},
 	} {
 		t.Run(tc.want.String(), func(t *testing.T) {
-			m := boundWith(t, terminalParams())
+			p := terminalParams()
+			m := boundWith(t, p)
 			_, acts := m.Step(at(10), 0xFEED, Simple(tc.ev))
 			msg := mustSend(t, acts, tc.want)
 
@@ -1028,11 +1030,32 @@ func TestDeclineAndReleaseCarryOnlyThePermittedOptions(t *testing.T) {
 			}
 			for c := range permitted[tc.want] {
 				if c == wire.OptClientID {
+					// Option 61 is a MAY in Table 5 and a MUST in section
+					// 3.1(6) for a client that used one; presence alone is
+					// therefore not the property, and it is asserted by VALUE
+					// below instead of being counted here.
 					continue
 				}
 				if _, ok := msg.Options[c]; !ok {
 					t.Errorf("%s does not carry option %s", tc.want, c)
 				}
+			}
+
+			// The two IDENTITY fields, and neither is held by the whitelist
+			// above: 'chaddr' is not an option at all, and option 61 is
+			// skipped by the presence loop by construction. RFC 2131 section
+			// 3.1(6): "The client identifies the lease to be released with its
+			// 'client identifier', or 'chaddr' and network address in the
+			// DHCPRELEASE message. If the client used a 'client identifier'
+			// when it obtained the lease, it MUST use the same 'client
+			// identifier'." A message carrying neither, or carrying somebody
+			// else's, is one the server cannot match to a binding — and
+			// nothing answers either message, so it fails in silence.
+			if !bytes.Equal(msg.CHAddr, p.CHAddr) {
+				t.Errorf("%s carries chaddr %x, want the client's %x", tc.want, msg.CHAddr, p.CHAddr)
+			}
+			if got, ok := msg.Options[wire.OptClientID]; !ok || !bytes.Equal(got, p.ClientID) {
+				t.Errorf("%s carries client-id %x/%v, want the one the lease was obtained with, %x", tc.want, got, ok, p.ClientID)
 			}
 			if msg.Secs != 0 {
 				t.Errorf("secs = %d, Table 5 says 0 for this column", msg.Secs)
@@ -1050,6 +1073,39 @@ func TestDeclineAndReleaseCarryOnlyThePermittedOptions(t *testing.T) {
 				if f.a.IsValid() && !f.a.IsUnspecified() {
 					t.Errorf("%s = %s, Table 5 says 0", f.name, f.a)
 				}
+			}
+		})
+	}
+}
+
+// TestTerminalMessagesOmitAnUnusedClientIdentifier is the other direction of
+// the section 3.1(6) MUST, and it is what keeps the assertion above from being
+// satisfied by a builder that always emits option 61.
+//
+// Table 5 makes the client identifier a MAY. A client that obtained its lease
+// WITHOUT one must not invent one here: the server matches the binding by
+// 'chaddr' in that case, and an option 61 the DHCPREQUEST never carried names
+// a binding that does not exist.
+func TestTerminalMessagesOmitAnUnusedClientIdentifier(t *testing.T) {
+	p := terminalParams()
+	p.ClientID = nil
+
+	for _, tc := range []struct {
+		want wire.MessageType
+		ev   EventKind
+	}{
+		{wire.MsgDecline, EvConflictDetected},
+		{wire.MsgRelease, EvRelease},
+	} {
+		t.Run(tc.want.String(), func(t *testing.T) {
+			m := boundWith(t, p)
+			_, acts := m.Step(at(10), 0xFEED, Simple(tc.ev))
+			msg := mustSend(t, acts, tc.want)
+			if got, ok := msg.Options[wire.OptClientID]; ok {
+				t.Errorf("%s carries client-id %x for a client that used none to obtain the lease", tc.want, got)
+			}
+			if !bytes.Equal(msg.CHAddr, p.CHAddr) {
+				t.Errorf("%s carries chaddr %x, want %x — the only identity left when there is no option 61", tc.want, msg.CHAddr, p.CHAddr)
 			}
 		})
 	}
@@ -1249,6 +1305,151 @@ func TestRestartFiresAFreshTransaction(t *testing.T) {
 			t.Errorf("the restart re-armed the restart timer: %v", RenderActions(acts))
 		}
 	}
+}
+
+// TestReleaseIsSentFromTheReleasedAddress is RFC 2131 section 4.4.4's
+// DHCPRELEASE as ring 3 has to execute it.
+//
+// Table 5 puts the released address in 'ciaddr', which the byte tests already
+// hold. This holds the OTHER half, which is not in the message at all: the
+// datagram is unicast to the server FROM that address, and ring 3 cannot
+// derive it — the transport is a packet socket on a link the kernel has no
+// address on. If the machine does not say, the release goes out from 0.0.0.0,
+// which no server can answer and none can match.
+//
+// The DHCPDECLINE is the control: section 4.4.4 broadcasts it and section 4.1
+// requires the source to be 0 for a client that is giving the address up.
+func TestReleaseIsSentFromTheReleasedAddress(t *testing.T) {
+	want := netip.MustParseAddr("192.168.99.50")
+	server := netip.MustParseAddr("192.168.99.1")
+
+	m := boundWith(t, terminalParams())
+	_, acts := m.Step(at(10), 0xFEED, Simple(EvRelease))
+	a, _ := find(acts, ActSend)
+	if a.Dest.Broadcast {
+		t.Fatalf("the DHCPRELEASE is a broadcast: %s", a.Dest)
+	}
+	if a.Dest.Addr != server {
+		t.Errorf("DHCPRELEASE destination = %s, want the server %s", a.Dest.Addr, server)
+	}
+	if a.Dest.Src != want {
+		t.Errorf("DHCPRELEASE source = %s, want the released address %s", a.Dest.Src, want)
+	}
+
+	m = boundWith(t, terminalParams())
+	_, acts = m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	a, _ = find(acts, ActSend)
+	if !a.Dest.Broadcast {
+		t.Fatalf("the DHCPDECLINE is not a broadcast: %s", a.Dest)
+	}
+	if a.Dest.Src.IsValid() && !a.Dest.Src.IsUnspecified() {
+		t.Errorf("the broadcast DHCPDECLINE names source %s; RFC 2131 section 4.1 sends it from 0", a.Dest.Src)
+	}
+}
+
+// TestAFailedTerminalSendIsAnnouncedAndAccountedFor covers what happens when
+// the DHCPRELEASE or the DHCPDECLINE does not leave the host.
+//
+// STANDARD, and it decides the first half: RFC 2131 section 4.4.6 says "the
+// correct operation of DHCP does not depend on the transmission of DHCPRELEASE
+// messages", and section 3.1(5) makes giving up a conflicting address a MUST
+// on DETECTION, not on transmission. So the loss is announced either way — a
+// client that kept using an address it has decided to stop using because a
+// packet did not leave would be the worse failure.
+//
+// What must NOT happen is the failure passing unremarked. Neither message is
+// answered and neither is retransmitted, so this journal line is the only
+// place the divergence — this client has released, the server still holds the
+// binding — is readable at all.
+func TestAFailedTerminalSendIsAnnouncedAndAccountedFor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ev    EventKind
+		want  Reason
+		state State
+	}{
+		{"release", EvRelease, ReasonReleased, StateStopped},
+		{"decline", EvConflictDetected, ReasonConflict, StateInit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := boundWith(t, terminalParams())
+			_, acts := m.Step(at(10), 0xFEED, Simple(tc.ev))
+			send, ok := find(acts, ActSend)
+			if !ok {
+				t.Fatalf("nothing was sent: %v", RenderActions(acts))
+			}
+			lost, ok := find(acts, ActLeaseLost)
+			if !ok || lost.Reason != tc.want {
+				t.Fatalf("the lease was not given up: %v", RenderActions(acts))
+			}
+			if m.State() != tc.state {
+				t.Fatalf("state = %s, want %s", m.State(), tc.state)
+			}
+
+			st, acts := m.Step(at(11), 1, ActionFailed(send.ID, "ENETDOWN"))
+			if st != tc.state {
+				t.Fatalf("a failed terminal send moved the machine to %s, want %s: the lease is given up whether or not the message left", st, tc.state)
+			}
+			said := false
+			for _, a := range acts {
+				if a.Kind == ActJournal && strings.Contains(a.Note, "failed") && strings.Contains(a.Note, "ENETDOWN") {
+					said = true
+				}
+			}
+			if !said {
+				t.Fatalf("the failed send was not journalled by name: %v", RenderActions(acts))
+			}
+			for _, a := range acts {
+				if a.Kind == ActJournal && strings.Contains(a.Note, "ignored") {
+					t.Fatalf("a failed terminal send was journalled as ignored: %v", RenderActions(acts))
+				}
+			}
+		})
+	}
+}
+
+// TestAFailedDeclineDoesNotCancelTheRestart is the same failure at the one
+// setting that used to strand the machine.
+//
+// With MaxSendFailures at 1, a single failed DHCPDECLINE send reaches the
+// transport-broken escalation, which parked the machine in INIT with every
+// timer cancelled — including the restart wait that declineAndRestart had just
+// armed and that nothing else re-arms. No lease, no timer, no event coming,
+// and INIT-with-nothing-armed is what an idle client looks like.
+func TestAFailedDeclineDoesNotCancelTheRestart(t *testing.T) {
+	p := terminalParams()
+	p.MaxSendFailures = 1
+	m := boundWith(t, p)
+
+	_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
+	send := mustSend(t, acts, wire.MsgDecline)
+	_ = send
+	sendAct, _ := find(acts, ActSend)
+	armed := false
+	for _, a := range acts {
+		if a.Kind == ActSetTimer && a.Timer == TimerRestart {
+			armed = true
+		}
+	}
+	if !armed {
+		t.Fatalf("the fixture armed no restart: %v", RenderActions(acts))
+	}
+
+	st, acts := m.Step(at(11), 1, ActionFailed(sendAct.ID, "ENETDOWN"))
+	if st != StateInit {
+		t.Fatalf("state = %s, want INIT", st)
+	}
+	for _, a := range acts {
+		if a.Kind == ActCancelTimer && a.Timer == TimerRestart {
+			t.Fatalf("the failed DHCPDECLINE cancelled the restart wait: %v", RenderActions(acts))
+		}
+	}
+	// The wait still fires, which is the property the cancellation removed.
+	st, acts = m.Step(at(30), 0xBEEF, TimerFired(TimerRestart))
+	if st != StateSelecting {
+		t.Fatalf("after the restart wait: %s, want SELECTING", st)
+	}
+	mustSend(t, acts, wire.MsgDiscover)
 }
 
 // TestRestartDoesNotWaitTwice drives the restart under a LIVE desync window.

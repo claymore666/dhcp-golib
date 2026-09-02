@@ -216,6 +216,12 @@ func (mg *Manager) Run(ctx context.Context) error {
 // confirmation a caller can have is the Lost event carrying
 // proto.ReasonReleased, which arrives on Events. Calling it with no Run in
 // flight, or twice, does nothing the second time.
+//
+// IT CAN BE DROPPED. The request queue is bounded, and a call made while it is
+// full is counted in Stats.RequestsDropped and does nothing else — no error,
+// no panic, no retry. That is safe for a caller that waits for the Lost event
+// rather than for this call to return, and it is the reason to wait for it: a
+// Release that produced no Lost was dropped, and the remedy is to call again.
 func (mg *Manager) Release() { mg.request(proto.Simple(proto.EvRelease)) }
 
 // ReportConflict tells the client that something else is using the address it
@@ -226,6 +232,9 @@ func (mg *Manager) Release() { mg.request(proto.Simple(proto.EvRelease)) }
 // duplicate address detection; a conflict reaches the machine only because a
 // caller called this. Until a probe exists, a real conflict on a real host
 // produces no DHCPDECLINE, because nothing notices it.
+//
+// It can be dropped for the same reason Release can, and is counted the same
+// way; the event to wait for is Lost carrying proto.ReasonConflict.
 func (mg *Manager) ReportConflict() { mg.request(proto.Simple(proto.EvConflictDetected)) }
 
 func (mg *Manager) request(ev proto.Event) {

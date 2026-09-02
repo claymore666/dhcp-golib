@@ -124,14 +124,29 @@ type Dest struct {
 	// section 4.1 requires the IP source address to be 0 for a message
 	// broadcast before the client has its address.
 	Broadcast bool
-	// Addr is the unicast destination when Broadcast is false. Unused at M1;
-	// RENEWING unicasts to the server identifier and is the next milestone.
+	// Addr is the unicast destination when Broadcast is false.
 	Addr netip.Addr
+	// Src is the IP source address a unicast must be sent FROM, and it is
+	// carried here because ring 3 cannot derive it: the transport is an
+	// AF_PACKET socket on a link the kernel has no address on, so nothing
+	// below this struct knows what the client's address is.
+	//
+	// RFC 2131 section 4.4.4 unicasts the DHCPRELEASE to the server, and
+	// section 4.4.6's message identifies the binding by the address it is
+	// released from — Table 5 carries it in 'ciaddr'. A release sent from
+	// 0.0.0.0 is a datagram the server can neither route back nor match.
+	//
+	// Zero for a broadcast, where RFC 2131 section 4.1 requires the source to
+	// be 0.0.0.0 anyway.
+	Src netip.Addr
 }
 
 func (d Dest) String() string {
 	if d.Broadcast {
 		return "broadcast"
+	}
+	if d.Src.IsValid() && !d.Src.IsUnspecified() {
+		return d.Src.String() + "->" + d.Addr.String()
 	}
 	return d.Addr.String()
 }

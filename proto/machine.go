@@ -123,6 +123,16 @@ func (m *Machine) stepStopped(now Instant, rnd uint64, ev Event, out *actions) {
 		m.beginAcquisition(now, rnd, out, true)
 	case EvStop:
 		out.journal(m, "already stopped")
+	case EvActionFailed:
+		// The action that fails here is the DHCPRELEASE: release() sends it
+		// and halts in the same step, so its failure arrives after the machine
+		// has already stopped. Journalled by name rather than folded into the
+		// default's "ignored", because RFC 2131 section 4.4.6 means the lease
+		// is given up whether or not the message left the host — so the ONLY
+		// place the server keeping a binding this client believes it released
+		// can be read is this line.
+		out.journal(m, fmt.Sprintf("%s failed (%s) after the machine stopped: the lease is given up locally, and the server may still hold the binding (RFC 2131 4.4.6)",
+			ev.Action, ev.Reason))
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in STOPPED", ev.Kind))
 	}
@@ -506,7 +516,16 @@ func (m *Machine) noteActionFailed(rnd uint64, ev Event, out *actions) {
 		out.failed(m, ReasonTransport, fmt.Sprintf("%d consecutive send failures: %s",
 			m.sendFailures, ev.Reason))
 		m.dropLease(out, ReasonTransport)
-		m.toInitIdle(out)
+		if m.state != StateInit {
+			// Parking is what INIT already is, and toInitIdle would also
+			// cancelAll — taking with it the restart wait armed by
+			// declineAndRestart, which is the ONE timer in INIT that nothing
+			// re-arms. A failed DHCPDECLINE send would then leave the machine
+			// in INIT with no lease, no timer and no event coming: the exact
+			// shape the restart wait exists to close.
+			// TestAFailedDeclineDoesNotCancelTheRestart.
+			m.toInitIdle(out)
+		}
 		return
 	}
 	switch m.state {
@@ -645,8 +664,10 @@ func (m *Machine) sendRelease(rnd uint64, out *actions) {
 	msg.Options[wire.OptServerID] = sv[:]
 	msg.Options[wire.OptMessage] = []byte(releaseMessage)
 	// RFC 2131 section 4.4.4: "The client unicasts DHCPRELEASE messages to the
-	// server."
-	out.send(m, msg, Dest{Addr: sid})
+	// server." Src is the released address: the datagram carries it in
+	// 'ciaddr' and must also come FROM it, or the server has no return path
+	// and ring 3 has nothing to build an IP header from.
+	out.send(m, msg, Dest{Addr: sid, Src: addr})
 }
 
 // The option 56 text of the two messages. Table 5 makes 'message' a SHOULD for

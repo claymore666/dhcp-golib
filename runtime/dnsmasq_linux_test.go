@@ -530,3 +530,169 @@ func (s *dnsmasqServer) waitFor(t *testing.T, want string) {
 	t.Fatalf("dnsmasq exited before logging a line containing %q.\nLog:\n%s",
 		want, strings.Join(s.lines(), "\n"))
 }
+
+// TestDeclineAndReleaseReachRealDnsmasq is the proof standard applied to the
+// two messages nothing answers.
+//
+// It is the only kind of evidence that means anything for these two. A
+// DHCPDECLINE and a DHCPRELEASE get no reply, are not retransmitted, and
+// change no state the client can read back — so a message that is malformed,
+// misaddressed, or never sent at all produces EXACTLY the observable
+// behaviour of a correct one. Every unit assertion about them is an assertion
+// about the library's own opinion. dnsmasq writing DHCPDECLINE and
+// DHCPRELEASE into its log is not.
+//
+// The DHCPRELEASE is the one that could not have worked before this test
+// existed: RFC 2131 section 4.4.4 unicasts it, and a unicast has to be
+// addressed at the link layer to a server this library never ARPs for. The
+// transport learns that address from the frame that carried the DHCPACK. If
+// that is wrong, the kernel on the other end drops the frame and dnsmasq
+// never sees it — which is why the log line, and not the client's counter, is
+// what this test reads.
+func TestDeclineAndReleaseReachRealDnsmasq(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		declineAndReleaseAgainstDnsmasq(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func declineAndReleaseAgainstDnsmasq(t *testing.T) {
+	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
+	mustRun(t, "ip", "addr", "add", testServerIP+"/24", "dev", testServerIf)
+	mustRun(t, "ip", "link", "set", testServerIf, "up")
+	mustRun(t, "ip", "link", "set", testClientIf, "up")
+
+	srv := startDnsmasq(t)
+
+	iface, err := net.InterfaceByName(testClientIf)
+	if err != nil {
+		t.Fatalf("InterfaceByName(%s): %v", testClientIf, err)
+	}
+	clientMAC := iface.HardwareAddr.String()
+
+	params := proto.DefaultParams(iface.HardwareAddr)
+	params.DesyncMin, params.DesyncMax = 0, 0
+	// The RFC minimum is ten seconds and this fixture waits one. It is the
+	// same trade the desync window above gets, for the same reason: the
+	// subject here is whether the two messages reach a real server, and ten
+	// seconds of nothing in the middle measures the timer instead. Ring 1 pins
+	// the default at the RFC floor separately, and refuses a negative, in
+	// TestRestartDelayMeetsTheRFCMinimum — this line cannot reach that.
+	params.RestartDelay = 1 * proto.Second
+	params.Hostname = "m2-client"
+
+	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- c.Run(ctx) }()
+
+	// ------------------------------------------------------ the DHCPDECLINE --
+	first := awaitAcquired(t, c)
+	declined := first.Lease.Addr.Addr().String()
+	t.Logf("acquired %s, declining it", declined)
+
+	c.ReportConflict()
+	if ev := awaitEvent(t, c, lease.Lost); ev.Reason != proto.ReasonConflict {
+		t.Fatalf("lease lost for %s, want conflict", ev.Reason)
+	}
+	mustHaveLeftTheHost(t, c, "DHCPDECLINE")
+	srv.waitFor(t, "DHCPDECLINE("+testServerIf+") "+declined)
+
+	// The restart, on the server's evidence rather than the client's: after
+	// section 3.1(5)'s wait the configuration process starts again, and
+	// dnsmasq hands out a DIFFERENT address because it has marked the declined
+	// one as in use. Both halves are the DECLINE having been understood.
+	second := awaitAcquired(t, c)
+	leased := second.Lease.Addr.Addr().String()
+	t.Logf("reacquired %s after the decline", leased)
+	if leased == declined {
+		t.Fatalf("the server handed back %s, the address this client had just declined", leased)
+	}
+
+	// ------------------------------------------------------ the DHCPRELEASE --
+	c.Release()
+	if ev := awaitEvent(t, c, lease.Lost); ev.Reason != proto.ReasonReleased {
+		t.Fatalf("lease lost for %s, want released", ev.Reason)
+	}
+	mustHaveLeftTheHost(t, c, "DHCPRELEASE")
+	srv.waitFor(t, "DHCPRELEASE("+testServerIf+") "+leased)
+
+	// Read back as a set, so the two lines are asserted against the same log
+	// and the failure message carries the whole of it.
+	want := []string{
+		"DHCPDECLINE(" + testServerIf + ") " + declined + " " + clientMAC,
+		"DHCPRELEASE(" + testServerIf + ") " + leased + " " + clientMAC,
+	}
+	log := srv.lines()
+	for _, w := range want {
+		if !containsLine(log, w) {
+			t.Fatalf("the server's log has no line containing %q.\nServer log:\n%s", w, strings.Join(log, "\n"))
+		}
+	}
+
+	cancel()
+	<-runErr
+
+	// The client's own counters, checked LAST and only against the log that
+	// has already been asserted: they are corroboration, never the evidence.
+	st := c.Stats()
+	if st.DeclinesSent != 1 || st.ReleasesSent != 1 {
+		t.Fatalf("stats = %+v, want one decline and one release", st)
+	}
+}
+
+// mustHaveLeftTheHost fails NOW if the transport refused the send, instead of
+// leaving the log assertion below to discover it by never being satisfied.
+//
+// It is not the evidence and does not replace it: the server's log line is
+// still what proves the message arrived, and this counter would say 1 for a
+// message that left correctly formed and was dropped on the way. What it
+// separates is the two failures — "the transport would not send it" from "the
+// server never saw it" — which are one 90-second hang apart otherwise.
+// MEASURED 2026-09-02 by reverting the transport's unicast path: without this
+// line the DHCPRELEASE half hangs into go test's timeout; with it the run
+// fails in four seconds naming the refusal.
+//
+// The ordering it depends on is exact rather than lucky: the machine emits the
+// send before it announces the loss, drain executes an action list in order,
+// and emit blocks until the caller takes the event. So a Lost in hand means
+// the Send call has already returned and its counter has already moved.
+func mustHaveLeftTheHost(t *testing.T, c *Client, what string) {
+	t.Helper()
+	st := c.Stats()
+	if st.SendFailures > 0 {
+		t.Fatalf("the %s was not transmitted: %d send failure(s) — the transport refused or could not send it. Stats: %+v",
+			what, st.SendFailures, st)
+	}
+}
+
+// awaitAcquired blocks until the client reports a lease.
+//
+// No duration appears here: an exchange that never completes hangs into go
+// test's own timeout, which is louder and more honest than a sleep that was
+// too short. See the head of this file.
+func awaitAcquired(t *testing.T, c *Client) lease.Event {
+	t.Helper()
+	return awaitEvent(t, c, lease.Acquired)
+}
+
+func awaitEvent(t *testing.T, c *Client, kind lease.EventKind) lease.Event {
+	t.Helper()
+	for ev := range c.Events() {
+		t.Logf("client event: %s", ev)
+		if ev.Kind == kind {
+			return ev
+		}
+		if ev.Kind == lease.Failed {
+			t.Fatalf("the client failed while waiting for %s: %s", kind, ev)
+		}
+	}
+	t.Fatalf("the event stream ended before %s arrived", kind)
+	return lease.Event{}
+}

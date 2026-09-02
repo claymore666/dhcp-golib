@@ -121,6 +121,15 @@ func (c *Client) Events() <-chan lease.Event { return c.mgr.Events() }
 // Lease returns a snapshot of the held lease.
 func (c *Client) Lease() (lease.Lease, bool) { return c.mgr.Lease() }
 
+// Release gives the lease back (RFC 2131 section 4.4.6). See Manager.Release
+// for what it does not promise.
+func (c *Client) Release() { c.mgr.Release() }
+
+// ReportConflict says the held address is in use, which obliges a DHCPDECLINE
+// (RFC 2131 section 3.1(5)). Nothing in this library detects that; see
+// Manager.ReportConflict.
+func (c *Client) ReportConflict() { c.mgr.ReportConflict() }
+
 // Stats returns the manager's counters.
 func (c *Client) Stats() lease.Stats { return c.mgr.Stats() }
 

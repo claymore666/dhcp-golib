@@ -49,13 +49,26 @@ func transportOnARealLink(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tr.Close() })
 
-	// A unicast destination is REFUSED, not quietly broadcast. Ring 1 does not
-	// produce one before RENEWING, so nothing else in the suite reaches this
-	// line; without it, a later milestone's first unicast would go to the
-	// broadcast address and appear to work.
-	err = tr.Send(proto.Dest{Addr: netip.MustParseAddr("192.168.99.1")}, []byte("unicast"))
-	if !errors.Is(err, ErrUnicastUnsupported) {
-		t.Fatalf("unicast send: err = %v, want %v", err, ErrUnicastUnsupported)
+	// The three ways a unicast is REFUSED rather than quietly broadcast.
+	// Broadcasting a DHCPRELEASE that names this client's binding, because its
+	// destination could not be addressed, would put it in front of every
+	// server on the link and would look exactly like success.
+	for _, c := range []struct {
+		what string
+		dst  proto.Dest
+		want error
+	}{
+		{"no destination", proto.Dest{Src: netip.MustParseAddr("192.168.99.100")}, ErrNotUnicast},
+		{"no source", proto.Dest{Addr: netip.MustParseAddr("192.168.99.1")}, ErrUnicastNoSource},
+		{"a peer never heard from", proto.Dest{
+			Addr: netip.MustParseAddr("192.168.99.7"),
+			Src:  netip.MustParseAddr("192.168.99.100"),
+		}, ErrUnicastUnresolved},
+	} {
+		err = tr.Send(c.dst, []byte("unicast"))
+		if !errors.Is(err, c.want) {
+			t.Fatalf("unicast with %s: err = %v, want %v", c.what, err, c.want)
+		}
 	}
 	if got := tr.Stats().Sends; got != 0 {
 		t.Fatalf("a refused send was counted: sends = %d", got)
@@ -66,7 +79,10 @@ func transportOnARealLink(t *testing.T) {
 		t.Fatalf("broadcast send: %v", err)
 	}
 
-	frame := awaitFrameToServerPort(t, peer)
+	frame, class := awaitFrameToServerPort(t, peer)
+	if class != syscall.PACKET_BROADCAST {
+		t.Fatalf("the broadcast arrived as packet class %d, want PACKET_BROADCAST (%d)", class, syscall.PACKET_BROADCAST)
+	}
 
 	// RFC 2131 section 4.1: source address 0, broadcast destination. RFC 919
 	// for the address itself. These are the fields a client with no address
@@ -150,6 +166,67 @@ func transportOnARealLink(t *testing.T) {
 	}
 	if st.Dropped != 0 {
 		t.Fatalf("dropped = %d, want 0: two frames do not fill the channel", st.Dropped)
+	}
+
+	// ------------------------------------------------- the unicast, driven --
+	//
+	// 192.168.99.1 has now been HEARD from — noChecksum above parsed as a
+	// datagram to the client port — so the destination this transport refused
+	// three assertions ago is now resolvable, with no ARP anywhere. That
+	// before-and-after is the whole of the no-ARP design: the only unicast RFC
+	// 2131 gives a client with a lease in hand is the DHCPRELEASE of section
+	// 4.4.4, addressed to the server that just answered it.
+	srvIface, err := net.InterfaceByName(testServerIf)
+	if err != nil {
+		t.Fatalf("%s: %v", testServerIf, err)
+	}
+	if hw, ok := tr.peerHardwareAddr(netip.MustParseAddr("192.168.99.1")); !ok {
+		t.Fatal("the transport did not learn the sender's hardware address from a frame it accepted")
+	} else if hw.String() != srvIface.HardwareAddr.String() {
+		t.Fatalf("learned hardware address %s, the sender's is %s", hw, srvIface.HardwareAddr)
+	}
+
+	const releasedFrom = "192.168.99.100"
+	uni := []byte("this stands in for a DHCPRELEASE")
+	if err := tr.Send(proto.Dest{
+		Addr: netip.MustParseAddr("192.168.99.1"),
+		Src:  netip.MustParseAddr(releasedFrom),
+	}, uni); err != nil {
+		t.Fatalf("unicast send to a peer that has been heard from: %v", err)
+	}
+
+	uframe, uclass := awaitFrameToServerPort(t, peer)
+	// The assertion that separates a unicast from a broadcast wearing unicast
+	// IP addresses. A frame sent to the broadcast MAC arrives here too, and
+	// every IP-level assertion below would pass on it.
+	if uclass != syscall.PACKET_HOST {
+		t.Fatalf("the unicast arrived as packet class %d, want PACKET_HOST (%d): it was not addressed to this host at the link layer",
+			uclass, syscall.PACKET_HOST)
+	}
+	if got := netip.AddrFrom4([4]byte(uframe[12:16])).String(); got != releasedFrom {
+		t.Fatalf("unicast source = %s, want %s: RFC 2131 section 4.4.4 sends the DHCPRELEASE from the released address", got, releasedFrom)
+	}
+	if got := netip.AddrFrom4([4]byte(uframe[16:20])).String(); got != "192.168.99.1" {
+		t.Fatalf("unicast destination = %s, want the server", got)
+	}
+	if got := uframe[8]; got != 64 {
+		t.Fatalf("unicast TTL = %d, want 64: only the link-local broadcast is capped at 1", got)
+	}
+	if got := checksum(uframe[:20]); got != 0 {
+		t.Fatalf("unicast IPv4 header checksum does not verify: %#04x", got)
+	}
+	var us4, ud4 [4]byte
+	copy(us4[:], uframe[12:16])
+	copy(ud4[:], uframe[16:20])
+	utotal := int(binary.BigEndian.Uint16(uframe[2:4]))
+	if got := udpChecksumVerify(us4, ud4, uframe[20:utotal]); got != 0 {
+		t.Fatalf("unicast UDP checksum does not verify: %#04x", got)
+	}
+	if got := uframe[28:utotal]; !bytes.Equal(got, uni) {
+		t.Fatalf("unicast payload = %q, want %q", got, uni)
+	}
+	if got := tr.Stats().Sends; got != 2 {
+		t.Fatalf("sends = %d, want the broadcast and the unicast", got)
 	}
 }
 
@@ -310,14 +387,24 @@ func peerSocket(t *testing.T, ifName string) int {
 }
 
 // awaitFrameToServerPort blocks until a UDP frame addressed to the server port
-// arrives. There is no deadline here on purpose: go test's own timeout is the
-// backstop, and a duration in this file would be a guess that either flakes or
-// hides a hang. See the T2 gate.
-func awaitFrameToServerPort(t *testing.T, fd int) []byte {
+// arrives, and returns it with the LINK-LAYER CLASS the kernel put it in.
+//
+// The class is the only thing on this socket that can tell a frame addressed
+// to this host from one addressed to the broadcast address or to somebody
+// else: SOCK_DGRAM strips the Ethernet header, so the destination MAC is not
+// in the bytes. recvfrom's sockaddr carries it as Pkttype — PACKET_HOST,
+// PACKET_BROADCAST or PACKET_OTHERHOST — and an AF_PACKET tap sees a frame
+// whatever its destination, so "it arrived" is not by itself evidence that it
+// was addressed correctly.
+//
+// There is no deadline here on purpose: go test's own timeout is the backstop,
+// and a duration in this file would be a guess that either flakes or hides a
+// hang. See the T2 gate.
+func awaitFrameToServerPort(t *testing.T, fd int) ([]byte, uint8) {
 	t.Helper()
 	buf := make([]byte, maxFrame)
 	for {
-		n, err := syscall.Read(fd, buf)
+		n, from, err := syscall.Recvfrom(fd, buf, 0)
 		if err != nil {
 			t.Fatalf("read on the witness socket: %v", err)
 		}
@@ -328,6 +415,10 @@ func awaitFrameToServerPort(t *testing.T, fd int) []byte {
 		if binary.BigEndian.Uint16(f[22:24]) != ServerPort {
 			continue
 		}
-		return append([]byte(nil), f...)
+		ll, ok := from.(*syscall.SockaddrLinklayer)
+		if !ok {
+			t.Fatalf("the witness socket returned a %T, not a link-layer address", from)
+		}
+		return append([]byte(nil), f...), ll.Pkttype
 	}
 }
