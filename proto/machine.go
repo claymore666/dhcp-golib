@@ -148,6 +148,8 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 		m.beginAcquisition(now, rnd, out, true)
 	case EvStop:
 		m.stop(out)
+	case EvRelease:
+		m.releaseBeforeBound(out)
 	case EvTimerFired:
 		switch ev.Timer {
 		case TimerDesync:
@@ -184,6 +186,8 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 	switch ev.Kind {
 	case EvStop:
 		m.stop(out)
+	case EvRelease:
+		m.releaseBeforeBound(out)
 	case EvReceived:
 		msg, ok := m.acceptable(ev.Msg, out)
 		if !ok {
@@ -242,6 +246,8 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 	switch ev.Kind {
 	case EvStop:
 		m.stop(out)
+	case EvRelease:
+		m.releaseBeforeBound(out)
 	case EvReceived:
 		msg, ok := m.acceptable(ev.Msg, out)
 		if !ok {
@@ -428,6 +434,37 @@ func (m *Machine) declineAndRestart(rnd uint64, out *actions) {
 // caller saying so a second time.
 func (m *Machine) release(rnd uint64, out *actions) {
 	m.sendRelease(rnd, out)
+	m.halt(out, ReasonReleased)
+}
+
+// releaseBeforeBound is EvRelease arriving in INIT, SELECTING or REQUESTING,
+// where no lease exists yet.
+//
+// It halts with ReasonReleased and sends NOTHING. There is nothing to
+// relinquish: RFC 2131 section 4.4.6 is about "its assigned network address"
+// and section 3.1(6) about "its lease on a network address", and this client
+// has neither. dropLease is guarded on a lease being held, so no ActLeaseLost
+// is stamped and the caller is not told it lost what it never had.
+//
+// Continuing was the alternative and it is the defect this replaces. The
+// caller had said it no longer wants an address; the machine went on to take
+// one anyway, and the only thing that could have released it had already been
+// told to stop.
+//
+// A LATE DHCPACK IS DISCARDED, NOT DECLINED OR RELEASED. Releasing from
+// REQUESTING leaves a DHCPREQUEST on the wire that a server may still answer,
+// binding an address this client will never use. Nothing here cleans that up,
+// and the RFC asks for nothing: section 4.4.1 says "Any arriving DHCPACK
+// messages must be silently discarded", which STOPPED does. DHCPDECLINE is
+// the answer to an address that "appears to be in use" (sections 3.1(5),
+// 4.4.4) — a different fact from an address not wanted. A DHCPRELEASE cannot
+// even be formed: section 4.4.4 unicasts it from the released address, and at
+// the halt no ACK has arrived, so there is no address to send from. The
+// binding lapses at its expiry, which section 4.4.6 anticipates in saying
+// "the correct operation of DHCP does not depend on the transmission of
+// DHCPRELEASE messages".
+func (m *Machine) releaseBeforeBound(out *actions) {
+	out.journal(m, "release with no lease held: stopping, nothing sent (RFC 2131 4.4.6)")
 	m.halt(out, ReasonReleased)
 }
 

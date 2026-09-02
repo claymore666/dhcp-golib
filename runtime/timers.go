@@ -11,9 +11,11 @@ import (
 // semantics.
 //
 // A table indexed by TimerID rather than a heap or a map, because
-// proto.AllTimerIDs is a closed set of three: that makes "Set on an armed
-// timer REPLACES it" a property of the data structure rather than a rule to
-// remember. A queue would let two fires for one id exist at once, and a
+// proto.AllTimerIDs is a CLOSED set: that makes "Set on an armed timer
+// REPLACES it" a property of the data structure rather than a rule to
+// remember. No count is written here or below — this said "three" until
+// TimerRestart made it four, and TestAllTimerIDsIsEveryDeclaredTimer is what
+// keeps the set closed now. A queue would let two fires for one id exist at once, and a
 // duplicated retransmit fire is a storm no ring-1 test could see.
 //
 // One goroutine owns every time.Timer, so a Cancel racing a fire resolves in
@@ -75,8 +77,8 @@ func (t *Timers) Set(id proto.TimerID, d proto.Duration) {
 }
 
 // Cancel disarms id. Cancelling an unarmed timer is not an error: ring 1
-// cancels all three timers on every acquisition restart without tracking which
-// are armed, and that is deliberate — the alternative is a second copy of the
+// cancels EVERY timer on every acquisition restart without tracking which are
+// armed, and that is deliberate — the alternative is a second copy of the
 // timer state living in the pure ring.
 func (t *Timers) Cancel(id proto.TimerID) {
 	if int(id) >= numTimers {

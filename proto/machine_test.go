@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -1552,12 +1553,32 @@ func TestReleaseWithNoLeaseSendsNothing(t *testing.T) {
 	for _, st := range []State{StateStopped, StateInit, StateSelecting, StateRequesting} {
 		t.Run(st.String(), func(t *testing.T) {
 			m := machineIn(t, st)
-			_, acts := m.Step(at(10), 1, Simple(EvRelease))
+			got, acts := m.Step(at(10), 1, Simple(EvRelease))
 			if _, ok := find(acts, ActSend); ok {
 				t.Fatalf("release in %s sent a message with no lease held: %v", st, RenderActions(acts))
 			}
 			if _, ok := find(acts, ActLeaseLost); ok {
 				t.Fatalf("release in %s announced a loss with no lease held: %v", st, RenderActions(acts))
+			}
+
+			// SENDING NOTHING IS HALF THE OBLIGATION. Until round 4 this test
+			// asserted only the half above, and EvRelease fell through the
+			// default in the three pre-BOUND states: the caller had given the
+			// address up and the machine carried on and took one anyway. What
+			// makes that a defect rather than a delay is the next assertion,
+			// not this one.
+			if got != StateStopped {
+				t.Fatalf("release in %s left the machine in %s, want STOPPED: the caller asked for no address and this one is still acquiring", st, got)
+			}
+			// Nothing re-armed. cancelAll's cancels are expected here; a SET
+			// would be an acquisition still in flight.
+			if a, ok := find(acts, ActSetTimer); ok {
+				t.Fatalf("release in %s armed %s, so the acquisition is still running: %v", st, a.Timer, RenderActions(acts))
+			}
+			// The preservation control, per state: STOPPED is parked, not
+			// dead, so the caller can still change its mind.
+			if resumed, _ := m.Step(at(11), 2, Simple(EvStart)); resumed != StateSelecting {
+				t.Fatalf("Start after a release in %s reached %s, want SELECTING", st, resumed)
 			}
 		})
 	}
@@ -1672,5 +1693,64 @@ func TestEveryPathToIdleCancelsEveryTimer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAllTimerIDsIsEveryDeclaredTimer closes the hand-list itself.
+//
+// AllTimerIDs is written out by hand and two things derive from it rather than
+// from the constants: cancelAll, so an id missing from the list is never
+// cancelled, and runtime's numTimers, so Timers.Set silently RETURNS for an id
+// past the end of the table. Dropping TimerRestart from the list survived the
+// whole of proto and lease; the only thing that caught it was the namespaced
+// dnsmasq test, by HANGING to go test's timeout.
+//
+// Every other test that ranges over AllTimerIDs — TestEveryPathToIdleCancelsEveryTimer
+// is the one that matters — takes the list as its domain, so shrinking the
+// list satisfies them instead of failing them. This test's domain is the
+// TimerID space, which is why it is the one that can see a member go missing.
+func TestAllTimerIDsIsEveryDeclaredTimer(t *testing.T) {
+	listed := map[TimerID]int{}
+	for _, id := range AllTimerIDs() {
+		listed[id]++
+	}
+
+	// A TimerID is DECLARED when String has a name for it; everything else
+	// falls back to timer(%d). That fallback is the only enumeration of the
+	// constants that exists at run time, so it is what the list is checked
+	// against — checking the list against itself is what let the gap open.
+	declared := map[TimerID]bool{}
+	for i := 0; i <= 255; i++ {
+		id := TimerID(i)
+		if id.String() != fmt.Sprintf("timer(%d)", i) {
+			declared[id] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("no TimerID has a name, so String's fallback would make any list correct and this test would assert nothing")
+	}
+
+	for id := range declared {
+		switch listed[id] {
+		case 1:
+		case 0:
+			t.Errorf("%s (TimerID %d) is declared and missing from AllTimerIDs: cancelAll will never cancel it and runtime's Timers.Set will silently drop it", id, uint8(id))
+		default:
+			t.Errorf("%s (TimerID %d) appears %d times in AllTimerIDs", id, uint8(id), listed[id])
+		}
+	}
+	for id := range listed {
+		if !declared[id] {
+			t.Errorf("AllTimerIDs contains TimerID %d, which String has no name for", uint8(id))
+		}
+	}
+
+	// DENSE FROM ZERO, which is a separate property from membership: runtime
+	// indexes a slice of len(AllTimerIDs()) BY the id, so a declared id at or
+	// above the count is dropped by a bounds check rather than reported.
+	for id := range declared {
+		if int(id) >= len(declared) {
+			t.Errorf("%s is TimerID %d with %d timers declared: runtime's timer table is indexed by id, so this one is out of range there", id, uint8(id), len(declared))
+		}
 	}
 }

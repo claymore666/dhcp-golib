@@ -90,7 +90,7 @@ func TestCancelDefeatsAnInFlightFire(t *testing.T) {
 }
 
 func TestCancelOfAnUnarmedTimerIsNotAnError(t *testing.T) {
-	// Ring 1 cancels all three timers on every acquisition restart without
+	// Ring 1 cancels every timer on every acquisition restart without
 	// tracking which are armed, deliberately: the alternative is a second copy
 	// of the timer state living in the pure ring.
 	tm := NewTimers()

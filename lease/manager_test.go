@@ -896,3 +896,114 @@ func TestManagerConcurrentRequestsAreSerialisedByTheLoop(t *testing.T) {
 		t.Fatalf("stats = %+v, want exactly one terminal message counted", s)
 	}
 }
+
+// TestReleaseDuringAcquisitionStopsTheClient is the window Release fell
+// through until round 4.
+//
+// EvRelease was handled only in BOUND. A caller that released while the client
+// was still acquiring got a journal line and nothing else: the machine went on
+// to take an address the caller had already given up, with nothing left that
+// would ever release it. Manager.Release's documented remedy — a Release that
+// produced no Lost was dropped, so call again — could not terminate either,
+// because the second call fell through the same default.
+//
+// The fixture holds SELECTING open rather than racing it: the server is deaf
+// to the FIRST DISCOVER only, so the machine sits on its retransmit timer, and
+// that timer is fired AFTER the release. Firing it is the point. Without it
+// this test could not tell a client that has stopped from one that is merely
+// between retransmissions, and "no acquisition follows" would be a claim about
+// timing rather than about state.
+func TestReleaseDuringAcquisitionStopsTheClient(t *testing.T) {
+	deafToTheFirstDiscover := func(req *wire.Message, n int) []*wire.Message {
+		if tp, ok := req.Type(); ok && tp == wire.MsgDiscover && n == 1 {
+			return nil
+		}
+		return answerNormally(req, n)
+	}
+	r := newRig(t, testParams(), deafToTheFirstDiscover, Fault{})
+
+	// In SELECTING with the window open: the DISCOVER is out and unanswered,
+	// and the retransmit is armed. A barrier, not a delay.
+	if !r.timers.waitArmed(proto.TimerRetransmit) {
+		t.Fatal("the retransmit timer was never armed, so the client never reached SELECTING and this test would measure nothing")
+	}
+
+	r.mgr.Release()
+	r.journal.waitAppended(t, "the release", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvRelease
+	})
+
+	rel := findEntry(t, r, "the release", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvRelease
+	})
+	if rel.From != proto.StateSelecting {
+		t.Fatalf("the release was seen in %s, not SELECTING: the fixture did not hold the window open", rel.From)
+	}
+	if rel.To != proto.StateStopped {
+		t.Fatalf("release in SELECTING left the machine in %s, want STOPPED — the caller gave the address up and this client is still acquiring", rel.To)
+	}
+
+	// Fire the retransmit the machine was sitting on. In SELECTING it sends a
+	// second DHCPDISCOVER; in STOPPED it must do nothing at all.
+	r.timers.fire(proto.TimerRetransmit)
+	r.journal.waitAppended(t, "the retransmit after the release", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvTimerFired && e.Timer == proto.TimerRetransmit && e.From == proto.StateStopped
+	})
+	fire := findEntry(t, r, "the retransmit after the release", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvTimerFired && e.Timer == proto.TimerRetransmit && e.From == proto.StateStopped
+	})
+	if fire.To != proto.StateStopped {
+		t.Fatalf("the retransmit moved the stopped machine to %s: the acquisition the caller released is running again", fire.To)
+	}
+
+	// Outside evidence for the same fact: what actually went on the wire.
+	// Exactly one DISCOVER, ever, and no DHCPRELEASE — there was no lease to
+	// give back, so a release message would name a binding this client never
+	// held.
+	var discovers, releases int
+	for _, c := range r.mgr.Packets() {
+		if c.Dir != DirOut || c.Msg == nil {
+			continue
+		}
+		switch tp, _ := c.Msg.Type(); tp {
+		case wire.MsgDiscover:
+			discovers++
+		case wire.MsgRelease:
+			releases++
+		}
+	}
+	if discovers != 1 {
+		t.Errorf("%d DHCPDISCOVERs went out, want 1: the client kept acquiring after it was released", discovers)
+	}
+	if releases != 0 {
+		t.Errorf("%d DHCPRELEASEs went out, want 0: nothing was leased, so there is no binding to relinquish", releases)
+	}
+
+	// No Lost, and no Acquired. STOPPED is only left on EvStart, so after the
+	// barrier above nothing more can be emitted and this read is not a race.
+	for {
+		select {
+		case ev, ok := <-r.mgr.Events():
+			if !ok {
+				return
+			}
+			t.Fatalf("the client emitted %s after a release that held no lease: Lost is the confirmation a lease was given back, so it must not arrive when there was none", ev)
+		default:
+			return
+		}
+	}
+}
+
+// findEntry returns the first journalled Step satisfying want. It reads the
+// recorder's snapshot, so it must follow a waitAppended for the same predicate
+// rather than replace one: the barrier is what makes the entry present.
+func findEntry(t *testing.T, r *rig, what string, want func(proto.JournalEntry) bool) proto.JournalEntry {
+	t.Helper()
+	for _, e := range r.mgr.Journal() {
+		if want(e) {
+			return e
+		}
+	}
+	t.Fatalf("no journal entry for %s", what)
+	return proto.JournalEntry{}
+}
