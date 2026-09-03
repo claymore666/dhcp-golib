@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/netip"
 	"os"
@@ -242,6 +243,29 @@ func TestAnUnreadableInteriorLineIsCountedApart(t *testing.T) {
 	if evs, blank := parseRecordLines([]byte("\n\n")); len(evs) != 0 || blank.Any() {
 		t.Fatalf("blank lines were counted as damage: %d event(s), %s", len(evs), blank)
 	}
+
+	// THE LAST LINE OF A COMPLETE FILE. A broken line in the final position of
+	// a file that ends in a newline is still not a crash: the writer got the
+	// newline out after it. Only the absence of that newline makes a fragment,
+	// and a check that keys on the position alone cannot tell the two apart.
+	closed := append(append([]byte(nil), good...), '\n')
+	closed = append(closed, []byte("{\"id\":\"rec-1\",\n")...)
+	evs, damage = parseRecordLines(closed)
+	if damage.Skipped != 1 || damage.TornTail != 0 {
+		t.Fatalf("damage = %s on a broken LAST line of a newline-terminated file, want 1 skipped and no torn tail", damage)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("%d event(s) survived, want the 1 good one", len(evs))
+	}
+
+	// And the same bytes WITHOUT that final newline are the fragment.
+	evs, damage = parseRecordLines(closed[:len(closed)-1])
+	if damage.TornTail != 1 || damage.Skipped != 0 {
+		t.Fatalf("damage = %s on the same file with its last newline missing, want 1 torn tail and nothing skipped", damage)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("%d event(s) survived the torn tail, want the 1 good one", len(evs))
+	}
 }
 
 // TestTwoWritersAppendWholeLines is note row D-9: an old plugin process and a
@@ -380,5 +404,130 @@ func TestAppendRefusesAnEventItCannotWriteAsOneLine(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("a second Close returned %v", err)
+	}
+}
+
+// TestTheSyncPolicyIsAppliedToEveryAppend is the CALL SITE of durableWrite.
+//
+// TestTheSyncPolicyIsClassifiedForEveryOperation pins the policy as a
+// function, which a call site wired to a constant satisfies just as well. An
+// fsync leaves no trace a same-process test can read, so the only way to see
+// which appends took one is to stand in for it.
+func TestTheSyncPolicyIsAppliedToEveryAppend(t *testing.T) {
+	var synced []lease.RecordEvent
+	failNext := false
+	real := syncRecordFile
+	syncRecordFile = func(f *os.File) error {
+		if failNext {
+			return os.ErrClosed
+		}
+		synced = append(synced, lease.RecordEvent{})
+		return real(f)
+	}
+	t.Cleanup(func() { syncRecordFile = real })
+
+	type appended struct {
+		ev   lease.RecordEvent
+		want bool
+	}
+	var plan []appended
+	seq := uint64(0)
+	add := func(op lease.RecordOp, kind lease.EventKind) {
+		seq++
+		ev := lease.RecordEvent{ID: "rec-1", Seq: seq, Op: op, Kind: kind}
+		plan = append(plan, appended{ev: ev, want: durableWrite(ev)})
+	}
+	for _, op := range lease.AllOps() {
+		add(op, 0)
+	}
+	// OpLease is the one op whose answer depends on the event it carries, so
+	// every kind of it is appended, not just the zero one.
+	for _, k := range []lease.EventKind{lease.Acquired, lease.Renewed, lease.Failed, lease.Lost} {
+		add(lease.OpLease, k)
+	}
+
+	path := filepath.Join(t.TempDir(), "records.jsonl")
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	wantSyncs := 0
+	for _, p := range plan {
+		before := len(synced)
+		if err := s.Append(p.ev); err != nil {
+			t.Fatalf("Append(%s/%s): %v", p.ev.Op, p.ev.Kind, err)
+		}
+		got := len(synced) > before
+		if got != p.want {
+			t.Errorf("%s/%s: synced = %v, durableWrite says %v", p.ev.Op, p.ev.Kind, got, p.want)
+		}
+		if p.want {
+			wantSyncs++
+		}
+	}
+	if wantSyncs == 0 || wantSyncs == len(plan) {
+		t.Fatalf("%d of %d appends were durable: a policy that answers the same for everything makes this test blind",
+			wantSyncs, len(plan))
+	}
+
+	// A failed fsync is a failed Append: a caller told the line is on disk
+	// when it is not is the whole reason the policy exists.
+	failNext = true
+	if err := s.Append(lease.RecordEvent{ID: "rec-1", Seq: seq + 1, Op: lease.OpCreate}); err == nil {
+		t.Error("Append returned nil after its fsync failed")
+	}
+}
+
+// TestNoFieldOfARecordEventCanEncodeToARawNewline is the reason Append's
+// newline check has never fired: encoding/json escapes a newline wherever one
+// can appear. The check stays, because the failure it guards — one event split
+// across two lines, every later line unreadable — is not recoverable, and the
+// property it rests on belongs to a package this one does not own.
+func TestNoFieldOfARecordEventCanEncodeToARawNewline(t *testing.T) {
+	const nl = "one\ntwo"
+	ev := lease.RecordEvent{
+		ID: nl, Op: lease.OpCreate, Seq: 1,
+		Instance: nl, Scope: nl, StepsRef: nl, Note: nl,
+		CHAddr: []byte(nl), Identity: []byte(nl),
+		Extra: map[string]uint64{nl: 1},
+	}
+	p := proto.DefaultParams([]byte(nl))
+	p.Hostname = nl
+	p.ClientID = []byte(nl)
+	ev.Params = &p
+
+	// Every string-shaped field of the event is set, so a field added later
+	// without a value here is a gap this test can name.
+	rv := reflect.ValueOf(ev)
+	rt := rv.Type()
+	for i := range rt.NumField() {
+		f := rv.Field(i)
+		switch f.Kind() {
+		case reflect.String:
+			if f.String() == "" {
+				t.Errorf("%s is a string field this test leaves empty, so it drives no newline through it", rt.Field(i).Name)
+			}
+		case reflect.Slice:
+			if f.Type().Elem().Kind() == reflect.Uint8 && f.Len() == 0 {
+				t.Errorf("%s is a byte field this test leaves empty", rt.Field(i).Name)
+			}
+		}
+	}
+
+	line, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		t.Fatalf("the encoded event carries a raw newline at offset %d: %s", i, line)
+	}
+	var back lease.RecordEvent
+	if err := json.Unmarshal(line, &back); err != nil {
+		t.Fatalf("the escaped form does not round trip: %v", err)
+	}
+	if back.Note != nl || string(back.CHAddr) != nl {
+		t.Fatalf("the newline did not survive escaping: note %q, chaddr %q", back.Note, back.CHAddr)
 	}
 }

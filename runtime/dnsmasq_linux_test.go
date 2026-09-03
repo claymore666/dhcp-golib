@@ -415,6 +415,16 @@ type dnsmasqServer struct {
 	cmd  *exec.Cmd
 	once sync.Once
 
+	// leasefile is the path dnsmasq keeps its own record of what it handed
+	// out. It is the outside evidence a rebuilt journal is checked against:
+	// the client's account of its lease is the client's opinion, and the
+	// server's file is not.
+	leasefile string
+
+	// iface is the link dnsmasq serves on, so a test that builds a different
+	// topology can read its own log lines back.
+	iface string
+
 	mu  sync.Mutex
 	buf []string
 
@@ -442,6 +452,8 @@ func (s *dnsmasqServer) count(want string) int {
 type dnsmasqConfig struct {
 	// rangeLo and rangeHi default to testRangeLo and testRangeHi.
 	rangeLo, rangeHi string
+	// iface is the link to serve on. Empty means testServerIf.
+	iface string
 	// extra is appended to the command line.
 	extra []string
 }
@@ -457,12 +469,16 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 	if cfg.rangeLo == "" {
 		cfg.rangeLo, cfg.rangeHi = testRangeLo, testRangeHi
 	}
+	if cfg.iface == "" {
+		cfg.iface = testServerIf
+	}
 
 	bin, err := findDnsmasq()
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	dir := t.TempDir()
+	leasefile := filepath.Join(dir, "leases")
 
 	cmd := exec.Command(bin,
 		"--conf-file=/dev/null",
@@ -483,7 +499,7 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 		"--log-facility=-",
 		"--log-dhcp",
 		"--port=0", // DNS off: this test is about DHCP.
-		"--interface="+testServerIf,
+		"--interface="+cfg.iface,
 		"--bind-interfaces",
 		"--except-interface=lo",
 		"--dhcp-range="+cfg.rangeLo+","+cfg.rangeHi+","+testSubnet+","+fmt.Sprint(testLeaseSec),
@@ -492,7 +508,7 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 		"--dhcp-option=15,"+testDomain,
 		"--dhcp-option=26,"+fmt.Sprint(testMTU),
 		"--dhcp-authoritative",
-		"--dhcp-leasefile="+filepath.Join(dir, "leases"),
+		"--dhcp-leasefile="+leasefile,
 		"--pid-file="+filepath.Join(dir, "pid"),
 		"--no-resolv",
 		"--no-hosts",
@@ -522,7 +538,7 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 		t.Fatalf("starting dnsmasq: %v", err)
 	}
 
-	s := &dnsmasqServer{cmd: cmd, arrived: make(chan string, 256)}
+	s := &dnsmasqServer{cmd: cmd, arrived: make(chan string, 256), leasefile: leasefile, iface: cfg.iface}
 	go s.read(stderr)
 
 	t.Cleanup(func() {

@@ -3,6 +3,7 @@ package lease
 import (
 	"errors"
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 
@@ -52,10 +53,49 @@ func TestIdentityIsWrittenOnceAndSurvivesARebind(t *testing.T) {
 	}
 
 	// Written ONCE: a second, different identity is refused rather than
-	// overwritten, whichever op carries it.
-	for _, op := range []RecordOp{OpBind, OpLease, OpRetain} {
-		if _, err := Fold(rebound, RecordEvent{ID: "rec-1", Seq: rebound.Seq + 1, Op: op, Identity: []byte{0x00}}); err == nil {
-			t.Errorf("a second, different identity was accepted on %s", op)
+	// overwritten, whichever op carries it — including the re-bind, which is
+	// the op that legitimately changes the hardware address and is therefore
+	// the one an overwrite would hide behind. The record must come back
+	// untouched, not merely with its identity intact: a refusal that applied
+	// half of its event would be invisible to a check on Identity alone.
+	//
+	// The second identity is offered in two shapes. A SAME-LENGTH one is the
+	// shape that matters: a refusal that compared lengths, or any prefix of
+	// the bytes, would pass every different-length row and let the one
+	// identifier the record is keyed on change under it.
+	sameLen := append([]byte(nil), testIdentity...)
+	sameLen[len(sameLen)-1] ^= 0xff
+	if len(sameLen) != len(testIdentity) || bytesEqual(sameLen, testIdentity) {
+		t.Fatal("the same-length identity is not a different identity of the same length")
+	}
+	tomb := recordAt(t, PhaseRetained)
+	for _, tc := range []struct {
+		op    RecordOp
+		from  Record
+		other []byte
+	}{
+		{OpRebind, tomb, sameLen},
+		{OpRebind, tomb, []byte{0x00}},
+		{OpBind, rebound, sameLen},
+		{OpBind, rebound, []byte{0x00}},
+		{OpLease, rebound, sameLen},
+		{OpRetain, rebound, sameLen},
+		{OpClose, rebound, sameLen},
+	} {
+		got, err := Fold(tc.from, RecordEvent{
+			ID: "rec-1", Seq: tc.from.Seq + 1, Op: tc.op,
+			CHAddr: testMAC2, Identity: tc.other,
+		})
+		var rej *Reject
+		if !errors.As(err, &rej) || rej.Reason != RejectIdentity {
+			t.Errorf("a second identity %x on %s gave %v, want a RejectIdentity", tc.other, tc.op, err)
+			continue
+		}
+		want := tc.from
+		want.Counters.Rejects++
+		want.LastReject = rej.Reason
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s with %x: the refused event moved the record: got %+v, want the input plus its reject count", tc.op, tc.other, got)
 		}
 	}
 	// And the same bytes again are not a rewrite.

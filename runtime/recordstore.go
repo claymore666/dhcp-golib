@@ -101,12 +101,19 @@ func (s *RecordStore) Append(ev lease.RecordEvent) error {
 		return fmt.Errorf("runtime: appending to %s: %w", s.path, err)
 	}
 	if durableWrite(ev) {
-		if err := s.f.Sync(); err != nil {
+		if err := syncRecordFile(s.f); err != nil {
 			return fmt.Errorf("runtime: syncing %s: %w", s.path, err)
 		}
 	}
 	return nil
 }
+
+// syncRecordFile is the fsync itself, indirected for ONE reason: an fsync has
+// no effect a same-process test can observe, so without this the policy below
+// can be pinned exhaustively while the line that consults it is wired to
+// nothing. TestTheSyncPolicyIsAppliedToEveryAppend swaps it and reads back
+// which events were synced.
+var syncRecordFile = (*os.File).Sync
 
 // durableWrite decides whether this event is fsynced.
 //
@@ -182,12 +189,14 @@ func parseRecordLines(b []byte) ([]lease.RecordEvent, RecordStoreDamage) {
 	if len(b) == 0 {
 		return nil, damage
 	}
-	tail := !bytes.HasSuffix(b, []byte("\n"))
 	lines := bytes.Split(b, []byte("\n"))
-	// A file ending in a newline splits with an empty final element, which is
-	// not a line.
-	if !tail {
-		lines = lines[:len(lines)-1]
+	// tailIdx is the ONLY carrier of "which line is the fragment", and it
+	// names no line at all when the file ends in a newline: there is then
+	// nothing half-written, and the empty final element Split leaves is
+	// skipped below like any other blank.
+	tailIdx := -1
+	if !bytes.HasSuffix(b, []byte("\n")) {
+		tailIdx = len(lines) - 1
 	}
 	for i, line := range lines {
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -195,7 +204,7 @@ func parseRecordLines(b []byte) ([]lease.RecordEvent, RecordStoreDamage) {
 		}
 		var ev lease.RecordEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
-			if tail && i == len(lines)-1 {
+			if i == tailIdx {
 				damage.TornTail++
 			} else {
 				damage.Skipped++

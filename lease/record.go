@@ -572,8 +572,11 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		return reject(RejectSeq, fmt.Sprintf("seq %d does not advance past %d", ev.Seq, rec.Seq))
 	}
 
-	// Written once. An identity that changes is the one defect a record exists
-	// to make impossible, so it is refused rather than overwritten.
+	// Written once, and this refusal is the ONLY thing that makes it so: the
+	// assignment below is unconditional, because a second guard there could
+	// only ever restate this one and would be untestable while it held.
+	// An identity that changes is the defect a record exists to make
+	// impossible, so it is refused rather than quietly overwritten.
 	if len(ev.Identity) > 0 && len(rec.Identity) > 0 && !bytesEqual(ev.Identity, rec.Identity) {
 		return reject(RejectIdentity, "the identity is written once and is already set")
 	}
@@ -670,7 +673,7 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 	if len(ev.CHAddr) > 0 {
 		next.CHAddr = append([]byte(nil), ev.CHAddr...)
 	}
-	if len(ev.Identity) > 0 && len(next.Identity) == 0 {
+	if len(ev.Identity) > 0 {
 		next.Identity = append([]byte(nil), ev.Identity...)
 	}
 	if ev.Params != nil {
