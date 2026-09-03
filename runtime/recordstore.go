@@ -56,9 +56,10 @@ type RecordStore struct {
 // is not a newline would take this process's first event onto the previous
 // process's half-written one and lose both. That first event is the restart
 // path's adopt — an event durableWrite fsyncs precisely because nothing can
-// re-derive it — so the newline goes in at open, and the fragment is counted
-// as damage at that moment: Damage and the next Load then report the SAME line
-// the same way, instead of one number standing for two lost events.
+// re-derive it — so the newline goes in at open, and what it cost is counted
+// at that moment by the same parse a Load uses, instead of one number standing
+// for two lost events. Append re-checks before every write: this covers only
+// the fragment that was on disk when the process started.
 //
 // ORDER, and the reason for it. The terminator is written AND FSYNCED before
 // any Append, not left to the first durable Append's fsync to carry. Two
@@ -71,11 +72,15 @@ type RecordStore struct {
 // is the same: make the file findable and consistent BEFORE the first event
 // depends on it.
 //
-// A second, live writer is not a hazard here. Append writes a whole line in
-// one call, so a file that does not end in a newline while another writer is
-// between calls is a file that writer died inside; and if one does append
-// between the read below and the write, O_APPEND puts the terminator after its
-// line, where it is a blank line — skipped, and not counted as damage.
+// A SECOND, LIVE WRITER IS A HAZARD, and this path alone does not close it.
+// Append writes a whole line in one call, so a file that does not end in a
+// newline while another writer is between calls is a file that writer died
+// inside — but that writer can die at any moment, including while THIS store
+// is open and past this function. Append re-checks for exactly that reason;
+// what follows here only covers the fragment that was already on disk when
+// this process started. If another writer does append between the read below
+// and the write, O_APPEND puts the terminator after its line, where it is a
+// blank line — skipped, and not counted as damage.
 func OpenRecordStore(path string) (*RecordStore, error) {
 	created := true
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -100,7 +105,12 @@ func OpenRecordStore(path string) (*RecordStore, error) {
 		return nil, fmt.Errorf("runtime: reading the end of %s: %w", path, err)
 	}
 	if fragment {
-		if _, err := f.Write([]byte("\n")); err != nil {
+		d, err := damageOnceTerminated(path)
+		if err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("runtime: reading %s to count what the fragment costs: %w", path, err)
+		}
+		if _, err := writeRecordLine(f, []byte("\n")); err != nil {
 			_ = f.Close()
 			return nil, fmt.Errorf("runtime: terminating the fragment at the end of %s: %w", path, err)
 		}
@@ -108,9 +118,30 @@ func OpenRecordStore(path string) (*RecordStore, error) {
 			_ = f.Close()
 			return nil, fmt.Errorf("runtime: syncing the terminated fragment in %s: %w", path, err)
 		}
-		s.torn = lease.StoreDamage{Skipped: 1}
+		s.torn = d
 	}
 	return s, nil
+}
+
+// damageOnceTerminated is what a Load will report about this file after the
+// terminator goes in, derived by running Load's own parse over the bytes plus
+// that newline.
+//
+// It exists so the repair paths do not COUNT for themselves. A repair that
+// wrote its own number is a second derivation of one fact, and the two answers
+// disagreed: a tail that is a whole event whose newline alone was lost is not
+// damage — parseRecordLines keeps it on purpose — yet the open counted it as a
+// skipped line, so Damage said 1 and the Load right after it said 0.
+//
+// The full read is paid only on a path that follows a crash or a failed write,
+// and it is the same read Load does.
+func damageOnceTerminated(path string) (lease.StoreDamage, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return lease.StoreDamage{}, err
+	}
+	_, d := parseRecordLines(append(b, '\n'))
+	return d, nil
 }
 
 // endsMidLine reports whether the file's LAST BYTE is something other than a
@@ -171,6 +202,30 @@ func (s *RecordStore) Close() error {
 // renewal line costs an INIT-REBOOT that asks for an address the record already
 // held, which the server answers; a lost creation line costs the identity, and
 // nothing can answer that.
+//
+// THE FILE IS CHECKED FOR A FRAGMENT BEFORE EVERY WRITE, not only when the
+// store was opened. O_APPEND writes at the end of the FILE, so an event that
+// follows a half-written line joins it and both are lost — and a fragment can
+// appear at any moment while this store is open, by two routes that no state
+// kept in this process can see:
+//
+//   - this store's own Write returned short. RLIMIT_FSIZE reaches it in a
+//     test; ENOSPC and EIO reach it in the field, on a journal this package
+//     ships without rotation. The error is returned, the partial bytes stay on
+//     disk, and the store stays open and usable.
+//   - another process on the same file died inside ITS Append. That is defeat
+//     row D-9, and it is why a flag set by our own failed write is not enough:
+//     the fragment is not ours.
+//
+// So the check is a read of the file's last byte, per Append. It is two
+// syscalls on a log that records lease transitions, not packets, and it is the
+// only construction that covers a writer this process never hears about.
+//
+// THE TERMINATOR RIDES IN THE SAME WRITE as the event. That keeps the one
+// property another writer depends on — one line, one write, so two writers
+// interleave as whole lines — and it removes the ordering question the open
+// path has to answer with an fsync: there is no "before" between a newline and
+// an event written in one call.
 func (s *RecordStore) Append(ev lease.RecordEvent) error {
 	line, err := json.Marshal(ev)
 	if err != nil {
@@ -186,7 +241,19 @@ func (s *RecordStore) Append(ev lease.RecordEvent) error {
 	if s.f == nil {
 		return fmt.Errorf("runtime: lease record store %s is closed", s.path)
 	}
-	if _, err := s.f.Write(line); err != nil {
+	fragment, err := endsMidLine(s.path)
+	if err != nil {
+		return fmt.Errorf("runtime: reading the end of %s before appending: %w", s.path, err)
+	}
+	if fragment {
+		d, err := damageOnceTerminated(s.path)
+		if err != nil {
+			return fmt.Errorf("runtime: reading %s to count what the fragment costs: %w", s.path, err)
+		}
+		line = append([]byte{'\n'}, line...)
+		s.torn = d
+	}
+	if _, err := writeRecordLine(s.f, line); err != nil {
 		return fmt.Errorf("runtime: appending to %s: %w", s.path, err)
 	}
 	if durableWrite(ev) {
@@ -203,6 +270,14 @@ func (s *RecordStore) Append(ev lease.RecordEvent) error {
 // nothing. TestTheSyncPolicyIsAppliedToEveryAppend swaps it and reads back
 // which events were synced.
 var syncRecordFile = (*os.File).Sync
+
+// writeRecordLine is the write itself, indirected for the same reason
+// syncRecordFile is. "One line, one write" is a property of HOW MANY TIMES
+// this is called, and the file that results is byte-for-byte identical whether
+// a repaired append took one call or two — so without this the property another
+// writer on the same file depends on can be given up with nothing going red.
+// TestARepairedAppendIsStillOneWrite counts the calls.
+var writeRecordLine = (*os.File).Write
 
 // durableWrite decides whether this event is fsynced.
 //
@@ -245,17 +320,24 @@ func (s *RecordStore) Load() ([]lease.RecordEvent, error) {
 	return evs, nil
 }
 
-// Damage reports the lines this store could not read: what the last Load
-// skipped, or — before any Load — the fragment the open had to terminate.
+// Damage reports the damaged lines this store knows about.
 //
 // It is a COUNT and not a log line: a store that quietly drops a record is the
 // failure this exists against, and a number nobody reads is the same failure
 // with extra steps.
 //
-// The two sources agree rather than accumulate. A fragment terminated at open
-// is one Skipped line, and the next Load reads that same line and counts it the
-// same way, so the number does not move when a Load happens; a Load REPLACES
-// the count rather than adding to it, because it re-reads the whole file.
+// IT IS NOT A SURVEY, and that is the whole of the contract. A Load reads the
+// file and REPLACES the count with what the file holds. Before any Load the
+// number is what this store had to REPAIR — at open, or in an Append that
+// found a fragment under it — and nothing else: a file whose damage this store
+// never had to touch reads 0 until a Load, because reading a journal on every
+// process start is what the one-byte check at open exists to avoid.
+//
+// Where it does report a repair, the number is exactly what the next Load will
+// report, because both come from parseRecordLines over the same bytes
+// (damageOnceTerminated). That is a derivation and not a promise:
+// TestDamageAfterARepairIsWhatTheNextLoadReports drives every torn shape
+// through both.
 func (s *RecordStore) Damage() lease.StoreDamage {
 	s.mu.Lock()
 	defer s.mu.Unlock()

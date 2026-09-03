@@ -129,9 +129,20 @@ type PacketRing interface {
 // not on one implementation: a caller holding a Store could otherwise be told
 // "here is every event" by a store that had just dropped one, and would have
 // no way to ask.
+//
+// AN IMPLEMENTATION MAY NOT CREATE DAMAGE. Skipping a fragment somebody else
+// left is allowed; appending onto one is not. A store that writes an event
+// after a half-written line destroys BOTH — the fragment and the event it was
+// just handed — and the count then names one line for two losses, which is the
+// count lying rather than reporting. The fragment can arrive at any time: from
+// this store's own short write, or from another process on the same file that
+// died inside its Append. An implementation that appends to a shared file
+// therefore has to check the file, not its own memory of what it wrote.
 type Store interface {
 	// Append writes one event. It must be atomic against a concurrent Append
-	// from another process on the same file: one line, one write.
+	// from another process on the same file: one line, one write. An
+	// implementation repairing a fragment ahead of the event puts the repair
+	// in that same write, so the guarantee holds for a repaired append too.
 	Append(RecordEvent) error
 	// Load returns every event, in append order.
 	Load() ([]RecordEvent, error)
