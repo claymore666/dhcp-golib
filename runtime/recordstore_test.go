@@ -43,7 +43,7 @@ func storeFixtureEvents(t *testing.T) []lease.RecordEvent {
 			Family: lease.FamilyV4, CHAddr: []byte{0x02, 0, 0, 0, 0, 1}, Identity: []byte{0xff, 0xde, 0xad, 0xbe, 0xef}, Params: &p},
 		{ID: "rec-1", Seq: 2, At: at, Instance: "p1", Op: lease.OpBind},
 		{ID: "rec-1", Seq: 3, At: at, Instance: "p1", Op: lease.OpLease, Kind: lease.Acquired, Lease: &l},
-		{ID: "rec-1", Seq: 4, At: at, Instance: "p1", Op: lease.OpStats, Stats: &lease.Stats{Sent: 2, Received: 2, Steps: 9}},
+		{ID: "rec-1", Seq: 4, At: at, Instance: "p1", Manager: "mgr-1", Op: lease.OpStats, Stats: &lease.Stats{Sent: 2, Received: 2, Steps: 9}},
 		{ID: "rec-1", Seq: 5, At: at, Instance: "p1", Op: lease.OpLost, Reason: proto.ReasonStopped},
 	}
 }
@@ -414,14 +414,14 @@ func TestAppendRefusesAnEventItCannotWriteAsOneLine(t *testing.T) {
 // fsync leaves no trace a same-process test can read, so the only way to see
 // which appends took one is to stand in for it.
 func TestTheSyncPolicyIsAppliedToEveryAppend(t *testing.T) {
-	var synced []lease.RecordEvent
+	var synced []string
 	failNext := false
 	real := syncRecordFile
 	syncRecordFile = func(f *os.File) error {
 		if failNext {
 			return os.ErrClosed
 		}
-		synced = append(synced, lease.RecordEvent{})
+		synced = append(synced, f.Name())
 		return real(f)
 	}
 	t.Cleanup(func() { syncRecordFile = real })
@@ -489,7 +489,7 @@ func TestNoFieldOfARecordEventCanEncodeToARawNewline(t *testing.T) {
 	const nl = "one\ntwo"
 	ev := lease.RecordEvent{
 		ID: nl, Op: lease.OpCreate, Seq: 1,
-		Instance: nl, Scope: nl, StepsRef: nl, Note: nl,
+		Instance: nl, Manager: nl, Scope: nl, StepsRef: nl, Note: nl,
 		CHAddr: []byte(nl), Identity: []byte(nl),
 		Extra: map[string]uint64{nl: 1},
 	}
@@ -529,5 +529,134 @@ func TestNoFieldOfARecordEventCanEncodeToARawNewline(t *testing.T) {
 	}
 	if back.Note != nl || string(back.CHAddr) != nl {
 		t.Fatalf("the newline did not survive escaping: note %q, chaddr %q", back.Note, back.CHAddr)
+	}
+}
+
+// TestANewStoresDirectoryIsMadeDurable is the other fsync, and it is not the
+// one Append does.
+//
+// Syncing a file makes its CONTENTS durable and says nothing about the
+// directory entry that names it. A machine that lost power right after the
+// first creating event could otherwise come back with that event synced and no
+// file to find it in — losing exactly the line the sync policy says nothing can
+// re-derive.
+func TestANewStoresDirectoryIsMadeDurable(t *testing.T) {
+	var synced []string
+	failDirs := false
+	real := syncRecordFile
+	syncRecordFile = func(f *os.File) error {
+		st, err := f.Stat()
+		if err == nil && st.IsDir() && failDirs {
+			return os.ErrPermission
+		}
+		synced = append(synced, f.Name())
+		return real(f)
+	}
+	t.Cleanup(func() { syncRecordFile = real })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "records.jsonl")
+
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore on a fresh file: %v", err)
+	}
+	if len(synced) != 1 || synced[0] != dir {
+		t.Fatalf("creating the store synced %v, want exactly the containing directory %s", synced, dir)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Opening one that already exists syncs NOTHING: the entry is already
+	// durable, and paying for an fsync on every process start would be a cost
+	// with no failure behind it.
+	synced = nil
+	s, err = OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore on an existing file: %v", err)
+	}
+	if len(synced) != 0 {
+		t.Errorf("re-opening an existing store synced %v, want nothing", synced)
+	}
+	// It is the same file, not a truncated one: a create-detection that opened
+	// with O_TRUNC would pass every assertion above and lose the journal.
+	if err := s.Append(lease.RecordEvent{ID: "rec-1", Seq: 1, Op: lease.OpCreate}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s, err = OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore, third time: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	evs, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("%d event(s) survived re-opening the store, want 1", len(evs))
+	}
+
+	// A directory that cannot be synced fails the OPEN. A store that reported
+	// success here would have promised a durability it did not get.
+	failDirs = true
+	other := filepath.Join(t.TempDir(), "records.jsonl")
+	if got, err := OpenRecordStore(other); err == nil {
+		_ = got.Close()
+		t.Error("OpenRecordStore succeeded although the directory sync failed")
+	}
+}
+
+// TestTheDamageCountIsReadableThroughThePort is finding 5 of review round 1.
+//
+// A caller holding a lease.Store could be handed "every event" by a store that
+// had just dropped one and, with Append and Load alone, had no way to ask. The
+// count is on the PORT for that reason, and this test reads it there — through
+// the interface, not through *RecordStore — so an implementation that answered
+// only on its concrete type would not satisfy it.
+func TestTheDamageCountIsReadableThroughThePort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "records.jsonl")
+	good, err := json.Marshal(lease.RecordEvent{ID: "rec-1", Seq: 1, Op: lease.OpCreate})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	file := append(append([]byte(nil), good...), '\n')
+	file = append(file, []byte("{\"id\":\"rec-1\",\nnot json\n")...)
+	file = append(file, good...)
+	file = append(file, '\n')
+	file = append(file, []byte("{\"id\":")...) // a fragment, no newline
+	if err := os.WriteFile(path, file, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rs, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	defer func() { _ = rs.Close() }()
+
+	var store lease.Store = rs
+	if d := store.Damage(); d.Any() {
+		t.Errorf("damage before any Load: %s; the count belongs to the last Load, not to the file", d)
+	}
+	evs, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("%d event(s) read, want the 2 good ones", len(evs))
+	}
+	d := store.Damage()
+	if d.TornTail != 1 || d.Skipped != 2 {
+		t.Fatalf("damage through the port = %s, want 1 torn tail and 2 skipped", d)
+	}
+	if !d.Any() {
+		t.Error("Any() is false on damage that has both numbers set")
+	}
+	if d.String() != "1 torn tail, 2 skipped" {
+		t.Errorf("String() = %q", d.String())
 	}
 }

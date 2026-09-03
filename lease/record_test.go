@@ -95,7 +95,51 @@ func TestTheFoldIsTotalOverEveryPhaseAndOperation(t *testing.T) {
 		t.Fatalf("the domain is %d phase(s) x %d op(s), want 8 x 12; a constant moved and this table no longer covers it", len(phases), len(ops))
 	}
 
-	accepted, rejected := 0, 0
+	// THE ACCEPTED SET, written out. Totality alone — every pair yields a
+	// verdict — is satisfied by a fold that accepts everything, so the table
+	// says WHICH pairs are accepted and treats every other one as refused.
+	// A widening is then a pair this table does not name, which is an error
+	// with the pair in it rather than a silent extra transition.
+	//
+	// Read down the column: a record is created once, bound once, and after it
+	// is left or closed the only things it takes are the two counter ops and
+	// the transitions that end it. `rebind` consumes a tombstone and is the
+	// only op RETAINED accepts beyond those.
+	accepted := map[Phase][]RecordOp{
+		PhaseUnset:    {OpReserve, OpCreate, OpAdopt},
+		PhaseReserved: {OpCreate, OpLease, OpLost, OpRetain, OpClose, OpStats, OpExtra},
+		PhaseCreated:  {OpBind, OpLease, OpLost, OpRetain, OpClose, OpStats, OpExtra},
+		PhaseJoined:   {OpLease, OpLost, OpLeave, OpRetain, OpClose, OpStats, OpExtra},
+		PhaseLeft:     {OpRetain, OpClose, OpStats, OpExtra},
+		PhaseRetained: {OpRebind, OpClose, OpStats, OpExtra},
+		PhaseAdopted:  {OpBind, OpLease, OpLost, OpRetain, OpClose, OpStats, OpExtra},
+		PhaseClosed:   {OpClose, OpStats, OpExtra},
+	}
+	// The table's own domain, checked against the derived populations rather
+	// than trusted: a phase added to the code and not to this table would
+	// otherwise be a phase whose whole row went unasserted.
+	if len(accepted) != len(phases) {
+		t.Fatalf("the expectation names %d phase(s) and the code has %d", len(accepted), len(phases))
+	}
+	inTable := map[Phase]map[RecordOp]bool{}
+	for _, p := range phases {
+		row, ok := accepted[p]
+		if !ok {
+			t.Fatalf("phase %s has no row in the expectation", p)
+		}
+		inTable[p] = map[RecordOp]bool{}
+		for _, op := range row {
+			if isUnknown(op.String()) {
+				t.Fatalf("the %s row names %s, which is not an operation", p, op)
+			}
+			if inTable[p][op] {
+				t.Fatalf("the %s row names %s twice", p, op)
+			}
+			inTable[p][op] = true
+		}
+	}
+
+	acceptedN, rejected := 0, 0
 	for _, p := range phases {
 		for _, op := range ops {
 			rec := recordAt(t, p)
@@ -106,7 +150,7 @@ func TestTheFoldIsTotalOverEveryPhaseAndOperation(t *testing.T) {
 			case OpLost:
 				ev.Reason = proto.ReasonExpired
 			case OpStats:
-				ev.Stats = &Stats{}
+				ev.Stats, ev.Manager = &Stats{}, "mgr-1"
 			case OpExtra:
 				ev.Extra = map[string]uint64{"k": 1}
 			}
@@ -115,10 +159,17 @@ func TestTheFoldIsTotalOverEveryPhaseAndOperation(t *testing.T) {
 			}
 
 			next, err := Fold(rec, ev)
+			if want := inTable[p][op]; want != (err == nil) {
+				if want {
+					t.Errorf("(%s, %s) is in the accepted set and was REFUSED: %v", p, op, err)
+				} else {
+					t.Errorf("(%s, %s) was ACCEPTED and is not in the accepted set; a transition was widened, or the row is missing", p, op)
+				}
+			}
 			var rj *Reject
 			switch {
 			case err == nil:
-				accepted++
+				acceptedN++
 				if next.Phase == PhaseUnset {
 					t.Errorf("(%s, %s) was accepted and left the record in no phase at all", p, op)
 				}
@@ -135,15 +186,22 @@ func TestTheFoldIsTotalOverEveryPhaseAndOperation(t *testing.T) {
 			}
 		}
 	}
-	if accepted+rejected != len(phases)*len(ops) {
-		t.Fatalf("%d of %d pairs produced a verdict", accepted+rejected, len(phases)*len(ops))
+	if acceptedN+rejected != len(phases)*len(ops) {
+		t.Fatalf("%d of %d pairs produced a verdict", acceptedN+rejected, len(phases)*len(ops))
 	}
 	// Both directions non-vacuous: a fold that accepted everything and one
 	// that refused everything are both total.
-	if accepted == 0 || rejected == 0 {
-		t.Fatalf("%d accepted, %d refused: a table with an empty half measures nothing", accepted, rejected)
+	if acceptedN == 0 || rejected == 0 {
+		t.Fatalf("%d accepted, %d refused: a table with an empty half measures nothing", acceptedN, rejected)
 	}
-	t.Logf("%d pair(s): %d accepted, %d refused", accepted+rejected, accepted, rejected)
+	want := 0
+	for _, row := range accepted {
+		want += len(row)
+	}
+	if acceptedN != want {
+		t.Errorf("%d pair(s) accepted, the table names %d", acceptedN, want)
+	}
+	t.Logf("%d pair(s): %d accepted, %d refused", acceptedN+rejected, acceptedN, rejected)
 }
 
 // TestARejectMovesNothingButItsOwnCount is defeat row M-5.
@@ -173,6 +231,9 @@ func TestARejectMovesNothingButItsOwnCount(t *testing.T) {
 		{"a lease event with no lease", PhaseJoined, RecordEvent{Op: OpLease, Kind: Acquired}, RejectPayload},
 		{"a Lost routed to the lease op", PhaseJoined, RecordEvent{Op: OpLease, Kind: Lost}, RejectPayload},
 		{"a counters event with no counters", PhaseJoined, RecordEvent{Op: OpStats}, RejectPayload},
+		{"a counters event naming no manager", PhaseJoined, RecordEvent{Op: OpStats, Stats: &Stats{}}, RejectPayload},
+		{"a second, different family", PhaseJoined, RecordEvent{Op: OpLeave, Family: FamilyV6}, RejectFamily},
+		{"a second, different family on the op that carries one", PhaseCreated, RecordEvent{Op: OpBind, Family: FamilyV6}, RejectFamily},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			rec := recordAt(t, c.phase)
@@ -290,11 +351,14 @@ func TestANakIsCountedOnceAcrossTheTwoEventsItProduces(t *testing.T) {
 // last manager's numbers as the endpoint's whole history.
 func TestStatsAccumulateAcrossManagerInstances(t *testing.T) {
 	rec := recordAt(t, PhaseJoined)
-	apply := func(instance string, s Stats) {
+	apply := func(manager string, s Stats) {
 		t.Helper()
-		next, err := Fold(rec, RecordEvent{ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats, Instance: instance, Stats: &s})
+		next, err := Fold(rec, RecordEvent{
+			ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+			Instance: "plugin-1", Manager: manager, Stats: &s,
+		})
 		if err != nil {
-			t.Fatalf("merging %s: %v", instance, err)
+			t.Fatalf("merging %s: %v", manager, err)
 		}
 		rec = next
 	}
@@ -302,7 +366,7 @@ func TestStatsAccumulateAcrossManagerInstances(t *testing.T) {
 	apply("mgr-1", Stats{Sent: 2, Received: 1})
 	apply("mgr-1", Stats{Sent: 5, Received: 4})
 	if got := rec.Counters.Wire.Sent; got != 5 {
-		t.Fatalf("Sent = %d after two snapshots of one instance, want 5: within an instance the counters are cumulative already", got)
+		t.Fatalf("Sent = %d after two snapshots of one manager, want 5: within a manager the counters are cumulative already", got)
 	}
 
 	apply("mgr-2", Stats{Sent: 3, Received: 2})
@@ -313,9 +377,135 @@ func TestStatsAccumulateAcrossManagerInstances(t *testing.T) {
 		t.Fatalf("Received = %d, want 6", got)
 	}
 
-	// Backwards inside one instance is not a new manager, it is a lie.
-	if _, err := Fold(rec, RecordEvent{ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats, Instance: "mgr-2", Stats: &Stats{Sent: 1}}); err == nil {
-		t.Fatal("a snapshot whose counters went backwards inside one instance was accepted")
+	// Backwards inside one manager is not a new manager, it is a lie.
+	if _, err := Fold(rec, RecordEvent{
+		ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+		Instance: "plugin-1", Manager: "mgr-2", Stats: &Stats{Sent: 1},
+	}); err == nil {
+		t.Fatal("a snapshot whose counters went backwards inside one manager was accepted")
+	}
+}
+
+// TestTwoManagersInOneProcessBothCount is the design's ORDINARY sequence, and
+// the shape that froze the wire counters while one field carried two
+// identities.
+//
+// The plugin runs the CreateEndpoint one-shot manager and then the Join
+// manager in ONE process, so both write under the same Instance. A fold that
+// rebaselines on the writer sees the second manager's first snapshot as the
+// first manager's counters going backwards, refuses it, and reports the
+// endpoint's whole life as whatever the one-shot managed to send.
+func TestTwoManagersInOneProcessBothCount(t *testing.T) {
+	const writer = "plugin-1"
+	rec := recordAt(t, PhaseJoined)
+
+	// The one-shot: two messages out, two in.
+	oneShot := Stats{Sent: 4, Received: 2, LeasesAcquired: 1}
+	next, err := Fold(rec, RecordEvent{
+		ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+		Instance: writer, Manager: "create-endpoint", Stats: &oneShot,
+	})
+	if err != nil {
+		t.Fatalf("the one-shot manager's counters were refused: %v", err)
+	}
+	rec = next
+
+	// The Join manager, in the SAME process, starting from zero as every
+	// manager does. Its numbers are LOWER than the one-shot's, which is the
+	// whole difficulty: they are not a regression, they are a new manager.
+	join := Stats{Sent: 2, Received: 1, LeasesAcquired: 1}
+	next, err = Fold(rec, RecordEvent{
+		ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+		Instance: writer, Manager: "join", Stats: &join,
+	})
+	if err != nil {
+		t.Fatalf("the second manager in one process was refused: %v; the record froze at the first manager's numbers", err)
+	}
+	rec = next
+
+	if got := rec.Counters.Wire.Sent; got != 6 {
+		t.Errorf("Sent = %d after two managers under one writer, want 6 (4 + 2); 4 means the second manager was refused and the counter froze", got)
+	}
+	if got := rec.Counters.Wire.Received; got != 3 {
+		t.Errorf("Received = %d, want 3 (2 + 1)", got)
+	}
+	if rec.Counters.Rejects != 0 {
+		t.Errorf("%d reject(s) folding two managers under one writer id, want 0", rec.Counters.Rejects)
+	}
+	if rec.Instance != writer {
+		t.Errorf("Instance = %q, want %q: the record still names the process that wrote the line", rec.Instance, writer)
+	}
+}
+
+// TestTheWriterIdIsNotTheManagerId drives the two fields apart in both
+// directions, so neither can be quietly derived from the other.
+func TestTheWriterIdIsNotTheManagerId(t *testing.T) {
+	base := recordAt(t, PhaseJoined)
+
+	// ONE writer, TWO managers: both count. (The case above, as a table row.)
+	// TWO writers, ONE manager: the same manager's counters continue across an
+	// upgrade that replaced the process, and are NOT rebaselined.
+	//
+	// A fold keyed on the writer gets the first wrong; a fold keyed on nothing
+	// gets the second wrong by double-counting the manager's whole history.
+	for _, tc := range []struct {
+		name            string
+		writers         [2]string
+		managers        [2]string
+		second          Stats
+		wantSent        uint64
+		wantRejects     uint64
+		whatItWouldMean string
+	}{
+		{
+			name: "one process, two managers", writers: [2]string{"p1", "p1"},
+			managers: [2]string{"m1", "m2"}, second: Stats{Sent: 2},
+			wantSent: 6, whatItWouldMean: "the second manager's counters were dropped",
+		},
+		{
+			name: "two processes, one manager", writers: [2]string{"p1", "p2"},
+			managers: [2]string{"m1", "m1"}, second: Stats{Sent: 7},
+			wantSent: 7, whatItWouldMean: "one manager's history was counted twice across an upgrade",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := base
+			for i := range 2 {
+				s := Stats{Sent: 4}
+				if i == 1 {
+					s = tc.second
+				}
+				next, err := Fold(rec, RecordEvent{
+					ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+					Instance: tc.writers[i], Manager: tc.managers[i], Stats: &s,
+				})
+				if err != nil {
+					t.Fatalf("snapshot %d (writer %s, manager %s) was refused: %v",
+						i+1, tc.writers[i], tc.managers[i], err)
+				}
+				rec = next
+			}
+			if got := rec.Counters.Wire.Sent; got != tc.wantSent {
+				t.Errorf("Sent = %d, want %d: %s", got, tc.wantSent, tc.whatItWouldMean)
+			}
+			if rec.Counters.Rejects != tc.wantRejects {
+				t.Errorf("%d reject(s), want %d", rec.Counters.Rejects, tc.wantRejects)
+			}
+		})
+	}
+
+	// And an OpStats that names no manager is refused rather than folded under
+	// the empty string, which would make every anonymous manager one manager.
+	got, err := Fold(base, RecordEvent{
+		ID: "rec-1", Seq: base.Seq + 1, Op: OpStats,
+		Instance: "p1", Stats: &Stats{Sent: 1},
+	})
+	var rej *Reject
+	if !errors.As(err, &rej) || rej.Reason != RejectPayload {
+		t.Fatalf("an OpStats naming no manager gave %v, want a RejectPayload", err)
+	}
+	if got.Counters.Wire.Sent != 0 {
+		t.Errorf("the refused snapshot was folded anyway: Sent = %d", got.Counters.Wire.Sent)
 	}
 }
 

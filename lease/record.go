@@ -102,12 +102,19 @@ type Record struct {
 	// counts them.
 	LastReject RejectReason
 
-	// statsBase is the last Stats snapshot merged, and statsInstance the
-	// manager instance it came from. A record outlives its managers and each
-	// new one starts its counters at zero, so what is accumulated is the
-	// DELTA within an instance; an instance change resets the baseline.
-	statsBase     Stats
-	statsInstance string
+	// statsBase is the last Stats snapshot merged, and statsManager the
+	// MANAGER it came from. A record outlives its managers and each new one
+	// starts its counters at zero, so what is accumulated is the DELTA within
+	// one manager; a change of manager resets the baseline.
+	//
+	// This is not the writer. One plugin process runs the CreateEndpoint
+	// one-shot manager and then the Join manager, so keying the baseline on
+	// the writing PROCESS makes the second manager's first snapshot read as
+	// counters going backwards and freezes the wire half at the first
+	// manager's numbers. The two identities are separate fields on the event
+	// for that reason, and the fold reads this one.
+	statsBase    Stats
+	statsManager string
 }
 
 // Family is the address family a record binds in.
@@ -301,10 +308,24 @@ type RecordEvent struct {
 	Seq uint64    `json:"seq"`
 	At  time.Time `json:"at"`
 
-	// Instance names the process that wrote this line. Two plugin processes
+	// Instance names the PROCESS that wrote this line. Two plugin processes
 	// during an upgrade both append to one file; without this, their lines are
 	// indistinguishable and their sequence numbers collide silently.
+	//
+	// It is NOT the manager: one process runs several managers in sequence and
+	// they share it. See Manager.
 	Instance string `json:"instance,omitempty"`
+
+	// Manager names the MANAGER whose counters an OpStats event carries, and
+	// is read by nothing else. A manager's Stats start at zero and only ever
+	// climb, so the fold accumulates the delta within one manager and
+	// rebaselines when this changes; without it, the second manager in a
+	// process looks like the first one counting backwards.
+	//
+	// An OpStats event that does not name one is REFUSED rather than folded
+	// under the empty string, because two anonymous managers are exactly the
+	// collision this field exists to prevent.
+	Manager string `json:"manager,omitempty"`
 
 	Scope    string        `json:"scope,omitempty"`
 	Family   Family        `json:"family,omitempty"`
@@ -355,6 +376,10 @@ const (
 	// RejectPayload: the op is defined from this phase but the event does not
 	// carry what the op needs.
 	RejectPayload
+	// RejectFamily: a second, different address family. Written once, like the
+	// identity: the family decides which wire the record's address is on, and
+	// a record that changed it would answer both lookups.
+	RejectFamily
 )
 
 func (r RejectReason) String() string {
@@ -379,6 +404,8 @@ func (r RejectReason) String() string {
 		return "counters went backwards"
 	case RejectPayload:
 		return "event carries nothing for this op"
+	case RejectFamily:
+		return "family rewrite"
 	default:
 		return fmt.Sprintf("reject(%d)", uint8(r))
 	}
@@ -581,6 +608,14 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		return reject(RejectIdentity, "the identity is written once and is already set")
 	}
 
+	// The family, on the same rule and for the same reason. It was the one
+	// write-once field of the three that was silently overwritable: a v6 event
+	// on a v4 record left the record claiming v6 while the same event's scope
+	// change was refused.
+	if ev.Family != FamilyUnset && rec.Family != FamilyUnset && ev.Family != rec.Family {
+		return reject(RejectFamily, "the record is in family "+rec.Family.String())
+	}
+
 	next := rec
 	switch ev.Op {
 	case OpReserve:
@@ -636,15 +671,18 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		if ev.Stats == nil {
 			return reject(RejectPayload, "OpStats with no Stats")
 		}
+		if ev.Manager == "" {
+			return reject(RejectPayload, "OpStats naming no manager")
+		}
 		now := statsIntoWire(*ev.Stats)
 		base := statsIntoWire(next.statsBase)
-		if ev.Instance != next.statsInstance {
+		if ev.Manager != next.statsManager {
 			base = WireCounters{}
 		}
 		if bad, ok := next.Counters.Wire.addDelta(now, base); !ok {
-			return reject(RejectStats, "Stats."+bad+" went backwards inside instance "+ev.Instance)
+			return reject(RejectStats, "Stats."+bad+" went backwards inside manager "+ev.Manager)
 		}
-		next.statsBase, next.statsInstance = *ev.Stats, ev.Instance
+		next.statsBase, next.statsManager = *ev.Stats, ev.Manager
 	case OpExtra:
 		if len(ev.Extra) == 0 {
 			return reject(RejectPayload, "OpExtra with no counters")

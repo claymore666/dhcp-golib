@@ -509,3 +509,64 @@ func recordFixture(t *testing.T) []RecordEvent {
 		{ID: "rec-2", Seq: 3, Op: OpLease, Kind: Acquired, Lease: &l, Instance: "p1"},
 	}
 }
+
+// TestTheFamilyIsWrittenOnceLikeTheIdentity is review round 1's finding 4.
+//
+// Of the three fields a record must not change under its own id — scope,
+// identity, family — the family was the one that could be overwritten in
+// silence: a v6 event on a v4 record left the record claiming v6 while the
+// same event's scope change was refused. The family decides which wire the
+// address is on, so a record that changed it would answer both lookups.
+func TestTheFamilyIsWrittenOnceLikeTheIdentity(t *testing.T) {
+	rec := recordAt(t, PhaseJoined)
+	if rec.Family != FamilyV4 {
+		t.Fatalf("the fixture record is in family %s, so this test measures nothing", rec.Family)
+	}
+
+	// Restating the same family is not a rewrite, and an event that names none
+	// leaves the record's alone. Without both of these the refusal below could
+	// be satisfied by refusing every event that carries a family at all.
+	for _, ev := range []RecordEvent{
+		{ID: "rec-1", Seq: rec.Seq + 1, Op: OpLeave, Family: FamilyV4},
+		{ID: "rec-1", Seq: rec.Seq + 1, Op: OpLeave},
+	} {
+		got, err := Fold(rec, ev)
+		if err != nil {
+			t.Fatalf("an event carrying family %s was refused: %v", ev.Family, err)
+		}
+		if got.Family != FamilyV4 {
+			t.Fatalf("family = %s after an event carrying %s, want v4", got.Family, ev.Family)
+		}
+	}
+
+	// A second, different one is refused, whichever op carries it, and the
+	// refused event moves nothing else.
+	for _, op := range []RecordOp{OpLeave, OpRetain, OpClose, OpLease, OpStats} {
+		ev := RecordEvent{
+			ID: "rec-1", Seq: rec.Seq + 1, Op: op, Family: FamilyV6,
+			CHAddr: testMAC2, Note: "would have been applied",
+		}
+		got, err := Fold(rec, ev)
+		var rej *Reject
+		if !errors.As(err, &rej) || rej.Reason != RejectFamily {
+			t.Errorf("a v6 event on a v4 record via %s gave %v, want a RejectFamily", op, err)
+			continue
+		}
+		want := rec
+		want.Counters.Rejects++
+		want.LastReject = rej.Reason
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: the refused event moved the record: got %+v", op, got)
+		}
+	}
+
+	// The family is still WRITABLE on a record that has none: the rule is
+	// written once, not never.
+	fresh, err := Fold(Record{}, RecordEvent{ID: "rec-9", Seq: 1, Op: OpCreate, Scope: "net-a", Family: FamilyV6})
+	if err != nil {
+		t.Fatalf("creating a v6 record was refused: %v", err)
+	}
+	if fresh.Family != FamilyV6 {
+		t.Fatalf("family = %s on a record created as v6", fresh.Family)
+	}
+}

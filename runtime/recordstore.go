@@ -3,8 +3,10 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -27,39 +29,56 @@ type RecordStore struct {
 
 	mu   sync.Mutex
 	f    *os.File
-	torn RecordStoreDamage
-}
-
-// RecordStoreDamage is what a Load could not read. Both numbers are reported
-// rather than folded into one, because they mean different things: a torn tail
-// is a crash, and an unreadable line anywhere else is two writers or a damaged
-// file.
-type RecordStoreDamage struct {
-	// TornTail is 1 when the file's last line has no terminating newline, or
-	// has one and still does not parse — the shape a process killed inside
-	// Append leaves.
-	TornTail int
-	// Skipped counts unreadable lines that are NOT the last one.
-	Skipped int
-}
-
-// Any reports whether anything was skipped.
-func (d RecordStoreDamage) Any() bool { return d.TornTail > 0 || d.Skipped > 0 }
-
-func (d RecordStoreDamage) String() string {
-	return fmt.Sprintf("%d torn tail, %d skipped", d.TornTail, d.Skipped)
+	torn lease.StoreDamage
 }
 
 // OpenRecordStore opens or creates the file at path.
 //
 // 0600, because the contents are a history of which machine held which address
 // and when.
+//
+// THE DIRECTORY IS FSYNCED WHEN THE FILE IS CREATED, and that is not the same
+// fsync Append does. Syncing a file makes its CONTENTS durable; it says
+// nothing about the directory entry that names it, so a machine that lost
+// power after the first creating event could come back with the event synced
+// and no file to find it in — the one case the sync policy says nothing can
+// re-derive. ext4 with its default options usually saves this, which is a
+// filesystem's behaviour and not a guarantee this store may make.
+//
+// O_EXCL is how creation is detected: O_CREATE alone cannot tell an open from
+// a create, and a directory sync on every open would pay for it on every
+// process start. A racing creator between the two opens is the one case the
+// fallback reports as an error rather than papering over, and the winner of
+// that race syncs the directory anyway.
 func OpenRecordStore(path string) (*RecordStore, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	created := true
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		created = false
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("runtime: lease record store %s: %w", path, err)
 	}
+	if created {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("runtime: making %s findable: %w", path, err)
+		}
+	}
 	return &RecordStore{path: path, f: f}, nil
+}
+
+// syncDir fsyncs a directory so that an entry created in it survives a power
+// loss. It goes through syncRecordFile for the same reason Append does: it is
+// the only way a test can see that it happened.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return syncRecordFile(d)
 }
 
 // Close closes the file. Safe to call more than once.
@@ -159,7 +178,7 @@ func (s *RecordStore) Load() ([]lease.RecordEvent, error) {
 // Damage reports what the last Load could not read. It is a COUNT and not a
 // log line: a store that quietly drops a record is the failure this exists
 // against, and a number nobody reads is the same failure with extra steps.
-func (s *RecordStore) Damage() RecordStoreDamage {
+func (s *RecordStore) Damage() lease.StoreDamage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.torn
@@ -181,10 +200,10 @@ func (s *RecordStore) Damage() RecordStoreDamage {
 // does not parse. So a tail that parses is a whole event whose newline did not
 // make it to disk, and dropping it would lose a record for the sake of a
 // symmetry.
-func parseRecordLines(b []byte) ([]lease.RecordEvent, RecordStoreDamage) {
+func parseRecordLines(b []byte) ([]lease.RecordEvent, lease.StoreDamage) {
 	var (
 		out    []lease.RecordEvent
-		damage RecordStoreDamage
+		damage lease.StoreDamage
 	)
 	if len(b) == 0 {
 		return nil, damage

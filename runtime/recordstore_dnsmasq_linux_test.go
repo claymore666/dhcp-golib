@@ -34,6 +34,9 @@ const (
 	restartBridge  = "br0"
 	restartClients = 3
 	restartScope   = "net-lan"
+	// One plugin process writes every record here; the managers are named per
+	// client. Instance is the writer, Manager is the manager.
+	restartWriter = "m4-restart-writer"
 
 	// The two directions the record's deadline may differ from the server's,
 	// derived in the comment beside the assertion that uses them. MEASURED
@@ -281,7 +284,7 @@ func acquireIntoTheJournal(t *testing.T, store *RecordStore, id, ifname string, 
 	append := func(ev lease.RecordEvent) {
 		t.Helper()
 		seq++
-		ev.ID, ev.Seq, ev.Instance = id, seq, ifname
+		ev.ID, ev.Seq, ev.Instance = id, seq, restartWriter
 		if ev.At.IsZero() {
 			ev.At = time.Now()
 		}
@@ -311,7 +314,7 @@ func acquireIntoTheJournal(t *testing.T, store *RecordStore, id, ifname string, 
 	// short.
 	acquired := false
 	for ev := range c.Events() {
-		append(lease.EventRecord(id, ifname, 0, time.Now(), ev))
+		append(lease.EventRecord(id, restartWriter, 0, time.Now(), ev))
 		if ev.Kind == lease.Failed {
 			t.Fatalf("%s: acquisition failed: %s", id, ev)
 		}
@@ -331,7 +334,7 @@ func acquireIntoTheJournal(t *testing.T, store *RecordStore, id, ifname string, 
 	// blocks.
 	stops := 0
 	for ev := range c.Events() {
-		append(lease.EventRecord(id, ifname, 0, time.Now(), ev))
+		append(lease.EventRecord(id, restartWriter, 0, time.Now(), ev))
 		if ev.Kind == lease.Lost && ev.Reason == proto.ReasonStopped {
 			stops++
 		}
@@ -339,8 +342,11 @@ func acquireIntoTheJournal(t *testing.T, store *RecordStore, id, ifname string, 
 	if stops != 1 {
 		t.Fatalf("%s: the stopped manager emitted %d Lost(stopped) event(s), want 1; the case this test exists for did not happen", id, stops)
 	}
+	// One process writes all three records, so all three carry the same writer
+	// id and each names its OWN manager. That is the separation finding 1 was
+	// about, driven here against a real server rather than only in a table.
 	s := c.Stats()
-	append(lease.RecordEvent{Op: lease.OpStats, Stats: &s})
+	append(lease.RecordEvent{Op: lease.OpStats, Manager: id, Stats: &s})
 }
 
 // dnsmasqLease is one line of --dhcp-leasefile.

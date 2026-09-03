@@ -1,6 +1,7 @@
 package lease
 
 import (
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -124,12 +125,43 @@ type PacketRing interface {
 // AN IMPLEMENTATION MAY SKIP WHAT IT CANNOT READ. A process killed inside an
 // Append leaves a fragment, and refusing the whole file for it would lose every
 // record written before the crash. Skipping is therefore allowed and COUNTING
-// what was skipped is not optional — see runtime.RecordStore, which reports a
-// torn tail and an unreadable interior line as two different numbers.
+// what was skipped is not optional — which is why Damage is on the port and
+// not on one implementation: a caller holding a Store could otherwise be told
+// "here is every event" by a store that had just dropped one, and would have
+// no way to ask.
 type Store interface {
 	// Append writes one event. It must be atomic against a concurrent Append
 	// from another process on the same file: one line, one write.
 	Append(RecordEvent) error
 	// Load returns every event, in append order.
 	Load() ([]RecordEvent, error)
+	// Damage reports what the last Load could not read. A store that reads
+	// everything reports a zero value.
+	Damage() StoreDamage
+}
+
+// StoreDamage is what a Load could not read.
+//
+// The two numbers are reported apart rather than folded into one, because they
+// mean different things: a torn tail is a crash, and an unreadable line
+// anywhere else is two writers or a damaged file.
+type StoreDamage struct {
+	// TornTail counts the file's LAST line when it has no terminating newline
+	// and does not parse — the shape a process killed inside Append leaves.
+	//
+	// Only the missing newline makes a fragment. A last line that HAS its
+	// newline and still does not parse is counted in Skipped: the writer got
+	// the newline out after it, so whatever damaged the line was not a crash
+	// in the middle of writing it.
+	TornTail int
+	// Skipped counts every other unreadable line: the interior ones, and the
+	// last one when its newline is present.
+	Skipped int
+}
+
+// Any reports whether anything was unreadable.
+func (d StoreDamage) Any() bool { return d.TornTail > 0 || d.Skipped > 0 }
+
+func (d StoreDamage) String() string {
+	return fmt.Sprintf("%d torn tail, %d skipped", d.TornTail, d.Skipped)
 }
