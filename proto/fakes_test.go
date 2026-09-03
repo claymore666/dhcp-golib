@@ -29,6 +29,24 @@ func testParams() Params {
 	return p
 }
 
+// testRebootAddr is the address the INIT-REBOOT fixtures remember. It is
+// deliberately NOT the address the acquisition fixtures lease
+// (192.168.99.50), so a test that confuses "the address we asked to keep"
+// with "the address the server handed out" fails rather than passing by
+// coincidence.
+const testRebootAddr = "192.168.99.77"
+
+// resumeParams is testParams with a remembered lease attached.
+func resumeParams(addr string, expire Instant, hasExpire bool) Params {
+	p := testParams()
+	p.Resume = &Resume{
+		Addr:      netip.MustParseAddr(addr),
+		Expire:    expire,
+		HasExpire: hasExpire,
+	}
+	return p
+}
+
 func newMachine(t *testing.T, p Params) *Machine {
 	t.Helper()
 	m, err := New(p)
@@ -172,6 +190,13 @@ func machineIn(t *testing.T, s State) *Machine {
 			t.Fatal("the BOUND fixture's lease has no T1; RENEWING is unreachable")
 		}
 		m.Step(t1, 4, TimerFired(TimerRenew))
+	case StateRebooting:
+		// Reached by its only door: a Start on a machine that was handed a
+		// remembered lease. Building it by assignment would prove nothing, and
+		// here it would prove less than nothing — REBOOTING's whole content is
+		// what the transition into it put on the wire.
+		m = newMachine(t, resumeParams(testRebootAddr, at(3600), true))
+		m.Step(0, 1, Simple(EvStart))
 	case StateRebinding:
 		m = machineIn(t, StateRenewing)
 		t2, ok := m.lease.RebindAt()

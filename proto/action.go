@@ -256,6 +256,24 @@ type Action struct {
 	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed
 	Reason Reason // ActLeaseLost, ActFailed
 	Note   string // ActJournal, and detail beside Reason
+
+	// Requested is the address this client ASKED FOR, on ActLeaseAcquired
+	// only, and the zero value means it asked for none.
+	//
+	// It is data and not a verdict. Two paths put an address in option 50 —
+	// Params.RequestedIP in a DHCPDISCOVER (RFC 2131 section 4.4.1, a MAY) and
+	// Params.Resume in the INIT-REBOOT DHCPREQUEST (section 4.3.2, a MUST) —
+	// and neither obliges the server to honour it: section 4.4.2 accepts "a
+	// DHCPACK message with an 'xid' field matching that in the client's
+	// DHCPREQUEST message ... from any server" and conditions acceptance on
+	// nothing else. So the machine takes the lease and reports what it had
+	// asked for beside it; whether a different address is acceptable is a
+	// question about the caller's endpoint, not about the protocol.
+	//
+	// NOT set on ActLeaseRenewed or ActLeaseChanged. A renewal asks for the
+	// address it already holds, and a renewal that comes back on a different
+	// one is journalled by name in enterBound.
+	Requested netip.Addr
 }
 
 func (a Action) String() string {
@@ -267,6 +285,9 @@ func (a Action) String() string {
 	case ActCancelTimer:
 		return fmt.Sprintf("CancelTimer %s", a.Timer)
 	case ActLeaseAcquired:
+		if a.Requested.IsValid() && !a.Requested.IsUnspecified() && a.Requested != a.Lease.Addr.Addr() {
+			return fmt.Sprintf("LeaseAcquired %s (asked for %s)", a.Lease, a.Requested)
+		}
 		return fmt.Sprintf("LeaseAcquired %s", a.Lease)
 	case ActLeaseChanged:
 		return fmt.Sprintf("LeaseChanged %s", a.Lease)

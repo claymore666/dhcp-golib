@@ -44,7 +44,21 @@ type Params struct {
 	// RequestedIP is a hint placed in option 50 of the DISCOVER. RFC 2131
 	// section 4.4.1 makes it a MAY there. It is NOT what drives the REQUEST:
 	// that carries the OFFER's yiaddr, which is a MUST.
+	//
+	// A hint is not a demand: the server may offer something else and this
+	// machine takes what it is offered. What it does not do is stay silent
+	// about it — the acquisition carries Action.Requested, so the caller can
+	// see that the address it asked for is not the address it got and decide.
+	// See Machine.requestedAddr.
 	RequestedIP netip.Addr
+
+	// Resume is a lease remembered from a previous run of this client, and it
+	// is what turns the first DHCPREQUEST into RFC 2131 section 4.4.2's
+	// INIT-REBOOT one instead of a DHCPDISCOVER.
+	//
+	// Nil means a fresh acquisition. See Resume for what it carries and, more
+	// to the point, what it does not.
+	Resume *Resume
 
 	// RequestedLease is option 51 in the DISCOVER and REQUEST. Zero means the
 	// option is not sent and the server chooses.
@@ -119,6 +133,78 @@ type Params struct {
 	// caller that could set it could put bytes on the wire that
 	// wire.EncodeFQDN refuses, which is the check New exists to run.
 	fqdn []byte
+}
+
+// Resume is an address this client held before it was restarted, and the
+// moment that holding stops being worth asserting.
+//
+// It carries the ADDRESS AND THE DEADLINE AND NOTHING ELSE, and the omission is
+// the guard rather than a saving. RFC 2131 Table 4 (section 4.3.6) and Table 5
+// (section 4.4.1) both make the 'server identifier' option a MUST NOT in the
+// message this value produces, and section 4.3.2 says what a server does with a
+// DHCPREQUEST that carries one: it reads the message as one "generated during
+// SELECTING state", compares the identifier against its own, and stays SILENT
+// when it does not match. Silence is also what a message that never left the
+// host produces, so the failure is a timeout that looks like a slow server.
+//
+// A remembered lease HAS a server identifier — lease.Lease carries one, and the
+// renewal path needs it. Not carrying it here is what makes the wrong message
+// impossible to build rather than merely absent from today's builder: a future
+// edit to sendReboot cannot fill in an option whose value is not in reach.
+//
+// Section 4.4.4's "the client may use that address in the DHCPDISCOVER or
+// DHCPREQUEST rather than the IP broadcast address" in REBOOTING is the one
+// thing this omission rules out. Table 4's INIT-REBOOT column says broadcast,
+// the MAY is a MAY, and a client on a link whose server has moved is better
+// served by the broadcast.
+type Resume struct {
+	// Addr is the remembered address, and it is what option 50 of the
+	// INIT-REBOOT DHCPREQUEST carries: section 4.3.2's "'requested IP address'
+	// option MUST be filled in with client's notion of its previously assigned
+	// address".
+	Addr netip.Addr
+
+	// Expire is when the remembered lease runs out, on the SAME monotonic
+	// clock Step is fed. HasExpire false means the remembered lease is
+	// infinite and never stops being worth asserting.
+	//
+	// Ring 1 cannot read a clock and cannot hold a wall-clock time (the T1
+	// gate refuses "time"), so the conversion from the wall-clock deadline a
+	// record stores is ring 2's, done ONCE through the one clock bridge in the
+	// library. See lease.Config.Resume.
+	//
+	// WHY THE DEADLINE TRAVELS AT ALL. Section 4.3.2: a server "MUST remain
+	// silent" for a DHCPREQUEST from a client it has no record of. An expired
+	// lease is exactly the case where no server has a record, so rebooting one
+	// buys a full retransmission budget of silence and then the DISCOVER that
+	// should have been sent first. The machine refuses it at EvStart and says
+	// so in the journal.
+	Expire    Instant
+	HasExpire bool
+}
+
+// live reports whether this remembered lease is still worth asserting at now.
+func (r *Resume) live(now Instant) bool {
+	if r == nil || !r.Addr.Is4() || r.Addr.IsUnspecified() {
+		return false
+	}
+	return !r.HasExpire || r.Expire.After(now)
+}
+
+// clone deep-copies a Resume. netip.Addr is a value, so this is the pointer and
+// nothing else — but a shallow copy of the POINTER is what makes a snapshot
+// alias the caller's memory, which is the defect SnapshotParams exists to
+// prevent.
+// Clone deep-copies a Resume. It is exported because lease.SnapshotParams has
+// to reach it: Resume is the only pointer in Params, and a record that shared
+// one with its caller would say what the caller's memory holds now rather than
+// what the manager ran with.
+func (r *Resume) Clone() *Resume {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	return &c
 }
 
 // ServerPolicy decides which servers this client accepts, by the 'server
@@ -283,6 +369,10 @@ var ErrBadRestartDelay = errors.New("proto: Params.RestartDelay is negative")
 // has already been deployed.
 var ErrBadFQDN = errors.New("proto: Params.FQDN cannot be encoded")
 
+// ErrBadResume is returned by New for a Resume that names no usable IPv4
+// address. See Params.validate.
+var ErrBadResume = errors.New("proto: Params.Resume names no usable IPv4 address")
+
 func (p Params) validate() error {
 	if len(p.CHAddr) == 0 {
 		return ErrNoCHAddr
@@ -295,6 +385,13 @@ func (p Params) validate() error {
 	}
 	if p.RestartDelay < 0 {
 		return fmt.Errorf("%w: %s", ErrBadRestartDelay, p.RestartDelay)
+	}
+	if p.Resume != nil && (!p.Resume.Addr.Is4() || p.Resume.Addr.IsUnspecified()) {
+		// Refused at construction rather than ignored at EvStart. A Resume
+		// carrying no usable address is a caller that meant to remember one;
+		// silently falling back to a DISCOVER gives it the behaviour it was
+		// trying to replace and no way to find out.
+		return fmt.Errorf("%w: %s", ErrBadResume, p.Resume.Addr)
 	}
 	if p.FQDN.Name != "" {
 		if _, err := wire.EncodeFQDN(p.FQDN.flags(), p.FQDN.Name); err != nil {

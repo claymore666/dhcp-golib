@@ -5,15 +5,21 @@ import "fmt"
 // State is a DHCPv4 client state, named as RFC 2131 section 4.4 names them.
 type State uint8
 
-// The states this machine implements, plus Stopped. INIT-REBOOT and REBOOTING
-// are still absent: naming them without their transitions would put
-// unreachable values into the exhaustive totality test and make it look like
-// more was covered than is.
+// The states this machine implements, plus Stopped.
 //
-// CONSEQUENCE: a client restarted with a remembered address re-acquires from
-// INIT rather than verifying the address it had, so the address can change
-// across a restart. RFC 2131 section 4.3.2's INIT-REBOOT DHCPREQUEST is what
-// closes that, and it needs somewhere to remember the address from.
+// INIT-REBOOT IS DELIBERATELY NOT ONE OF THEM. RFC 2131 Figure 5 leaves
+// INIT-REBOOT on "-/Send DHCPREQUEST", with no event in between, exactly as it
+// leaves INIT for SELECTING on "-/Send DHCPDISCOVER". INIT is nonetheless a
+// state because a client can SIT in it — section 4.4.1's desync wait, section
+// 3.1(5)'s restart wait, a link that is down. Nothing holds a client in
+// INIT-REBOOT: section 4.4.2 describes no wait, and this machine adds none
+// (Machine.beginReboot says why). A StateInitReboot would therefore be a value
+// no event could be observed in, and it would grow the totality test's (state,
+// event) product by ten pairs whose only possible assertion is that nothing
+// happens — reporting a larger domain as fully covered, which is the shape the
+// paragraph this one replaced refused REBOOTING for.
+//
+// So INIT-REBOOT is a transition here and REBOOTING is the state.
 const (
 	// StateStopped is the state before Start and after Stop. It is not an RFC
 	// state; it exists so that Step is total over "events that arrive when we
@@ -36,6 +42,22 @@ const (
 	// still held and the DHCPREQUEST is broadcast, so that ANY server may
 	// answer (section 4.4.5).
 	StateRebinding
+	// StateRebooting is RFC 2131's REBOOTING: a broadcast DHCPREQUEST naming a
+	// remembered address is in flight and NO lease is held yet.
+	//
+	// Section 4.4.2: "The client begins in INIT-REBOOT state and sends a
+	// DHCPREQUEST message ... Once a DHCPACK message with an 'xid' field
+	// matching that in the client's DHCPREQUEST message arrives from any
+	// server, the client is initialized and moves to BOUND state." Figure 5's
+	// other edges out of it are "DHCPNAK/Restart" to INIT and
+	// "DHCPOFFER/Discard".
+	//
+	// It is NOT a renewal state even though the message is a DHCPREQUEST. The
+	// three differences are the whole of P-3: 'ciaddr' is zero rather than the
+	// client's address, option 50 is a MUST rather than a MUST NOT, and no
+	// lease is held, so there is nothing to lose here and nothing to unicast
+	// to.
+	StateRebooting
 )
 
 func (s State) String() string {
@@ -54,6 +76,8 @@ func (s State) String() string {
 		return "RENEWING"
 	case StateRebinding:
 		return "REBINDING"
+	case StateRebooting:
+		return "REBOOTING"
 	default:
 		return fmt.Sprintf("state(%d)", uint8(s))
 	}
@@ -66,6 +90,6 @@ func (s State) String() string {
 func AllStates() []State {
 	return []State{
 		StateStopped, StateInit, StateSelecting, StateRequesting, StateBound,
-		StateRenewing, StateRebinding,
+		StateRenewing, StateRebinding, StateRebooting,
 	}
 }

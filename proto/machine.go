@@ -64,6 +64,20 @@ type Machine struct {
 	// lease is the lease held in BOUND.
 	lease   Lease
 	haveLse bool
+
+	// resume is the remembered lease this machine has NOT yet used, and it is
+	// consumed by the first acquisition it starts. See takeResume: every exit
+	// from REBOOTING other than BOUND restarts the configuration process, and
+	// RFC 2131 section 3.2(3) says that restart uses "the (non-abbreviated)
+	// procedure described in section 3.1" — so there is no second INIT-REBOOT
+	// on one Resume, and nil here is what makes that true rather than a rule
+	// each exit has to remember.
+	resume *Resume
+
+	// rebootAddr is the address the INIT-REBOOT DHCPREQUEST in flight names.
+	// Held apart from resume because the retransmissions need it after the
+	// Resume is gone, and because it is what Action.Requested reports.
+	rebootAddr netip.Addr
 }
 
 // New builds a Machine in StateStopped.
@@ -87,7 +101,11 @@ func New(p Params) (*Machine, error) {
 		}
 		p.fqdn = v
 	}
-	return &Machine{params: p, state: StateStopped}, nil
+	// The Resume pointer is cloned, not shared. A caller holding the value it
+	// passed in could otherwise move the remembered address out from under a
+	// machine that has already decided to ask for it.
+	p.Resume = p.Resume.Clone()
+	return &Machine{params: p, state: StateStopped, resume: p.Resume}, nil
 }
 
 // State returns the current state.
@@ -97,7 +115,15 @@ func (m *Machine) State() State { return m.state }
 func (m *Machine) Lease() (Lease, bool) { return m.lease, m.haveLse }
 
 // Params returns the machine's configuration.
-func (m *Machine) Params() Params { return m.params }
+//
+// The Resume is cloned on the way out for the reason New clones it on the way
+// in: it is the one pointer in Params, and a caller that could reach through it
+// could change what this machine is going to ask for.
+func (m *Machine) Params() Params {
+	p := m.params
+	p.Resume = p.Resume.Clone()
+	return p
+}
 
 // Step is total: every (state, event) pair yields a defined result and no
 // reachable panic. R1 tests that over the whole product of AllStates and
@@ -121,6 +147,8 @@ func (m *Machine) Step(now Instant, rnd uint64, ev Event) (State, []Action) {
 		m.stepBound(now, rnd, ev, &out)
 	case StateRenewing, StateRebinding:
 		m.stepRenewal(now, rnd, ev, &out)
+	case StateRebooting:
+		m.stepRebooting(now, rnd, ev, &out)
 	default:
 		// Unreachable through the exported API — State is not settable from
 		// outside — and handled anyway, because "unreachable" is a claim about
@@ -316,6 +344,114 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 	}
 }
 
+// stepRebooting is RFC 2131 Figure 5's REBOOTING: the INIT-REBOOT DHCPREQUEST
+// is in flight, no lease is held, and three things can end it.
+//
+// It is NOT stepRequesting with a different message, and the difference that
+// forbids sharing them is the DHCPOFFER arm. In REQUESTING an OFFER is a second
+// server answering a DHCPDISCOVER this client already acted on; here no
+// DHCPDISCOVER was ever sent, so an OFFER is a server answering the
+// INIT-REBOOT request as though it were one — Figure 5 draws that edge
+// explicitly as "DHCPOFFER/Discard" and it is worth its own journal line,
+// because a link where it happens is a link where some server is treating this
+// message as a SELECTING one, which is exactly what section 4.3.2 warns the
+// server-identifier option causes.
+func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions) {
+	switch ev.Kind {
+	case EvStop:
+		m.stop(out)
+	case EvStart:
+		out.journal(m, "Start in REBOOTING: already running")
+	case EvRelease:
+		// No lease is held here: section 4.4.2's client is "seeking to verify
+		// a previously allocated, cached configuration" and has not had it
+		// confirmed. releaseBeforeBound says why nothing is sent.
+		m.releaseBeforeBound(out)
+	case EvReceived:
+		msg, ok := m.acceptable(ev.Msg, out)
+		if !ok {
+			return
+		}
+		t, _ := msg.Type()
+		switch t {
+		case wire.MsgAck:
+			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
+			if !ok {
+				// The retransmission timer is still armed, so the machine
+				// keeps asking.
+				out.journal(m, "DHCPACK without a usable yiaddr and lease time: discarded")
+				return
+			}
+			if note != "" {
+				out.journal(m, note)
+			}
+			// SECTION 4.4.2 ACCEPTS THIS ACK FROM ANY SERVER AND FOR ANY
+			// ADDRESS. "Once a DHCPACK message with an 'xid' field matching
+			// that in the client's DHCPREQUEST message arrives from any
+			// server, the client is initialized and moves to BOUND state" —
+			// there is no clause about the address matching the one asked for,
+			// and no clause about the server being the one that issued the
+			// remembered lease. Both are reported rather than enforced:
+			// Action.Requested carries what was asked for, and the lease's
+			// ServerID is read out of this ACK.
+			m.enterBound(now, lse, out, false)
+		case wire.MsgNak:
+			// Figure 5's "DHCPNAK/Restart" edge, and section 3.2(3): "If the
+			// client receives a DHCPNAK message, it cannot reuse its
+			// remembered network address. It must instead request a new
+			// address by restarting the configuration process, this time using
+			// the (non-abbreviated) procedure described in section 3.1."
+			//
+			// Non-abbreviated is the load-bearing word: the restart below is a
+			// DHCPDISCOVER and not another INIT-REBOOT, and it is so because
+			// takeResume has already consumed the Resume.
+			out.cancel(m, TimerRetransmit)
+			out.failed(m, ReasonNak, m.nakText(msg))
+			m.beginAcquisition(now, split(rnd, 1), out, false)
+		case wire.MsgOffer:
+			out.journal(m, "DHCPOFFER in REBOOTING: discarded (RFC 2131 Figure 5)")
+		default:
+			out.journal(m, fmt.Sprintf("%s in REBOOTING: discarded", t))
+		}
+	case EvTimerFired:
+		if ev.Timer != TimerRetransmit {
+			out.journal(m, fmt.Sprintf("timer %s fired in REBOOTING: ignored", ev.Timer))
+			return
+		}
+		if m.params.Request.Exhausted(m.retransmits) {
+			// SECTION 3.2(3) OFFERS A CHOICE HERE AND THIS IS THE OTHER ONE.
+			// "If the client receives neither a DHCPACK or a DHCPNAK message
+			// after employing the retransmission algorithm, the client MAY
+			// choose to use the previously allocated network address and
+			// configuration parameters for the remainder of the unexpired
+			// lease."
+			//
+			// DECISION 2026-09-03: the MAY is not taken. Silence is what
+			// section 4.3.2 requires of a server that "has no record of this
+			// client" — the case where the address has been reissued to
+			// somebody else is indistinguishable, from here, from the case
+			// where the server is merely down. Taking the MAY puts a host on
+			// the network with an address nothing has confirmed in this boot,
+			// and this library has no conflict probe until M6. The cost of not
+			// taking it is an outage where a client could have carried on
+			// using an address it still held; the cost of taking it is two
+			// hosts on one address, which is the failure this plugin exists to
+			// avoid.
+			out.failed(m, ReasonNoServer, "no answer to the INIT-REBOOT DHCPREQUEST after the retransmission budget; acquiring from INIT")
+			m.beginAcquisition(now, split(rnd, 1), out, false)
+			return
+		}
+		m.retransmits++
+		m.sendReboot(now, rnd, out)
+	case EvLinkDown:
+		m.linkDown(out)
+	case EvActionFailed:
+		m.noteActionFailed(now, rnd, ev, out)
+	default:
+		out.journal(m, fmt.Sprintf("%s ignored in REBOOTING", ev.Kind))
+	}
+}
+
 func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 	switch ev.Kind {
 	case EvStop:
@@ -480,9 +616,23 @@ func (m *Machine) beginAcquisition(now Instant, rnd uint64, out *actions, withDe
 	m.retransmits = 0
 	m.sendFailures = 0
 	m.offer = nil
+	m.rebootAddr = netip.Addr{}
 	m.xid = uint32(split(rnd, 0))
 	m.state = StateInit
 	out.cancelAll(m)
+
+	// RFC 2131 section 3.2's abbreviated exchange, when there is a remembered
+	// lease to abbreviate it with. It is tried HERE, in the one function every
+	// path into INIT goes through, rather than at EvStart: the alternative was
+	// a check at the Start arm of stepStopped, which would have left every
+	// other entry to INIT — an expiry, a NAK, a link coming back — silently
+	// unable to use a remembered lease, and the difference between those
+	// entries is not the remembered lease's business. What decides is
+	// takeResume, once.
+	if m.takeResume(now, out) {
+		m.sendReboot(now, split(rnd, 3), out)
+		return
+	}
 
 	d := Duration(0)
 	if withDesync {
@@ -494,6 +644,88 @@ func (m *Machine) beginAcquisition(now Instant, rnd uint64, out *actions, withDe
 	}
 	out.set(m, TimerDesync, d)
 	out.journal(m, fmt.Sprintf("INIT: waiting %s to desynchronise (RFC 2131 4.4.1)", d))
+}
+
+// takeResume consumes the remembered lease and reports whether this
+// acquisition is RFC 2131 section 3.2's abbreviated one.
+//
+// IT CONSUMES WHICHEVER WAY IT ANSWERS, and that is the whole of the "one
+// INIT-REBOOT per Resume" rule. The three ways out of REBOOTING that are not
+// BOUND all end in beginAcquisition: a DHCPNAK, an exhausted retransmission
+// budget, and a link that dropped and came back. Section 3.2(3) makes the first
+// two "the (non-abbreviated) procedure", and the third is the only one where
+// asking again would be defensible — distinguishing it would cost a second
+// lifetime rule in ring 1 for a case a caller can drive itself by constructing
+// a client with the same Resume. So: one attempt, and after it this machine
+// acquires the ordinary way.
+//
+// The expired arm is not a silent fallback. Section 4.3.2: a server "MUST
+// remain silent" for a DHCPREQUEST from a client of which it "has no record",
+// and an expired lease is precisely the case where no server has a record — so
+// rebooting one buys a full retransmission budget of silence and then the
+// DHCPDISCOVER that should have gone first. The journal line is the only place
+// that is visible from outside, because the wire shows nothing.
+func (m *Machine) takeResume(now Instant, out *actions) bool {
+	r := m.resume
+	if r == nil {
+		return false
+	}
+	// Consumed whichever way this answers, so that every non-BOUND exit from
+	// REBOOTING is automatically RFC 2131 section 3.2(3)'s "(non-abbreviated)
+	// procedure" without each exit having to remember the rule.
+	m.resume = nil
+	if !r.live(now) {
+		out.journal(m, "the remembered lease on "+r.Addr.String()+
+			" has expired: acquiring from INIT, because a server with no record of a client must stay silent (RFC 2131 4.3.2)")
+		return false
+	}
+	m.rebootAddr = r.Addr
+	out.journal(m, "INIT-REBOOT: asking to keep "+r.Addr.String()+" (RFC 2131 4.4.2)")
+	return true
+}
+
+// sendReboot builds and sends the DHCPREQUEST of INIT-REBOOT.
+//
+// RFC 2131 section 4.3.2, the server's reading of it: "'server identifier' MUST
+// NOT be filled in, 'requested IP address' option MUST be filled in with
+// client's notion of its previously assigned address. 'ciaddr' MUST be zero."
+// Table 4 (section 4.3.6) says the same three cells and adds that the message
+// is broadcast; Table 5 (section 4.4.1) makes option 50 a MUST "in SELECTING or
+// INIT-REBOOT" and option 54 a MUST NOT "after INIT-REBOOT".
+//
+// IT IS A SEPARATE BUILDER FROM sendRequest AND FROM sendRenewal, and the
+// separation is the guard rather than a style. sendRequest fills option 54 from
+// the offer it holds and takes option 50 from that offer's yiaddr; sendRenewal
+// fills 'ciaddr' and neither option. Reusing either one here would produce a
+// message this state must not send, and section 4.3.2 says what a server does
+// with the wrong one: a DHCPREQUEST carrying a server identifier is read as one
+// "generated during SELECTING state", checked against the server's own
+// identifier, and answered with SILENCE when it does not match. Silence is also
+// what a message that never left the host produces, so the defect would be a
+// timeout that looks like a slow server. Three builders that cannot reach each
+// other's fields is a compile-time separation;
+// TestTheInitRebootRequestCarriesOnlyWhatSection432Allows is the run-time one.
+func (m *Machine) sendReboot(now Instant, rnd uint64, out *actions) {
+	msg := m.base(now, wire.MsgRequest)
+	v := m.rebootAddr.As4()
+	msg.Options[wire.OptRequestedIP] = v[:]
+	m.state = StateRebooting
+	// Section 4.4.2: "The client records its own local time for later use in
+	// computing the lease expiration", and section 4.4.5's arithmetic runs from
+	// the moment the DHCPREQUEST was SENT. Re-set on every attempt, because the
+	// retransmission the server answered is the one that counts.
+	m.requestSentAt = now
+	out.send(m, msg, Dest{Broadcast: true})
+	out.set(m, TimerRetransmit, m.params.Request.Delay(m.retransmits, rnd))
+}
+
+// requestedAddr is the address this machine ASKED FOR in option 50, or the zero
+// Addr when it asked for none. See Action.Requested.
+func (m *Machine) requestedAddr() netip.Addr {
+	if m.rebootAddr.IsValid() && !m.rebootAddr.IsUnspecified() {
+		return m.rebootAddr
+	}
+	return m.params.RequestedIP
 }
 
 // toInitIdle parks in INIT with nothing armed, waiting for a LinkUp or Start.
@@ -652,7 +884,7 @@ func (m *Machine) enterBound(now Instant, l Lease, out *actions, renewal bool) {
 	m.armDeadline(now, TimerRebind, d.Rebind, d.HasRebind, out)
 
 	if !renewal {
-		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l})
+		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l, Requested: m.requestedAddr()})
 		return
 	}
 	// G-3: a Renewed action on EVERY ACK that extends a held lease, whether
@@ -772,7 +1004,13 @@ func (m *Machine) noteActionFailed(now Instant, rnd uint64, ev Event, out *actio
 	switch m.state {
 	case StateSelecting:
 		out.set(m, TimerRetransmit, m.params.Discover.Delay(m.retransmits, rnd))
-	case StateRequesting:
+	case StateRequesting, StateRebooting:
+		// REBOOTING shares REQUESTING's schedule because section 3.2(3) points
+		// at the same algorithm: "The client retransmits the DHCPREQUEST
+		// according to the retransmission algorithm in section 4.1." Without
+		// this arm a failed send in REBOOTING leaves no timer armed and no
+		// event coming — a machine that has stopped, silently, in the one
+		// state whose whole purpose is to be answered or to give up.
 		out.set(m, TimerRetransmit, m.params.Request.Delay(m.retransmits, rnd))
 	}
 }

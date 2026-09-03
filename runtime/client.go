@@ -41,9 +41,35 @@ type ClientConfig struct {
 
 	// EventBuffer is the depth of the outward event channel.
 	EventBuffer int
+
+	// Resume is a lease this identity held in a PREVIOUS run of this client,
+	// and supplying it makes the first message on the wire RFC 2131 section
+	// 4.4.2's INIT-REBOOT DHCPREQUEST instead of a DHCPDISCOVER. See
+	// lease.Config.Resume for the rules; lease.Record.Resume is where one
+	// comes from, and lease.Record.Prefer is what to do when it says no.
+	Resume *lease.Lease
 }
 
 // NewClient assembles a Client on the named interface.
+//
+// THE CALLING GOROUTINE'S NETWORK NAMESPACE IS THE CLIENT'S, PERMANENTLY.
+// This call opens an AF_PACKET socket, and a socket in Linux belongs to the
+// network namespace that was current in the CREATING THREAD at the moment of
+// the socket(2) call. It does not follow the thread afterwards and it does not
+// follow the process: a caller that locks its goroutine to a thread, enters a
+// namespace with setns(2), calls NewClient and then leaves that namespace has
+// a Client whose socket is still in the namespace it was created in, and Run
+// may be called from any goroutine on any thread thereafter.
+//
+// That is the whole of the contract, and it is what makes one process able to
+// lease on many containers' interfaces at once: the client, not the caller,
+// carries the namespace. It also means the interface name is resolved THERE —
+// cfg.Interface and the hardware address it fills in are looked up in the
+// calling goroutine's namespace, so a name that exists in both namespaces
+// resolves to the one the caller was standing in.
+//
+// TestTheClientKeepsTheNamespaceItWasBuiltIn measures it, including the
+// control that the interface is invisible from the parent namespace.
 //
 // The order below matters for cleanup: each resource opened is released if a
 // later one fails, because a half-constructed Client has no Close to call.
@@ -88,6 +114,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	mgr, err := lease.NewManager(lease.Config{
 		Params:      cfg.Params,
+		Resume:      cfg.Resume,
 		Transport:   tr,
 		Clock:       Clock{},
 		Timers:      timers,

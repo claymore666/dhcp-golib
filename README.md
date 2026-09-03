@@ -57,6 +57,18 @@ Three things are true of it, and each is a test rather than a claim:
   driven by restarting the server with a pool that no longer holds the leased
   address — not against the library's opinion of what happened. No root, no
   password, no host state touched.
+- **A restart that keeps its address, against that same server.** The client is
+  stopped and started again with the lease it held, and the server's log shows
+  a DHCPREQUEST and a DHCPACK for that address with no DHCPDISCOVER between
+  them. A second run, against a replacement server whose pool no longer holds
+  the address, shows the refusal and then the whole acquisition the RFC
+  prescribes after one; a third, whose remembered lease is past its deadline,
+  shows the DHCPDISCOVER and never the DHCPREQUEST.
+- **A socket that keeps the namespace it was opened in.** A client is built on
+  a thread inside a network namespace of its own, the thread is then destroyed,
+  and the client leases from a server that exists only in there — while the
+  goroutine running it cannot even see the interface. That is what lets one
+  process lease on many containers' links at once.
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
@@ -67,10 +79,13 @@ Three things are true of it, and each is a test rather than a claim:
 
 Stated because a bound nobody writes down is read as a guarantee:
 
-- **No INIT-REBOOT.** A client that restarts asks from INIT with a
-  DHCPDISCOVER rather than confirming the address it had, so a reboot costs a
-  round trip the RFC does not require. The state and its message are a later
-  milestone.
+- **A client whose reboot goes unanswered keeps nothing.** RFC 2131 permits a
+  client that gets neither an ACK nor a NAK to its INIT-REBOOT request to go on
+  using the lease for the rest of its term; this one does not, and acquires
+  from INIT instead. Nothing reaches the link that no server has confirmed in
+  this process's lifetime. Silence from a server is also what a message that
+  never left the host produces, and the two are not worth telling apart by
+  guessing.
 - **No INFORM, and no address-in-use probe.** `ReportConflict` sends the
   DHCPDECLINE, but nothing in this library notices a conflict on its own: a
   real one on a real host produces no DHCPDECLINE, because nothing looks.

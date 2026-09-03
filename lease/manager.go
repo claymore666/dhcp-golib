@@ -30,6 +30,29 @@ type Config struct {
 	// EventBuffer is the depth of the outward event channel. Zero means a
 	// small default.
 	EventBuffer int
+
+	// Resume is a lease this identity held in a PREVIOUS run of this client,
+	// and supplying it is what turns the first message on the wire into RFC
+	// 2131 section 4.4.2's INIT-REBOOT DHCPREQUEST instead of a
+	// DHCPDISCOVER. Record.Resume is where one comes from.
+	//
+	// Only Addr and Expire are read. Everything else in the Lease — the
+	// gateway, the DNS servers, and in particular the ServerID — is
+	// deliberately dropped on the way in: section 4.3.2 has a server treat a
+	// DHCPREQUEST carrying a server identifier as a SELECTING one and stay
+	// SILENT when the identifier is not its own, so a remembered server
+	// identifier put on this wire is a hang rather than a wrong answer.
+	//
+	// A zero Expire is an infinite lease and always qualifies. An expiry
+	// already past at NewManager is not an error: the machine journals it and
+	// acquires from INIT, because that is what a client with an expired lease
+	// should do and refusing to start would be worse.
+	//
+	// It is CONSUMED BY ONE ATTEMPT. Whatever ends the INIT-REBOOT —
+	// a DHCPNAK, an exhausted retransmission budget, a link that dropped —
+	// the acquisition that follows is an ordinary DHCPDISCOVER, which is RFC
+	// 2131 section 3.2(3)'s "(non-abbreviated) procedure".
+	Resume *Lease
 }
 
 // Manager runs one managed lease.
@@ -136,6 +159,23 @@ var (
 	ErrNoClock     = errors.New("lease: Config.Clock is required")
 	ErrNoTimers    = errors.New("lease: Config.Timers is required")
 	ErrNoEntropy   = errors.New("lease: Config.Entropy is required")
+
+	// ErrResumeTwice is Config.Resume and Config.Params.Resume both set.
+	//
+	// ONE FACT, ONE DERIVATION. They are two spellings of the same thing on
+	// two clocks, and the pair cannot be checked for agreement here: the
+	// monotonic one names an epoch this process cannot compare against a wall
+	// clock without assuming the very conversion that is in question. Silently
+	// preferring one would make the answer depend on which field a caller
+	// happened to fill.
+	ErrResumeTwice = errors.New("lease: set Config.Resume or Config.Params.Resume, not both")
+
+	// ErrResumeNoAddr is a Config.Resume whose Addr is not a usable IPv4
+	// address. Refused rather than ignored: a caller that meant to keep an
+	// address and passed an empty Lease would otherwise get the plain
+	// DHCPDISCOVER it was trying to replace, with nothing to read that says
+	// so.
+	ErrResumeNoAddr = errors.New("lease: Config.Resume.Addr is not a usable IPv4 address")
 )
 
 // NewManager builds a Manager.
@@ -150,7 +190,26 @@ func NewManager(cfg Config) (*Manager, error) {
 	case cfg.Entropy == nil:
 		return nil, ErrNoEntropy
 	}
-	m, err := proto.New(cfg.Params)
+	params := cfg.Params
+	if cfg.Resume != nil {
+		if params.Resume != nil {
+			return nil, ErrResumeTwice
+		}
+		addr := cfg.Resume.Addr.Addr()
+		if !addr.Is4() || addr.IsUnspecified() {
+			return nil, ErrResumeNoAddr
+		}
+		// The one crossing, taken ONCE at construction from a single paired
+		// reading, for the reason clockBridge exists: two readings taken
+		// separately let a wall-clock step land between them.
+		b := bridge(cfg.Clock)
+		r := &proto.Resume{Addr: addr}
+		if !cfg.Resume.Expire.IsZero() {
+			r.Expire, r.HasExpire = b.instant(cfg.Resume.Expire), true
+		}
+		params.Resume = r
+	}
+	m, err := proto.New(params)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +474,7 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			mg.lease, mg.held = l, true
 			mg.stats.LeasesAcquired++
 			mg.mu.Unlock()
-			mg.emit(ctx, Event{Kind: Acquired, Lease: l})
+			mg.emit(ctx, Event{Kind: Acquired, Lease: l, Requested: a.Requested})
 
 		case proto.ActLeaseRenewed:
 			l := toLease(a.Lease, bridgeAt)

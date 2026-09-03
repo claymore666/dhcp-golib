@@ -892,6 +892,51 @@ func (r Record) Resume(now time.Time) (Lease, bool) {
 	return Lease{}, false
 }
 
+// Prefer is the address this record would ask for as a PREFERENCE rather than
+// claim as a binding: option 50 in a DHCPDISCOVER, which RFC 2131 section
+// 4.4.1 makes a MAY the server is free to ignore.
+//
+// It is the OTHER half of Resume and the two are disjoint by construction —
+// Prefer refuses whatever Resume answers — so a caller writes the pair once
+// and cannot get both:
+//
+//	if l, ok := rec.Resume(now); ok {
+//		cfg.Resume = &l                  // INIT-REBOOT: a claim
+//	} else if a, ok := rec.Prefer(now); ok {
+//		cfg.Params.RequestedIP = a       // DISCOVER + option 50: a request
+//	}
+//
+// THE RETAINED CASE IS WHY IT EXISTS. A tombstone's address was given up: the
+// server is free to have handed it to somebody else, and section 4.3.2 has a
+// server with no record of the client answer an INIT-REBOOT DHCPREQUEST with
+// silence, so claiming it back costs a retransmission budget before the
+// DHCPDISCOVER that should have gone first. Asking for it inside a
+// DHCPDISCOVER costs nothing and usually works, because a server that still
+// has the binding free will re-offer it (section 4.3.1).
+//
+// An EXPIRED lease in any other phase lands here for the same reason, which is
+// what makes the pair total: a record holding an address either believes the
+// lease is live, and claims it, or does not, and asks.
+//
+// PhaseUnset holds nothing and PhaseClosed is over; both answer false.
+func (r Record) Prefer(now time.Time) (netip.Addr, bool) {
+	if _, ok := r.Resume(now); ok {
+		return netip.Addr{}, false
+	}
+	switch r.Phase {
+	case PhaseUnset, PhaseClosed:
+		return netip.Addr{}, false
+	}
+	if !r.Lease.Addr.IsValid() {
+		return netip.Addr{}, false
+	}
+	addr := r.Lease.Addr.Addr()
+	if !addr.Is4() || addr.IsUnspecified() {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}
+
 // Addr is the address the record holds, if it holds one.
 func (r Record) Addr() (netip.Addr, bool) {
 	if !r.Lease.Addr.IsValid() {
@@ -912,6 +957,11 @@ func SnapshotParams(p proto.Params) proto.Params {
 	p.ParameterList = append([]wire.OptionCode(nil), p.ParameterList...)
 	p.Servers.Allow = append([]netip.Addr(nil), p.Servers.Allow...)
 	p.Servers.Deny = append([]netip.Addr(nil), p.Servers.Deny...)
+	// Resume is the one POINTER in Params, so a shallow copy leaves the record
+	// and the caller sharing one struct: the caller can change what the
+	// snapshot says was sent, after it was sent. The four slices above are the
+	// same defect in the shape Go makes easier to spot.
+	p.Resume = p.Resume.Clone()
 	return p
 }
 

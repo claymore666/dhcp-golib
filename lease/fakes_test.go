@@ -300,6 +300,40 @@ func nakFor(req *wire.Message) *wire.Message {
 	}
 }
 
+// answerTheRequestedAddress is a server that HAS the client's record: it ACKs
+// whatever option 50 names, which is what RFC 2131 section 4.3.2 says a server
+// with a matching binding does with an INIT-REBOOT DHCPREQUEST.
+//
+// Separate from answerNormally, which always answers with testYIAddr, because
+// a fixture that hands back one fixed address cannot tell "the client asked for
+// this" from "the fixture always says this".
+func answerTheRequestedAddress(req *wire.Message, _ int) []*wire.Message {
+	t, ok := req.Type()
+	if !ok {
+		return nil
+	}
+	want, asked := req.Addr4(wire.OptRequestedIP)
+	switch t {
+	case wire.MsgDiscover:
+		// It answers a DHCPDISCOVER as well, so that a test whose client
+		// falls back to INIT still completes. A fixture that answered only
+		// DHCPREQUESTs would turn every such case into a hang, which is a
+		// whole-package timeout with no failing assertion.
+		m := offerFor(req)
+		if asked {
+			m.YIAddr = want
+		}
+		return []*wire.Message{m}
+	case wire.MsgRequest:
+		m := ackFor(req, 3600)
+		if asked {
+			m.YIAddr = want
+		}
+		return []*wire.Message{m}
+	}
+	return nil
+}
+
 // answerNormally is the ordinary server: OFFER to a DISCOVER, ACK to a REQUEST.
 func answerNormally(req *wire.Message, _ int) []*wire.Message {
 	t, ok := req.Type()
@@ -542,8 +576,26 @@ func (r *rig) stop() error {
 	return r.wait()
 }
 
+// rigOption sets a Config field that is not Params. Variadic so that every
+// existing call site stays the three-argument one it was: an option nobody
+// passes must not change what the other tests build.
+type rigOption func(*Config)
+
+// withResume supplies the remembered lease that turns the first message into
+// an INIT-REBOOT DHCPREQUEST.
+func withResume(l Lease) rigOption { return func(c *Config) { c.Resume = &l } }
+
 // newRig assembles a manager over the fakes and starts Run.
-func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault) *rig {
+func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault, opts ...rigOption) *rig {
+	t.Helper()
+	return newRigOn(t, newFakeClock(), p, behaviour, plan, opts...)
+}
+
+// newRigOn is newRig with the clock supplied, for the tests that need the two
+// clocks moved apart BEFORE the manager is built — the wall-to-monotonic
+// conversion happens once, at construction, so a test that advances the clock
+// afterwards measures nothing about it.
+func newRigOn(t *testing.T, clk *fakeClock, p proto.Params, behaviour serverBehaviour, plan Fault, opts ...rigOption) *rig {
 	t.Helper()
 
 	srv := newFakeServer(behaviour)
@@ -557,13 +609,13 @@ func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault)
 		server:  srv,
 		fault:   ft,
 		timers:  newFakeTimers(),
-		clock:   newFakeClock(),
+		clock:   clk,
 		journal: newJournalRecorder(),
 		packets: newPacketRecorder(),
 		done:    make(chan error, 1),
 	}
 
-	mgr, err := NewManager(Config{
+	cfg := Config{
 		Params:      p,
 		Transport:   ft,
 		Clock:       r.clock,
@@ -572,7 +624,11 @@ func newRig(t *testing.T, p proto.Params, behaviour serverBehaviour, plan Fault)
 		Journal:     r.journal,
 		Packets:     r.packets,
 		EventBuffer: 16,
-	})
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	mgr, err := NewManager(cfg)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

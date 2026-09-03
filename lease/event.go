@@ -105,11 +105,33 @@ type Event struct {
 	Lease  Lease
 	Reason proto.Reason
 	Note   string
+
+	// Requested is the address the client ASKED FOR, on Acquired only, and
+	// the zero value means it asked for none. It is set when the caller
+	// supplied Config.Resume (the INIT-REBOOT address) or
+	// Params.RequestedIP (option 50 in the DHCPDISCOVER).
+	//
+	// It is here because RFC 2131 lets a server answer either with something
+	// else: section 4.4.1 makes option 50 in a DHCPDISCOVER a MAY, and
+	// section 4.4.2 accepts a DHCPACK for an INIT-REBOOT request "from any
+	// server" on the xid alone. A caller that cannot see the difference
+	// applies an address it did not ask for, and the plugin's `ip` option
+	// then silently means nothing.
+	//
+	// IT IS A REPORT, NOT A VERDICT. This library binds the address the
+	// server gave. Refusing it is the chassis's decision, because only the
+	// chassis knows whether the container can be started with a different
+	// address; the check is Requested.IsValid() && Requested != the lease's
+	// address.
+	Requested netip.Addr
 }
 
 func (e Event) String() string {
 	switch e.Kind {
 	case Acquired, Changed, Renewed:
+		if e.Requested.IsValid() && e.Lease.Addr.IsValid() && e.Requested != e.Lease.Addr.Addr() {
+			return fmt.Sprintf("%s %s (asked for %s)", e.Kind, e.Lease, e.Requested)
+		}
 		return fmt.Sprintf("%s %s", e.Kind, e.Lease)
 	default:
 		return fmt.Sprintf("%s %s: %s", e.Kind, e.Reason, e.Note)
@@ -136,6 +158,27 @@ func bridge(c Clock) clockBridge {
 
 func (b clockBridge) at(i proto.Instant) time.Time {
 	return b.wall.Add(time.Duration(i.Sub(b.mono)))
+}
+
+// instant is at's inverse: a wall-clock deadline that outlived the process
+// that computed it, expressed in the monotonic clock this process is running
+// on.
+//
+// It exists for exactly one input — the remembered lease's expiry, read back
+// from a record written by a PREVIOUS run — and it is the only direction that
+// crosses that way. A monotonic epoch means nothing to the next process, which
+// is why the record stores wall-clock deadlines; ring 1 cannot import time,
+// which is why they have to come back across here.
+//
+// THE STEP RISK IS REAL AND IS ACCEPTED. A wall clock that jumped while this
+// client was not running moves the converted deadline by the size of the jump,
+// so an NTP correction can make a live remembered lease look expired or the
+// reverse. The alternative is to keep no deadline at all and INIT-REBOOT
+// unconditionally, which RFC 2131 section 4.3.2 says buys a retransmission
+// budget of silence from any server with no record of the client. One
+// conversion, at construction, is the smaller error.
+func (b clockBridge) instant(t time.Time) proto.Instant {
+	return b.mono.Add(proto.Duration(t.Sub(b.wall)))
 }
 
 // toLease converts ring 1's Lease into the outward one.
