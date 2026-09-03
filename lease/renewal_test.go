@@ -1,6 +1,10 @@
 package lease
 
 import (
+	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/netip"
 	"testing"
 
@@ -90,11 +94,39 @@ func TestRenewalsSentCountsRenewalsOnly(t *testing.T) {
 // Two counters, because their DIFFERENCE is the diagnostic: a DHCPNAK
 // discarded for a stale xid is invisible in either number alone, and on a LAN
 // with two DHCP servers it is the number that explains the behaviour.
+//
+// THE TEST HAS TO KEEP A TRANSACTION OPEN. Review round 4 measured this test's
+// first two shapes and found both vacuous: disabling proto's xid guard left
+// this package GREEN. The reason was not the barrier — it was the state. In
+// BOUND the machine discards every inbound message before it ever looks at an
+// xid ("message in BOUND with no transaction open"), so a stale NAK injected
+// there costs nothing whatever the guard does. Firing T1 first puts the
+// machine in RENEWING, where a DHCPNAK for the open transaction WOULD end the
+// lease, and the xid is then the only thing standing between the foreign NAK
+// and the loss. MEASURED: with the guard disabled this test now fails.
 func TestNakCountersSeparateTheWireFromTheMachine(t *testing.T) {
-	r := newRig(t, testParams(), answerNormally, Fault{})
+	r := newRig(t, testParams(), answerTheAcquisitionThenGoSilent, Fault{})
 	if ev := r.nextEvent(t); ev.Kind != Acquired {
 		t.Fatalf("first event is %s, want acquired", ev)
 	}
+
+	// Into RENEWING, and stay there: the server answers no renewal.
+	if !r.timers.waitArmed(proto.TimerRenew) {
+		t.Fatal("no renewal timer was armed")
+	}
+	at, ok := r.timers.armedAt(proto.TimerRenew)
+	if !ok {
+		t.Fatal("the renewal timer is not armed")
+	}
+	r.clock.advance(at)
+	r.timers.fire(proto.TimerRenew)
+	r.packets.waitRecorded(t, "the renewal request", func(c CapturedPacket) bool {
+		if c.Dir != DirOut || c.Msg == nil {
+			return false
+		}
+		mt, ok := c.Msg.Type()
+		return ok && mt == wire.MsgRequest && c.Msg.CIAddr.IsValid() && !c.Msg.CIAddr.IsUnspecified()
+	})
 
 	// A DHCPNAK for a transaction this client never had.
 	stale := nakFor(&wire.Message{XID: 0xDEADBEEF, CHAddr: testCHAddr})
@@ -103,19 +135,40 @@ func TestNakCountersSeparateTheWireFromTheMachine(t *testing.T) {
 		t.Fatalf("Encode: %v", err)
 	}
 	go r.server.injectRaw(raw)
-	r.packets.waitRecorded(t, "the stale DHCPNAK", func(c CapturedPacket) bool {
-		return c.Dir == DirIn && c.Msg != nil && c.Msg.XID == 0xDEADBEEF
+	r.journal.waitAppended(t, "the stale DHCPNAK", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvReceived && bytes.Equal(e.Raw, raw)
+	})
+
+	// A SECOND NAK, AND ITS JOURNAL ENTRY, ARE THE BARRIER FOR THE FIRST.
+	//
+	// waitAppended's own doc says why: an entry is appended after Step but
+	// BEFORE that Step's actions drain, so the first NAK's entry proves the
+	// machine saw it and not that it did nothing about it. The entry for a
+	// LATER event is appended only after the earlier event's actions have
+	// drained, so it is the point at which "nothing happened" is a fact
+	// rather than a head start.
+	second := nakFor(&wire.Message{XID: 0xFEEDFACE, CHAddr: testCHAddr})
+	raw2, err := wire.Encode(second)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	go r.server.injectRaw(raw2)
+	r.journal.waitAppended(t, "the second stale DHCPNAK", func(e proto.JournalEntry) bool {
+		return e.Kind == proto.EvReceived && bytes.Equal(e.Raw, raw2)
 	})
 
 	s := r.mgr.Stats()
-	if s.NaksSeen != 1 {
-		t.Fatalf("Stats.NaksSeen = %d, want 1: the NAK was on the wire whatever the machine did with it", s.NaksSeen)
+	if s.NaksSeen != 2 {
+		t.Fatalf("Stats.NaksSeen = %d, want 2: both NAKs were on the wire whatever the machine did with them", s.NaksSeen)
 	}
 	if s.NaksAccepted != 0 {
 		t.Fatalf("Stats.NaksAccepted = %d, want 0: a NAK for a foreign transaction cost this client nothing", s.NaksAccepted)
 	}
 	if _, ok := r.mgr.Lease(); !ok {
 		t.Fatal("a DHCPNAK with a foreign xid ended the lease")
+	}
+	if s.LeasesLost != 0 {
+		t.Fatalf("Stats.LeasesLost = %d, want 0", s.LeasesLost)
 	}
 }
 
@@ -209,6 +262,20 @@ func TestNakDuringRenewalEndsTheHeldLease(t *testing.T) {
 	if l, ok := r.mgr.Lease(); ok {
 		t.Fatalf("the manager still reports holding %s while announcing that it lost it", l.Addr)
 	}
+	if s := r.mgr.Stats(); s.LeasesLost != 1 {
+		t.Fatalf("Stats.LeasesLost = %d, want 1: it is the counter the Lost event reports", s.LeasesLost)
+	}
+
+	// THE NAK COUNTERS BELONG TO THE NEXT EVENT, so the next event is the
+	// barrier. One Step produces ActLeaseLost and then ActFailed, in that
+	// order because a caller tears the interface down when it sees the loss;
+	// NaksAccepted is bumped in the second of those. Reading it here without
+	// waiting was review round 4's blocking finding: it made the arbiter go
+	// red under load, in the false-red direction, roughly once in a hundred.
+	failed := r.nextEvent(t)
+	if failed.Kind != Failed || failed.Reason != proto.ReasonNak {
+		t.Fatalf("event after the loss is %s, want failed/nak", failed)
+	}
 
 	s := r.mgr.Stats()
 	if s.NaksSeen != 1 || s.NaksAccepted != 1 {
@@ -218,4 +285,242 @@ func TestNakDuringRenewalEndsTheHeldLease(t *testing.T) {
 	if s.LeasesLost != 1 {
 		t.Fatalf("Stats.LeasesLost = %d, want 1", s.LeasesLost)
 	}
+}
+
+// TestStatsAreCurrentWhenAnEventIsReceived pins the contract Stats documents,
+// for EVERY event kind: the counters an event reports are bumped before it is
+// emitted, so a caller that reads Stats on receipt sees that event accounted
+// for.
+//
+// It exists because review round 4 held this branch on a test that assumed
+// MORE than that — it read a counter belonging to the NEXT event — and the
+// arbiter went red under load. This test states the contract in the caller's
+// terms — read Stats the moment the event arrives, see the event in it — but
+// it is NOT what holds the order: measured, it lets a bump moved below its
+// emit through on an idle box. TestEveryCounterIsBumpedBeforeItsEmit, below,
+// is the observer; this one is the description.
+//
+// One rig drives all five kinds in order: acquire, renew onto a lease whose
+// router has moved (Renewed then Changed), then a refused renewal (Lost then
+// Failed).
+func TestStatsAreCurrentWhenAnEventIsReceived(t *testing.T) {
+	r := newRig(t, testParams(), renewalChangesThenNak(), Fault{})
+
+	renew := func() {
+		t.Helper()
+		if !r.timers.waitArmed(proto.TimerRenew) {
+			t.Fatal("no renewal timer was armed")
+		}
+		at, ok := r.timers.armedAt(proto.TimerRenew)
+		if !ok {
+			t.Fatal("the renewal timer is not armed")
+		}
+		r.clock.advance(at)
+		r.timers.fire(proto.TimerRenew)
+	}
+
+	steps := []struct {
+		kind EventKind
+		// want reports what is WRONG, or "" when the counters this kind
+		// reports are current.
+		want func(Stats, Event) string
+		// then drives whatever produces the next event.
+		then func()
+	}{
+		{
+			kind: Acquired,
+			want: func(s Stats, _ Event) string {
+				if s.LeasesAcquired < 1 {
+					return "LeasesAcquired is 0"
+				}
+				return ""
+			},
+			then: renew,
+		},
+		{
+			kind: Renewed,
+			want: func(s Stats, _ Event) string {
+				if s.RenewalsCompleted < 1 {
+					return "RenewalsCompleted is 0"
+				}
+				if s.RenewalsSent < 1 {
+					return "RenewalsSent is 0"
+				}
+				return ""
+			},
+		},
+		{
+			kind: Changed,
+			// Changed reports no counter of its own. What it reports is the
+			// lease, and that is current at receipt for the same reason: the
+			// manager writes it under the mutex before it emits.
+			want: func(_ Stats, ev Event) string {
+				held, ok := r.mgr.Lease()
+				if !ok {
+					return "the manager holds nothing while announcing a changed lease"
+				}
+				if held.Gateway != ev.Lease.Gateway {
+					return "Lease() gateway " + held.Gateway.String() + " is not the event's " + ev.Lease.Gateway.String()
+				}
+				return ""
+			},
+			then: renew,
+		},
+		{
+			kind: Lost,
+			want: func(s Stats, _ Event) string {
+				if s.LeasesLost < 1 {
+					return "LeasesLost is 0"
+				}
+				return ""
+			},
+		},
+		{
+			kind: Failed,
+			want: func(s Stats, _ Event) string {
+				if s.AcquireFailures < 1 {
+					return "AcquireFailures is 0"
+				}
+				if s.NaksAccepted < 1 {
+					return "NaksAccepted is 0"
+				}
+				return ""
+			},
+		},
+	}
+
+	for i, step := range steps {
+		ev := r.nextEvent(t)
+		// Read the counters FIRST, before anything else can advance them:
+		// the question is what the caller sees at the moment the event
+		// arrives, not what it sees a moment later.
+		s := r.mgr.Stats()
+		if ev.Kind != step.kind {
+			t.Fatalf("event %d is %s, want %s", i, ev, step.kind)
+		}
+		if bad := step.want(s, ev); bad != "" {
+			t.Fatalf("at the %s event, %s: the counters an event reports must be current when it is received", step.kind, bad)
+		}
+		if step.then != nil {
+			step.then()
+		}
+	}
+}
+
+// TestEveryCounterIsBumpedBeforeItsEmit is the deterministic half of the
+// contract above, and it exists because the runtime half cannot be made
+// deterministic.
+//
+// MEASURED, round 4: four mutants that move a counter bump BELOW its emit
+// (LeasesAcquired, RenewalsCompleted, LeasesLost, the NAK pair) all SURVIVE
+// TestStatsAreCurrentWhenAnEventIsReceived at -count=20 on an idle box, and
+// all four die under a scheduling probe that spins 5 ms after every emit. That
+// is the shape of the defect this round fixed: the window between "the caller
+// has the event" and "the manager executed the next instruction" is a few
+// nanoseconds wide, so a test that races it observes the property only when
+// the box is busy — which is the wrong way round for an observer.
+//
+// The property is about the ORDER OF TWO STATEMENTS, so it is checked where it
+// is decidable: in the source. For every case arm of drain's action switch that
+// emits an event, no counter may be written after the emit.
+func TestEveryCounterIsBumpedBeforeItsEmit(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "manager.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing manager.go: %v", err)
+	}
+
+	var drain *ast.FuncDecl
+	for _, d := range file.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "drain" {
+			drain = fn
+		}
+	}
+	if drain == nil {
+		t.Fatal("manager.go declares no drain method: this test is looking at the wrong code")
+	}
+
+	emitting := 0
+	ast.Inspect(drain, func(n ast.Node) bool {
+		clause, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		last := -1
+		for i, stmt := range clause.Body {
+			if callsMethod(stmt, "emit") {
+				last = i
+			}
+		}
+		if last < 0 {
+			return true
+		}
+		emitting++
+		for _, stmt := range clause.Body[last+1:] {
+			if what := counterWrite(stmt); what != "" {
+				t.Errorf("%s: %s is written AFTER the emit above it; every counter an event reports must be current when the event is received. See Stats.",
+					fset.Position(stmt.Pos()), what)
+			}
+		}
+		return true
+	})
+
+	// The walk above is vacuous if it matched nothing: five event kinds, five
+	// arms that emit.
+	if emitting != 5 {
+		t.Fatalf("drain has %d case arm(s) that emit, want 5 (one per event kind): the walk is not seeing what it thinks it is", emitting)
+	}
+}
+
+// callsMethod reports whether stmt is a call to a method of this name.
+func callsMethod(stmt ast.Stmt, name string) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == name {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// counterWrite names the counter stmt writes, or "" when it writes none.
+//
+// Three spellings count, because a gate keyed on one spelling only enforces
+// that spelling: the bump helper, a direct increment under the mutex, and any
+// assignment to a field of mg.stats. Anything that touches mg.stats is a write
+// as far as this test is concerned; there is no reason to read a counter down
+// here, and a false positive costs a rewrite while a false negative costs the
+// property.
+func counterWrite(stmt ast.Stmt) string {
+	if callsMethod(stmt, "bump") {
+		return "a counter (via bump)"
+	}
+	name := ""
+	note := func(sel *ast.SelectorExpr) {
+		if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "stats" {
+			name = "stats." + sel.Sel.Name
+		}
+	}
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.IncDecStmt:
+			if sel, ok := v.X.(*ast.SelectorExpr); ok {
+				note(sel)
+			}
+		case *ast.AssignStmt:
+			for _, lhs := range v.Lhs {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok {
+					note(sel)
+				}
+			}
+		}
+		return true
+	})
+	return name
 }

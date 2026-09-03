@@ -315,6 +315,66 @@ func answerNormally(req *wire.Message, _ int) []*wire.Message {
 	return nil
 }
 
+// renewalChangesThenNak is the one server that drives every outward event
+// kind: it acquires, answers the first renewal with a lease whose router has
+// moved (Renewed AND Changed), refuses the second (Lost AND Failed), and then
+// says nothing.
+//
+// The renewals are told apart by counting RENEWALS, not messages: a renewal is
+// the DHCPREQUEST that names the address it already holds, and keying on the
+// client's message ordinal would keep passing while quietly answering a
+// different message than the one this fixture means.
+func renewalChangesThenNak() serverBehaviour {
+	renewals := 0
+	return func(req *wire.Message, n int) []*wire.Message {
+		t, ok := req.Type()
+		if !ok {
+			return nil
+		}
+		renewal := t == wire.MsgRequest && req.CIAddr.IsValid() && !req.CIAddr.IsUnspecified()
+		switch {
+		case t == wire.MsgDiscover && n == 1:
+			return []*wire.Message{offerFor(req)}
+		case renewal:
+			renewals++
+			if renewals > 1 {
+				return []*wire.Message{nakFor(req)}
+			}
+			m := ackFor(req, 3600)
+			// The router moves, so the renewed lease is not the one the
+			// caller had and a Changed rides beside the Renewed.
+			m.Options[wire.OptRouter] = addr4("192.168.99.2")
+			return []*wire.Message{m}
+		case t == wire.MsgRequest:
+			return []*wire.Message{ackFor(req, 3600)}
+		}
+		return nil
+	}
+}
+
+// answerTheAcquisitionThenGoSilent hands out one lease and then says nothing:
+// no answer to the renewal, no answer to a second acquisition.
+//
+// It is what holds a test in RENEWING. A server that answered the renewal
+// would put the machine back in BOUND while the test was still injecting, and
+// BOUND discards every inbound message before the xid is ever looked at — so a
+// test that means to exercise the xid guard has to keep a transaction open.
+func answerTheAcquisitionThenGoSilent(req *wire.Message, n int) []*wire.Message {
+	t, ok := req.Type()
+	if !ok {
+		return nil
+	}
+	switch {
+	case t == wire.MsgDiscover && n == 1:
+		return []*wire.Message{offerFor(req)}
+	case t == wire.MsgRequest && req.CIAddr.IsValid() && !req.CIAddr.IsUnspecified():
+		return nil
+	case t == wire.MsgRequest:
+		return []*wire.Message{ackFor(req, 3600)}
+	}
+	return nil
+}
+
 // nakTheRenewalThenGoSilent answers the acquisition, refuses the renewal, and
 // then says nothing at all.
 //

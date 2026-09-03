@@ -71,6 +71,28 @@ type Manager struct {
 }
 
 // Stats are the counters this manager produces.
+//
+// WHEN A COUNTER IS CURRENT. Every counter an event reports is bumped BEFORE
+// that event is emitted, so a caller that reads Stats on receiving an event
+// sees that event accounted for: LeasesAcquired at Acquired, RenewalsCompleted
+// at Renewed, LeasesLost at Lost, AcquireFailures and NaksAccepted at Failed.
+// Two tests hold this. One drives every event kind and reads the counters at
+// the instant each event arrives; the other reads this file and refuses a
+// counter written below an emit, which is where the order is decidable — the
+// runtime race is nanoseconds wide, and a test cannot win it reliably.
+//
+// What the contract does NOT say is that a counter belonging to a LATER event
+// is current: one Step can produce several events, and each is emitted as its
+// own action is executed. A DHCPNAK that costs a lease produces ActLeaseLost
+// and then ActFailed, in that order and for a reason ring 1 is explicit about
+// — a caller tears the interface down when it sees the loss — so at the Lost
+// event NaksAccepted has not been bumped yet. A caller (or a test) that wants
+// that number waits for the Failed event, which is the event that reports it.
+//
+// The alternative — accounting a whole Step before executing it, so any event
+// in it sees the final numbers — was considered and rejected in review round
+// 4: Sent and SendFailures are outcomes, not intentions, and a pre-pass would
+// have to count sends that then fail.
 type Stats struct {
 	Steps            uint64
 	Sent             uint64
@@ -419,6 +441,9 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			mg.emit(ctx, Event{Kind: Lost, Lease: lost, Reason: a.Reason})
 
 		case proto.ActFailed:
+			// Bumped before the emit, like every other counter here: the
+			// Failed event is the one that reports these two, and a caller
+			// reading Stats when it arrives must see them. See Stats.
 			mg.bump(func(s *Stats) {
 				s.AcquireFailures++
 				if a.Reason == proto.ReasonNak {

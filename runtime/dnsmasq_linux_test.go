@@ -566,7 +566,6 @@ func (s *dnsmasqServer) lines() []string {
 	return append([]string(nil), s.buf...)
 }
 
-// waitFor blocks until a log line contains want.
 // waitCount blocks until at least n of the lines logged so far contain want.
 //
 // It is waitFor's answer to a barrier that has to be about a line the log may
@@ -586,6 +585,7 @@ func (s *dnsmasqServer) waitCount(t *testing.T, want string, n int, why string) 
 		why, s.count(want), want, n, strings.Join(s.lines(), "\n"))
 }
 
+// waitFor blocks until a log line contains want.
 func (s *dnsmasqServer) waitFor(t *testing.T, want string) {
 	t.Helper()
 	// Anything already read counts: the line may have arrived before this
