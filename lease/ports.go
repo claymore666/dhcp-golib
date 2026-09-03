@@ -105,3 +105,31 @@ type PacketRing interface {
 	Record(CapturedPacket)
 	Packets() []CapturedPacket
 }
+
+// Store is the durable lease-record log: the port ring 3 implements and the
+// only thing that survives the process.
+//
+// It is deliberately NOT a record store. What is durable is the event stream;
+// the record is the fold of it (Rebuild). A port with Get and Put for records
+// would make the last writer the truth and would lose the one property this
+// design is built on — that a restart replays what happened rather than
+// trusting a summary somebody wrote down.
+//
+// APPEND-ONLY AND IN ORDER. Load returns every event this store holds, in the
+// order it was appended, which is what makes the fold's answer a function of
+// the file. A Load that sorted, de-duplicated or reversed would satisfy any
+// test that counted lines; the ordering is asserted directly, and the fold's
+// own per-record sequence check refuses a reordering independently.
+//
+// AN IMPLEMENTATION MAY SKIP WHAT IT CANNOT READ. A process killed inside an
+// Append leaves a fragment, and refusing the whole file for it would lose every
+// record written before the crash. Skipping is therefore allowed and COUNTING
+// what was skipped is not optional — see runtime.RecordStore, which reports a
+// torn tail and an unreadable interior line as two different numbers.
+type Store interface {
+	// Append writes one event. It must be atomic against a concurrent Append
+	// from another process on the same file: one line, one write.
+	Append(RecordEvent) error
+	// Load returns every event, in append order.
+	Load() ([]RecordEvent, error)
+}
