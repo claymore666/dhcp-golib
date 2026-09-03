@@ -135,8 +135,9 @@ type Store interface {
 	Append(RecordEvent) error
 	// Load returns every event, in append order.
 	Load() ([]RecordEvent, error)
-	// Damage reports what the last Load could not read. A store that reads
-	// everything reports a zero value.
+	// Damage reports the lines this store could not read, whether a Load
+	// found them or the store had to repair them to open at all. A store that
+	// read everything reports a zero value.
 	Damage() StoreDamage
 }
 

@@ -10,6 +10,10 @@ import (
 // the order they were created, plus everything the fold refused.
 type Rebuilt struct {
 	Records []Record
+	// Rejects is every refusal in the journal, including the ones that
+	// arrived before their record existed and therefore appear in no
+	// Record.Counters.Rejects. It is the journal's account, not the sum of
+	// the records'.
 	Rejects []Reject
 
 	byID map[string]int
@@ -109,7 +113,16 @@ func Rebuild(evs []RecordEvent) Rebuilt {
 		}
 		if next.Phase == PhaseUnset {
 			// The event was refused before it could bring a record into
-			// existence. Recording the empty record would invent one.
+			// existence. Recording the empty record would invent one — a
+			// record with no create behind it, answering lookups for an
+			// endpoint nothing made.
+			//
+			// So the refusal is counted in one place only: the Rejects slice
+			// has it, and no Record.Counters.Rejects ever will, because there
+			// is no record it belongs to. A caller auditing a journal reads
+			// this slice; one auditing an endpoint reads that counter; the two
+			// numbers are different questions and do not have to agree. Pinned
+			// by TestRefusalsBeforeTheCreateAreTheJournalsNotTheRecords.
 			continue
 		}
 		rb.byID[ev.ID] = len(rb.Records)

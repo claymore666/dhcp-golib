@@ -50,6 +50,32 @@ type RecordStore struct {
 // process start. A racing creator between the two opens is the one case the
 // fallback reports as an error rather than papering over, and the winner of
 // that race syncs the directory anyway.
+//
+// A FRAGMENT IS TERMINATED BEFORE THE FIRST APPEND. O_APPEND writes at the end
+// of the FILE, not at the start of a line, so an existing file whose last byte
+// is not a newline would take this process's first event onto the previous
+// process's half-written one and lose both. That first event is the restart
+// path's adopt — an event durableWrite fsyncs precisely because nothing can
+// re-derive it — so the newline goes in at open, and the fragment is counted
+// as damage at that moment: Damage and the next Load then report the SAME line
+// the same way, instead of one number standing for two lost events.
+//
+// ORDER, and the reason for it. The terminator is written AND FSYNCED before
+// any Append, not left to the first durable Append's fsync to carry. Two
+// unsynced writes to one file are not ordered against each other across a
+// power loss: the event's bytes could reach the disk while the newline before
+// them did not, which is the defect this exists to prevent, reassembled. It
+// costs one fsync on a path that by definition follows a crash. It does not
+// interact with the directory sync above — that one runs only when the file
+// was CREATED, and a created file has no fragment — but the rule the two share
+// is the same: make the file findable and consistent BEFORE the first event
+// depends on it.
+//
+// A second, live writer is not a hazard here. Append writes a whole line in
+// one call, so a file that does not end in a newline while another writer is
+// between calls is a file that writer died inside; and if one does append
+// between the read below and the write, O_APPEND puts the terminator after its
+// line, where it is a blank line — skipped, and not counted as damage.
 func OpenRecordStore(path string) (*RecordStore, error) {
 	created := true
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -60,13 +86,57 @@ func OpenRecordStore(path string) (*RecordStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runtime: lease record store %s: %w", path, err)
 	}
+	s := &RecordStore{path: path, f: f}
 	if created {
 		if err := syncDir(filepath.Dir(path)); err != nil {
 			_ = f.Close()
 			return nil, fmt.Errorf("runtime: making %s findable: %w", path, err)
 		}
+		return s, nil
 	}
-	return &RecordStore{path: path, f: f}, nil
+	fragment, err := endsMidLine(path)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("runtime: reading the end of %s: %w", path, err)
+	}
+	if fragment {
+		if _, err := f.Write([]byte("\n")); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("runtime: terminating the fragment at the end of %s: %w", path, err)
+		}
+		if err := syncRecordFile(f); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("runtime: syncing the terminated fragment in %s: %w", path, err)
+		}
+		s.torn = lease.StoreDamage{Skipped: 1}
+	}
+	return s, nil
+}
+
+// endsMidLine reports whether the file's LAST BYTE is something other than a
+// newline, which is the shape a process killed inside Append leaves.
+//
+// It reads one byte rather than the file: a journal is unbounded and this runs
+// on every open. An empty file is not a fragment — there is nothing before the
+// first event to run into.
+func endsMidLine(path string) (bool, error) {
+	r, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = r.Close() }()
+	fi, err := r.Stat()
+	if err != nil {
+		return false, err
+	}
+	if fi.Size() == 0 {
+		return false, nil
+	}
+	var last [1]byte
+	if _, err := r.ReadAt(last[:], fi.Size()-1); err != nil {
+		return false, err
+	}
+	return last[0] != '\n', nil
 }
 
 // syncDir fsyncs a directory so that an entry created in it survives a power
@@ -175,9 +245,17 @@ func (s *RecordStore) Load() ([]lease.RecordEvent, error) {
 	return evs, nil
 }
 
-// Damage reports what the last Load could not read. It is a COUNT and not a
-// log line: a store that quietly drops a record is the failure this exists
-// against, and a number nobody reads is the same failure with extra steps.
+// Damage reports the lines this store could not read: what the last Load
+// skipped, or — before any Load — the fragment the open had to terminate.
+//
+// It is a COUNT and not a log line: a store that quietly drops a record is the
+// failure this exists against, and a number nobody reads is the same failure
+// with extra steps.
+//
+// The two sources agree rather than accumulate. A fragment terminated at open
+// is one Skipped line, and the next Load reads that same line and counts it the
+// same way, so the number does not move when a Load happens; a Load REPLACES
+// the count rather than adding to it, because it re-reads the whole file.
 func (s *RecordStore) Damage() lease.StoreDamage {
 	s.mu.Lock()
 	defer s.mu.Unlock()

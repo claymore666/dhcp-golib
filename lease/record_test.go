@@ -213,30 +213,52 @@ func TestARejectMovesNothingButItsOwnCount(t *testing.T) {
 	for _, c := range []struct {
 		what  string
 		phase Phase
-		ev    RecordEvent
-		want  RejectReason
+		// before is folded in first, for refusals that need a history rather
+		// than a phase. Each one is checked for acceptance, so a row cannot
+		// pass by having its setup silently refused.
+		before []RecordEvent
+		ev     RecordEvent
+		want   RejectReason
 	}{
-		{"a lease event after Leave, which would drag a left record back", PhaseLeft,
+		{"a lease event after Leave, which would drag a left record back", PhaseLeft, nil,
 			RecordEvent{Op: OpLease, Kind: Changed, Lease: ptr(testRecordLease("192.168.99.100/24"))}, RejectPhase},
-		{"a bind on a retained record", PhaseRetained, RecordEvent{Op: OpBind}, RejectPhase},
-		{"a leave on a record nothing joined", PhaseCreated, RecordEvent{Op: OpLeave}, RejectPhase},
-		{"a reservation for a record that already exists", PhaseJoined, RecordEvent{Op: OpReserve}, RejectExists},
-		{"an adoption of a record that already exists", PhaseJoined, RecordEvent{Op: OpAdopt}, RejectExists},
-		{"a create on a joined record, which is a phase error rather than a duplicate", PhaseJoined, RecordEvent{Op: OpCreate}, RejectPhase},
-		{"a re-bind of something that is not a tombstone", PhaseJoined, RecordEvent{Op: OpRebind}, RejectPhase},
-		{"an event for a record nothing created", PhaseUnset, RecordEvent{Op: OpBind}, RejectNoRecord},
-		{"an event naming another record", PhaseJoined, RecordEvent{Op: OpLeave, ID: "rec-2"}, RejectID},
-		{"an event naming another scope", PhaseJoined, RecordEvent{Op: OpLeave, Scope: "net-b"}, RejectScope},
-		{"a second, different identity", PhaseJoined, RecordEvent{Op: OpLeave, Identity: []byte{0x01}}, RejectIdentity},
-		{"a lease event with no lease", PhaseJoined, RecordEvent{Op: OpLease, Kind: Acquired}, RejectPayload},
-		{"a Lost routed to the lease op", PhaseJoined, RecordEvent{Op: OpLease, Kind: Lost}, RejectPayload},
-		{"a counters event with no counters", PhaseJoined, RecordEvent{Op: OpStats}, RejectPayload},
-		{"a counters event naming no manager", PhaseJoined, RecordEvent{Op: OpStats, Stats: &Stats{}}, RejectPayload},
-		{"a second, different family", PhaseJoined, RecordEvent{Op: OpLeave, Family: FamilyV6}, RejectFamily},
-		{"a second, different family on the op that carries one", PhaseCreated, RecordEvent{Op: OpBind, Family: FamilyV6}, RejectFamily},
+		{"a bind on a retained record", PhaseRetained, nil, RecordEvent{Op: OpBind}, RejectPhase},
+		{"a leave on a record nothing joined", PhaseCreated, nil, RecordEvent{Op: OpLeave}, RejectPhase},
+		{"a reservation for a record that already exists", PhaseJoined, nil, RecordEvent{Op: OpReserve}, RejectExists},
+		{"an adoption of a record that already exists", PhaseJoined, nil, RecordEvent{Op: OpAdopt}, RejectExists},
+		{"a create on a joined record, which is a phase error rather than a duplicate", PhaseJoined, nil, RecordEvent{Op: OpCreate}, RejectPhase},
+		{"a re-bind of something that is not a tombstone", PhaseJoined, nil, RecordEvent{Op: OpRebind}, RejectPhase},
+		{"an event for a record nothing created", PhaseUnset, nil, RecordEvent{Op: OpBind}, RejectNoRecord},
+		{"an event naming another record", PhaseJoined, nil, RecordEvent{Op: OpLeave, ID: "rec-2"}, RejectID},
+		{"an event naming another scope", PhaseJoined, nil, RecordEvent{Op: OpLeave, Scope: "net-b"}, RejectScope},
+		{"a second, different identity", PhaseJoined, nil, RecordEvent{Op: OpLeave, Identity: []byte{0x01}}, RejectIdentity},
+		{"a lease event with no lease", PhaseJoined, nil, RecordEvent{Op: OpLease, Kind: Acquired}, RejectPayload},
+		{"a Lost routed to the lease op", PhaseJoined, nil, RecordEvent{Op: OpLease, Kind: Lost}, RejectPayload},
+		{"a counters event with no counters", PhaseJoined, nil, RecordEvent{Op: OpStats}, RejectPayload},
+		{"a counters event naming no manager", PhaseJoined, nil, RecordEvent{Op: OpStats, Stats: &Stats{}}, RejectPayload},
+		{"a second, different family", PhaseJoined, nil, RecordEvent{Op: OpLeave, Family: FamilyV6}, RejectFamily},
+		{"a second, different family on the op that carries one", PhaseCreated, nil, RecordEvent{Op: OpBind, Family: FamilyV6}, RejectFamily},
+		// A manager id that comes BACK. Under one id the fold cannot tell a
+		// second manager from a renewal, so it counts (see
+		// TestTwoManagersUnderOneIdCountAsOne); an id that returns after
+		// another one is decidable, and is refused.
+		{"a manager id that returns after another manager", PhaseJoined,
+			[]RecordEvent{
+				{Op: OpStats, Manager: "mgr-a", Stats: &Stats{Sent: 2}},
+				{Op: OpStats, Manager: "mgr-b", Stats: &Stats{Sent: 1}},
+			},
+			RecordEvent{Op: OpStats, Manager: "mgr-a", Stats: &Stats{Sent: 5}}, RejectManager},
 	} {
 		t.Run(c.what, func(t *testing.T) {
 			rec := recordAt(t, c.phase)
+			for i, pre := range c.before {
+				pre.ID, pre.Seq = "rec-1", rec.Seq+1
+				next, err := Fold(rec, pre)
+				if err != nil {
+					t.Fatalf("setup event %d (%s) was refused: %v; the row would then test the wrong refusal", i, pre.Op, err)
+				}
+				rec = next
+			}
 			ev := c.ev
 			if ev.ID == "" {
 				ev.ID = "rec-1"

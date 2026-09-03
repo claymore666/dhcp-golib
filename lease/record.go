@@ -115,6 +115,10 @@ type Record struct {
 	// for that reason, and the fold reads this one.
 	statsBase    Stats
 	statsManager string
+	// statsSeen is every manager id this record has folded counters for. It
+	// exists only to refuse an id that comes back after another one; see
+	// RecordEvent.Manager for what it can and cannot catch.
+	statsSeen map[string]bool
 }
 
 // Family is the address family a record binds in.
@@ -325,6 +329,26 @@ type RecordEvent struct {
 	// An OpStats event that does not name one is REFUSED rather than folded
 	// under the empty string, because two anonymous managers are exactly the
 	// collision this field exists to prevent.
+	//
+	// UNIQUENESS IS THE CALLER'S OBLIGATION, and it is not free-form. Every
+	// manager instance must get an id no other manager instance ever gets —
+	// per manager, not per endpoint, per interface or per process, all three
+	// of which repeat. Give two managers one id and the fold reads the second
+	// one's counters as a continuation of the first's, which is what a
+	// snapshot HIGHER than the previous one means by definition; the wire half
+	// then undercounts by the first manager's total and nothing is refused,
+	// because a higher snapshot under one id is also exactly what a renewal
+	// looks like. There is no reading of the numbers that separates the two,
+	// so the fold counts, and says so here, rather than pretending to detect.
+	//
+	// The half that IS decidable is refused: an id that comes BACK after a
+	// different manager has been seen is a cycling id, not a continuation, and
+	// gives RejectManager. That catches an id derived from something that
+	// repeats; it cannot catch two managers handed one id back to back.
+	//
+	// The cost of getting it wrong is bounded to the wire counters. Phase,
+	// lease, identity and the folded counters are derived from the events
+	// themselves and are untouched by it.
 	Manager string `json:"manager,omitempty"`
 
 	Scope    string        `json:"scope,omitempty"`
@@ -380,6 +404,11 @@ const (
 	// identity: the family decides which wire the record's address is on, and
 	// a record that changed it would answer both lookups.
 	RejectFamily
+	// RejectManager: a manager id came back after a different manager. Manager
+	// ids are unique per manager instance; one that returns is an id derived
+	// from something that repeats, and its counters would be folded as one
+	// manager's.
+	RejectManager
 )
 
 func (r RejectReason) String() string {
@@ -406,6 +435,8 @@ func (r RejectReason) String() string {
 		return "event carries nothing for this op"
 	case RejectFamily:
 		return "family rewrite"
+	case RejectManager:
+		return "manager id reused"
 	default:
 		return fmt.Sprintf("reject(%d)", uint8(r))
 	}
@@ -460,7 +491,19 @@ type RecordCounters struct {
 	Timeouts  uint64 `json:"timeouts,omitempty"`
 	Conflicts uint64 `json:"conflicts,omitempty"`
 	Expiries  uint64 `json:"expiries,omitempty"`
-	Rejects   uint64 `json:"rejects,omitempty"`
+	// Rejects counts refusals THIS RECORD received. It does not count events
+	// refused before the record existed: a refusal that precedes the creating
+	// event leaves nothing to carry the number, and Rebuild deliberately
+	// discards the reject-bumped empty record rather than invent one that no
+	// event created. Those refusals live in Rebuilt.Rejects, which is the
+	// journal's account and not any record's.
+	//
+	// This is stated rather than fixed because the alternative is worse: a
+	// record materialised by a refusal is a record with no create behind it,
+	// and every lookup would then answer for an endpoint that was never made.
+	// A caller auditing a journal reads Rebuilt.Rejects; a caller auditing an
+	// endpoint reads this.
+	Rejects uint64 `json:"rejects,omitempty"`
 
 	Wire WireCounters `json:"wire,omitzero"`
 }
@@ -677,12 +720,26 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		now := statsIntoWire(*ev.Stats)
 		base := statsIntoWire(next.statsBase)
 		if ev.Manager != next.statsManager {
+			if next.statsSeen[ev.Manager] {
+				return reject(RejectManager, "manager "+ev.Manager+" already ran and was replaced by "+next.statsManager)
+			}
 			base = WireCounters{}
 		}
 		if bad, ok := next.Counters.Wire.addDelta(now, base); !ok {
 			return reject(RejectStats, "Stats."+bad+" went backwards inside manager "+ev.Manager)
 		}
 		next.statsBase, next.statsManager = *ev.Stats, ev.Manager
+		if !next.statsSeen[ev.Manager] {
+			// Copy on write: next shares the map with the input record until
+			// something is added, and a fold that mutated its argument would
+			// make Rebuild's answer depend on who else held the record.
+			seen := make(map[string]bool, len(next.statsSeen)+1)
+			for k := range next.statsSeen {
+				seen[k] = true
+			}
+			seen[ev.Manager] = true
+			next.statsSeen = seen
+		}
 	case OpExtra:
 		if len(ev.Extra) == 0 {
 			return reject(RejectPayload, "OpExtra with no counters")

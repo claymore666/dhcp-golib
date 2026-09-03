@@ -570,3 +570,173 @@ func TestTheFamilyIsWrittenOnceLikeTheIdentity(t *testing.T) {
 		t.Fatalf("family = %s on a record created as v6", fresh.Family)
 	}
 }
+
+// TestRefusalsBeforeTheCreateAreTheJournalsNotTheRecords pins the boundary
+// between the two reject counts, in the direction the second review measured:
+// a journal whose create arrives LAST refuses everything ahead of it, and the
+// record that finally exists carries none of those numbers.
+//
+// The alternative — materialising a record so it can carry them — is the thing
+// TestARecordIsNeverInventedByTheFold forbids, and it is worse than the
+// asymmetry: every lookup would then answer for an endpoint no create ever
+// made. So the two counts answer two questions, Rebuilt.Rejects for the file
+// and Record.Counters.Rejects for the endpoint, and this test is what stops
+// either from being quietly redefined as the other.
+func TestRefusalsBeforeTheCreateAreTheJournalsNotTheRecords(t *testing.T) {
+	var evs []RecordEvent
+	seq := uint64(0)
+	add := func(ev RecordEvent) {
+		seq++
+		ev.ID, ev.Seq = "rec-1", seq
+		evs = append(evs, ev)
+	}
+	// Five events for a record nothing has created yet.
+	add(RecordEvent{Op: OpBind})
+	add(RecordEvent{Op: OpLease, Kind: Acquired, Lease: ptr(testRecordLease("192.168.99.100/24"))})
+	add(RecordEvent{Op: OpLeave})
+	add(RecordEvent{Op: OpStats, Manager: "mgr-1", Stats: &Stats{Sent: 1}})
+	add(RecordEvent{Op: OpRetain})
+	// And then, late, the create.
+	add(RecordEvent{Op: OpCreate, Scope: "net-a", Family: FamilyV4, CHAddr: testMAC, Identity: testIdentity})
+
+	rb := Rebuild(evs)
+
+	if len(rb.Rejects) != 5 {
+		t.Fatalf("the journal reports %d refusal(s), want 5: every event before the create is one", len(rb.Rejects))
+	}
+	if len(rb.Records) != 1 {
+		t.Fatalf("%d record(s), want 1: a refusal before the create must not invent one", len(rb.Records))
+	}
+	rec, ok := rb.ByID("rec-1")
+	if !ok {
+		t.Fatal("the created record is missing")
+	}
+	if rec.Phase != PhaseCreated {
+		t.Fatalf("phase = %s, want %s: the refusals ahead of the create must not have moved it", rec.Phase, PhaseCreated)
+	}
+	if rec.Counters.Rejects != 0 {
+		t.Fatalf("the record carries %d refusal(s) of its own, want 0; five belong to the journal and none to an endpoint that did not exist when they arrived", rec.Counters.Rejects)
+	}
+	if rec.LastReject != RejectNone {
+		t.Fatalf("LastReject = %s on a record whose own events were all accepted", rec.LastReject)
+	}
+
+	// The other direction, so the zero above is a boundary and not a fold that
+	// stopped counting: a refusal AFTER the create lands on the record, and on
+	// the journal as well.
+	after := append(append([]RecordEvent(nil), evs...), RecordEvent{ID: "rec-1", Seq: seq + 1, Op: OpLeave})
+	rb2 := Rebuild(after)
+	rec2, _ := rb2.ByID("rec-1")
+	if rec2.Counters.Rejects != 1 {
+		t.Fatalf("a refusal after the create gave the record %d, want 1", rec2.Counters.Rejects)
+	}
+	if len(rb2.Rejects) != 6 {
+		t.Fatalf("the journal reports %d, want 6", len(rb2.Rejects))
+	}
+}
+
+// TestTwoManagersUnderOneIdCountAsOne is the direction chosen for the second
+// review's finding 3, made explicit rather than left to be discovered.
+//
+// One manager id, two managers, the second's snapshot HIGHER than the first's
+// final one: the fold reads it as one manager still running, because that is
+// also exactly what a renewal looks like. There is no reading of the numbers
+// that separates the two, so the wire counters undercount by the first
+// manager's total and nothing is refused. The obligation is the caller's, and
+// it is stated beside RecordEvent.Manager.
+//
+// The half that IS decidable — an id that comes BACK after another one — is
+// refused, and has a row in TestARejectMovesNothingButItsOwnCount.
+//
+// This test exists to bound the damage: it asserts the undercount is confined
+// to the wire counters and that phase, lease, identity and the folded counters
+// are the truth regardless.
+func TestTwoManagersUnderOneIdCountAsOne(t *testing.T) {
+	rec := recordAt(t, PhaseJoined)
+	l := testRecordLease("192.168.99.100/24")
+	var err error
+	if rec, err = Fold(rec, RecordEvent{ID: "rec-1", Seq: rec.Seq + 1, Op: OpLease, Kind: Acquired, Lease: &l}); err != nil {
+		t.Fatalf("acquiring: %v", err)
+	}
+
+	// Manager one, under the shared id, ending at 8 sent.
+	for _, sent := range []uint64{3, 8} {
+		if rec, err = Fold(rec, RecordEvent{
+			ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+			Manager: "shared", Stats: &Stats{Sent: sent, Received: sent - 1, LeasesAcquired: 1},
+		}); err != nil {
+			t.Fatalf("manager one's snapshot at %d was refused: %v", sent, err)
+		}
+	}
+	// Manager two, same id, its own first snapshot already past 8.
+	if rec, err = Fold(rec, RecordEvent{
+		ID: "rec-1", Seq: rec.Seq + 1, Op: OpStats,
+		Manager: "shared", Stats: &Stats{Sent: 9, Received: 8, LeasesAcquired: 1},
+	}); err != nil {
+		t.Fatalf("the second manager's snapshot under the shared id was refused: %v", err)
+	}
+
+	// 9, not 17: the second manager's 9 is folded as one more than the first's
+	// 8. That is the undercount, and it is the price of the field being the
+	// caller's to make unique.
+	if got := rec.Counters.Wire.Sent; got != 9 {
+		t.Fatalf("Wire.Sent = %d, want 9; the fold treats a higher snapshot under one id as a continuation, which is what a renewal is", got)
+	}
+	if rec.Counters.Rejects != 0 {
+		t.Fatalf("%d refusal(s), want 0: nothing in the numbers distinguishes a second manager from a renewal", rec.Counters.Rejects)
+	}
+
+	// The bound. Everything below is derived from the events themselves and is
+	// unaffected by which manager wrote which snapshot.
+	if !rec.Held || rec.Lease.Addr != l.Addr {
+		t.Fatalf("the record holds %v (%s); the collision reached the lease", rec.Held, rec.Lease.Addr)
+	}
+	if rec.Phase != PhaseJoined {
+		t.Fatalf("phase = %s, want %s", rec.Phase, PhaseJoined)
+	}
+	if !reflect.DeepEqual(rec.Identity, testIdentity) {
+		t.Fatalf("identity = %x, want %x", rec.Identity, testIdentity)
+	}
+	if rec.Counters.Acquisitions != 1 {
+		t.Fatalf("Acquisitions = %d, want 1: the folded counters come from the events, not the snapshots", rec.Counters.Acquisitions)
+	}
+}
+
+// TestAFoldDoesNotChangeTheRecordItWasGiven drives the purity Fold's signature
+// advertises, on the one piece of state that is a map and therefore shared by
+// a plain struct copy: the set of manager ids the record has seen.
+//
+// A fold that writes into that map through its argument makes the OLD record
+// answer differently after a fold it did not take part in. Two branches from
+// one record is not hypothetical — the reject path returns the record it was
+// given, so every refusal hands the caller a record another fold has already
+// been applied to.
+func TestAFoldDoesNotChangeTheRecordItWasGiven(t *testing.T) {
+	before := recordAt(t, PhaseJoined)
+	var err error
+	if before, err = Fold(before, RecordEvent{
+		ID: "rec-1", Seq: before.Seq + 1, Op: OpStats,
+		Manager: "mgr-a", Stats: &Stats{Sent: 2},
+	}); err != nil {
+		t.Fatalf("the first manager's counters were refused: %v", err)
+	}
+
+	// One branch: mgr-b takes over.
+	if _, err = Fold(before, RecordEvent{
+		ID: "rec-1", Seq: before.Seq + 1, Op: OpStats,
+		Manager: "mgr-b", Stats: &Stats{Sent: 1},
+	}); err != nil {
+		t.Fatalf("the second manager was refused: %v", err)
+	}
+
+	// The other branch, from the SAME record. mgr-b has never been seen by
+	// this one, so it must be accepted exactly as it was above. If the fold
+	// wrote mgr-b into the map it shares with `before`, this is refused as a
+	// returning manager — a refusal invented by a fold on another branch.
+	if _, err = Fold(before, RecordEvent{
+		ID: "rec-1", Seq: before.Seq + 1, Op: OpStats,
+		Manager: "mgr-b", Stats: &Stats{Sent: 1},
+	}); err != nil {
+		t.Fatalf("the second branch was refused: %v; a fold on the first branch changed the record it was handed", err)
+	}
+}

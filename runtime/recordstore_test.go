@@ -639,8 +639,10 @@ func TestTheDamageCountIsReadableThroughThePort(t *testing.T) {
 	defer func() { _ = rs.Close() }()
 
 	var store lease.Store = rs
-	if d := store.Damage(); d.Any() {
-		t.Errorf("damage before any Load: %s; the count belongs to the last Load, not to the file", d)
+	// Opening the file TERMINATED its fragment, so the count is readable
+	// before any Load and names that one line.
+	if d := store.Damage(); d.Skipped != 1 || d.TornTail != 0 {
+		t.Errorf("damage before any Load = %s, want the 1 fragment the open terminated", d)
 	}
 	evs, err := store.Load()
 	if err != nil {
@@ -650,13 +652,385 @@ func TestTheDamageCountIsReadableThroughThePort(t *testing.T) {
 		t.Fatalf("%d event(s) read, want the 2 good ones", len(evs))
 	}
 	d := store.Damage()
-	if d.TornTail != 1 || d.Skipped != 2 {
-		t.Fatalf("damage through the port = %s, want 1 torn tail and 2 skipped", d)
+	if d.TornTail != 0 || d.Skipped != 3 {
+		t.Fatalf("damage through the port = %s, want 3 skipped: the two interior lines plus the fragment the open terminated, which is no longer a tail", d)
 	}
 	if !d.Any() {
-		t.Error("Any() is false on damage that has both numbers set")
+		t.Error("Any() is false on damage that has a number set")
 	}
-	if d.String() != "1 torn tail, 2 skipped" {
+	if d.String() != "0 torn tail, 3 skipped" {
 		t.Errorf("String() = %q", d.String())
+	}
+
+	// A TORN TAIL is still reachable through the port, and this is the shape
+	// that produces one now that an open repairs what it finds: the file is
+	// torn BEHIND a store that is already open — another writer killed
+	// mid-Append, or this process about to be. Without this the tail counter
+	// would be dead through the public API and only reachable in the parser.
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := os.WriteFile(path, append(onDisk, []byte("{\"id\":\"rec-3\"")...), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := store.Load(); err != nil {
+		t.Fatalf("Load after the second tear: %v", err)
+	}
+	if d := store.Damage(); d.TornTail != 1 {
+		t.Errorf("damage = %s after the file was torn behind an open store, want 1 torn tail", d)
+	}
+}
+
+// TestReopeningAfterATornTailDoesNotLandOnTheFragment is review round 2's
+// blocking finding, and it is the one path a plugin actually takes after a
+// crash: reopen the same file and append.
+//
+// A process killed inside Append leaves a line with no newline. O_APPEND puts
+// the next write at the end of the FILE, not at the start of a line, so the
+// recovering process's first event lands on the fragment and both are lost —
+// and the recovering process's first event is the restart path's adopt, which
+// durableWrite fsyncs precisely because nothing can re-derive it. One number
+// was reported for two lost events, and nothing said that a freshly written
+// one was among them.
+func TestReopeningAfterATornTailDoesNotLandOnTheFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "records.jsonl")
+
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	first := lease.RecordEvent{ID: "rec-1", Seq: 1, Op: lease.OpCreate, Scope: "net-a", Family: lease.FamilyV4}
+	second := lease.RecordEvent{ID: "rec-1", Seq: 2, Op: lease.OpBind}
+	for _, ev := range []lease.RecordEvent{first, second} {
+		if err := s.Append(ev); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The crash: killed inside the second Append, so its line is a fragment
+	// with no newline. Cut it in the middle rather than at a boundary.
+	whole, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := bytes.SplitAfter(whole, []byte("\n"))
+	if len(lines) != 3 || len(lines[1]) < 4 {
+		t.Fatalf("the fixture is not two lines: %q", whole)
+	}
+	torn := append(append([]byte(nil), lines[0]...), lines[1][:len(lines[1])/2]...)
+	if err := os.WriteFile(path, torn, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// The recovering process. Its FIRST event is the one nothing can
+	// re-derive, which is why this is the event the defect destroyed.
+	s, err = OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore after the crash: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if d := s.Damage(); d.Skipped != 1 || d.TornTail != 0 {
+		t.Errorf("damage at open = %s, want 1 skipped: the open terminated a fragment and must say so, "+
+			"so that its count and the next Load's are the same number for the same line", d)
+	}
+	adopt := lease.RecordEvent{ID: "rec-9", Seq: 1, Op: lease.OpAdopt, Scope: "net-a", Family: lease.FamilyV4}
+	after := lease.RecordEvent{ID: "rec-2", Seq: 1, Op: lease.OpCreate, Scope: "net-a", Family: lease.FamilyV4}
+	for _, ev := range []lease.RecordEvent{adopt, after} {
+		if err := s.Append(ev); err != nil {
+			t.Fatalf("Append after the crash: %v", err)
+		}
+	}
+
+	evs, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ids := make([]string, len(evs))
+	for i, ev := range evs {
+		ids[i] = ev.ID + "/" + ev.Op.String()
+	}
+	want := []string{"rec-1/create", "rec-9/adopt", "rec-2/create"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("Load returned %v, want %v: the recovering process's own first event was destroyed by the fragment it landed on", ids, want)
+	}
+	if d := s.Damage(); d.Skipped != 1 || d.TornTail != 0 {
+		t.Errorf("damage after the Load = %s, want 1 skipped — the SAME line the open counted, counted the same way", d)
+	}
+
+	rb := lease.Rebuild(evs)
+	if len(rb.Rejects) != 0 {
+		t.Errorf("Rebuild reported %d reject(s) on a journal with one lost line and two good new ones: %v", len(rb.Rejects), rb.Rejects)
+	}
+	if len(rb.Records) != 3 {
+		t.Fatalf("%d record(s) rebuilt, want 3", len(rb.Records))
+	}
+	if _, ok := rb.ByID("rec-9"); !ok {
+		t.Error("the adopted record is not in the rebuild: the event the sync policy fsyncs was the one that was lost")
+	}
+}
+
+// TestAFileThatEndsAtALineBoundaryIsNotRepaired is the other direction of the
+// open-time repair, and without it the repair could be a newline appended to
+// every file that is ever opened twice.
+//
+// A file whose last byte IS a newline has nothing half-written at the end. It
+// must be left exactly as it is — no terminator, no damage counted — because a
+// store that grew a blank line and a damage count on every restart would make
+// the number meaningless and the file's history a record of its own opens.
+func TestAFileThatEndsAtALineBoundaryIsNotRepaired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "records.jsonl")
+
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	if err := s.Append(lease.RecordEvent{ID: "rec-1", Seq: 1, Op: lease.OpCreate, Scope: "net-a"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Opened and closed three times over: neither the bytes nor the count move.
+	for i := range 3 {
+		s, err = OpenRecordStore(path)
+		if err != nil {
+			t.Fatalf("re-open %d: %v", i+1, err)
+		}
+		if d := s.Damage(); d.Any() {
+			t.Errorf("re-open %d reported %s on a file that ends at a line boundary", i+1, d)
+		}
+		evs, err := s.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(evs) != 1 {
+			t.Errorf("re-open %d: %d event(s), want 1", i+1, len(evs))
+		}
+		if d := s.Damage(); d.Any() {
+			t.Errorf("re-open %d: Load reported %s", i+1, d)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("three opens changed the file:\nbefore %q\nafter  %q", before, after)
+	}
+
+	// An EMPTY file is the same case for the same reason: there is nothing
+	// before the first event for it to run into.
+	empty := filepath.Join(t.TempDir(), "empty.jsonl")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err = OpenRecordStore(empty)
+	if err != nil {
+		t.Fatalf("OpenRecordStore on an empty file: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if d := s.Damage(); d.Any() {
+		t.Errorf("opening an empty file reported %s", d)
+	}
+	if b, err := os.ReadFile(empty); err != nil || len(b) != 0 {
+		t.Errorf("opening an empty file wrote %q (err %v)", b, err)
+	}
+}
+
+// TestTwoConsecutiveTornOpensCountTwoLostLines is the repair applied to its own
+// output: a crash after a recovery is not a special case, and the counts must
+// keep adding up line for line rather than resetting or double-counting.
+func TestTwoConsecutiveTornOpensCountTwoLostLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "records.jsonl")
+
+	// tear cuts the file in the middle of its last line, which is what a
+	// process killed inside Append leaves behind.
+	tear := func() {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		lines := bytes.SplitAfter(b, []byte("\n"))
+		last := lines[len(lines)-1]
+		if len(last) != 0 {
+			t.Fatalf("the file already ends mid-line: %q", last)
+		}
+		last = lines[len(lines)-2]
+		if len(last) < 4 {
+			t.Fatalf("the last line is too short to cut: %q", last)
+		}
+		cut := len(b) - len(last) + len(last)/2
+		if err := os.WriteFile(path, b[:cut], 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	write := func(s *RecordStore, id string) {
+		t.Helper()
+		if err := s.Append(lease.RecordEvent{ID: id, Seq: 1, Op: lease.OpCreate, Scope: "net-a"}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	// Round 1: two events, then a crash inside the second.
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	write(s, "rec-1")
+	write(s, "rec-2")
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	tear()
+
+	// Round 2: recover, write one event, then crash inside a second.
+	s, err = OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore, second: %v", err)
+	}
+	if d := s.Damage(); d.Skipped != 1 {
+		t.Errorf("the first recovery reported %s, want 1 skipped", d)
+	}
+	write(s, "rec-3")
+	write(s, "rec-4")
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	tear()
+
+	// Round 3: recover again. The second recovery counts its OWN fragment, and
+	// the Load that follows counts both — the one this open terminated and the
+	// one the previous open did.
+	s, err = OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore, third: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if d := s.Damage(); d.Skipped != 1 || d.TornTail != 0 {
+		t.Errorf("the second recovery reported %s, want 1 skipped: an open counts the fragment IT terminated, not the file's history", d)
+	}
+	write(s, "rec-5")
+
+	evs, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ids := make([]string, len(evs))
+	for i, ev := range evs {
+		ids[i] = ev.ID
+	}
+	want := []string{"rec-1", "rec-3", "rec-5"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("Load returned %v, want %v: one event was lost to each crash and no more", ids, want)
+	}
+	if d := s.Damage(); d.Skipped != 2 || d.TornTail != 0 {
+		t.Fatalf("damage = %s after two crashes, want 2 skipped — one line per crash, neither counted twice", d)
+	}
+	if rb := lease.Rebuild(evs); len(rb.Rejects) != 0 || len(rb.Records) != 3 {
+		t.Errorf("Rebuild: %d record(s), %d reject(s); want 3 and 0", len(rb.Records), len(rb.Rejects))
+	}
+}
+
+// TestTheTerminatorIsSyncedBeforeTheFirstAppend pins the ORDER the open-time
+// repair depends on, which is otherwise invisible: an fsync leaves no trace a
+// same-process test can read, so it is observed the way every other fsync in
+// this file is — through the indirection the call goes through.
+//
+// The terminator is not left to the first durable Append's fsync to carry.
+// Two unsynced writes to one file are not ordered against each other across a
+// power loss, so the event's bytes could reach the disk while the newline
+// before them did not — which is the defect the terminator exists to prevent,
+// reassembled out of its own remedy.
+func TestTheTerminatorIsSyncedBeforeTheFirstAppend(t *testing.T) {
+	// The recorder reads the file AT THE MOMENT OF THE SYNC. Recording only
+	// that a sync happened cannot tell an fsync of the terminated file from an
+	// fsync taken just before the terminator was written, and the second one
+	// makes the newline exactly as unsynced as having no fsync at all.
+	type syncEvent struct {
+		name       string
+		terminated bool
+	}
+	var synced []syncEvent
+	real := syncRecordFile
+	syncRecordFile = func(f *os.File) error {
+		e := syncEvent{name: f.Name()}
+		if fi, err := f.Stat(); err == nil && !fi.IsDir() {
+			if b, err := os.ReadFile(f.Name()); err == nil {
+				e.terminated = bytes.HasSuffix(b, []byte("\n"))
+			}
+		}
+		synced = append(synced, e)
+		return real(f)
+	}
+	t.Cleanup(func() { syncRecordFile = real })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "records.jsonl")
+	if err := os.WriteFile(path, []byte("{\"id\":\"rec-1\",\"op\":1,\"seq\":1}\n{\"id\":"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	synced = nil
+	s, err := OpenRecordStore(path)
+	if err != nil {
+		t.Fatalf("OpenRecordStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if len(synced) != 1 || synced[0].name != path {
+		t.Fatalf("opening a torn file synced %v, want exactly the journal %s — before any Append, not after", synced, path)
+	}
+	if !synced[0].terminated {
+		t.Fatalf("the journal was fsynced while it still ended mid-line: the terminator went in AFTER its own sync, so it is no more durable than an unsynced write")
+	}
+
+	// The file on disk is already terminated at this point, with no Append yet:
+	// the newline is out and durable before anything depends on it.
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.HasSuffix(b, []byte("\n")) {
+		t.Fatalf("the file still ends mid-line after the open: %q", b)
+	}
+
+	// And a file that needs no repair pays no fsync: the cost is on the path
+	// that follows a crash, not on every process start.
+	clean := filepath.Join(dir, "clean.jsonl")
+	if err := os.WriteFile(clean, []byte("{\"id\":\"rec-1\",\"op\":1,\"seq\":1}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	synced = nil
+	c, err := OpenRecordStore(clean)
+	if err != nil {
+		t.Fatalf("OpenRecordStore on a clean file: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if len(synced) != 0 {
+		t.Errorf("opening a file that ends at a line boundary synced %v, want nothing", synced)
+	}
+
+	// A terminator that cannot be made durable fails the OPEN. Reporting
+	// success would promise the ordering that was not obtained.
+	syncRecordFile = func(f *os.File) error { return os.ErrPermission }
+	if err := os.WriteFile(path, []byte("{\"id\":"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got, err := OpenRecordStore(path); err == nil {
+		_ = got.Close()
+		t.Error("OpenRecordStore succeeded although the terminator could not be synced")
 	}
 }
