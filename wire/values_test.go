@@ -367,6 +367,91 @@ func TestEncodeFQDNBoundsBothForms(t *testing.T) {
 			}
 		})
 	}
+
+	// THE EDGE, in both directions, because 330 and 233 pin neither. Review
+	// rounds 1 through 4 all reported that moving the bound to 254 or to 256
+	// survives this test, and it did: a name that is 75 octets too long is
+	// refused by any of the three, and one that is 22 octets short is accepted
+	// by any of the three.
+	//
+	// So the two rows below are the LAST accepted length and the FIRST refused
+	// one, per encoding, and they are computed from the encoding rather than
+	// written as literals. A single option instance carries 255 octets; the
+	// flags octet and the two RCODEs are three of them.
+	//
+	//	ascii     len(out) = 3 + len(name)          -> 252 fits, 253 does not
+	//	canonical len(out) = 3 + len(name) + 1      -> 251 fits, 252 does not
+	//
+	// The extra octet in the canonical form is the length prefix of the first
+	// label: k labels of total length L separated by k-1 dots encode to
+	// k + (L - (k-1)) = L + 1 octets when the name is not fully qualified.
+	for _, edge := range []struct {
+		what    string
+		flags   uint8
+		lastOK  int
+		firstNo int
+	}{
+		{"canonical", FQDNFlagE | FQDNFlagS, 251, 252},
+		{"ascii, E clear", FQDNFlagS, 252, 253},
+	} {
+		t.Run("the exact edge/"+edge.what, func(t *testing.T) {
+			ok := nameOfLen(t, edge.lastOK)
+			v, err := EncodeFQDN(edge.flags, ok)
+			if err != nil {
+				t.Fatalf("a %d-octet name was refused: %v", len(ok), err)
+			}
+			if len(v) != 255 {
+				t.Fatalf("a %d-octet name makes a %d-octet option; this row is meant to sit exactly ON the 255-octet edge and does not, so it pins nothing",
+					len(ok), len(v))
+			}
+
+			no := nameOfLen(t, edge.firstNo)
+			v, err = EncodeFQDN(edge.flags, no)
+			if !errors.Is(err, ErrBadName) {
+				t.Fatalf("a %d-octet name makes a 256-octet option and must be refused; err = %v, %d octet(s) returned",
+					len(no), err, len(v))
+			}
+			if v != nil {
+				t.Fatalf("got %d octets back beside the error", len(v))
+			}
+		})
+	}
+}
+
+// nameOfLen builds a syntactically valid domain name of exactly n characters:
+// labels of at most 63 octets, no empty label, and no trailing dot, since a
+// trailing dot adds the root label and would move the encoded length by one.
+//
+// It fails the test rather than returning something close, because a helper
+// that silently returns the wrong length turns an edge row into a row about
+// some other number.
+func nameOfLen(t *testing.T, n int) string {
+	t.Helper()
+	if n < 1 {
+		t.Fatalf("nameOfLen(%d): a name has at least one octet", n)
+	}
+	var b strings.Builder
+	for b.Len() < n {
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		for i := 0; i < 50 && b.Len() < n; i++ {
+			b.WriteByte('a')
+		}
+	}
+	out := b.String()
+	if strings.HasSuffix(out, ".") {
+		out = out[:len(out)-1] + "a"
+	}
+	if len(out) != n {
+		t.Fatalf("nameOfLen(%d) built %d octets", n, len(out))
+	}
+	for _, label := range strings.Split(out, ".") {
+		if label == "" || len(label) > 63 {
+			t.Fatalf("nameOfLen(%d) built a %d-octet label, which RFC 1035 does not allow", n, len(label))
+		}
+	}
+	return out
 }
 
 func TestEncodeFQDNRefusesUnencodableNames(t *testing.T) {

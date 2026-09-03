@@ -415,7 +415,7 @@ func TestStatsAreCurrentWhenAnEventIsReceived(t *testing.T) {
 // (LeasesAcquired, RenewalsCompleted, LeasesLost, the NAK pair) all SURVIVE
 // TestStatsAreCurrentWhenAnEventIsReceived at -count=20 on an idle box, and
 // all four die under a scheduling probe that spins 5 ms after every emit. That
-// is the shape of the defect this round fixed: the window between "the caller
+// is the shape of the defect that round fixed: the window between "the caller
 // has the event" and "the manager executed the next instruction" is a few
 // nanoseconds wide, so a test that races it observes the property only when
 // the box is busy — which is the wrong way round for an observer.
@@ -423,6 +423,19 @@ func TestStatsAreCurrentWhenAnEventIsReceived(t *testing.T) {
 // The property is about the ORDER OF TWO STATEMENTS, so it is checked where it
 // is decidable: in the source. For every case arm of drain's action switch that
 // emits an event, no counter may be written after the emit.
+//
+// M4 CHANGED HOW "AFTER" IS DECIDED. Until here this walked the arm's TOP-LEVEL
+// statements and compared list indexes, so a counter write nested inside the
+// same statement as the emit — a closure called in place, a defer, a bare block
+// — was invisible: M3's review round 5 built exactly that mutant (R1) and it
+// survived this test while dying under the probe. Positions replace indexes:
+// the boundary is the END of the last emit CALL in the arm, and every counter
+// write anywhere in the arm's subtree is compared against it. A write inside
+// the emit's own ARGUMENTS is correctly not flagged, because arguments are
+// evaluated before the call.
+//
+// Deferred and spawned writes are flagged wherever they appear, because their
+// position says nothing about when they run.
 func TestEveryCounterIsBumpedBeforeItsEmit(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "manager.go", nil, 0)
@@ -447,20 +460,19 @@ func TestEveryCounterIsBumpedBeforeItsEmit(t *testing.T) {
 		if !ok {
 			return true
 		}
-		last := -1
-		for i, stmt := range clause.Body {
-			if callsMethod(stmt, "emit") {
-				last = i
-			}
-		}
-		if last < 0 {
+		last := lastCallEnd(clause, "emit")
+		if !last.IsValid() {
 			return true
 		}
 		emitting++
-		for _, stmt := range clause.Body[last+1:] {
-			if what := counterWrite(stmt); what != "" {
+		for _, w := range counterWrites(clause) {
+			switch {
+			case w.deferred:
+				t.Errorf("%s: %s is written by a %s statement in an arm that emits; a deferred write runs after the emit whatever its position. See Stats.",
+					fset.Position(w.pos), w.name, w.how)
+			case w.pos > last:
 				t.Errorf("%s: %s is written AFTER the emit above it; every counter an event reports must be current when the event is received. See Stats.",
-					fset.Position(stmt.Pos()), what)
+					fset.Position(w.pos), w.name)
 			}
 		}
 		return true
@@ -473,23 +485,37 @@ func TestEveryCounterIsBumpedBeforeItsEmit(t *testing.T) {
 	}
 }
 
-// callsMethod reports whether stmt is a call to a method of this name.
-func callsMethod(stmt ast.Stmt, name string) bool {
-	found := false
-	ast.Inspect(stmt, func(n ast.Node) bool {
+// lastCallEnd returns the position just past the last call to a method of this
+// name anywhere under n, or token.NoPos when there is none.
+//
+// The END of the call and not its start: a counter write inside the call's own
+// arguments is evaluated BEFORE the call runs, so it is not a write after the
+// emit and must not be reported as one.
+func lastCallEnd(n ast.Node, name string) token.Pos {
+	last := token.NoPos
+	ast.Inspect(n, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == name {
-			found = true
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == name && call.End() > last {
+			last = call.End()
 		}
 		return true
 	})
-	return found
+	return last
 }
 
-// counterWrite names the counter stmt writes, or "" when it writes none.
+// counterRef is one write to mg.stats, where it is, and whether its execution
+// is detached from its position.
+type counterRef struct {
+	name     string
+	pos      token.Pos
+	deferred bool
+	how      string
+}
+
+// counterWrites finds every write to a counter anywhere under n.
 //
 // Three spellings count, because a gate keyed on one spelling only enforces
 // that spelling: the bump helper, a direct increment under the mutex, and any
@@ -497,18 +523,49 @@ func callsMethod(stmt ast.Stmt, name string) bool {
 // as far as this test is concerned; there is no reason to read a counter down
 // here, and a false positive costs a rewrite while a false negative costs the
 // property.
-func counterWrite(stmt ast.Stmt) string {
-	if callsMethod(stmt, "bump") {
-		return "a counter (via bump)"
+//
+// The walk is over the whole subtree rather than over a statement list, which
+// is what makes a write nested inside another statement visible.
+func counterWrites(n ast.Node) []counterRef {
+	type span struct {
+		from, to token.Pos
+		how      string
 	}
-	name := ""
+	var detached []span
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.DeferStmt:
+			detached = append(detached, span{v.Pos(), v.End(), "defer"})
+		case *ast.GoStmt:
+			detached = append(detached, span{v.Pos(), v.End(), "go"})
+		}
+		return true
+	})
+	detachedAt := func(p token.Pos) (bool, string) {
+		for _, s := range detached {
+			if p >= s.from && p < s.to {
+				return true, s.how
+			}
+		}
+		return false, ""
+	}
+
+	var out []counterRef
+	add := func(name string, pos token.Pos) {
+		d, how := detachedAt(pos)
+		out = append(out, counterRef{name: name, pos: pos, deferred: d, how: how})
+	}
 	note := func(sel *ast.SelectorExpr) {
 		if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "stats" {
-			name = "stats." + sel.Sel.Name
+			add("stats."+sel.Sel.Name, sel.Pos())
 		}
 	}
-	ast.Inspect(stmt, func(n ast.Node) bool {
+	ast.Inspect(n, func(n ast.Node) bool {
 		switch v := n.(type) {
+		case *ast.CallExpr:
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "bump" {
+				add("a counter (via bump)", v.Pos())
+			}
 		case *ast.IncDecStmt:
 			if sel, ok := v.X.(*ast.SelectorExpr); ok {
 				note(sel)
@@ -522,5 +579,5 @@ func counterWrite(stmt ast.Stmt) string {
 		}
 		return true
 	})
-	return name
+	return out
 }
