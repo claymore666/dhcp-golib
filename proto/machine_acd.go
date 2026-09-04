@@ -251,6 +251,9 @@ func (m *Machine) applyACD(now Instant, rnd uint64, acts []acdAction, out *actio
 		case acdSetTimer:
 			out.set(m, TimerACD, a.after)
 
+		case acdCancelTimer:
+			out.cancel(m, TimerACD)
+
 		case acdSendProbe:
 			m.sendARP(m.acd.probe(), out)
 

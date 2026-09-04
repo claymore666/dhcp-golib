@@ -318,6 +318,16 @@ const (
 	acdSendAnnounce
 	// acdSetTimer arms the one ACD timer.
 	acdSetTimer
+	// acdCancelTimer disarms it, at the end of the schedule.
+	//
+	// EMITTED RATHER THAN LEFT TO THE CALLER. Section 2.3's last
+	// Announcement is the end of everything this sub-machine schedules;
+	// section 2.4's ongoing detection is a listener and has no timer at all
+	// (this client never defends, so DEFEND_INTERVAL schedules nothing). A
+	// timer left armed there would fire minutes later in a phase with no arm
+	// for it, and the only trace would be a journal line saying it was
+	// ignored.
+	acdCancelTimer
 	// acdReady says section 2.1's probing completed with no conflict, so the
 	// address may be used safely. In ConflictWait it is what releases the
 	// lease to the caller.
@@ -464,7 +474,7 @@ func (a *acd) timer(rnd uint64, out []acdAction) []acdAction {
 func (a *acd) announce(out []acdAction) []acdAction {
 	if a.params.AnnounceNum <= 0 {
 		a.phase = ACDDefending
-		return out
+		return append(out, acdAction{kind: acdCancelTimer})
 	}
 	out = append(out, acdAction{kind: acdSendAnnounce})
 	a.sent++
@@ -472,7 +482,7 @@ func (a *acd) announce(out []acdAction) []acdAction {
 		return append(out, acdAction{kind: acdSetTimer, after: a.params.AnnounceInterval})
 	}
 	a.phase = ACDDefending
-	return out
+	return append(out, acdAction{kind: acdCancelTimer})
 }
 
 // arp applies RFC 5227's conflict rules to one received packet.
@@ -501,6 +511,14 @@ func (a *acd) arp(p *wire.ARPPacket, out []acdAction) []acdAction {
 // whole mechanism silently narrower. TestTheRelevanceFilterCannotHideAConflict
 // runs one against the other.
 func (a *acd) conflictRule(p *wire.ARPPacket) (rule, why string) {
+	if p == nil {
+		// arp() already guards, so this is unreachable through acdStep. It is
+		// handled anyway and not left to a nil dereference, for the reason R1
+		// gives about Step being total: a panic in ring 1 takes the whole
+		// plugin down, and this predicate is reached from whatever anyone can
+		// put on a wire.
+		return "", ""
+	}
 	switch a.phase {
 	case ACDProbing, ACDSettling:
 		// Section 2.1.1, first rule: "If during this period, from the

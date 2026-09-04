@@ -686,20 +686,27 @@ func (mg *Manager) onARP(ctx context.Context, in ARPInbound) {
 		mg.bump(func(s *Stats) { s.ARPErrors++ })
 		return
 	}
-	mg.bump(func(s *Stats) { s.ARPSeen++ })
+	// ONE bump per frame, carrying both the sighting and its verdict.
+	//
+	// Two bumps would leave a window in which a reader sees ARPSeen raised and
+	// the frame not yet classified, so the invariant a caller reads these
+	// counters for — every frame seen is exactly one of decode-failed, ignored
+	// and delivered — would be false at arbitrary moments rather than only
+	// while a frame is genuinely in flight.
 	p, err := wire.DecodeARP(in.Frame)
 	if err != nil {
 		// Not an Ethernet/IPv4 ARP packet, or shorter than one. Counted and
 		// dropped: RFC 5227's rules are all predicates over the sender and
 		// target addresses of such a packet, and a frame that has none has
 		// nothing for them to read.
-		mg.bump(func(s *Stats) { s.ARPDecodeFailures++ })
+		mg.bump(func(s *Stats) { s.ARPSeen++; s.ARPDecodeFailures++ })
 		return
 	}
 	if !mg.machine.ARPRelevant(p) {
-		mg.bump(func(s *Stats) { s.ARPIgnored++ })
+		mg.bump(func(s *Stats) { s.ARPSeen++; s.ARPIgnored++ })
 		return
 	}
+	mg.bump(func(s *Stats) { s.ARPSeen++ })
 	mg.packets.Record(CapturedPacket{
 		At:  mg.cfg.Clock.Wall(),
 		Dir: DirIn,
