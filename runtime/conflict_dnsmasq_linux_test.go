@@ -308,9 +308,10 @@ func briskACD() proto.ACDParams {
 	return d
 }
 
-// startConflictClient wires the veth pair, starts dnsmasq and starts a client
-// with conflict detection in the given mode and the given ACD table.
-func startConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string) *conflictFixture {
+// newConflictClient wires the veth pair, starts dnsmasq and BUILDS a client
+// with conflict detection in the given mode and the given ACD table. It does
+// not run it: conflictFixture.start does, and takes the observer.
+func newConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string) *conflictFixture {
 	t.Helper()
 
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
@@ -342,21 +343,39 @@ func startConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDPar
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	runErr := make(chan error, 1)
-	go func() { runErr <- c.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		<-runErr
-	})
-
 	return &conflictFixture{
 		srv:       srv,
 		client:    c,
 		clientMAC: iface.HardwareAddr.String(),
-		cancel:    cancel,
-		runErr:    runErr,
 	}
+}
+
+// start runs the client, and takes the observer that must already be watching
+// the wire.
+//
+// The squatter is a parameter so that arming the observer LATE is a compile
+// error rather than a rare red. The first ARP Probe leaves within
+// U(0, PROBE_WAIT) of the DHCPACK — 50ms under briskACD — so an observer whose
+// socket is bound after the client has started can miss it, and a missing
+// probe 1 reads exactly like a client that sent PROBE_NUM-1 probes.
+//
+// MEASURED 2026-09-04, with the client started first: "the wire carried 2
+// probe(s) for 192.168.99.129, want PROBE_NUM = 3", the two frames seen being
+// probes 2 and 3 — their gaps, 1.477s and 2.148s, are PROBE_MIN..PROBE_MAX
+// and ANNOUNCE_WAIT, not two inter-probe gaps.
+func (f *conflictFixture) start(t *testing.T, sq *squatter) {
+	t.Helper()
+	if sq == nil {
+		t.Fatal("the observer must be on the wire before the client starts")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- f.client.Run(ctx) }()
+	f.cancel, f.runErr = cancel, runErr
+	t.Cleanup(func() {
+		cancel()
+		<-runErr
+	})
 }
 
 // offers returns the addresses dnsmasq has logged a DHCPOFFER for, in order.
@@ -443,8 +462,9 @@ func TestASquatterInTheProbeWindowMakesAnAsyncClientDecline(t *testing.T) {
 // way, which is the point: the mode is a promise to the CALLER about when it
 // may use the address, not a change to the protocol on the wire.
 func squatterInProbeWindow(t *testing.T, mode proto.ConflictMode) {
-	f := startConflictClient(t, mode, briskACD(), "m6-client")
+	f := newConflictClient(t, mode, briskACD(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterDefendFirstProbed)
+	f.start(t, sq)
 
 	// The first address the server hands out. Read from the SERVER's log, not
 	// from the client: the whole question is whether the client gave back the
@@ -605,8 +625,9 @@ func TestASquatterAfterBoundTakesSection24sPath(t *testing.T) {
 // signal is DHCPDECLINE. The address is never defended, because it was never
 // this host's to defend.
 func squatterAfterBound(t *testing.T) {
-	f := startConflictClient(t, proto.ConflictWait, briskACD(), "m6-client")
+	f := newConflictClient(t, proto.ConflictWait, briskACD(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterAnnounceOnCue)
+	f.start(t, sq)
 
 	ev := awaitAcquired(t, f.client)
 	held := ev.Lease.Addr.Addr()
@@ -687,8 +708,9 @@ func TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic(t *testing.T) {
 // The MEASURED number below is what a container will actually wait, and it is
 // the reason D23's async mode exists.
 func measureTheProbeDelay(t *testing.T) {
-	f := startConflictClient(t, proto.ConflictWait, proto.DefaultACDParams(), "m6-client")
+	f := newConflictClient(t, proto.ConflictWait, proto.DefaultACDParams(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterObserve)
+	f.start(t, sq)
 
 	ev := awaitAcquired(t, f.client)
 	held := ev.Lease.Addr.Addr()
@@ -700,9 +722,14 @@ func measureTheProbeDelay(t *testing.T) {
 	// instant the first Announcement is handed to the socket; the squatter is
 	// a second process reading a second socket, and it has not necessarily
 	// stamped that frame yet. Section 2.3 puts the Announcement after the
-	// whole probe schedule, so once one has been read every Probe that was
-	// ever going to be sent has been read too, and counting them here is
-	// counting a complete set.
+	// whole probe schedule, so once one has been read no Probe is still to
+	// come.
+	//
+	// That closes the LATE edge of the window. The EARLY edge is closed by
+	// conflictFixture.start, which will not run the client until the observer
+	// holds a bound socket — read its comment, because a probe sent before
+	// the observer existed is invisible here and looks like a probe never
+	// sent.
 	//
 	// MEASURED 2026-09-04: sampled instead of waited for, this test failed
 	// under load with "the wire carried no ARP Announcement" on both a loaded
