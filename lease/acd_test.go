@@ -3,6 +3,7 @@ package lease
 import (
 	"errors"
 	"net/netip"
+	goruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -145,8 +146,13 @@ func arpReply(hw []byte, sender, target string) *wire.ARPPacket {
 // every fire would wait two seconds for a barrier that, by design, never
 // comes. Every dispatch appends exactly one journal entry whatever it decides,
 // including the one that decides to send nothing, so the entry count is the
-// one signal that is present on every step. Polling it is not a sleep: the
-// deadline only bounds a hang.
+// one signal that is present on every step.
+//
+// The spin carries no deadline of its own, which is gate T2's rule and not a
+// stylistic preference: a deadline written here is a wall-clock wait, and the
+// way a wall-clock wait fails is that somebody lengthens it. An entry that
+// never arrives hangs until go test's own -timeout, which names the test and
+// prints every goroutine — strictly more than a Fatalf chosen here would say.
 func runACD(t *testing.T, r *rig) {
 	t.Helper()
 	for i := 0; i < 20; i++ {
@@ -155,13 +161,8 @@ func runACD(t *testing.T, r *rig) {
 		}
 		before := len(r.journal.Entries())
 		r.timers.fire(proto.TimerACD)
-		deadline := time.After(2 * time.Second)
 		for len(r.journal.Entries()) == before {
-			select {
-			case <-deadline:
-				t.Fatal("the manager did not act on an ACD timer fire")
-			default:
-			}
+			goruntime.Gosched()
 		}
 	}
 	t.Fatal("the ACD schedule did not terminate in 20 timer fires")
@@ -345,11 +346,7 @@ func TestAConflictInTheProbeWindowDeclinesAndCountsOnce(t *testing.T) {
 	waitForTimer(t, r, proto.TimerACD)
 	// One probe out.
 	r.timers.fire(proto.TimerACD)
-	select {
-	case <-r.timers.armed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("no timer re-armed after the first probe")
-	}
+	<-r.timers.armed
 
 	arp.deliver(arpReply(squatterMAC, acdAddr, "192.168.99.9"))
 
@@ -437,7 +434,6 @@ func TestOrdinaryARPTrafficNeverReachesTheMachine(t *testing.T) {
 
 	// Drain: send one frame that IS relevant but is not a conflict — our own
 	// announcement echoed back — and wait for the counters to settle on it.
-	deadline := time.After(2 * time.Second)
 	for {
 		s := r.mgr.Stats()
 		if s.ARPSeen >= noise+2 {
@@ -452,11 +448,7 @@ func TestOrdinaryARPTrafficNeverReachesTheMachine(t *testing.T) {
 			}
 			return
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("only %d of %d frames were seen", s.ARPSeen, noise+2)
-		default:
-		}
+		goruntime.Gosched()
 	}
 }
 
@@ -567,15 +559,10 @@ func containsSub(s, sub string) bool {
 // waitForTimer blocks until id has been armed.
 func waitForTimer(t *testing.T, r *rig, id proto.TimerID) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
 	for {
 		if _, armed := r.timers.armedAt(id); armed {
 			return
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("timer %s was never armed", id)
-		default:
-		}
+		goruntime.Gosched()
 	}
 }

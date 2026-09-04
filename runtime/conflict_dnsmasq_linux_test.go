@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,24 +205,30 @@ func (s *squatter) sightings() []squatterSighting {
 	return append([]squatterSighting(nil), s.seen...)
 }
 
-// probesFor returns, in the order they crossed the wire, the ARP Probes the
-// squatter saw for one address.
-func (s *squatter) probesFor(addr netip.Addr) []squatterSighting {
-	var out []squatterSighting
-	for _, g := range s.sightings() {
-		if g.p.IsProbe() && g.p.TargetIP == addr {
-			out = append(out, g)
-		}
-	}
-	return out
+// isProbeFor and isAnnouncementFor are the two frame classes this file waits
+// on and counts. They are spelled once so that a wait and the count taken
+// afterwards cannot describe different sets of frames.
+//
+// A Probe is RFC 5227 section 2.1.1's: an ARP Request with an all-zero sender
+// IP. An Announcement is section 2.3's: an ARP Request with sender and target
+// IP both the address being claimed.
+func isProbeFor(addr netip.Addr) func(*wire.ARPPacket) bool {
+	return func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == addr }
 }
 
-// announcementsFor returns the ARP Announcements (section 2.3: sender and
-// target IP both the address) the squatter saw for one address.
-func (s *squatter) announcementsFor(addr netip.Addr) []squatterSighting {
+func isAnnouncementFor(addr netip.Addr) func(*wire.ARPPacket) bool {
+	return func(p *wire.ARPPacket) bool {
+		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == addr
+	}
+}
+
+// matching returns, in the order they crossed the wire, the frames the
+// squatter has read so far that pred accepts. It does not wait: every caller
+// below first waits on a LATER frame, so that what it then counts is complete.
+func (s *squatter) matching(pred func(*wire.ARPPacket) bool) []squatterSighting {
 	var out []squatterSighting
 	for _, g := range s.sightings() {
-		if g.p.Op == wire.ARPRequest && g.p.SenderIP == addr && g.p.TargetIP == addr {
+		if pred(g.p) {
 			out = append(out, g)
 		}
 	}
@@ -246,13 +253,7 @@ func (s *squatter) waitForSighting(pred func(*wire.ARPPacket) bool) squatterSigh
 // waitForCount blocks until pred has matched at least n of the frames read.
 func (s *squatter) waitForCount(pred func(*wire.ARPPacket) bool, n int) []squatterSighting {
 	for {
-		var out []squatterSighting
-		for _, g := range s.sightings() {
-			if pred(g.p) {
-				out = append(out, g)
-			}
-		}
-		if len(out) >= n {
+		if out := s.matching(pred); len(out) >= n {
 			return out
 		}
 		<-s.heard
@@ -686,14 +687,25 @@ func measureTheProbeDelay(t *testing.T) {
 	ev := awaitAcquired(t, f.client)
 	held := ev.Lease.Addr.Addr()
 
-	probes := sq.probesFor(held)
-	if len(probes) != proto.DefaultACDParams().ProbeNum {
+	d := proto.DefaultACDParams()
+
+	// THE ANNOUNCEMENT IS THE BARRIER, and it is waited for rather than
+	// sampled. Acquired is emitted from the manager's own goroutine the
+	// instant the first Announcement is handed to the socket; the squatter is
+	// a second process reading a second socket, and it has not necessarily
+	// stamped that frame yet. Section 2.3 puts the Announcement after the
+	// whole probe schedule, so once one has been read every Probe that was
+	// ever going to be sent has been read too, and counting them here is
+	// counting a complete set.
+	//
+	// MEASURED 2026-09-04: sampled instead of waited for, this test failed
+	// under load with "the wire carried no ARP Announcement" on both a loaded
+	// and a concurrent verify run, having timed nothing.
+	anns := sq.waitForCount(isAnnouncementFor(held), 1)
+	probes := sq.matching(isProbeFor(held))
+	if len(probes) != d.ProbeNum {
 		t.Fatalf("the wire carried %d probe(s) for %s, want PROBE_NUM = %d.\nsightings: %v",
-			len(probes), held, proto.DefaultACDParams().ProbeNum, sq.sightings())
-	}
-	anns := sq.announcementsFor(held)
-	if len(anns) == 0 {
-		t.Fatalf("the wire carried no ARP Announcement for %s", held)
+			len(probes), held, d.ProbeNum, sq.sightings())
 	}
 
 	// The DHCPACK's own moment, taken from the packet ring: the frame the
@@ -712,7 +724,6 @@ func measureTheProbeDelay(t *testing.T) {
 	}
 
 	// MEASURED, all of it. Nothing below is a constant this file chose.
-	d := proto.DefaultACDParams()
 	toFirstProbe := probes[0].at.Sub(ackAt)
 	gap1 := probes[1].at.Sub(probes[0].at)
 	gap2 := probes[2].at.Sub(probes[1].at)
@@ -789,13 +800,20 @@ func measureTheProbeDelay(t *testing.T) {
 	// ANNOUNCE_NUM is two and the second one is owed ANNOUNCE_INTERVAL after
 	// the first, so it is waited for on the wire rather than read out of the
 	// counter at a moment the RFC says it has not been sent yet.
-	anns = sq.waitForCount(func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPRequest && p.SenderIP == held && p.TargetIP == held
-	}, d.AnnounceNum)
+	anns = sq.waitForCount(isAnnouncementFor(held), d.AnnounceNum)
 	if gap := anns[1].at.Sub(anns[0].at); gap < dur(d.AnnounceInterval)-slack || gap > dur(d.AnnounceInterval)+slack {
 		t.Errorf("the two announcements are %s apart, RFC 5227 says ANNOUNCE_INTERVAL = %s", gap, d.AnnounceInterval)
 	}
 
+	// The counters are bumped AFTER the send returns, so the wire can be
+	// ahead of them by one frame. Waiting for the total to reach the expected
+	// one closes that window without softening the assertion: an overcount
+	// still fails the equality below, and an undercount that never arrives
+	// hangs until go test's -timeout rather than passing.
+	want := uint64(d.ProbeNum + d.AnnounceNum)
+	for f.client.Stats().ProbesSent+f.client.Stats().AnnouncementsSent < want {
+		goruntime.Gosched()
+	}
 	st := f.client.Stats()
 	if st.ProbesSent != uint64(d.ProbeNum) || st.AnnouncementsSent != uint64(d.AnnounceNum) {
 		t.Errorf("the client counted %d probe(s) and %d announcement(s), want %d and %d",
