@@ -280,13 +280,36 @@ type conflictFixture struct {
 	runErr    chan error
 }
 
-// startConflictClient wires the veth pair, starts dnsmasq and starts a client
-// with conflict detection in the given mode.
+// briskACD is RFC 5227 section 1.1's table with its DURATIONS scaled down and
+// its COUNTS untouched.
 //
-// realACD says whether the RFC's own constants are in force. Every test here
-// uses them: the whole subject is the schedule those constants describe, and
-// the one test that measures it would measure a fixture instead.
-func startConflictClient(t *testing.T, mode proto.ConflictMode, hostname string) *conflictFixture {
+// The three conflict runs use it and the timing run does not. What those three
+// are about is a verdict — a real squatter on a real wire makes a real dnsmasq
+// log a DHCPDECLINE and hand out a different address — and that verdict does
+// not depend on how long the gaps were. Paying the RFC's own four to seven
+// seconds three more times would add twenty seconds to a suite with a
+// sixty-second ceiling and measure nothing the fourth test does not measure
+// properly.
+//
+// PROBE_NUM and ANNOUNCE_NUM keep the RFC's values, because those are counts
+// of packets and every one of them is asserted on the wire. The durations are
+// pinned at their RFC values in proto's TestACDConstantsAreTheRFCValues and
+// MEASURED against a real wire in
+// TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic; nothing here can reach
+// either.
+func briskACD() proto.ACDParams {
+	d := proto.DefaultACDParams()
+	d.ProbeWait = 50 * proto.Millisecond
+	d.ProbeMin = 50 * proto.Millisecond
+	d.ProbeMax = 100 * proto.Millisecond
+	d.AnnounceWait = 100 * proto.Millisecond
+	d.AnnounceInterval = 100 * proto.Millisecond
+	return d
+}
+
+// startConflictClient wires the veth pair, starts dnsmasq and starts a client
+// with conflict detection in the given mode and the given ACD table.
+func startConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string) *conflictFixture {
 	t.Helper()
 
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
@@ -311,8 +334,7 @@ func startConflictClient(t *testing.T, mode proto.ConflictMode, hostname string)
 	// and this line cannot reach it.
 	params.RestartDelay = 1 * proto.Second
 	params.Conflict = mode
-	// params.ACD is left at DefaultParams's table, which is RFC 5227 section
-	// 1.1's. Nothing in this file scales it down.
+	params.ACD = acd
 	params.Hostname = hostname
 
 	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
@@ -410,7 +432,7 @@ func TestASquatterInTheProbeWindowMakesAnAsyncClientDecline(t *testing.T) {
 // way, which is the point: the mode is a promise to the CALLER about when it
 // may use the address, not a change to the protocol on the wire.
 func squatterInProbeWindow(t *testing.T, mode proto.ConflictMode) {
-	f := startConflictClient(t, mode, "m6-client")
+	f := startConflictClient(t, mode, briskACD(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterDefendFirstProbed)
 
 	// The first address the server hands out. Read from the SERVER's log, not
@@ -566,7 +588,7 @@ func TestASquatterAfterBoundTakesSection24sPath(t *testing.T) {
 // signal is DHCPDECLINE. The address is never defended, because it was never
 // this host's to defend.
 func squatterAfterBound(t *testing.T) {
-	f := startConflictClient(t, proto.ConflictWait, "m6-client")
+	f := startConflictClient(t, proto.ConflictWait, briskACD(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterAnnounceOnCue)
 
 	ev := awaitAcquired(t, f.client)
@@ -648,7 +670,7 @@ func TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic(t *testing.T) {
 // The MEASURED number below is what a container will actually wait, and it is
 // the reason D23's async mode exists.
 func measureTheProbeDelay(t *testing.T) {
-	f := startConflictClient(t, proto.ConflictWait, "m6-client")
+	f := startConflictClient(t, proto.ConflictWait, proto.DefaultACDParams(), "m6-client")
 	sq := newSquatter(t, testServerIf, squatterObserve)
 
 	ev := awaitAcquired(t, f.client)
