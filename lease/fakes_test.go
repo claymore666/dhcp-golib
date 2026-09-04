@@ -449,6 +449,14 @@ func testParams() proto.Params {
 	// would make every manager test start by firing a timer that has nothing
 	// to do with what it asserts.
 	p.DesyncMin, p.DesyncMax = 0, 0
+	// Conflict detection off, explicitly. The zero value is proto.ConflictWait
+	// so a caller with no opinion gets RFC 5227's check; these fixtures have
+	// an opinion, and it is that their subject is the manager — the action
+	// drain, the counters, the record — not RFC 5227's five-and-a-half-second
+	// schedule sitting between every DHCPACK and every Acquired they wait for.
+	// The ACD manager tests say ConflictWait or ConflictAsync at their own
+	// line and supply an ARP port.
+	p.Conflict = proto.ConflictOff
 	return p
 }
 

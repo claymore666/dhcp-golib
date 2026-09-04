@@ -70,6 +70,18 @@ type Record struct {
 
 	Phase Phase
 
+	// ACD is where RFC 5227's conflict check stood at the last lease event
+	// folded in. D23, and it is durable for one reason: a proto.ConflictAsync
+	// client is told Acquired while the check is still running, so a process
+	// that restarts inside that window has to know whether the address it is
+	// resuming was ever cleared. A record saying ACDProbing has not been; one
+	// saying ACDDefending has.
+	//
+	// It is proto.ACDIdle for a client running with proto.ConflictOff, and for
+	// every record written before M6 — which reads correctly, because those
+	// clients ran no check either.
+	ACD proto.ACDPhase
+
 	// Deadline is when a RETAINED record may be closed: the caller's
 	// min(lease expiry, tombstone TTL). Zero outside RETAINED.
 	Deadline time.Time
@@ -366,6 +378,10 @@ type RecordEvent struct {
 	Reason proto.Reason `json:"reason,omitempty"`
 	Note   string       `json:"note,omitempty"`
 
+	// ACD is the conflict-detection phase the manager event carried, for
+	// OpLease and OpLost. See Record.ACD.
+	ACD proto.ACDPhase `json:"acd,omitempty"`
+
 	// Stats is a manager snapshot, for OpStats.
 	Stats *Stats `json:"stats,omitempty"`
 
@@ -531,11 +547,25 @@ type WireCounters struct {
 	RequestsDropped  uint64 `json:"requests_dropped,omitempty"`
 	RenewalsSent     uint64 `json:"renewals_sent,omitempty"`
 	NaksSeen         uint64 `json:"naks_seen,omitempty"`
+
+	// The RFC 5227 wire counters. They belong here and not in the folded half
+	// for the rule this type states: nothing in the record's own event stream
+	// counts an ARP frame. A record carries lease events, and a probe that
+	// went out, a frame that was ignored and a frame that would not decode
+	// each produce none.
+	ProbesSent        uint64 `json:"probes_sent,omitempty"`
+	AnnouncementsSent uint64 `json:"announcements_sent,omitempty"`
+	ARPSendFailures   uint64 `json:"arp_send_failures,omitempty"`
+	ARPSeen           uint64 `json:"arp_seen,omitempty"`
+	ARPIgnored        uint64 `json:"arp_ignored,omitempty"`
+	ARPDecodeFailures uint64 `json:"arp_decode_failures,omitempty"`
+	ARPErrors         uint64 `json:"arp_errors,omitempty"`
 }
 
-// The five Stats fields WireCounters deliberately does not carry, because the
+// The six Stats fields WireCounters deliberately does not carry, because the
 // fold derives the same fact from the record's own events: LeasesAcquired,
-// LeasesLost, AcquireFailures, RenewalsCompleted and NaksAccepted.
+// LeasesLost, AcquireFailures, RenewalsCompleted, NaksAccepted and
+// ConflictsDetected.
 //
 // Named here as data rather than in prose so the disjointness test can read it.
 var statsFoldedInstead = map[string]string{
@@ -544,6 +574,11 @@ var statsFoldedInstead = map[string]string{
 	"AcquireFailures":   "Failures",
 	"RenewalsCompleted": "Renewals",
 	"NaksAccepted":      "Naks",
+	// Both paths, in two arms that cannot both fire for one conflict:
+	// foldLost's for a conflict on a lease already in service (RFC 5227
+	// section 2.4), foldLease's Failed arm for one found before the address
+	// was ever used (section 2.1).
+	"ConflictsDetected": "Conflicts",
 }
 
 // The reflective arithmetic over WireCounters.
@@ -811,6 +846,7 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 		}
 		rec.Lease = CloneLease(*ev.Lease)
 		rec.Held = true
+		rec.ACD = ev.ACD
 		switch ev.Kind {
 		case Acquired:
 			rec.Counters.Acquisitions++
@@ -831,6 +867,15 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 			rec.Counters.Naks++
 		case proto.ReasonNoServer:
 			rec.Counters.Timeouts++
+		case proto.ReasonConflict:
+			// RFC 5227 section 2.1's check failing BEFORE the address was
+			// used: nothing was acquired, so no Lost arrives and foldLost's
+			// bump never runs. Counting it here is what makes
+			// RecordCounters.Conflicts the whole population rather than the
+			// half that happened to a lease already in service — and the two
+			// arms cannot double-count, because ring 1 emits Failed with this
+			// reason only when it holds no lease.
+			rec.Counters.Conflicts++
 		}
 	case Lost:
 		return rec, &Reject{Reason: RejectPayload, Op: ev.Op, Phase: rec.Phase, ID: ev.ID, Seq: ev.Seq,
@@ -843,6 +888,10 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 }
 
 func foldLost(rec Record, ev RecordEvent) Record {
+	// The phase at the loss, whatever the reason. After a conflict it is
+	// ACDIdle — the sub-machine stops when it declines — and that is the fact
+	// a resuming process needs: there is nothing in flight to resume.
+	rec.ACD = ev.ACD
 	if ev.Reason == proto.ReasonStopped {
 		// P-7. Cancelling a manager makes ring 1 drop the lease with this
 		// reason, so it arrives at the end of every ordinary shutdown and at
