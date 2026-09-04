@@ -508,8 +508,14 @@ func squatterInProbeWindow(t *testing.T, mode proto.ConflictMode) {
 
 	// The second address is probed too. A client that declined and then took
 	// the replacement on faith would pass every assertion above.
+	// Two of them, not one, and the second is the BARRIER for the counter
+	// assertion at the end of this function. ProbesSent is bumped after the
+	// send returns, so the wire runs one frame ahead of it; waiting for a
+	// LATER frame -- one the assertion is not about -- puts the earlier
+	// bumps behind us without spinning on the number under test, which is
+	// how a broken counter stays a red rather than becoming a hang.
 	second := netip.MustParseAddr(offers[len(offers)-1])
-	sq.waitForSighting(func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == second })
+	sq.waitForCount(isProbeFor(second), 2)
 
 	// The caller's side of it, which differs by mode and is the reason D23
 	// exists at all.
@@ -805,13 +811,17 @@ func measureTheProbeDelay(t *testing.T) {
 		t.Errorf("the two announcements are %s apart, RFC 5227 says ANNOUNCE_INTERVAL = %s", gap, d.AnnounceInterval)
 	}
 
-	// The counters are bumped AFTER the send returns, so the wire can be
-	// ahead of them by one frame. Waiting for the total to reach the expected
-	// one closes that window without softening the assertion: an overcount
-	// still fails the equality below, and an undercount that never arrives
-	// hangs until go test's -timeout rather than passing.
-	want := uint64(d.ProbeNum + d.AnnounceNum)
-	for f.client.Stats().ProbesSent+f.client.Stats().AnnouncementsSent < want {
+	// THE BARRIER IS THE PACKET RING, not the counters this then asserts on.
+	//
+	// A send bumps its counter and only then records the frame in the ring,
+	// so a ring that holds ANNOUNCE_NUM outgoing Announcements is proof that
+	// every bump owed for them has already happened. The obvious shortcut --
+	// spinning until the counters reach the expected number -- would make a
+	// counter that never counts an infinite spin instead of a failed
+	// assertion, and the tree has MEASURED that once already: written that
+	// way in transport_packet_linux_test.go, two counter mutants came back as
+	// 200-second hangs, and a hang is not a kill.
+	for countOutgoing(f.client, isAnnouncementFor(held)) < d.AnnounceNum {
 		goruntime.Gosched()
 	}
 	st := f.client.Stats()
@@ -819,6 +829,20 @@ func measureTheProbeDelay(t *testing.T) {
 		t.Errorf("the client counted %d probe(s) and %d announcement(s), want %d and %d",
 			st.ProbesSent, st.AnnouncementsSent, d.ProbeNum, d.AnnounceNum)
 	}
+}
+
+// countOutgoing counts the ARP frames the client's own packet ring says it
+// sent and pred accepts. It is a barrier, never evidence: what the client
+// believes it sent is exactly the thing the squatter's socket is here to
+// check independently.
+func countOutgoing(c *Client, pred func(*wire.ARPPacket) bool) int {
+	n := 0
+	for _, p := range c.Packets() {
+		if p.Dir == lease.DirOut && p.ARP != nil && pred(p.ARP) {
+			n++
+		}
+	}
+	return n
 }
 
 // dur converts ring 1's Duration to the one testing prints.
