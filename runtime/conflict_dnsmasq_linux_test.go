@@ -390,10 +390,20 @@ func addrInLog(line, prefix string) (string, bool) {
 // in the handover is the test's own output and not a transcription.
 func (f *conflictFixture) quote(t *testing.T, what string) {
 	t.Helper()
+	// The transaction lines only. dnsmasq's --log-dhcp prose ("available DHCP
+	// range", "requested options", "sent size") is what makes this log
+	// unreadable in a report, and every one of those lines contains the string
+	// DHCP.
 	var keep []string
 	for _, l := range f.srv.lines() {
-		if strings.Contains(l, "DHCP") && !strings.Contains(l, "DHCP, IP range") {
-			keep = append(keep, l)
+		for _, kind := range []string{
+			"DHCPDISCOVER(", "DHCPOFFER(", "DHCPREQUEST(", "DHCPACK(",
+			"DHCPNAK(", "DHCPDECLINE(", "DHCPRELEASE(", "DHCPINFORM(",
+		} {
+			if strings.Contains(l, kind) {
+				keep = append(keep, l)
+				break
+			}
 		}
 	}
 	t.Logf("dnsmasq log excerpt (%s):\n%s", what, strings.Join(keep, "\n"))
