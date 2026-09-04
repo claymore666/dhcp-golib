@@ -512,7 +512,7 @@ func TestConflictOffOpensNothing(t *testing.T) {
 	// And every ARP packet class, in every state, changes nothing.
 	for _, s := range AllStates() {
 		if s == StateProbing {
-			continue // unreachable in this mode; TestEveryStateAndEventPair covers it
+			continue // unreachable in this mode; TestEveryPhaseAndPacketClass covers it
 		}
 		for _, p := range adversarialARP() {
 			mm := newMachine(t, acdParams(ConflictOff))
