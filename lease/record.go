@@ -80,6 +80,21 @@ type Record struct {
 	// It is proto.ACDIdle for a client running with proto.ConflictOff, and for
 	// every record written before M6 — which reads correctly, because those
 	// clients ran no check either.
+	//
+	// NOTHING IN THIS LIBRARY READS IT. Stated here, on the field, because the
+	// chassis author (M6b) is the only consumer and this is where they will
+	// look. MEASURED at round 2's head: the readers of Record.ACD and
+	// RecordEvent.ACD are the fold, the JSON tag and the tests; proto.Resume
+	// carries an address and an expiry and nothing else.
+	//
+	// So D23's "a restart during the window resumes the probe, not skips it"
+	// is NOT delivered by this field. It is delivered by the machine: on the
+	// INIT-REBOOT DHCPACK, afterAck runs the RFC 5227 section 2.1 check
+	// unconditionally, whatever the record said — and if the ACK never comes,
+	// the remembered lease is not used at all (RFC 2131 section 3.2(3)'s MAY
+	// is declined; Machine's REBOOTING arm has the reason). The field is the
+	// chassis's evidence for what a half-checked lease was, not this library's
+	// control input.
 	ACD proto.ACDPhase
 
 	// Deadline is when a RETAINED record may be closed: the caller's

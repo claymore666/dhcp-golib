@@ -598,6 +598,36 @@ func adversarialARP() []arpCase {
 			pkt:  probeFrom(testCHAddr, testACDAddr),
 		},
 		{
+			// ROUND 2, FINDING 1. The section 2.5 ARP Reply, as it comes back
+			// on our own AF_PACKET socket: "whenever a host receives an ARP
+			// Request ... where the 'target IP address' of the ARP Request is
+			// (one of) the host's own IP address(es) configured on that
+			// interface, the host MUST respond with an ARP Reply". Sender IP
+			// is the leased address and the sender hardware address is ours,
+			// because the kernel that sent it is ours. It exists the moment
+			// the address is configured, which in ConflictAsync is while the
+			// probe window is still open.
+			name: "the kernel's own section 2.5 ARP Reply for our address",
+			pkt:  replyFrom(testCHAddr, testACDAddr, "192.168.99.9"),
+		},
+		{
+			// ROUND 2, FINDING 1, the other frame: our own stack resolving a
+			// neighbour once the address is up. An ordinary ARP Request, whose
+			// sender IP is the leased address because that is the source it
+			// will send from.
+			name: "our own ARP Request for a neighbour, from our address",
+			pkt:  requestFrom(testCHAddr, testACDAddr, "192.168.99.222"),
+		},
+		{
+			// Our own Probe for a DIFFERENT address. Neither rule can fire:
+			// the sender IP is zero and the target is not the address under
+			// test. It is here so that the exemption cannot be written as
+			// "anything from our own MAC in the probe window is fine" and go
+			// unnoticed on a corpus that never sends one.
+			name: "our own Probe for a DIFFERENT address",
+			pkt:  probeFrom(testCHAddr, "192.168.99.77"),
+		},
+		{
 			name: "another host probing for OUR address at the same time",
 			pkt:  probeFrom(theirMAC, testACDAddr),
 		},
@@ -636,18 +666,32 @@ func TestEveryPhaseAndPacketClass(t *testing.T) {
 	// conflictIn[phase][packet name] is whether RFC 5227 calls it a conflict.
 	// Named by rule in the comment beside each block.
 	probeWindow := map[string]string{
-		// Section 2.1.1, first rule: ANY ARP packet, Request or Reply, whose
-		// sender IP is the address being probed. NO hardware-address
-		// exemption is written, and none is added — see conflictRule.
+		// Section 2.1.1, first rule: an ARP packet, Request or Reply, whose
+		// sender IP is the address being probed — READ WITH SECTION 2.4'S
+		// HARDWARE-ADDRESS CLAUSE, which is the correction round 2 makes.
+		//
+		// ROUND 1 PINNED THE OPPOSITE HERE, deliberately and wrongly: the two
+		// own-MAC rows below asserted "RFC 5227 2.1.1", on the reading that
+		// section 2.1.1's first rule is written without an exemption and that
+		// adding one would weaken it. The premise that made that reading safe
+		// — that a probing host cannot itself emit a frame carrying the
+		// address — is false for a host that is already USING the address,
+		// which is what ConflictAsync promises and what a renewal onto a moved
+		// address forces even in ConflictWait. Section 2.4 governs a host that
+		// is using an address and carries the clause; section 2.5 makes the
+		// reply in the fourth row MANDATORY. conflictRule has the text.
 		"an ARP Reply claiming our address, from another host":             "RFC 5227 2.1.1",
 		"an ARP Request whose sender IP is our address, from another host": "RFC 5227 2.1.1",
 		"another host's Announcement for our address":                      "RFC 5227 2.1.1",
-		"an ARP Reply for our address from our OWN hardware address":       "RFC 5227 2.1.1",
-		"our own Announcement echoed back by the link":                     "RFC 5227 2.1.1",
 		"an ARP Reply for our address with a zero sender hardware address": "RFC 5227 2.1.1",
 		// Section 2.1.1, second rule: an ARP Probe whose target is the address
 		// being probed and whose sender hardware address is not ours.
 		"another host probing for OUR address at the same time": "RFC 5227 2.1.1",
+		// Everything the host itself put on the wire is absent from this map,
+		// which is the assertion: "an ARP Reply for our address from our OWN
+		// hardware address", "our own Announcement echoed back by the link",
+		// "the kernel's own section 2.5 ARP Reply for our address" and "our
+		// own ARP Request for a neighbour, from our address" are all "".
 	}
 	ongoing := map[string]string{
 		// Section 2.4: sender IP is one of our addresses AND the sender
@@ -657,6 +701,10 @@ func TestEveryPhaseAndPacketClass(t *testing.T) {
 		"an ARP Request whose sender IP is our address, from another host": "RFC 5227 2.4",
 		"another host's Announcement for our address":                      "RFC 5227 2.4",
 		"an ARP Reply for our address with a zero sender hardware address": "RFC 5227 2.4",
+		// The two frames the host's own stack emits are absent here too, and
+		// were absent in round 1: this arm always carried the clause. That the
+		// two maps now agree about them is the point — the SAME frame cannot
+		// be our own traffic after the window and a squatter inside it.
 	}
 	expected := map[ACDPhase]map[string]string{
 		ACDIdle:       {},
@@ -1199,4 +1247,274 @@ func hasTimer(acts []Action, t TimerID) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------- round 2, finding 1: our own traffic --
+
+// advanceToPhase steps the machine's ACD timer until it reaches want, and
+// returns the instant it got there.
+//
+// It drives the SCHEDULE rather than assigning a.phase, because the phase a
+// frame arrives in is the whole subject here and a hand-set phase is a claim
+// that the schedule can reach it.
+func advanceToPhase(t *testing.T, m *Machine, acts []Action, want ACDPhase) Instant {
+	t.Helper()
+	now := at(2)
+	delay, armed := armedACD(acts)
+	for step := 0; step < 12; step++ {
+		if m.ACDPhase() == want {
+			return now
+		}
+		if !armed {
+			break
+		}
+		now = now.Add(delay)
+		_, acts = m.Step(now, uint64(step+7), TimerFired(TimerACD))
+		delay, armed = armedACD(acts)
+	}
+	if m.ACDPhase() != want {
+		t.Fatalf("the schedule did not reach %s; it stopped in %s", want, m.ACDPhase())
+	}
+	return now
+}
+
+// TestOurOwnTrafficInTheProbeWindowIsNeverAConflict is round 2's finding 1,
+// and defeat rows M6-28, M6-29 and M6-30.
+//
+// THE PRODUCT IS (probing, settling) x (three packet classes) x (three modes),
+// driven through Machine.Step rather than through conflictRule, because the
+// defect the reviewer found was not in the predicate's table — that table
+// asserted the wrong answer and passed — but in what the machine DOES with it:
+// a DHCPDECLINE for the client's own lease.
+//
+// The three classes are the three the finding names:
+//
+//   - OUR sender hardware address carrying the LEASED sender IP. Two frames,
+//     because the host's stack emits two: section 2.5's mandatory ARP Reply,
+//     and an ordinary ARP Request for a neighbour. Never a conflict.
+//   - a FOREIGN sender hardware address carrying the leased sender IP. Still a
+//     conflict, in every mode that looks — that is what the exemption must not
+//     cost, and it is the assertion that fails if the exemption is widened to
+//     the sender IP alone.
+//   - OUR sender hardware address probing for a DIFFERENT address. Never a
+//     conflict, and it is here so that "our own MAC" cannot become the whole
+//     rule.
+//
+// ConflictOff is in the product and its expectation is the same for all three
+// classes — nothing — because an off client has no sub-machine to consult. It
+// is driven anyway: an off client that declined on a frame would be a
+// milestone-wide failure and no other test in this file feeds it one in a
+// state where it holds a lease.
+func TestOurOwnTrafficInTheProbeWindowIsNeverAConflict(t *testing.T) {
+	classes := []struct {
+		name       string
+		pkt        *wire.ARPPacket
+		isConflict bool
+	}{
+		{
+			name: "the kernel's section 2.5 ARP Reply for the leased address",
+			pkt:  replyFrom(testCHAddr, testACDAddr, "192.168.99.9"),
+		},
+		{
+			name: "our own ARP Request for a neighbour, sent from the leased address",
+			pkt:  requestFrom(testCHAddr, testACDAddr, "192.168.99.222"),
+		},
+		{
+			name:       "another host's ARP Reply claiming the leased address",
+			pkt:        replyFrom(theirMAC, testACDAddr, "192.168.99.9"),
+			isConflict: true,
+		},
+		{
+			name: "our own Probe for a different address",
+			pkt:  probeFrom(testCHAddr, "192.168.99.77"),
+		},
+	}
+
+	// The phase axis is PER MODE and not a constant list, because an off
+	// client has no probe window: it is in ACDIdle from the DHCPACK onwards.
+	// Writing {probing, settling} for it and skipping the rows would report a
+	// product this test did not drive.
+	phasesOf := func(mode ConflictMode) []ACDPhase {
+		if mode == ConflictOff {
+			return []ACDPhase{ACDIdle}
+		}
+		return []ACDPhase{ACDProbing, ACDSettling}
+	}
+
+	for _, mode := range []ConflictMode{ConflictWait, ConflictAsync, ConflictOff} {
+		for _, phase := range phasesOf(mode) {
+			for _, c := range classes {
+				t.Run(mode.String()+"/"+phase.String()+"/"+c.name, func(t *testing.T) {
+					m, acts := acdMachine(t, mode)
+					now := at(2)
+					if mode != ConflictOff {
+						now = advanceToPhase(t, m, acts, phase)
+					} else if got := m.ACDPhase(); got != ACDIdle {
+						t.Fatalf("an off client is in ACD phase %s after its DHCPACK, want idle", got)
+					}
+					state := m.State()
+					_, got := m.Step(now.Add(Nanosecond), 99, ARPReceived(c.pkt))
+
+					conflicted := count(got, ActLeaseLost)+count(got, ActFailed) > 0
+					want := c.isConflict && mode != ConflictOff
+					if conflicted != want {
+						t.Fatalf("conflict = %v, want %v; the actions were %v", conflicted, want, got)
+					}
+					if !want {
+						// The DECLINE is the damage. Nothing at all may be
+						// sent: a client that declined its own lease here
+						// would look, to the server, exactly like one that
+						// found a squatter.
+						if n := count(got, ActSend); n != 0 {
+							t.Fatalf("%d DHCP message(s) sent on our own traffic; the first is %v", n, got[0])
+						}
+						if m.State() != state {
+							t.Fatalf("the machine moved from %s to %s on its own traffic", state, m.State())
+						}
+						if m.ACDPhase() != phase {
+							t.Fatalf("the ACD phase moved from %s to %s on our own traffic", phase, m.ACDPhase())
+						}
+					} else {
+						msg := mustSend(t, got, wire.MsgDecline)
+						if addr, ok := msg.Addr4(wire.OptRequestedIP); !ok || addr.String() != testACDAddr {
+							t.Fatalf("the DHCPDECLINE names %s (present %v), want %s", addr, ok, testACDAddr)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// -------------------------------- round 2, finding 2: the rate limit acts --
+
+// armedRestart reports the delay TimerRestart was last armed for in this
+// action list. It is the OBSERVABLE the rate limit changes, and round 1 had
+// no assertion on it: TestTheRateLimitEngagesAtTheTenth reads the pure
+// function's return value, which is the number before it is composed.
+func armedRestart(acts []Action) (Duration, bool) {
+	for i := len(acts) - 1; i >= 0; i-- {
+		if acts[i].Kind == ActSetTimer && acts[i].Timer == TimerRestart {
+			return acts[i].After, true
+		}
+	}
+	return 0, false
+}
+
+// TestTheACDFixtureCanSeeTheRateLimit is defeat row M6-32: the fixture
+// carries its own requirement as an assertion.
+//
+// The reviewer's mutant survived round 1 because acdParams scaled
+// RATE_LIMIT_INTERVAL to 600ns while the restart delay it composes with stayed
+// at ten seconds, so `max(base, rate)` was `base` for every reachable input
+// and the composition had no observable. A comment saying "do not scale this"
+// is not a check; this is. It fails if the two are ever made
+// indistinguishable again, whichever of them moves.
+func TestTheACDFixtureCanSeeTheRateLimit(t *testing.T) {
+	p := acdParams(ConflictWait)
+	if p.ACD.RateLimitInterval <= p.restartDelay() {
+		t.Fatalf("the fixture's RATE_LIMIT_INTERVAL is %s and its restart delay is %s: "+
+			"restartDelay composes them as a maximum, so no test built on this fixture can tell "+
+			"a client that applies the limit from one that does not",
+			p.ACD.RateLimitInterval, p.restartDelay())
+	}
+}
+
+// TestTheRateLimitIsArmedOnTheRestartTimer is round 2's finding 2 and defeat
+// row M6-31: RFC 5227 section 2.1.1's rate limit is a MUST, and this is the
+// observer where it ACTS.
+//
+// "if the host experiences MAX_CONFLICTS or more address conflicts on a given
+// interface, then the host MUST limit the rate at which it probes for new
+// addresses on this interface to no more than one attempted new address per
+// RATE_LIMIT_INTERVAL."
+//
+// TWELVE REAL CONFLICTS, DRIVEN THROUGH THE WIRE, not a count assigned to a
+// field. The failure mode the RFC names is "a defective DHCP server that
+// repeatedly assigns the same address to every host that asks for one", which
+// is a LOOP: DHCPDECLINE, restart timer, DISCOVER, OFFER, ACK, probe,
+// conflict, again. Each turn of that loop moves acd.attemptAt, and the limit
+// is measured from the attempt rather than from the conflict, so a test that
+// set the count directly would never exercise the arithmetic that makes the
+// interval a rate.
+//
+// The assertion is on the duration TimerRestart is ARMED for — the action a
+// ring-2 caller drains — because that is the only thing that changes what the
+// client does. The journal line beside it says the same number and cannot be
+// the evidence: a client that journals "next attempt in 59s" and arms ten
+// seconds is exactly the defect.
+func TestTheRateLimitIsArmedOnTheRestartTimer(t *testing.T) {
+	p := acdParams(ConflictWait)
+	max := p.ACD.MaxConflicts
+	if max != 10 {
+		t.Fatalf("the fixture's MAX_CONFLICTS is %d; this test names the tenth and the eleventh", max)
+	}
+
+	m := newMachine(t, p)
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	now := at(0)
+
+	for n := 1; n <= max+2; n++ {
+		if n > 1 {
+			// The restart timer the previous conflict armed. Firing it is
+			// what makes the next attempt an attempt.
+			_, acts = m.Step(now, uint64(n)*10+1, TimerFired(TimerRestart))
+		}
+		disc := mustSend(t, acts, wire.MsgDiscover)
+		_, acts = m.Step(now.Add(Second), uint64(n)*10+2, received(t, offerFor(disc, testACDAddr, "192.168.99.1")))
+		req := mustSend(t, acts, wire.MsgRequest)
+		// The attempt begins here: acd.start stamps attemptAt at the DHCPACK
+		// that puts the machine into PROBING.
+		attempt := now.Add(2 * Second)
+		_, acts = m.Step(attempt, uint64(n)*10+3, received(t, ackFor(req, testACDAddr, "192.168.99.1", 3600)))
+		if m.ACDPhase() != ACDProbing {
+			t.Fatalf("conflict %d: the machine is in ACD phase %s after its DHCPACK, want probing", n, m.ACDPhase())
+		}
+
+		// The squatter answers. One second into the attempt, so that the
+		// remaining interval is a number this test computes rather than reads.
+		conflictAt := attempt.Add(Second)
+		_, acts = m.Step(conflictAt, uint64(n)*10+4, ARPReceived(replyFrom(theirMAC, testACDAddr, "192.168.99.9")))
+		mustSend(t, acts, wire.MsgDecline)
+
+		d, ok := armedRestart(acts)
+		if !ok {
+			t.Fatalf("conflict %d: no restart timer was armed after the DHCPDECLINE", n)
+		}
+		// RFC 2131 section 3.1(5)'s floor below MAX_CONFLICTS; section
+		// 2.1.1's rate above it, measured from the start of the attempt.
+		want := p.restartDelay()
+		if n >= max {
+			want = attempt.Add(p.ACD.RateLimitInterval).Sub(conflictAt)
+		}
+		if d != want {
+			t.Fatalf("conflict %d: TimerRestart armed for %s, want %s (MAX_CONFLICTS = %d, RATE_LIMIT_INTERVAL = %s, floor %s)",
+				n, d, want, max, p.ACD.RateLimitInterval, p.restartDelay())
+		}
+		if n == max-1 && d != p.restartDelay() {
+			t.Fatalf("the limit engaged at conflict %d, one before MAX_CONFLICTS", n)
+		}
+		now = conflictAt.Add(d)
+	}
+
+	// D5, at the same observable. A second client on the same parent has its
+	// own count, so its own restart is the floor and not the rate. Round 1
+	// asserted this on acd.rateLimited(); the boundary that matters is the
+	// timer, and a rate limit keyed on the parent would arm 59s here.
+	neighbour := newMachine(t, acdParams(ConflictWait))
+	_, nacts := neighbour.Step(at(1000), 1, Simple(EvStart))
+	disc := mustSend(t, nacts, wire.MsgDiscover)
+	_, nacts = neighbour.Step(at(1001), 2, received(t, offerFor(disc, testACDAddr, "192.168.99.1")))
+	req := mustSend(t, nacts, wire.MsgRequest)
+	_, nacts = neighbour.Step(at(1002), 3, received(t, ackFor(req, testACDAddr, "192.168.99.1", 3600)))
+	_, nacts = neighbour.Step(at(1003), 4, ARPReceived(replyFrom(theirMAC, testACDAddr, "192.168.99.9")))
+	mustSend(t, nacts, wire.MsgDecline)
+	d, ok := armedRestart(nacts)
+	if !ok {
+		t.Fatal("the second client armed no restart timer after its DHCPDECLINE")
+	}
+	if d != p.restartDelay() {
+		t.Fatalf("a second client on the same parent waits %s after its FIRST conflict, want the %s floor: "+
+			"D5 makes the rate limit per endpoint", d, p.restartDelay())
+	}
 }

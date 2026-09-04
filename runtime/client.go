@@ -207,7 +207,9 @@ func (c *Client) ReportConflict() { c.mgr.ReportConflict() }
 func (c *Client) ACDPhase() proto.ACDPhase { return c.mgr.ACDPhase() }
 
 // ARPStats returns the ARP socket's counters, and the zero value for a client
-// running with proto.ConflictOff — which has no such socket.
+// running with proto.ConflictOff — which has no such socket. Present is false
+// in exactly that case, and it is the only way to tell "there is no ARP port"
+// from "the port has read nothing".
 //
 // Separate from Stats for the reason TransportStats is: the socket counts what
 // arrived, the manager counts what it acted on, and a client that saw no

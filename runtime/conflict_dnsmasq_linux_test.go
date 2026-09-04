@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -313,13 +314,21 @@ func briskACD() proto.ACDParams {
 // not run it: conflictFixture.start does, and takes the observer.
 func newConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string) *conflictFixture {
 	t.Helper()
+	return newConflictClientCfg(t, mode, acd, hostname, dnsmasqConfig{})
+}
+
+// newConflictClientCfg is newConflictClient with the server's command line
+// open to the caller. Round 2's two runs need option 58, because a lease that
+// SURVIVES is proved by a renewal and dnsmasq's default T1 is a minute away.
+func newConflictClientCfg(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, cfg dnsmasqConfig) *conflictFixture {
+	t.Helper()
 
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
 	mustRun(t, "ip", "addr", "add", testServerIP+"/24", "dev", testServerIf)
 	mustRun(t, "ip", "link", "set", testServerIf, "up")
 	mustRun(t, "ip", "link", "set", testClientIf, "up")
 
-	srv := startDnsmasq(t)
+	srv := startDnsmasqCfg(t, cfg)
 
 	iface, err := net.InterfaceByName(testClientIf)
 	if err != nil {
@@ -874,3 +883,436 @@ func countOutgoing(c *Client, pred func(*wire.ARPPacket) bool) int {
 
 // dur converts ring 1's Duration to the one testing prints.
 func dur(d proto.Duration) time.Duration { return time.Duration(d) }
+
+// ------- round 2, finding 1: the address is IN USE while the window is open --
+
+// testNeighbourIP is an address in the subnet that nothing holds. It is what
+// the client's own stack is made to resolve, so that the ARP Request it emits
+// is an ordinary one — sender IP the leased address, sender hardware address
+// the client's — and not something this test built.
+//
+// It is NOT the gateway, which is what a container would really ARP for, and
+// the reason is the fixture: both ends of the veth pair live in one network
+// namespace, so testServerIP is a LOCAL address and the kernel answers it
+// internally without ever putting an ARP Request on the wire. An unassigned
+// neighbour is the same frame aimed at an address that forces the resolution.
+const testNeighbourIP = "192.168.99.222"
+
+// testAskerIP is the address the observer puts in the 'sender IP address' of
+// the ARP Requests it uses to make the client's kernel answer.
+//
+// It is NOT testServerIP and NOT testNeighbourIP, and both exclusions are
+// measured rather than stylistic. MEASURED 2026-09-04: with testServerIP —
+// which is configured on the server's end of the same veth pair and is
+// therefore a LOCAL address to the one kernel both ends share — no ARP Reply
+// is ever sent, and the run hangs. With testNeighbourIP the request would
+// populate the client's neighbour table for the very address resolveNeighbour
+// then needs to resolve, so the ARP Request that test drives would never be
+// sent. A third address, configured nowhere, is an ordinary neighbour asking
+// an ordinary question.
+const testAskerIP = "192.168.99.221"
+
+// strictARP stops the SERVER's end of the veth pair from answering ARP for an
+// address configured on the CLIENT's end.
+//
+// It is a property of this fixture and of no deployment. Both ends live in one
+// network namespace, so one kernel owns both, and Linux's default
+// arp_ignore = 0 means "reply for any local address, whichever interface the
+// request arrived on". The moment a test configures the leased address on the
+// client's interface, the server's interface starts answering the client's own
+// ARP Probes for it — with the SERVER's hardware address, which is a foreign
+// host claiming our address and IS a conflict under RFC 5227 section 2.1.1's
+// first rule. A correct verdict about a wrong wire.
+//
+// MEASURED 2026-09-04 before this was set: DHCPACK 192.168.99.122, then
+// "address conflict: RFC 5227 2.1.1: an ARP packet from fe:ae:9c:4b:e1:4e
+// claims 192.168.99.122 while we are probing for it" — that hardware address
+// being the server's end of the pair, not the client's.
+//
+// arp_ignore = 1 is "reply only if the target address is configured on the
+// interface the request arrived on", which is what two hosts on a wire do. The
+// client's own interface still answers for its own address, which is what
+// section 2.5 requires and what this test needs it to keep doing.
+func strictARP(t *testing.T) {
+	t.Helper()
+	const knob = "/proc/sys/net/ipv4/conf/all/arp_ignore"
+	if err := os.WriteFile(knob, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", knob, err)
+	}
+}
+
+// slowACD widens RFC 5227's window enough for a test to do work inside it,
+// while keeping the counts.
+//
+// briskACD's window is 150-300ms end to end, which is not a window a test can
+// configure an address in and then race. This one puts the first Announcement
+// about 1.5s after the DHCPACK. The test does not TRUST that number: it reads
+// the Announcement off the observer's socket and asserts that the frames it
+// drove were seen before it.
+func slowACD() proto.ACDParams {
+	d := proto.DefaultACDParams()
+	d.ProbeWait = 100 * proto.Millisecond
+	d.ProbeMin = 500 * proto.Millisecond
+	d.ProbeMax = 500 * proto.Millisecond
+	d.AnnounceWait = 400 * proto.Millisecond
+	d.AnnounceInterval = 100 * proto.Millisecond
+	return d
+}
+
+// fromClient matches the frames the CLIENT's stack put on the wire: the
+// section 2.5 ARP Reply the kernel owes for the leased address, and the
+// ordinary ARP Request it sends resolving a neighbour from that address.
+func fromClientReplyFor(mac string, addr netip.Addr) func(*wire.ARPPacket) bool {
+	return func(p *wire.ARPPacket) bool {
+		return p.Op == wire.ARPReply && p.SenderIP == addr &&
+			net.HardwareAddr(p.SenderHW).String() == mac
+	}
+}
+
+func fromClientRequestTo(mac string, addr netip.Addr, target netip.Addr) func(*wire.ARPPacket) bool {
+	return func(p *wire.ARPPacket) bool {
+		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == target &&
+			net.HardwareAddr(p.SenderHW).String() == mac
+	}
+}
+
+func fromMAC(mac string) func(*wire.ARPPacket) bool {
+	return func(p *wire.ARPPacket) bool {
+		return net.HardwareAddr(p.SenderHW).String() == mac
+	}
+}
+
+// resolveNeighbour makes the client's own kernel ARP for testNeighbourIP from
+// the leased address.
+//
+// A UDP datagram to an address with no neighbour entry is the cheapest way to
+// oblige a resolution, and the route added first is what pins the frame to the
+// client's link and its source address: both interfaces carry the /24, so a
+// route lookup without it could leave through the server's end.
+//
+// The send is expected to succeed at the socket layer and nothing is expected
+// to answer. What is asserted is the ARP Request, on the observer's socket.
+func resolveNeighbour(t *testing.T, from netip.Addr) {
+	t.Helper()
+	mustRun(t, "ip", "route", "add", testNeighbourIP+"/32", "dev", testClientIf, "src", from.String())
+	c, err := net.Dial("udp4", testNeighbourIP+":9")
+	if err != nil {
+		t.Fatalf("dialling %s to force an ARP resolution: %v", testNeighbourIP, err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.Write([]byte("m6")); err != nil {
+		t.Fatalf("writing to %s to force an ARP resolution: %v", testNeighbourIP, err)
+	}
+}
+
+// The round-2 pool. THREE ADDRESSES, and the size is the requirement rather
+// than tidiness: every address in it gets a permanent neighbour entry before
+// anything starts, and renewalAgainstDnsmasq's reason applies unchanged here —
+// a renewal DHCPACK is unicast to the client's address (RFC 2131 section
+// 4.3.2), the client's address lives only inside an AF_PACKET socket, so
+// without the entry the server's kernel ARPs into silence and the renewal
+// never completes. Both round-2 runs that wait for a renewal need it.
+const (
+	testR2PoolLo = "192.168.99.120"
+	testR2PoolHi = "192.168.99.122"
+)
+
+// renewableConflictClient is newConflictClientCfg with the pool small, the
+// neighbour entries pinned and option 58 set, which is what a run that waits
+// for a renewal needs.
+func renewableConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, renewSec int) *conflictFixture {
+	t.Helper()
+	f := newConflictClientCfg(t, mode, acd, hostname, dnsmasqConfig{
+		rangeLo: testR2PoolLo, rangeHi: testR2PoolHi,
+		extra: []string{"--dhcp-option=58," + strconv.Itoa(renewSec)},
+	})
+	for _, a := range addrRange(t, testR2PoolLo, testR2PoolHi) {
+		mustRun(t, "ip", "neigh", "replace", a, "lladdr", f.clientMAC, "dev", testServerIf, "nud", "permanent")
+	}
+	return f
+}
+
+func TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		ownTrafficInTheProbeWindow(t, false)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		ownTrafficInTheProbeWindow(t, true)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+// ownTrafficInTheProbeWindow is round 2's proof for review finding 1, and the
+// two arms are ONE CONTROL WITH ONE VARIABLE MOVED.
+//
+// Both arms run a ConflictAsync client, configure the leased address on the
+// client's interface at Acquired — which is what D23 tells the chassis to do
+// and what no round-1 fixture ever did — and then put two frames on the wire
+// out of the client's OWN kernel while RFC 5227 section 2.1's window is still
+// open:
+//
+//   - the section 2.5 ARP Reply. "From the time a host sends its first ARP
+//     Announcement, until the time it ceases using that IP address, the host
+//     MUST answer ARP Requests in the usual way required by the ARP
+//     specification." The observer asks for the address; the kernel answers.
+//     Sender IP is the lease, sender hardware address is the client's.
+//   - an ordinary ARP Request resolving a neighbour, sender IP the lease.
+//
+// Round 1's predicate called both of those conflicts, because section 2.1.1's
+// first rule as written has no hardware-address clause. The ONLY difference
+// between the arms is whether a foreign host also claims the address in the
+// same window. Arm one must end with no DHCPDECLINE in dnsmasq's log and a
+// lease that survives to a renewal; arm two must still end with the DECLINE.
+// An exemption widened from "our hardware address" to "the leased sender IP"
+// passes arm one and fails arm two, which is why they are one function.
+func ownTrafficInTheProbeWindow(t *testing.T, withSquatter bool) {
+	// Option 58 is the renewal clock: arm one proves the lease SURVIVED, and
+	// a lease survives by being renewed, not by nothing having happened yet.
+	f := renewableConflictClient(t, proto.ConflictAsync, slowACD(), "m6-own", 3)
+	strictARP(t)
+	sq := newSquatter(t, testServerIf, squatterAnnounceOnCue)
+	f.start(t, sq)
+
+	// async: the caller is told at the DHCPACK, with the phase saying the
+	// check has not finished. This is the moment the chassis configures the
+	// address, and the whole of what finding 1 is about.
+	ev := awaitAcquired(t, f.client)
+	addr := ev.Lease.Addr.Addr()
+	if ev.ACD != proto.ACDProbing {
+		t.Fatalf("async Acquired carries ACD phase %s, want probing: this test needs the window open", ev.ACD)
+	}
+	mustRun(t, "ip", "addr", "add", ev.Lease.Addr.String(), "dev", testClientIf)
+
+	// Frame one: the observer asks who has the address, and the client's
+	// kernel answers because section 2.5 obliges it to.
+	sq.send(&wire.ARPPacket{
+		Op:       wire.ARPRequest,
+		SenderHW: sq.hw,
+		SenderIP: netip.MustParseAddr(testAskerIP),
+		TargetIP: addr,
+	})
+	// Frame two: the client's kernel resolves a neighbour from the address.
+	resolveNeighbour(t, addr)
+
+	reply := sq.waitForSighting(fromClientReplyFor(f.clientMAC, addr))
+	request := sq.waitForSighting(fromClientRequestTo(f.clientMAC, addr, netip.MustParseAddr(testNeighbourIP)))
+
+	// THE LINK ECHO, and without it this run cannot see finding 1 at all.
+	//
+	// MEASURED 2026-09-04, first run of this test: three Probes and two
+	// Announcements sent, ARPSeen = 1. A packet socket bound to ETH_P_ARP
+	// rather than ETH_P_ALL is registered in the kernel's ptype_base, and
+	// dev_queue_xmit_nit walks ptype_all — so the socket is delivered INBOUND
+	// frames only, and the client's own kernel traffic above, both frames of
+	// it, never reaches ring 1 by itself. A run that stopped at the two
+	// sightings would therefore pass with round 1's sender-IP-only predicate
+	// still in place: it would be measuring the link, not the rule.
+	//
+	// So the observer replays both frames back onto the wire. That is not a
+	// contrivance to make the test fire; it is the case RFC 5227 section
+	// 2.1.1 names in its own words, "note that a host may see its own Probes
+	// echoed back by the link", and section 2.4's hardware-address clause is
+	// what makes it not a conflict. What goes back out is the client's own
+	// ARP payload, byte for byte, sender hardware address included, which is
+	// the field every rule in this file is written over; only the Ethernet
+	// source is the relay's, which is exactly what a relaying bridge or
+	// access point does with a frame it forwards.
+	sq.send(reply.p)
+	sq.send(request.p)
+
+	if withSquatter {
+		// The one variable. A foreign hardware address claiming the same
+		// address, in the same window, from the same fixture.
+		sq.announce <- addr
+		f.srv.waitFor(t, "DHCPDECLINE("+f.srv.iface+") "+addr.String()+" "+f.clientMAC)
+		f.srv.waitCount(t, "DHCPDISCOVER("+f.srv.iface+")", 2, "the client did not restart after the DECLINE")
+		lost := awaitEvent(t, f.client, lease.Lost)
+		if lost.Reason != proto.ReasonConflict {
+			t.Fatalf("Lost carries reason %s, want conflict", lost.Reason)
+		}
+		f.quote(t, "the address configured AND a squatter, both inside the probe window")
+		return
+	}
+
+	// The barrier that makes "inside the window" a measurement and not a
+	// hope: the first ARP Announcement is what section 2.1's check ending
+	// looks like on the wire, and both frames above were read off the same
+	// socket before it.
+	announcement := sq.waitForSighting(isAnnouncementFor(addr))
+	if !reply.at.Before(announcement.at) {
+		t.Fatalf("the section 2.5 reply was seen at %s, the first Announcement at %s: "+
+			"the probe window had already closed and this run proves nothing about it",
+			reply.at, announcement.at)
+	}
+	if !request.at.Before(announcement.at) {
+		t.Fatalf("the neighbour ARP Request was seen at %s, the first Announcement at %s: "+
+			"the probe window had already closed and this run proves nothing about it",
+			request.at, announcement.at)
+	}
+
+	// THE ADDRESS COMES OFF BEFORE T1, and this is a property of the FIXTURE
+	// and not of the client.
+	//
+	// Both ends of the veth pair live in one network namespace, so an address
+	// configured on the client's end is a LOCAL address to the server's
+	// kernel too. A renewal DHCPACK is unicast to it (RFC 2131 section 4.3.2),
+	// and a unicast to a local address is routed to loopback whatever
+	// interface the sender names — it never reaches the wire, and the
+	// client's AF_PACKET socket never sees it. MEASURED 2026-09-04: with the
+	// address left on, this run hangs at the renewal.
+	//
+	// It weakens nothing this test asserts. Both frames have already crossed
+	// the wire, been read off the observer's socket, been shown to precede
+	// the first Announcement, and — by ARPIgnored below — been classified by
+	// the machine. What the renewal then proves is that no DHCPDECLINE was
+	// sent for them, and the log is read for the whole run.
+	mustRun(t, "ip", "addr", "del", ev.Lease.Addr.String(), "dev", testClientIf)
+
+	// THE SERVER'S OWN LOG, and the lease surviving to a renewal. A renewal
+	// is a second DHCPACK on the same address after a DHCPREQUEST that was
+	// not preceded by a DISCOVER, which is exactly what a client that never
+	// gave the address back does.
+	renewed := awaitEvent(t, f.client, lease.Renewed)
+	if renewed.Lease.Addr != ev.Lease.Addr {
+		t.Fatalf("renewed onto %s, want the address it was told to keep, %s", renewed.Lease.Addr, ev.Lease.Addr)
+	}
+	if n := f.srv.count("DHCPDECLINE(" + f.srv.iface + ")"); n != 0 {
+		t.Fatalf("the client sent %d DHCPDECLINE(s) for its own traffic.\nLog:\n%s",
+			n, strings.Join(f.srv.lines(), "\n"))
+	}
+	if n := f.srv.count("DHCPDISCOVER(" + f.srv.iface + ")"); n != 1 {
+		t.Fatalf("dnsmasq logged %d DHCPDISCOVER(s), want the one acquisition: a restart means the lease was given up", n)
+	}
+	f.quote(t, "the address configured on the client's interface inside the probe window")
+
+	st := f.client.Stats()
+	if st.ConflictsDetected != 0 {
+		t.Errorf("ConflictsDetected = %d, want 0", st.ConflictsDetected)
+	}
+	// THE FRAMES REACHED THE MACHINE, AND REACHED IT WITH THE WINDOW OPEN.
+	//
+	// Every assertion above is outside evidence, and every one of them also
+	// passes if the echoes were dropped before ring 1 ever classified them.
+	// This is the one check that has to read the client's own record, because
+	// "what the machine saw" is not observable from outside the machine. The
+	// capture ring holds exactly the inbound frames Machine.ARPRelevant
+	// admitted, plus the ARP the client sent, on one clock (lease/ports.go).
+	var ownIn []lease.CapturedPacket
+	var firstAnnounce time.Time
+	for _, cp := range f.client.Packets() {
+		if cp.ARP == nil {
+			continue
+		}
+		if cp.Dir == lease.DirIn && cp.ARP.SenderIP == addr &&
+			net.HardwareAddr(cp.ARP.SenderHW).String() == f.clientMAC {
+			ownIn = append(ownIn, cp)
+			continue
+		}
+		if cp.Dir == lease.DirOut && !cp.ARP.IsProbe() && firstAnnounce.IsZero() {
+			firstAnnounce = cp.At
+		}
+	}
+	if len(ownIn) < 2 {
+		t.Fatalf("the machine classified %d frame(s) carrying our own hardware address and %s, want the 2 echoed back: "+
+			"a run where they never arrived proves nothing about the predicate", len(ownIn), addr)
+	}
+	if firstAnnounce.IsZero() {
+		t.Fatalf("the client never captured an Announcement, so there is no window boundary to measure against")
+	}
+	for _, cp := range ownIn {
+		if !cp.At.Before(firstAnnounce) {
+			t.Errorf("the machine read our own %s at %s, after its first Announcement at %s: "+
+				"section 2.1's window had closed and this frame was judged by the section 2.4 arm, not the probing arm",
+				cp.ARP.Op, cp.At, firstAnnounce)
+		}
+	}
+	t.Logf("client stats: %d conflict(s), %d probe(s), %d announcement(s), %d ARP frames seen, %d ignored",
+		st.ConflictsDetected, st.ProbesSent, st.AnnouncementsSent, st.ARPSeen, st.ARPIgnored)
+}
+
+// ------------------------- round 2, finding 3: off, at ring 3, on a wire --
+
+func TestAnOffClientPutsNoARPOnTheWire(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		offClientOnAWire(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+// offClientOnAWire is round 2's proof for review finding 3 and defeat row
+// M6-22's ring-3 half.
+//
+// The row's stated closing move was "runtime.NewClient never calls
+// NewARPSocket", and round 1 left that sentence with no test behind it: no
+// ConflictOff client existed anywhere under runtime, so the mutant that made
+// an off client open the socket anyway had no execution to change. The
+// operator's complaint the row names — ARP on a macvlan parent shared with the
+// host, from an endpoint configured not to do conflict detection — is about
+// frames on a wire, so the assertion is about frames on a wire.
+//
+// THE BARRIER IS THE RENEWAL, and it is chosen rather than convenient. "No ARP
+// frame" is a claim about a window, and a window that ends the moment the
+// lease is acquired would be shorter than briskACD's own schedule: a client
+// that probed would not have finished. Option 58 puts the renewal three
+// seconds out, which is an order of magnitude past the 150-300ms briskACD
+// would have taken to send PROBE_NUM probes and ANNOUNCE_NUM announcements.
+func offClientOnAWire(t *testing.T) {
+	f := renewableConflictClient(t, proto.ConflictOff, briskACD(), "m6-off", 3)
+	sq := newSquatter(t, testServerIf, squatterObserve)
+	f.start(t, sq)
+
+	ev := awaitAcquired(t, f.client)
+	if ev.ACD != proto.ACDIdle {
+		t.Fatalf("an off client's Acquired carries ACD phase %s, want idle", ev.ACD)
+	}
+
+	// There is no ARP port. Present is the only thing that can say so: the
+	// counters are zero for a socket that read nothing too.
+	if st := f.client.ARPStats(); st.Present {
+		t.Fatalf("an off client reports an ARP port: %+v", st)
+	}
+
+	renewed := awaitEvent(t, f.client, lease.Renewed)
+	if renewed.Lease.Addr != ev.Lease.Addr {
+		t.Fatalf("renewed onto %s, want %s", renewed.Lease.Addr, ev.Lease.Addr)
+	}
+
+	// The wire, read by another host's socket. Not one frame, of any kind,
+	// carrying this client's hardware address.
+	if got := sq.matching(fromMAC(f.clientMAC)); len(got) != 0 {
+		var lines []string
+		for _, g := range got {
+			lines = append(lines, g.p.String())
+		}
+		t.Fatalf("an off client put %d ARP frame(s) on the wire:\n%s", len(got), strings.Join(lines, "\n"))
+	}
+	if st := f.client.Stats(); st.ProbesSent != 0 || st.AnnouncementsSent != 0 {
+		t.Errorf("an off client counted %d probe(s) and %d announcement(s), want none",
+			st.ProbesSent, st.AnnouncementsSent)
+	}
+	f.quote(t, "conflict detection off")
+
+	// DRIVE THE ABSENCE. The measurement above is "the observer heard no
+	// frame carrying this hardware address", and an observer whose socket was
+	// never bound reports exactly that. So make one such frame exist, in this
+	// namespace, on this socket, after the assertion has been taken: the
+	// address goes onto the client's interface and the observer asks who has
+	// it, and the KERNEL answers — the library is not involved and this is
+	// not the client probing. What it proves is that the silence above was
+	// the client's and not the instrument's.
+	mustRun(t, "ip", "addr", "add", ev.Lease.Addr.String(), "dev", testClientIf)
+	sq.send(&wire.ARPPacket{
+		Op:       wire.ARPRequest,
+		SenderHW: sq.hw,
+		SenderIP: netip.MustParseAddr(testAskerIP),
+		TargetIP: ev.Lease.Addr.Addr(),
+	})
+	sq.waitForSighting(fromMAC(f.clientMAC))
+}

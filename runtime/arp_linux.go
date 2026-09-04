@@ -88,6 +88,17 @@ type ARPSocket struct {
 
 // ARPStats is what an ARPSocket has seen.
 type ARPStats struct {
+	// Present says there IS an ARP socket behind these numbers.
+	//
+	// It exists because the zero value has to be able to say two different
+	// things and could not. Client.ARPStats returns ARPStats{} for a client
+	// running with proto.ConflictOff, which has no socket at all — and
+	// ARPStats{} is also what a socket that has read nothing reports. Without
+	// this field "the off client opened no ARP socket" is not a sentence any
+	// test can write, which is how ring 3's off path went unheld through
+	// round 1. Only ARPSocket.Stats sets it, so it cannot be true for a
+	// client that has no socket.
+	Present bool
 	// Reads is every frame the socket delivered, this host's own included.
 	Reads uint64
 	// Sends is every frame that left.
@@ -201,6 +212,7 @@ func (s *ARPSocket) Close() error {
 // Stats reports what the socket has seen.
 func (s *ARPSocket) Stats() ARPStats {
 	return ARPStats{
+		Present: true,
 		Reads:   s.reads.Load(),
 		Sends:   s.sends.Load(),
 		Dropped: s.dropped.Load(),

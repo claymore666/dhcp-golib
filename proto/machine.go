@@ -460,17 +460,23 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 			// configuration parameters for the remainder of the unexpired
 			// lease."
 			//
-			// DECISION 2026-09-03: the MAY is not taken. Silence is what
-			// section 4.3.2 requires of a server that "has no record of this
-			// client" — the case where the address has been reissued to
-			// somebody else is indistinguishable, from here, from the case
-			// where the server is merely down. Taking the MAY puts a host on
-			// the network with an address nothing has confirmed in this boot,
-			// and this library has no conflict probe until M6. The cost of not
-			// taking it is an outage where a client could have carried on
-			// using an address it still held; the cost of taking it is two
-			// hosts on one address, which is the failure this plugin exists to
-			// avoid.
+			// DECISION 2026-09-03, REASON CORRECTED 2026-09-04 (M6 shipped
+			// the probe the original reason said did not exist): the MAY is
+			// not taken. Silence is what section 4.3.2 requires of a server
+			// that "has no record of this client" — the case where the address
+			// has been reissued to somebody else is indistinguishable, from
+			// here, from the case where the server is merely down. Taking the
+			// MAY puts a host on the network with an address nothing has
+			// confirmed in this boot, and RFC 5227 does not make that safe:
+			// its probe proves that nobody ANSWERS for the address right now,
+			// which a lease reissued to a host that is powered off satisfies
+			// exactly. The two hosts then collide when the other one boots,
+			// which is section 2.4's path and a conflict rather than a
+			// prevention. In ConflictOff there is no probe at all. The cost of
+			// not taking the MAY is an outage where a client could have
+			// carried on using an address it still held; the cost of taking it
+			// is two hosts on one address, which is the failure this plugin
+			// exists to avoid.
 			out.failed(m, ReasonNoServer, "no answer to the INIT-REBOOT DHCPREQUEST after the retransmission budget; acquiring from INIT")
 			m.beginAcquisition(now, split(rnd, 1), out, false)
 			return

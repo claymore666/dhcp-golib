@@ -529,13 +529,51 @@ func (a *acd) conflictRule(p *wire.ARPPacket) (rule, why string) {
 		// being probed for, then the host MUST treat this address as being in
 		// use by some other host".
 		//
-		// NO SENDER-HARDWARE-ADDRESS EXEMPTION IS WRITTEN HERE, and none is
-		// added. It is not an oversight in the RFC and adding one would be a
-		// weakening: this client's own probes carry an all-zero sender IP
-		// (that is what makes them Probes), so no frame it sends in this phase
-		// can trip this rule. TestOurOwnProbesDoNotTripTheProbeWindow drives
-		// the echo AF_PACKET actually delivers.
-		if p.SenderIP == a.addr {
+		// THE SENDER-HARDWARE-ADDRESS EXEMPTION IS THIS LIBRARY'S, AND
+		// SECTION 2.4 IS THE TEXT IT COMES FROM. Section 2.1.1's rule as
+		// quoted has no such clause, and it does not need one IN THE MODEL
+		// THAT DOCUMENT ASSUMES: there, a host is not using the address while
+		// it probes, its Probes carry an all-zero sender IP by the MUST two
+		// paragraphs up, and section 2.5's duty to answer ARP Requests for the
+		// address starts only "from the time a host sends its first ARP
+		// Announcement". Under those three facts no frame the host emits in
+		// this window can carry the address as its sender IP, so the clause
+		// would have nothing to exempt.
+		//
+		// D23 BREAKS THAT PREMISE ON PURPOSE, and so does the RFC 2131 path
+		// that has nothing to do with D23. In ConflictAsync the caller is told
+		// Acquired at the DHCPACK and configures the address while this window
+		// is open; on a renewal that MOVES the address the caller has held the
+		// old one for hours and cannot un-hold it. In both, the address is in
+		// use, and section 2.4 is the text that governs a host that is using
+		// an address: "Address Conflict Detection is an ongoing process that
+		// is in effect for as long as a host is using an address. At any time,
+		// if a host receives an ARP packet (Request *or* Reply) where the
+		// 'sender IP address' is (one of) the host's own IP address(es)
+		// configured on that interface, but the 'sender hardware address' does
+		// not match any of the host's own interface addresses, then this is a
+		// conflicting ARP packet". Section 2.5 then requires the very frames
+		// the unexempted rule was declining on: "whenever a host receives an
+		// ARP Request, that's not a conflicting ARP packet as described above
+		// in Section 2.4, where the 'target IP address' of the ARP Request is
+		// (one of) the host's own IP address(es) configured on that interface,
+		// the host MUST respond with an ARP Reply". A rule that declines the
+		// lease on a reply section 2.5 makes mandatory is not a stricter
+		// reading of section 2.1.1; it is two of the document's sections
+		// contradicting each other.
+		//
+		// So section 2.4's predicate is used in every phase, and section
+		// 2.1.1's own NOTE says the same thing in the same words: "the
+		// precaution described above is necessary to ensure that a host is not
+		// confused when it sees its own ARP packets echoed back."
+		//
+		// WHAT THIS MUST NOT COST: a FOREIGN host claiming the address in this
+		// window is still a conflict, in every mode. The exemption is keyed on
+		// the sender hardware address being ours and on nothing else — not on
+		// the mode, not on whether the caller has been told Acquired — so it
+		// cannot widen to cover a squatter. TestEveryPhaseAndPacketClass
+		// carries both directions and the netns runs drive both on a wire.
+		if p.SenderIP == a.addr && !a.isOurs(p.SenderHW) {
 			return "RFC 5227 2.1.1", "an ARP packet from " + hw(p.SenderHW) +
 				" claims " + a.addr.String() + " while we are probing for it"
 		}

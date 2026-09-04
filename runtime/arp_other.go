@@ -15,6 +15,7 @@ import (
 // is TestTransportStatsDeclarationsAgree's ARP counterpart, which parses both
 // files.
 type ARPStats struct {
+	Present bool
 	Reads   uint64
 	Sends   uint64
 	Dropped uint64

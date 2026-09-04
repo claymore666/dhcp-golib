@@ -45,13 +45,23 @@ func testParams() Params {
 }
 
 // acdParams is testParams with conflict detection ON and RFC 5227 section
-// 1.1's constants scaled down to nanoseconds.
+// 1.1's SCHEDULE constants scaled down to nanoseconds.
 //
 // THE SCALE IS THE ONLY THING THAT CHANGES: the counts, the ordering and the
 // ratios are the RFC's, so a test that reads three probes here reads three
 // probes in production. The real durations are pinned once, by
 // TestACDConstantsAreTheRFCValues against DefaultACDParams, and measured once
 // on the wire by the netns run — no other test pays for them.
+//
+// RATE_LIMIT_INTERVAL IS NOT SCALED, and round 2 is why. It is not a schedule
+// constant: nothing waits on it, it is composed onto the DHCPDECLINE restart
+// delay and the composition is the only place it acts. Round 1 scaled it to
+// 600ns beside a RestartDelay of ten seconds, so the maximum of the two was
+// the ten seconds whatever the rate limit said, and the reviewer's mutant
+// deleting the composition survived: the fixture had made the two answers the
+// same number. At the RFC's own 60s against the RFC's own 10s floor they
+// differ by construction. TestTheACDFixtureCanSeeTheRateLimit refuses a
+// future edit that scales it back down.
 func acdParams(mode ConflictMode) Params {
 	p := testParams()
 	p.Conflict = mode
@@ -64,7 +74,7 @@ func acdParams(mode ConflictMode) Params {
 		AnnounceNum:       2,
 		AnnounceInterval:  7 * Nanosecond,
 		MaxConflicts:      10,
-		RateLimitInterval: 600 * Nanosecond,
+		RateLimitInterval: 60 * Second,
 		DefendInterval:    8 * Nanosecond,
 	}
 	return p
