@@ -124,7 +124,13 @@ SUITE_TIMEOUT_SECONDS=180
 # The flags `go test` actually runs with, in ONE array, so the constant the
 # bounds step reads is the constant the suite uses. Scenarios test-cache,
 # race-detector, hang-bounded, bounds-ordering, suite-timeout-detached.
-SUITE_ARGS=(-race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s")
+#
+# -v is here for the PARTITION, added 2026-09-05 round 2 and not for reading:
+# without it the run says nothing about WHICH tests it ran, and the row's
+# sentence about how many were held back for the netns row was a restatement of
+# the roster rather than a measurement of the run. Scenario
+# suite-partition-skip-inert.
+SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 
 # The netns runs — the tests that re-execute themselves into a user and
 # network namespace and talk to a real dnsmasq — have their own row, their own
@@ -260,7 +266,13 @@ trap 'ABORT_LINE=$LINENO' ERR
 #      examined nothing.
 #   3. Both directions are driven in process, on every run, by self_check
 #      below: a skip by the wrong row must be refused and an honest one must
-#      survive.
+#      survive. That is not the same as the arm being OBSERVED, and round 1
+#      said it was. MEASURED by review: this condition turned to `if false`
+#      AND the probe that drives it deleted in one edit left every row green
+#      and the whole oracle green, because the probes counted themselves. The
+#      count is declared in verify.manifest.sh now, out of reach of the
+#      deletion, and scenario self-check-skip-arm-deleted plants the composed
+#      edit and requires the row that owns it to go red.
 record() { # name result note [count]
 	local name="$1" result="$2" note="${3:-}" count="${4:-}"
 	if [ "$result" = SKIPPED ] && ! in_list "$name" "${MANIFEST_SKIPPABLE_ROWS[@]}"; then
@@ -346,12 +358,23 @@ command -v go >/dev/null 2>&1 || {
 # directions are driven: three shapes that must be refused and one that must
 # survive, because a guard that refuses everything measures nothing either.
 self_check() {
-	local bad="" cases=0
+	local bad="" cases=0 refused=0 i
 	[ "${#NAMES[@]}" -eq 0 ] || {
 		record "self-check" FAIL "self-check ran after ${#NAMES[@]} row(s); it cannot discard its probes safely"
 		return
 	}
 
+	# ROUND 2, 2026-09-05, and it is the reason this block is counted at all.
+	# MEASURED by review at the previous head: the SKIPPED arm's condition was
+	# turned into `if false` and the probe below that drives it was deleted in
+	# the SAME edit — the shape this row exists to refuse, one level up. Every
+	# row stayed green and the full oracle run passed; the only trace was this
+	# note saying "refused 4" where it had said 5, a number computed from the
+	# case list itself and therefore moved by the deletion that caused it.
+	#
+	# The count is now DECLARED, in verify.manifest.sh, where deleting a probe
+	# cannot move it, and it is compared against the probes that actually ran.
+	# Scenario self-check-skip-arm-deleted plants exactly that composed edit.
 	record "__probe__" PASS "no count at all"
 	cases=$((cases + 1))
 	[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a PASS with no count survived;"
@@ -386,6 +409,16 @@ self_check() {
 	cases=$((cases + 1))
 	[ "${RESULTS[cases - 1]}" = SKIPPED ] || bad="$bad a correctly counted SKIPPED by the row entitled to it was rejected;"
 
+	# The refusals, COUNTED from what record() did rather than derived from the
+	# length of the case list. `cases - 2` was the derivation, and it moved
+	# with any probe that was deleted — including the probe whose deletion is
+	# the whole point of counting.
+	for ((i = 0; i < cases; i++)); do
+		if [ "${RESULTS[i]}" = FAIL ]; then
+			refused=$((refused + 1))
+		fi
+	done
+
 	NAMES=()
 	RESULTS=()
 	NOTES=()
@@ -394,8 +427,11 @@ self_check() {
 	if [ -n "$bad" ]; then
 		record "self-check" FAIL "record() is not enforcing its contract:$bad"
 		echo "--- self-check FAILED: the choke point that decides every PASS does not refuse an uncounted one ---" >&2
+	elif [ "$cases" -ne "$SELF_CHECK_PROBES_N" ] || [ "$refused" -ne "$SELF_CHECK_REFUSALS_N" ]; then
+		record "self-check" FAIL "this row ran $cases probe(s) of which record() refused $refused, against the $SELF_CHECK_PROBES_N and $SELF_CHECK_REFUSALS_N declared in verify.manifest.sh; a probe that dies with the arm it drives leaves the arm undriven, which is why the count is declared somewhere the deletion cannot reach"
+		echo "--- self-check FAILED: fewer probes ran than the manifest declares, so an arm of record() is no longer driven ---" >&2
 	else
-		record "self-check" PASS "record() refused $((cases - 2)) unrecordable verdict shape(s) and preserved a counted PASS and a counted SKIPPED" "$cases"
+		record "self-check" PASS "record() refused $refused unrecordable verdict shape(s) of $cases probe(s) and preserved a counted PASS and a counted SKIPPED" "$cases"
 	fi
 }
 self_check
@@ -815,8 +851,40 @@ elif [ "$netns_roster_rc" -ne 0 ] || [ "$netns_n" -eq 0 ]; then
 else
 	suite_start=$(date +%s)
 	rc=0
-	suite_out="$(go test "${SUITE_ARGS[@]}" -skip "$netns_skip" ./... 2>&1)" || rc=$?
+	suite_raw="$(mktemp)"
+	go test "${SUITE_ARGS[@]}" -skip "$netns_skip" ./... >"$suite_raw" 2>&1 || rc=$?
 	suite_elapsed=$(($(date +%s) - suite_start))
+	# THE PARTITION, MEASURED rather than restated (round 2, finding 3).
+	#
+	# This row used to say "N declared test(s), M of them held for the
+	# netns-suite row" with both numbers read out of the roster — the same
+	# roster that produced the -skip pattern. The sentence was therefore true
+	# of the roster whatever the run did, and MEASURED 2026-09-05 by review:
+	# with -skip naming a test no package declares, the netns tests ran HERE
+	# too, the two rows stopped being a partition, the combined 52s still fit
+	# the 60s ceiling, and this note still said nineteen were held.
+	#
+	# So "held" is now read off the run: -v makes go test name every test it
+	# starts, and a netns name appearing in this list is the partition broken.
+	# The direction the complement already closed is the other one (a test the
+	# classifier does not recognise runs here rather than nowhere); this is the
+	# direction where the FILTER, not the roster, is what failed.
+	suite_ran_f="$(mktemp)"
+	netns_owned_f="$(mktemp)"
+	sed -n 's/^=== RUN[[:space:]]\{1,\}\([^ /]*\)$/\1/p' "$suite_raw" | LC_ALL=C sort -u >"$suite_ran_f"
+	printf '%s\n' "$netns_roster" | grep . | LC_ALL=C sort -u >"$netns_owned_f"
+	suite_ran_n="$(grep -c . <"$suite_ran_f" || true)"
+	suite_netns_leak="$(LC_ALL=C comm -12 "$netns_owned_f" "$suite_ran_f" | tr '\n' ' ' | sed 's/ $//')"
+	rm -f "$suite_ran_f" "$netns_owned_f"
+	# The report every check below reads, with the per-test lines -v added
+	# taken back out. Two reasons, and the second is not tidiness: 445 tests
+	# make 200KB of PASS lines, and every `printf "$suite_out" | grep -q` in
+	# this file and in the oracle's scenarios runs under `set -o pipefail` —
+	# grep -q exits on the first match, printf dies of SIGPIPE, the pipeline
+	# reports 141 and the check reads as its own opposite. MEASURED here: the
+	# ok-package-line check inverted on the first run after -v was added.
+	suite_out="$(grep -vE '^(=== (RUN|PAUSE|CONT)|[[:space:]]*--- PASS: )' "$suite_raw" || true)"
+	rm -f "$suite_raw"
 	# Every directory holding a _test.go file, as the import path go test prints.
 	module="$(go list -m 2>/dev/null || true)"
 	tested_dirs="$(find . -name '*_test.go' -not -path './.git/*' -printf '%h\n' | sort -u)"
@@ -829,7 +897,7 @@ else
 		.) ip="$module" ;;
 		*) ip="$module/${d#./}" ;;
 		esac
-		if printf '%s\n' "$suite_out" | grep -qE "^\?[[:space:]]+${ip//./\\.}[[:space:]]+\[no test files\]"; then
+		if grep -qE "^\?[[:space:]]+${ip//./\\.}[[:space:]]+\[no test files\]" <<<"$suite_out"; then
 			missing="$missing $ip"
 		fi
 	done <<-EOF
@@ -883,18 +951,15 @@ else
 	if [ "$rc" -ne 0 ]; then
 		record "unit-suite" FAIL "exit $rc after ${suite_elapsed}s: $(printf '%s\n' "$suite_out" | grep -E '^(--- FAIL|FAIL|panic:|WARNING: DATA RACE|.*test timed out)' | head -1 | sed 's/^[[:space:]]*//')"
 		printf '\n--- unit-suite FAILED ---\n%s\n' "$suite_out" >&2
-	elif printf '%s' "$suite_out" | grep -q '(cached)'; then
+	elif grep -q '(cached)' <<<"$suite_out"; then
 		record "unit-suite" FAIL "go test reported a cached result; -count=1 was not in force, so the suite was not measured on this tree"
 		printf '\n--- unit-suite was served from the test cache ---\n%s\n' "$suite_out" >&2
-	elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
-		record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
-		echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
 	elif [ -z "$module" ] || [ "$tested_n" -eq 0 ]; then
 		# The two ways this row's own domain check can fail to be computed. Both
 		# are a refusal, because a comparison against an empty population passes
 		# for the same reason a suite with no tests does.
 		record "unit-suite" FAIL "the suite exited 0, but its domain is UNMEASURED (module '$module', $tested_n director(ies) holding a _test.go file)"
-	elif ! printf '%s\n' "$suite_out" | grep -q '^ok[[:space:]]'; then
+	elif ! grep -q '^ok[[:space:]]' <<<"$suite_out"; then
 		record "unit-suite" FAIL "the suite exited 0 but reported no 'ok' package line; its output was not the account of a run"
 		printf '\n--- unit-suite produced no ok line ---\n%s\n' "$suite_out" >&2
 	elif [ -n "$missing" ]; then
@@ -931,8 +996,25 @@ else
 		# exactly where it was and caps the erosion at MAX_DECLARED_MARGIN instead
 		# of leaving it unbounded. Scenario min-declared-tests-margin.
 		record "unit-suite" FAIL "$declared_n declared test(s) against $MIN_DECLARED_TESTS (+$MAX_DECLARED_MARGIN) in verify.manifest.sh; tests were ADDED — set MIN_DECLARED_TESTS=$declared_n, because a floor with margin is a floor that has started to decay"
+	elif [ "$suite_ran_n" -eq 0 ]; then
+		# The vacuity floor for the two arms below. An empty list makes "no
+		# netns name ran here" true of nothing, which is the shape every one of
+		# rounds 5 to 8 ended in.
+		record "unit-suite" FAIL "the suite exited 0 and named no test it started, so WHICH tests ran here is UNMEASURED and the partition against the netns row cannot be read from this run"
+	elif [ -n "$suite_netns_leak" ]; then
+		record "unit-suite" FAIL "this run started test(s) the netns-suite row owns: $suite_netns_leak; the -skip filter did not hold them back, so the two rows are not a partition and their seconds land on the wrong ceiling"
+		printf '\n--- unit-suite ran tests belonging to the netns row ---\n%s\n' "$suite_netns_leak" >&2
+	elif [ "$suite_elapsed" -gt "$SUITE_CEILING_SECONDS" ]; then
+		# LAST of the failing arms, and it moved here in round 2 with the arm
+		# above it. The ceiling asks "has this suite drifted into waiting"; a
+		# suite that is running the other row's tests has not drifted into
+		# anything, it is measuring the wrong population, and reporting the
+		# clock for it would name the symptom over the cause. Every arm above
+		# is a statement about WHAT ran; this one is about how long it took.
+		record "unit-suite" FAIL "passed but took ${suite_elapsed}s, over the ${SUITE_CEILING_SECONDS}s ceiling"
+		echo "--- unit-suite exceeded the T2 wall-clock ceiling: something is waiting ---" >&2
 	else
-		record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s), $netns_n of them held for the netns-suite row, across $tested_n package(s)" "$declared_n"
+		record "unit-suite" PASS "${suite_elapsed}s, ceiling ${SUITE_CEILING_SECONDS}s, $declared_n declared test(s), $suite_ran_n started here and none of the $netns_n the netns-suite row owns, across $tested_n package(s)" "$declared_n"
 	fi
 fi
 
@@ -944,8 +1026,9 @@ fi
 # They are OUTER-only, like the oracle and the self-drive: an inner run is one
 # of sixty-odd copies of this tree, and sixty-odd sets of namespaces and
 # dnsmasq processes is not a cost the oracle can carry. What that leaves open
-# is stated in the handover: this row is driven by two outer scenarios, and a
-# netns test failing for a PRODUCT reason is driven by the real run.
+# is stated in the handover: this row is driven by outer scenarios only — which
+# ones is written down in MANIFEST_SCENARIO_CONTRACTS and not counted here —
+# and a netns test failing for a PRODUCT reason is driven by the real run.
 #
 # The row's own domain check is set equality against the roster, not a count:
 # a -run regexp that matches nothing produces an exit 0 and an empty table, and
@@ -1086,15 +1169,20 @@ fi
 #   - it is gitignored, so it never travels with a commit;
 #   - --oracle ignores it entirely.
 #
-# THE BOUND, and it is not closable here: a stamp written BY HAND with the
-# right hash grants a skip, exactly as editing any other single file in this
-# tree defeats the thing that file decides. What is closed is the accident and
-# the cheap forgery, not the deliberate one. The second bound is the one to
-# read before trusting a skip: this hash covers the ARBITER, and scenarios that
-# depend on the PRODUCT's shape can go stale without any covered byte changing
-# — hang-bounded, ceiling-control, ceiling-fires, the six suite-* scenarios,
-# min-declared-tests-floor and -margin, and the netns pair. docs/verifying.md
-# says so beside the row, and the lead runs --oracle before a merge.
+# THE BOUND, and it is not closable here: the stamp is a local cache and not
+# evidence. One written BY HAND with the right hash grants a skip, exactly as
+# editing any other single file in this tree defeats the thing that file
+# decides — any hand can compute what this block computes. What is closed is
+# the accident and the cheap forgery, not the deliberate one, and the merge
+# rule is a reviewer's own --oracle run at the head rather than a stamp.
+#
+# The second bound is the one to read before trusting a skip: this hash covers
+# the ARBITER, and scenarios that depend on the PRODUCT's shape can go stale
+# without any covered byte changing. Which scenarios those are is not typed
+# here or in the doc — a typed list omitted eleven of them, MEASURED
+# 2026-09-05 by review. It is derived from the oracle and quoted in
+# docs/verifying.md, and TestStaleAnchorBoundNamesWhatTheOracleDerives fails
+# when the derivation and the quote disagree.
 if [ "$INNER" -eq 0 ]; then
 	ORACLE_STAMP="$ROOT/.verify-oracle-stamp"
 	oracle_covered="$( {

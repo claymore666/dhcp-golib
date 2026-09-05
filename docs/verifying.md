@@ -194,6 +194,17 @@ requires the set of names the run REPORTED to equal the roster, because a
 `-run` regexp that matches nothing exits zero, and it treats a `SKIP` as a
 failure, because those tests fail closed rather than skipping.
 
+The other direction is the one the complement does not close, and it was open
+until round 2: with the pure suite's `-skip` matching nothing, BOTH rows run
+the namespaced tests, `go test` exits zero, and — MEASURED by review — the
+combined seconds still fitted the pure suite's ceiling while the row went on
+reporting how many tests were "held" for the other row. Both of those numbers
+came from the roster that produced the filter, so the sentence was true of the
+roster whatever the run did. The pure suite now runs with `-v` and reads the
+tests it STARTED off its own output: a roster name appearing there is the
+partition broken, and it is a failure with the leaked names in it. Scenario
+`suite-partition-skip-inert`.
+
 The netns row is an OUTER row: `--inner` does not have it, so the oracle's
 copies of this tree do not each raise namespaces and a dnsmasq of their own.
 What that leaves open is written down rather than argued away — the row is
@@ -232,16 +243,72 @@ oracle once. What binds the stamp to a real pass: it is written in one place,
 after every check the row makes, and only when `record()` ACCEPTED the pass; it
 names the root it was written for, so a stamp copied into another tree — every
 oracle scenario copies this one — grants nothing there. Only `verify-oracle`
-may record SKIPPED; `record()` rewrites a SKIPPED from any other row to FAIL,
-and both directions are driven in-process by the `self-check` row on every run.
+may record SKIPPED; `record()` rewrites a SKIPPED from any other row to FAIL.
 
-**Two bounds on the skip, both real.** A stamp written BY HAND carrying the
-right hash grants a skip — forging it is a single-file edit, like every other
-thing a single file decides in this tree. And the hash covers the ARBITER, so a
-scenario that depends on the PRODUCT's shape can go stale without a covered
-byte moving: `hang-bounded`, `ceiling-control`, `ceiling-fires`, the `suite-*`
-family, `min-declared-tests-floor` and `-margin`, and the netns pair. Those are
-the scenarios a skipped run is not re-checking.
+What drives that arm, stated exactly, because the first version of this
+sentence overstated it: the `self-check` row puts a skip by a row that may not
+skip, and an honest one by the row that may, through `record()` on every run —
+and the row also counts its probes and the refusals they earned against
+`SELF_CHECK_PROBES_N` and `SELF_CHECK_REFUSALS_N` in `verify.manifest.sh`. The
+count is what survives the composed edit: MEASURED by review, disabling the arm
+AND deleting the probe that drives it in one edit left every row green and the
+whole oracle green, because the only trace was a refusal count derived from the
+case list that had just been shortened. Scenarios `self-check-guard-deleted`
+(the arm disabled, the probe speaks) and `self-check-skip-arm-deleted` (both
+removed together, the declared count speaks).
+
+**Two bounds on the skip, both real.** The stamp is a LOCAL CACHE and not
+evidence: it is gitignored and per-clone, and a stamp written BY HAND carrying
+the hash `verify.sh` computes grants a skip, because any hand can compute what
+`verify.sh` computes. So the merge rule is not "the stamp says it passed" — it
+is a reviewer's own `./verify.sh --oracle` run at the head being merged.
+
+The second bound is that the hash covers the ARBITER, so a scenario that
+depends on the PRODUCT's shape can go stale without a covered byte moving.
+Those scenarios are not typed out here. A typed list was, and it omitted eleven
+of them; this one is DERIVED from `scripts/test-verify.sh` and quoted:
+
+```stale-anchor-scenarios
+ceiling-control
+ceiling-fires
+citation-after-url
+citation-embedded-identifier
+citation-trailing
+citation-underscore
+citation-url
+citation-whitewash
+citation-word-start
+doc-number-reintroduced
+gate-panic
+gate-refuses
+gofmt-violation
+hang-bounded
+min-declared-tests-floor
+min-declared-tests-margin
+netns-row-empty-domain
+race-detector
+readme-usage-drifts-in-the-example
+readme-usage-drifts-in-the-readme
+roster-gate-added
+roster-gate-deleted
+stale-citation
+t1-violation
+t2-violation
+verdict-without-gomod
+vet-violation
+```
+
+The rule is: a scenario names a path inside its copy of the tree that is not
+`verify.sh`, not `verify.manifest.sh` and not under `scripts/` — directly, or
+through a helper it calls. `TestStaleAnchorBoundNamesWhatTheOracleDerives`
+performs that derivation and fails when it and this block differ, so the list
+cannot go stale the way the sentence it replaces did. Its BOUND, stated rather
+than argued away: the derivation is textual, so a scenario reaching the product
+through a glob, a `find`, or a tool it runs inside the copy — with no path
+written down — is invisible to it, and `suite-tests-disabled` and
+`suite-partition-skip-inert` are both exactly that today. Which
+is why this is the list a skipped run is not re-checking rather than a claim
+that nothing else can go stale.
 
 **`--light`, the scope, and why a scenario cannot hide behind it.** The oracle
 plants one defect in a copy of the tree and runs the copy's `verify.sh` end to

@@ -3,6 +3,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -268,7 +269,7 @@ func (s *squatter) matching(pred arpPred) []squatterSighting {
 // owes that deadline is the sentence naming what did not happen: the goroutine
 // dump names this function, and nothing in it names the frame.
 func (s *squatter) waitForSighting(pred arpPred) squatterSighting {
-	announceWait("the squatter to see "+pred.what, s.waitLog())
+	w := announceWait("the squatter to see "+pred.what, s.waitLog())
 	for {
 		for _, g := range s.sightings() {
 			if pred.ok(g.p) {
@@ -276,17 +277,130 @@ func (s *squatter) waitForSighting(pred arpPred) squatterSighting {
 			}
 		}
 		<-s.heard
+		// Before the next scan, not after it: a frame that arrives and does
+		// NOT satisfy the predicate is the one the report exists for, and a
+		// trace taken after the scan never reaches the frame that ended the
+		// wait. Scenario-free half of finding 2, driven by
+		// TestSquatterWaitReportsTheFramesThatArriveDuringIt.
+		w.note(s.waitLog())
 	}
 }
 
 // waitForCount blocks until pred has matched at least n of the frames read.
 func (s *squatter) waitForCount(pred arpPred, n int) []squatterSighting {
-	announceWait(fmt.Sprintf("the squatter to see %d frame(s) matching %s", n, pred.what), s.waitLog())
+	w := announceWait(fmt.Sprintf("the squatter to see %d frame(s) matching %s", n, pred.what), s.waitLog())
 	for {
 		if out := s.matching(pred); len(out) >= n {
 			return out
 		}
 		<-s.heard
+		w.note(s.waitLog())
+	}
+}
+
+// handshakeSink is netnsWaitSink for the test below: it records what the wait
+// wrote and BLOCKS until the test has taken delivery of it.
+//
+// That is what makes the test deterministic without a clock in it. The waiting
+// goroutine and the test each hold one end of every step: the test releases a
+// report, then delivers the next frame, then waits for the report about it. T2
+// is satisfied for the same reason the fixture is honest — there is nothing to
+// wait on here but the waiter.
+type handshakeSink struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	released chan struct{}
+}
+
+func (h *handshakeSink) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	h.buf.Write(p)
+	h.mu.Unlock()
+	h.released <- struct{}{}
+	return len(p), nil
+}
+
+func (h *handshakeSink) String() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.buf.String()
+}
+
+// TestSquatterWaitReportsTheFramesThatArriveDuringIt drives the CALL SITE of
+// the wait report, not the formatting function beside it.
+//
+// The defect this exists against was measured, not imagined: announceWait
+// snapshots the log and then blocks, so a wait that ends on the child's
+// deadline reported the log as it stood BEFORE anything interesting happened —
+// "nothing logged yet" while the frame the predicate was reading sat fourteen
+// lines below in the same run. The evidence half was empty exactly when the
+// deadline fired, which is the only time anybody reads it.
+//
+// So this test blocks a real waitForSighting, delivers two frames while it is
+// blocked, and requires both to appear in the report — each exactly once. It
+// needs no namespace and no socket: the wait reads s.seen and s.heard and
+// nothing else.
+//
+// THE BOUND, stated because it changes how a mutant of the call site scores.
+// The handshake below is what makes the ordering deterministic: the test knows
+// the wait has begun only because the wait said so. Delete the w.note call and
+// this test does not fail, it DEADLOCKS — there is no report to hand it back,
+// and T2 forbids a timer here that could turn the wait into an assertion. The
+// bound is therefore the process one: `go test -timeout`. MEASURED 2026-09-05
+// with the call site replaced by `_ = w`: `./verify.sh --inner` ended at 184s
+// with `unit-suite FAIL exit 1 after 180s: panic: test timed out after 3m0s`.
+// The row reads it; a mutation harness reading Go's timeout panic banks it as
+// HUNG rather than KILLED, which is that harness being right about what it can
+// stand behind, not this test failing to observe.
+func TestSquatterWaitReportsTheFramesThatArriveDuringIt(t *testing.T) {
+	target := netip.MustParseAddr("192.0.2.7")
+	before := netip.MustParseAddr("192.0.2.8")
+	during := netip.MustParseAddr("192.0.2.9")
+	probe := func(a netip.Addr) *wire.ARPPacket {
+		return &wire.ARPPacket{Op: wire.ARPRequest, SenderIP: netip.AddrFrom4([4]byte{}), TargetIP: a}
+	}
+
+	// Buffered, and it has to be: the squatter's reader offers a frame without
+	// blocking on it, and a test that blocks on the send deadlocks whenever
+	// the waiter finds its match without coming back for the ping. MEASURED
+	// here, with an unbuffered channel, as a 60s timeout in one run of four.
+	s := &squatter{heard: make(chan struct{}, 4)}
+	add := func(a netip.Addr) {
+		s.mu.Lock()
+		s.seen = append(s.seen, squatterSighting{p: probe(a)})
+		s.mu.Unlock()
+		s.heard <- struct{}{}
+	}
+	add(before)
+	<-s.heard // the frame that was already logged when the wait began
+
+	sink := &handshakeSink{released: make(chan struct{})}
+	restore := netnsWaitSink
+	netnsWaitSink = sink
+	t.Cleanup(func() { netnsWaitSink = restore })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.waitForSighting(isProbeFor(target))
+	}()
+	<-sink.released // the report the wait owes before it blocks
+	add(during)
+	<-sink.released // ... and the frame that arrived while it was blocked
+	add(target)
+	<-sink.released
+	<-done
+
+	got := sink.String()
+	for _, a := range []netip.Addr{before, during, target} {
+		line := "target=" + a.String() + "/"
+		if n := strings.Count(got, line); n != 1 {
+			t.Errorf("the report carries %q %d time(s), want exactly 1 — a frame reported twice stops being read, and one reported never is the half that tells %q from %q:\n%s",
+				line, n, "it never came", "it came in another shape", got)
+		}
+	}
+	if !strings.Contains(got, netnsWaitBanner+" waiting for") {
+		t.Errorf("the report does not name the predicate it is waiting for:\n%s", got)
 	}
 }
 

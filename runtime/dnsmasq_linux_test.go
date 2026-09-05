@@ -146,14 +146,29 @@ func reexecInNamespaces(t *testing.T) {
 	err := cmd.Run()
 	out := buf.Bytes()
 	if err != nil {
-		t.Fatalf("the namespaced run failed (%v); its output is above, streamed as it arrived.\n%s", err, out)
+		t.Fatal(netnsChildFailure("failed ("+err.Error()+")", out))
 	}
 	if reportErr := childReport(string(out), name); reportErr != nil {
-		t.Fatalf("the namespaced run exited 0, but %v — so this test measured nothing.\nchild output:\n%s", reportErr, out)
+		t.Fatal(netnsChildFailure("exited 0, but "+reportErr.Error()+" — so this test measured nothing", out))
 	}
 	// Not the output itself: it went to stderr line by line above, and
 	// printing it twice is how a log stops being read.
 	t.Logf("the namespaced run reported %s over %d byte(s) of child output", name, len(out))
+}
+
+// netnsChildFailure is the sentence a failed namespaced run leaves behind, and
+// what it deliberately does NOT carry is the child's output.
+//
+// MEASURED 2026-09-05 by review: the child's 102 lines appeared twice in one
+// run — once streamed by the MultiWriter above as they arrived, and again out
+// of t.Fatalf's copy of the same buffer — three lines under the comment saying
+// that printing a log twice is how it stops being read. The buffer is kept
+// because childReport reads it; it is the PRINTING that was doubled.
+//
+// It is a pure function of (reason, output) so the property can be driven
+// without a namespace: see TestNetnsChildFailureDoesNotRepeatTheStreamedOutput.
+func netnsChildFailure(reason string, out []byte) string {
+	return fmt.Sprintf("the namespaced run %s. Its output is above, streamed as it arrived — %d byte(s), not repeated here.", reason, len(out))
 }
 
 // netnsChildTimeout is the CHILD's own deadline, and it is the deadline every
@@ -210,11 +225,60 @@ func netnsWaitReport(what string, log []string) string {
 	return b.String()
 }
 
-// announceWait writes the report to the child's stderr rather than through
-// t.Logf, for two reasons: a Logf from a goroutine that outlives its test
-// panics, and stderr is already flushed when the child is killed.
-func announceWait(what string, log []string) {
-	fmt.Fprint(os.Stderr, netnsWaitReport(what, log))
+// netnsWaitSink is where a wait's own report goes: the child's stderr rather
+// than t.Logf, for two reasons — a Logf from a goroutine that outlives its
+// test panics, and stderr is already flushed when the child is killed.
+//
+// It is a variable so the reporting can be driven by a test that reads it back
+// instead of only by a run that hangs. The seam is the TRANSPORT; every
+// verdict below is computed the same way whatever this points at.
+var netnsWaitSink io.Writer = os.Stderr
+
+// netnsWaitTrace is the half of the report that only exists after the wait has
+// begun, and it is the half that was empty exactly when it was needed.
+//
+// MEASURED 2026-09-05 by review: an isProbeFor predicate that can never hold
+// ended its run on the child's 45s deadline and named the predicate, and said
+// "nothing logged yet" — while the squatter had logged the frame it was
+// waiting on fourteen lines further down. announceWait SNAPSHOTS the log
+// before it blocks, so the evidence half describes the moment before the
+// interesting one. What separates "it never came" from "it came in another
+// shape" is what arrived DURING the wait, and nothing was reporting that.
+//
+// Each entry is reported ONCE: a trace that reprints the whole log on every
+// frame is the same defect as printing it twice, at a higher rate.
+type netnsWaitTrace struct{ reported int }
+
+// fresh returns the entries of log this trace has not reported yet, and marks
+// them reported. It is separate from note so the once-each property is a pure
+// function: see TestNetnsWaitTraceReportsEachEntryOnce.
+func (w *netnsWaitTrace) fresh(log []string) []string {
+	if w.reported >= len(log) {
+		return nil
+	}
+	out := log[w.reported:]
+	w.reported = len(log)
+	return out
+}
+
+// note writes whatever has been logged since the last call.
+func (w *netnsWaitTrace) note(log []string) {
+	add := w.fresh(log)
+	if len(add) == 0 {
+		return
+	}
+	var b strings.Builder
+	for _, ln := range add {
+		b.WriteString(netnsWaitBanner + "   " + ln + "\n")
+	}
+	fmt.Fprint(netnsWaitSink, b.String())
+}
+
+// announceWait writes the report the wait owes before it blocks, and returns
+// the trace its caller must feed as the log grows.
+func announceWait(what string, log []string) *netnsWaitTrace {
+	fmt.Fprint(netnsWaitSink, netnsWaitReport(what, log))
+	return &netnsWaitTrace{reported: len(log)}
 }
 
 // TestNetnsChildArgsBoundTheChild drives the two properties the child's
@@ -262,6 +326,64 @@ func TestNetnsWaitReportNamesThePredicateAndTheLog(t *testing.T) {
 	}
 	if !strings.Contains(empty, "nothing logged yet") {
 		t.Errorf("the empty report does not say the log was empty, which is the observation:\n%s", empty)
+	}
+}
+
+// TestNetnsWaitTraceReportsEachEntryOnce drives the once-each property as a
+// pure function, in both directions: nothing new is nothing to print, and a
+// log that has grown prints only the growth.
+//
+// The call site is driven separately, by
+// TestSquatterWaitReportsTheFramesThatArriveDuringIt — a trace that is correct
+// and never fed is exactly the state review measured.
+func TestNetnsWaitTraceReportsEachEntryOnce(t *testing.T) {
+	var w netnsWaitTrace
+	log := []string{"first"}
+	w.reported = len(log)
+	if got := w.fresh(log); got != nil {
+		t.Errorf("the entries present when the wait began were reported again: %v", got)
+	}
+	log = append(log, "second", "third")
+	got := w.fresh(log)
+	if len(got) != 2 || got[0] != "second" || got[1] != "third" {
+		t.Errorf("fresh() returned %v, want the two entries logged during the wait", got)
+	}
+	if again := w.fresh(log); again != nil {
+		t.Errorf("fresh() returned %v a second time; an entry printed twice is an entry that stops being read", again)
+	}
+
+	var sink strings.Builder
+	restore := netnsWaitSink
+	netnsWaitSink = &sink
+	t.Cleanup(func() { netnsWaitSink = restore })
+	w.note(append(log, "fourth"))
+	w.note(append(log, "fourth"))
+	if n := strings.Count(sink.String(), "fourth"); n != 1 {
+		t.Errorf("note() wrote %q %d time(s), want 1:\n%s", "fourth", n, sink.String())
+	}
+	if strings.Contains(sink.String(), "second") {
+		t.Errorf("note() reprinted an entry an earlier call had already reported:\n%s", sink.String())
+	}
+}
+
+// TestNetnsChildFailureDoesNotRepeatTheStreamedOutput drives the other half of
+// the same finding: the child's output is streamed to this process's stderr as
+// it arrives, and the failure sentence used to print the whole buffer again,
+// three lines under the comment saying that printing a log twice is how it
+// stops being read.
+func TestNetnsChildFailureDoesNotRepeatTheStreamedOutput(t *testing.T) {
+	out := []byte("=== RUN   TestSomething\nnetns wait: waiting for a frame\n--- PASS: TestSomething (0.00s)\n")
+	got := netnsChildFailure("failed (signal: killed)", out)
+	for _, unwanted := range []string{"=== RUN", "netns wait:", "--- PASS"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("the failure sentence repeats the streamed output (%q):\n%s", unwanted, got)
+		}
+	}
+	if !strings.Contains(got, "failed (signal: killed)") {
+		t.Errorf("the failure sentence does not carry the reason:\n%s", got)
+	}
+	if !strings.Contains(got, fmt.Sprintf("%d byte(s)", len(out))) {
+		t.Errorf("the failure sentence does not say how much output there was, so a truncated stream reads like a complete one:\n%s", got)
 	}
 }
 
@@ -745,8 +867,9 @@ func (s *dnsmasqServer) waitCount(t *testing.T, want string, n int, why string) 
 	if s.count(want) >= n {
 		return
 	}
-	announceWait(fmt.Sprintf("%d dnsmasq log line(s) containing %q (%s)", n, want, why), s.lines())
+	w := announceWait(fmt.Sprintf("%d dnsmasq log line(s) containing %q (%s)", n, want, why), s.lines())
 	for range s.arrived {
+		w.note(s.lines())
 		if s.count(want) >= n {
 			return
 		}
@@ -764,8 +887,9 @@ func (s *dnsmasqServer) waitFor(t *testing.T, want string) {
 	if containsLine(s.lines(), want) {
 		return
 	}
-	announceWait(fmt.Sprintf("a dnsmasq log line containing %q", want), s.lines())
+	w := announceWait(fmt.Sprintf("a dnsmasq log line containing %q", want), s.lines())
 	for line := range s.arrived {
+		w.note(s.lines())
 		if strings.Contains(line, want) {
 			return
 		}

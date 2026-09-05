@@ -12,6 +12,8 @@
 #         scripts/test-verify.sh --scenario N run one (used by the parallel driver)
 # Exit:   0 = every scenario behaved, 1 = at least one did not,
 #         2 = REFUSED, the oracle could not measure its own domain.
+#         A single --scenario run answers the same way for itself: 0 when it
+#         reported PASS, 1 when it reported FAIL, 2 when it refused.
 
 set -euo pipefail
 
@@ -445,7 +447,7 @@ sc_test_cache() {
 	copy_tree "$d"
 	# Removing -count=1 lets the SECOND run be served from the test cache. The
 	# first run must still pass, or the second run's failure could be anything.
-	edit "$d/verify.sh" 'SUITE_ARGS=(-race -count=1 -timeout' 'SUITE_ARGS=(-race -timeout'
+	edit "$d/verify.sh" 'SUITE_ARGS=(-race -count=1 -v -timeout' 'SUITE_ARGS=(-race -v -timeout'
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "the first run of the -count=1-less copy did not pass: exit $RC"
 	run_verify "$d"
@@ -531,8 +533,9 @@ sc_hang_bounded() {
 	# with no plant, so what it observed was the suite's own honest duration.
 	# §A.7's fix, and the negative control the deferred row implies:
 	#
-	#   - the run is scoped to the ONE test the plant adds, through SUITE_ARGS
-	#     so that the bounds row still sees its own constants in force;
+	#   - the run is scoped, through SUITE_ARGS so that the bounds row still
+	#     sees its own constants in force, to the test the plant adds and one
+	#     companion read out of the copy (see below);
 	#   - the scenario runs UNPLANTED first and requires the row to be green,
 	#     which is the assertion that fails if the bound is measuring anything
 	#     but the plant;
@@ -540,23 +543,40 @@ sc_hang_bounded() {
 	#
 	# The 15s stays: a timeout that no longer separates a hang from a suite is
 	# the thing being fixed, not the number.
-	local d="$1"
+	local d="$1" companion
 	copy_tree "$d"
 	edit "$d/verify.sh" \
 		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
 		'SUITE_TIMEOUT_SECONDS=15'
 	# The scope, carried in the flag array the bounds row reads, so this stays
 	# one variable rather than a second invocation the arbiter does not check.
+	# THE COMPANION, and round 2 is why it exists. The scope used to select the
+	# hanging test alone, so the negative control below ran a suite of NO tests
+	# and called that green. unit-suite now refuses a run that names no test it
+	# started — WHICH tests ran is the operand two of its arms read — so
+	# "returned at once having run nothing" is a red row, correctly, and it
+	# would have reddened this control for a reason that has nothing to do with
+	# the timeout. The companion keeps the scoped population at one test in the
+	# control phase and two in the planted one, so the only thing that changes
+	# between them is whether one of them returns.
+	#
+	# It is READ OUT OF THE COPY rather than written down or planted: a name
+	# typed here would be a second premise about the product, and planting a
+	# second test would push the declared count past MAX_DECLARED_MARGIN and
+	# redden this row through the band instead of the timeout.
+	companion="$(grep -h '^func Test' "$d"/proto/*_test.go |
+		sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' | LC_ALL=C sort | sed -n '1p')"
+	[ -n "$companion" ] || refuse "no pure test in $d/proto to scope the hang scenario's control run to"
 	edit "$d/verify.sh" \
-		'SUITE_ARGS=(-race -count=1 -timeout "${SUITE_TIMEOUT_SECONDS}s")' \
-		'SUITE_ARGS=(-race -count=1 -run "^TestHangs$" -timeout "${SUITE_TIMEOUT_SECONDS}s")'
+		'SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")' \
+		"SUITE_ARGS=(-race -count=1 -v -run \"^(TestHangs|$companion)\$\" -timeout \"\${SUITE_TIMEOUT_SECONDS}s\")"
 
-	# THE NEGATIVE CONTROL, and it runs first. With nothing planted the scoped
-	# suite runs no test at all and returns at once; a 15s bound that reddens
-	# this row here is a bound measuring the suite, which is the defect.
+	# THE NEGATIVE CONTROL, and it runs first. With the hang not yet planted
+	# the scoped suite runs the companion and returns at once; a 15s bound that
+	# reddens this row here is a bound measuring the suite, which is the defect.
 	run_verify "$d"
 	[ "$(row unit-suite)" = PASS ] ||
-		note "the scoped suite went red with NOTHING planted: $(row unit-suite) — $(why unit-suite); the timeout is measuring the suite, not a hang"
+		note "the scoped suite went red with the hang NOT planted: $(row unit-suite) — $(why unit-suite); the timeout is measuring the suite, not a hang"
 
 	cat >"$d/proto/hang_test.go" <<'GO'
 package proto
@@ -1144,6 +1164,43 @@ sc_self_check_guard_deleted() {
 	printf '%s\n' "$OUT" | grep -q 'not enforcing its contract' || note "the diagnosis does not name the choke point"
 }
 
+sc_self_check_skip_arm_deleted() {
+	# ROUND 2, finding 1, and it is the COMPOSED mutant: the arm and the probe
+	# that drives it, removed in ONE edit.
+	#
+	# MEASURED 2026-09-05 by review at the previous head: record()'s SKIPPED
+	# arm turned into `if false` and the probe asserting it deleted together,
+	# gofmt recording SKIPPED, every row green, seventy-two scenarios green,
+	# VERDICT: PASS. A witness that dies with its subject — the same class
+	# sc_self_check_guard_deleted covers for the COUNT arm, one arm later.
+	#
+	# What makes it red now is not another probe: it is that the number of
+	# probes and the number record() must refuse are DECLARED in
+	# verify.manifest.sh, so deleting a probe moves the measurement and not the
+	# expectation. The guard-deleted scenario beside this one is the other
+	# half — it disables the arm and keeps the probe, and the probe speaks.
+	local d="$1"
+	copy_tree "$d"
+	edit "$d/verify.sh" \
+		$'\tif [ "$result" = SKIPPED ] && ! in_list "$name" "${MANIFEST_SKIPPABLE_ROWS[@]}"; then' \
+		$'\tif false; then'
+	edit "$d/verify.sh" \
+		$'\trecord "__probe__" SKIPPED "a row that may not skip" 1\n\tcases=$((cases + 1))\n\t[ "${RESULTS[cases - 1]}" = FAIL ] || bad="$bad a SKIPPED recorded by a row that may not skip survived;"\n\n' \
+		''
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the SKIPPED arm and the probe that drives it were deleted together and the run passed"
+	[ "$(row self-check)" = FAIL ] ||
+		note "the row did not notice a probe was missing: $(row self-check) — $(why self-check)"
+	printf '%s\n' "$OUT" | grep -q 'a probe that dies with the arm it drives' ||
+		note "the diagnosis does not say that a probe was deleted with its arm"
+	# The negative control for the same run: the count arm's own probes are
+	# untouched, so record() is still enforcing its contract. Without this the
+	# scenario is satisfied by a plant that breaks record() outright.
+	printf '%s\n' "$OUT" | grep -q 'not enforcing its contract' &&
+		note "record() stopped enforcing its contract; this run failed for a reason this scenario does not name"
+	return 0
+}
+
 sc_min_declared_tests_floor() {
 	# Round 7 stated this bound and called it unclosable: "a test DELETED,
 	# rather than disabled, leaves both sides agreeing". It was true because
@@ -1407,6 +1464,37 @@ sc_oracle_is_invoked() {
 		note "the verify-oracle row does not name the scenario that failed: $(why verify-oracle)"
 }
 
+sc_scenario_rc_follows_the_verdict() {
+	# ROUND 2, finding 6, found by review rather than planted for: a
+	# --scenario run exited 0 for a PASS and a FAIL alike, so its exit status
+	# said only that the script had not refused. Anything reading rc — a
+	# person, a mutation harness, round 1's own negative control — read every
+	# scenario as a pass.
+	#
+	# Both directions, on the SAME scenario, so the difference is the plant and
+	# not the choice of scenario. ceiling-band is the subject because it reads
+	# a constant out of verify.sh and runs nothing: this scenario costs two
+	# sub-second runs instead of two full ones.
+	local d="$1" out rc
+	copy_tree "$d"
+	rc=0
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
+	printf '%s\n' "$out" | grep -q '^RESULT ceiling-band PASS' ||
+		note "the unplanted control did not report PASS, so this scenario is measuring something else: $out"
+	[ "$rc" -eq 0 ] || note "an unplanted scenario run exited $rc; a run that cannot exit 0 cannot show a FAIL by its exit status"
+	obs "scenario-rc-pass:$rc"
+	# The plant is in the SUBJECT the scenario reads, not in the scenario: a
+	# ceiling of zero is a ceiling no suite can be measured against, which is
+	# one of the two mutations ceiling-band exists to kill.
+	edit "$d/verify.sh" 'SUITE_CEILING_SECONDS=60' 'SUITE_CEILING_SECONDS=0'
+	rc=0
+	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
+	printf '%s\n' "$out" | grep -q '^RESULT ceiling-band FAIL' ||
+		note "the planted scenario did not report FAIL, so its exit status is not the thing under test: $out"
+	[ "$rc" -ne 0 ] || note "a scenario that reported FAIL exited 0; the verdict is not in the exit status, and every caller that reads rc reads a pass"
+	obs "scenario-rc-fail:$rc"
+}
+
 sc_silent_scenario_named() {
 	# ROUND 13, N14. A scenario that dies LOUDLY is caught by the death
 	# reporter — that was round 11. A scenario that dies SILENTLY, killed
@@ -1593,6 +1681,45 @@ sc_netns_row_partition_broken() {
 		note "the diagnosis does not name the tests the run never reported"
 	[ "$(row unit-suite)" = PASS ] ||
 		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
+}
+
+sc_suite_partition_skip_inert() {
+	# DEFEAT 3.6, driven. The OTHER direction of the partition, and the one the
+	# complement does not close: the roster is derived, the netns row is told
+	# to run it, and the pure suite's -skip stops holding it back. Both rows
+	# then run the same tests, and MEASURED 2026-09-05 by review at the
+	# previous head: `go test` exited 0, the combined seconds still fitted the
+	# pure suite's ceiling, and the row went on reporting how many tests were
+	# "held" for the other row — a sentence read out of the roster that
+	# produced the filter, and therefore true of the roster whatever the run
+	# did.
+	#
+	# The plant drops the FIRST roster name from the -skip alternation and
+	# nothing else, so exactly one namespaced test leaks into the pure suite
+	# rather than nineteen. That is the same economy sc_netns_row_partition_broken
+	# takes on the other side of the pair, and for the same reason: one
+	# namespace and one dnsmasq is affordable inside an oracle copy and
+	# nineteen are not.
+	#
+	# The preservation control is every other full-scope scenario: they all run
+	# this row with the real roster and an intact -skip, and it passes.
+	local d="$1" leaked
+	copy_tree "$d"
+	edit "$d/verify.sh" \
+		'netns_skip="^(${netns_alt})$"' \
+		'netns_skip="^(${netns_alt#*|})$"'
+	# Derived, not typed: the name this plant lets through is the first the
+	# roster reports, and a literal here would be a second spelling of it.
+	leaked="$(cd "$d" && go run ./internal/tools/testroster -netns . 2>/dev/null | head -1)"
+	[ -n "$leaked" ] || refuse "the netns roster is empty in the copy; the plant has nothing to let through"
+	run_verify "$d"
+	[ "$RC" -ne 0 ] || note "the pure suite ran a test the netns row owns and the run passed"
+	[ "$(row unit-suite)" = FAIL ] ||
+		note "the pure suite did not notice it had run the other row's test: $(row unit-suite) — $(why unit-suite)"
+	printf '%s\n' "$OUT" | grep -q 'did not hold them back' ||
+		note "the diagnosis does not name the filter that failed"
+	printf '%s\n' "$OUT" | grep -qF "$leaked" ||
+		note "the diagnosis does not name $leaked, the test that leaked across the partition"
 }
 
 sc_netns_row_control() {
@@ -1960,9 +2087,18 @@ run_one() {
 	observed="$(LC_ALL=C sort -u "$OBSFILE" | tr '\n' ',' | sed 's/,$//')"
 	if [ "${#FAILS[@]}" -eq 0 ]; then
 		printf 'RESULT %s PASS obs=%s\n' "$name" "$observed"
-	else
-		printf 'RESULT %s FAIL obs=%s %s\n' "$name" "$observed" "$(printf '%s; ' "${FAILS[@]}")"
+		return 0
 	fi
+	printf 'RESULT %s FAIL obs=%s %s\n' "$name" "$observed" "$(printf '%s; ' "${FAILS[@]}")"
+	# ROUND 2, 2026-09-05, finding 6. A --scenario run used to exit 0 for a
+	# PASS and a FAIL alike — only refuse() ever exited non-zero — so anything
+	# reading the exit status of one scenario read every scenario as a pass.
+	# MEASURED: round 1's own hang-bounded negative control did exactly that,
+	# and had to be rewritten to parse the RESULT line. The parent driver below
+	# reads the RESULT lines and is unaffected either way; a person, a mutation
+	# harness and every other caller are not. Scenario
+	# scenario-rc-follows-the-verdict.
+	return 1
 }
 
 # A light scenario may not READ a row a light run does not produce. MEASURED
@@ -2009,8 +2145,9 @@ END { for (f in want) if (!(f in seen)) print f " is declared light and has no b
 
 if [ "${1:-}" = "--scenario" ]; then
 	[ -n "${2:-}" ] || refuse "--scenario needs a name"
-	run_one "$2"
-	exit 0
+	sc_rc=0
+	run_one "$2" || sc_rc=$?
+	exit "$sc_rc"
 fi
 
 [ "${#SCENARIOS[@]}" -gt 0 ] || refuse "no scenarios are declared; the oracle's domain is empty"

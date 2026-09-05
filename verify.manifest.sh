@@ -61,7 +61,9 @@ MANIFEST_ROWS_N=16
 # not re-enter the oracle; netns-suite joined the list on 2026-09-05 because
 # sixty-odd copies of this tree each raising real namespaces and a real dnsmasq
 # is not a cost the oracle can carry. What that leaves undriven is stated in
-# the handover, not argued away: this row is driven by two OUTER scenarios.
+# the handover, not argued away: this row is driven by OUTER scenarios only,
+# and which ones is read off MANIFEST_SCENARIO_CONTRACTS rather than counted
+# in a sentence here.
 MANIFEST_OUTER_ROWS=(
 	netns-suite
 	self-drive
@@ -93,6 +95,23 @@ MANIFEST_SKIPPABLE_ROWS=(
 	verify-oracle
 )
 MANIFEST_SKIPPABLE_ROWS_N=1
+
+# The self-check row's own population: how many probe verdicts it puts through
+# record() before any real row, and how many of those record() must REFUSE.
+#
+# ROUND 2, 2026-09-05. These were derived inside verify.sh — the row counted
+# its own cases and reported `cases - 2` refusals — so a probe deleted together
+# with the arm it drives moved the expectation with it. MEASURED by review at
+# the previous head: record()'s SKIPPED arm turned into `if false` and its
+# probe deleted in one edit, every row green, the full oracle green, and the
+# only trace a note that said "refused 4" instead of 5.
+#
+# Stating them here is the same move the rest of this file is: the number is
+# not in the file that can delete the thing it counts. verify.sh compares both
+# against what actually ran, so a probe added without an edit here is a
+# refusal too — which is the direction that keeps the pair honest.
+SELF_CHECK_PROBES_N=7
+SELF_CHECK_REFUSALS_N=5
 
 # The gate commands under internal/gates that must exist and must run.
 MANIFEST_GATES=(
@@ -134,7 +153,7 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # The Go pin holds a separate literal as a low-water mark, `>=` only. That one
 # is NOT maintained in step and is not meant to be: it exists so that lowering
 # the number here cannot go below a level somebody once measured.
-MIN_DECLARED_TESTS=441
+MIN_DECLARED_TESTS=445
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -227,8 +246,13 @@ SELF_DRIVE_SURVIVES_N=5
 # so". A fake oracle that prints a correct-looking account returns instantly;
 # a real one copies the tree once per scenario and runs a race-enabled suite in
 # each copy. MEASURED 2026-08-30 on this box, that tree: 262s. RE-MEASURED
-# 2026-09-05 on this box, this tree, ORACLE_JOBS=4: 334s over 71 scenarios,
-# with 39 of them at the light scope. The number is the oracle's WALL CLOCK,
+# 2026-09-05 on this box, this tree, ORACLE_JOBS=4: 440s over the
+# population MANIFEST_SCENARIOS_N declares, at the scopes
+# MANIFEST_LIGHT_SCENARIOS declares. Round 1 wrote those two counts out here as
+# "71 scenarios, 39 of them light" and both were wrong the moment the lists
+# above moved; a count restated in a comment is a count nothing checks, which
+# is the same lesson the DOC_NUMBER_CEILING comment carries. The number below
+# is the oracle's WALL CLOCK,
 # and it moves whenever the population or the scope declaration moves, so it is
 # re-measured rather than carried: a floor derived from a measurement of a
 # different tree is a literal wearing a derivation's clothes.
@@ -248,8 +272,10 @@ SELF_DRIVE_SURVIVES_N=5
 # refuses the two drifting apart.
 #
 # Why 5% and not more, stated as a trade rather than a preference: the floor is
-# paid, in wall clock, by every scenario that has to sleep past it — three of
-# them today, each sleeping the floor plus one second. Raising the fraction
+# paid, in wall clock, by every scenario that reaches the floor through
+# fabricating_stub, each sleeping the floor plus one second — a population that
+# grows with the oracle and is not restated here, because a number in this
+# comment is a number nothing checks. Raising the fraction
 # raises that cost linearly, to catch a fabricator that is already free to
 # sleep for as long as the floor demands. The floor buys "the cheap edit is not
 # the quiet one"; it does not buy proof of work, and no fraction of a
@@ -270,7 +296,7 @@ SELF_DRIVE_SURVIVES_N=5
 # delete the number.
 DOC_NUMBER_CEILING=64
 
-ORACLE_MEASURED_SECONDS=334
+ORACLE_MEASURED_SECONDS=440
 ORACLE_MIN_PERCENT=5
 ORACLE_MIN_SECONDS=$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))
 
@@ -350,8 +376,11 @@ MANIFEST_SCENARIOS=(
 	readme-usage-drifts-in-the-readme
 	readme-usage-drifts-in-the-example
 	oracle-scope-fabricated
+	self-check-skip-arm-deleted
+	suite-partition-skip-inert
+	scenario-rc-follows-the-verdict
 )
-MANIFEST_SCENARIOS_N=72
+MANIFEST_SCENARIOS_N=75
 
 # The scenarios that run the subject at the LIGHT scope: --inner --light, which
 # is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
@@ -424,8 +453,9 @@ MANIFEST_LIGHT_SCENARIOS=(
 	readme-usage-drifts-in-the-readme
 	readme-usage-drifts-in-the-example
 	oracle-scope-fabricated
+	self-check-skip-arm-deleted
 )
-MANIFEST_LIGHT_SCENARIOS_N=39
+MANIFEST_LIGHT_SCENARIOS_N=40
 
 # What each scenario must OBSERVE. One entry per scenario, same order.
 #
@@ -499,7 +529,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"race-detector|nonzero|unit-suite:FAIL|WARNING DATA RACE"
 	"test-cache|nonzero|unit-suite:FAIL|go test reported a cached result"
 	"ceiling-fires|nonzero|unit-suite:FAIL|passed but took"
-	"ceiling-control|zero|unit-suite:PASS|of them held for the netns suite row"
+	"ceiling-control|zero|unit-suite:PASS|started here and none of the"
 	"ceiling-band|static|ceiling-seconds:60|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
@@ -559,8 +589,11 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"readme-usage-drifts-in-the-readme|nonzero|readme-usage:FAIL|has no fenced go block under Usage"
 	"readme-usage-drifts-in-the-example|nonzero|readme-usage:FAIL|the README says byte for byte and they are not"
 	"oracle-scope-fabricated|nonzero|verify-oracle:FAIL|ABSENT scope full"
+	"self-check-skip-arm-deleted|nonzero|self-check:FAIL|a probe that dies with the arm it drives leaves the arm undriven"
+	"suite-partition-skip-inert|nonzero|unit-suite:FAIL|the skip filter did not hold them back"
+	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=72
+MANIFEST_SCENARIO_CONTRACTS_N=75
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members
@@ -570,14 +603,26 @@ MANIFEST_SCENARIO_CONTRACTS_N=72
 #                               and observes the value.
 #   scenario-death-is-reported  runs the ORACLE in a copy, not verify.sh, and
 #                               observes the child's own death line.
+#   scenario-rc-follows-the-verdict
+#                               runs ONE scenario in a copy, twice, and
+#                               observes the exit status it answered with.
+#
+# The third member arrived in round 2 and the cap moved with it, which is the
+# pattern this file says to watch. What makes it the sanctioned case rather
+# than the routine one: both of the new-ish members are about the ORACLE'S OWN
+# PROTOCOL — how a scenario reports and what its exit status means — and a
+# scenario about the oracle's protocol has no row of the subject's table to
+# read, by construction rather than by convenience. A fourth member that is
+# not of that kind is the one to refuse.
 #
 # Set equality against the contract table is pinned from Go, so this list
 # cannot describe a membership the table does not have.
 MANIFEST_STATIC_CONTRACTS=(
 	ceiling-band
 	scenario-death-is-reported
+	scenario-rc-follows-the-verdict
 )
-MANIFEST_STATIC_CONTRACTS_N=2
+MANIFEST_STATIC_CONTRACTS_N=3
 
 
 # manifest_check — layer 2, run by every reader of this file BEFORE it is
@@ -624,6 +669,11 @@ manifest_check() {
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
 	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
+	# Both halves non-empty and the refusals a PROPER subset of the probes: a
+	# self-check that refuses every probe it runs has no preservation control,
+	# and one that refuses none of them is not a guard.
+	[ "$SELF_CHECK_REFUSALS_N" -ge 1 ] && [ "$SELF_CHECK_REFUSALS_N" -lt "$SELF_CHECK_PROBES_N" ] ||
+		bad="$bad SELF_CHECK_REFUSALS_N is $SELF_CHECK_REFUSALS_N against $SELF_CHECK_PROBES_N probe(s); a self-check with no refusals is not a guard and one with no survivors is a check with one possible verdict;"
 	[ "$MANIFEST_SCENARIO_CONTRACTS_N" -ge 1 ] || bad="$bad MANIFEST_SCENARIO_CONTRACTS_N is not positive;"
 	[ "${#MANIFEST_OUTER_ROWS[@]}" -eq "$MANIFEST_OUTER_ROWS_N" ] ||
 		bad="$bad MANIFEST_OUTER_ROWS has ${#MANIFEST_OUTER_ROWS[@]} name(s), MANIFEST_OUTER_ROWS_N says $MANIFEST_OUTER_ROWS_N;"
