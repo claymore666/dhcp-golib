@@ -153,10 +153,16 @@ func (s *squatter) run(t *testing.T, mode squatterMode) {
 				continue
 			}
 			at := time.Now()
-			// Frames the squatter itself sent come back on its own socket —
-			// AF_PACKET echoes this host's outgoing frames — and recording
-			// them would put the squatter's own answer into the evidence it
-			// is providing about the client.
+			// Recording a frame the squatter itself put on the wire would
+			// put its own answer into the evidence it is providing about the
+			// client. MEASURED 2026-09-04 (M6 review round 2): an
+			// AF_PACKET socket bound to ETH_P_ARP is registered in the
+			// kernel's ptype_base, and dev_queue_xmit_nit walks ptype_all, so
+			// it is delivered INBOUND frames only. The squatter's own frames
+			// therefore do not come back on its own socket. This filter is
+			// kept because the link in this fixture is a veth pair with both
+			// ends in one namespace, where the peer's traffic IS visible, and
+			// because the test replays frames deliberately further down.
 			if hwEqual(p.SenderHW, s.hw) {
 				continue
 			}

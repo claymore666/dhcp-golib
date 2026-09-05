@@ -135,7 +135,7 @@ func New(p Params) (*Machine, error) {
 	p.Resume = p.Resume.Clone()
 	m := &Machine{params: p, state: StateStopped, resume: p.Resume}
 	if p.Conflict != ConflictOff {
-		m.acd = newACD(p.acd(), p.Conflict, p.CHAddr)
+		m.acd = newACD(p.acd(), p.Conflict, p.linkHW())
 	}
 	return m, nil
 }
