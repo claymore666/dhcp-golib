@@ -359,11 +359,17 @@ func scaleRand(d Duration, n int64) Duration {
 	// hi is at most (2^63 * 2^20) >> 64, far below randDenom, so Div64 cannot
 	// overflow. The guard is here anyway: Div64 PANICS on overflow, and a
 	// panic in ring 1 takes the plugin's network driver down with it.
+	//
+	// UNREACHABLE, so it is written to be harmless rather than clever: |RAND|
+	// is at most 0.1 by construction, so a tenth of the magnitude is the
+	// largest answer this function can honestly give, and returning d itself
+	// would be a tenfold error at exactly the moment nobody is watching.
 	if hi >= uint64(randDenom) {
+		q := Duration(ad / 10)
 		if neg {
-			return Duration(-d)
+			return -q
 		}
-		return d
+		return q
 	}
 	q, _ := bits.Div64(hi, lo, uint64(randDenom))
 	if neg {

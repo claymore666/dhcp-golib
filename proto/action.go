@@ -420,8 +420,14 @@ type Config6 struct {
 	RefreshTime Duration
 }
 
+// String renders the VALUES and not their counts. "dns=2" in a journal cannot
+// distinguish a client that installed the right resolvers from one that
+// installed somebody else's, which is the diagnosis this line exists to
+// support; Lease.String() sets the same precedent one ring over. The lists are
+// short by construction — RFC 3646 configurations carry a handful of entries —
+// so nothing here needs a cap.
 func (c Config6) String() string {
-	return fmt.Sprintf("dns=%d search=%d refresh=%s", len(c.DNS), len(c.Search), c.RefreshTime)
+	return fmt.Sprintf("dns=%v search=%v refresh=%s", c.DNS, c.Search, c.RefreshTime)
 }
 
 // RouterObservation is what the library saw of RFC 4861 router discovery on

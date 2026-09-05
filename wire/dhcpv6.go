@@ -628,17 +628,22 @@ func (o OptionsV6) Uint32V6(c OptionCodeV6) (uint32, bool, error) {
 // in octets; must be a multiple of 16", so the remainder is not a short address
 // but evidence that the offsets are wrong, and every address read from those
 // offsets would be wrong with it.
+//
+// EVERY instance of the option is walked, not the first. RFC 3646 defines one
+// option carrying a list and says nothing about a repeat, so a server that
+// sends two is outside the text either way — and of the two readings available
+// to a decoder, "the union, in wire order" hides nothing while "the first" is a
+// silent deletion of half the resolvers. The raw options are still there for a
+// caller that wants to judge the repeat itself: All(OptV6DNSServers).
 func (o OptionsV6) DNSServers() ([]netip.Addr, error) {
-	v, ok := o.First(OptV6DNSServers)
-	if !ok {
-		return nil, nil
-	}
-	if len(v)%16 != 0 {
-		return nil, fmt.Errorf("%w: option 23 is %d octet(s), not a multiple of 16", ErrV6BadOption, len(v))
-	}
-	out := make([]netip.Addr, 0, len(v)/16)
-	for i := 0; i+16 <= len(v); i += 16 {
-		out = append(out, netip.AddrFrom16([16]byte(v[i:i+16])))
+	var out []netip.Addr
+	for _, v := range o.All(OptV6DNSServers) {
+		if len(v)%16 != 0 {
+			return nil, fmt.Errorf("%w: option 23 is %d octet(s), not a multiple of 16", ErrV6BadOption, len(v))
+		}
+		for i := 0; i+16 <= len(v); i += 16 {
+			out = append(out, netip.AddrFrom16([16]byte(v[i:i+16])))
+		}
 	}
 	return out, nil
 }
@@ -653,20 +658,19 @@ func (o OptionsV6) DNSServers() ([]netip.Addr, error) {
 // 3397 permits them in option 119; calling it here would accept a message this
 // standard forbids and would resolve its pointers against an offset base that
 // does not exist in DHCPv6, where the option value is not the whole message.
+// Every instance of the option is walked, for the reason DNSServers gives.
 func (o OptionsV6) DomainSearch() ([]string, error) {
-	v, ok := o.First(OptV6DomainList)
-	if !ok {
-		return nil, nil
-	}
 	var out []string
-	for i := 0; i < len(v); {
-		name, next, err := readNameUncompressed(v, i)
-		if err != nil {
-			return nil, err
-		}
-		i = next
-		if name != "" {
-			out = append(out, name)
+	for _, v := range o.All(OptV6DomainList) {
+		for i := 0; i < len(v); {
+			name, next, err := readNameUncompressed(v, i)
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			if name != "" {
+				out = append(out, name)
+			}
 		}
 	}
 	return out, nil
@@ -715,22 +719,41 @@ func EncodeDomainSearch(names []string) ([]byte, error) {
 	return out, nil
 }
 
+// MaxNameLen is RFC 1035 section 2.3.4's "names 255 octets or less", counted in
+// the wire form: every label's length octet, every label, and the root label.
+//
+// It is enforced on the ENCODE side only. A name longer than this cannot be
+// represented in DNS and must not leave here; one that ARRIVES over-long is
+// still unambiguously readable, and ring 0 hands the state machine what the
+// server actually said rather than deciding on its behalf that it said nothing.
+const MaxNameLen = 255
+
 func encodeNameUncompressed(name string) ([]byte, error) {
+	// A trailing dot is the ordinary fully-qualified spelling and means the
+	// same name; it is normalised away rather than refused. An EMPTY name is
+	// not the same thing: it encodes to a lone root label, which is a search
+	// list entry that decodes back to nothing, so a caller that asks for one
+	// has a bug and is told.
 	name = strings.TrimSuffix(name, ".")
-	var out []byte
-	if name != "" {
-		for _, label := range strings.Split(name, ".") {
-			if label == "" {
-				return nil, fmt.Errorf("%w: %q has an empty label", ErrV6Name, name)
-			}
-			if len(label) > 63 {
-				return nil, fmt.Errorf("%w: label %q is %d octet(s), RFC 1035 section 3.1 allows 63", ErrV6Name, label, len(label))
-			}
-			out = append(out, byte(len(label)))
-			out = append(out, label...)
-		}
+	if name == "" {
+		return nil, fmt.Errorf("%w: the empty name encodes to a lone root label, which is not a search list entry", ErrV6Name)
 	}
-	return append(out, 0), nil
+	var out []byte
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			return nil, fmt.Errorf("%w: %q has an empty label", ErrV6Name, name)
+		}
+		if len(label) > 63 {
+			return nil, fmt.Errorf("%w: label %q is %d octet(s), RFC 1035 section 3.1 allows 63", ErrV6Name, label, len(label))
+		}
+		out = append(out, byte(len(label)))
+		out = append(out, label...)
+	}
+	out = append(out, 0)
+	if len(out) > MaxNameLen {
+		return nil, fmt.Errorf("%w: %q is %d octet(s) on the wire, RFC 1035 section 2.3.4 allows %d", ErrV6Name, name, len(out), MaxNameLen)
+	}
+	return out, nil
 }
 
 // ------------------------------------------------------------------- DUID --
