@@ -108,6 +108,7 @@ const (
 	OptV6IANA         OptionCodeV6 = 3  // §21.4
 	OptV6IAAddr       OptionCodeV6 = 5  // §21.6
 	OptV6ORO          OptionCodeV6 = 6  // §21.7
+	OptV6Preference   OptionCodeV6 = 7  // §21.8
 	OptV6ElapsedTime  OptionCodeV6 = 8  // §21.9
 	OptV6StatusCode   OptionCodeV6 = 13 // §21.13
 	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
@@ -123,6 +124,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6IANA:         "ia-na",
 	OptV6IAAddr:       "ia-addr",
 	OptV6ORO:          "oro",
+	OptV6Preference:   "preference",
 	OptV6ElapsedTime:  "elapsed-time",
 	OptV6StatusCode:   "status-code",
 	OptV6DNSServers:   "dns-servers",
@@ -467,6 +469,20 @@ func EncodeIAAddr(a *IAAddr) ([]byte, error) {
 func (a *IAAddr) Valid() bool { return a.PreferredLifetime <= a.ValidLifetime }
 
 // Addrs returns every IA Address in the options area, decoded.
+//
+// ITS DOMAIN IS AN IA_NA's OPTIONS FIELD, NOT A MESSAGE's. §21.6, of the IA
+// Address option: "In this document, it is only specified to be encapsulated
+// within an IA_NA." A caller that reaches this method through
+// MessageV6.Options is reading the TOP-LEVEL area, where an IA Address is a
+// misplaced option: it arrives with no IAID and no T1/T2, so an address taken
+// from there is one nothing can renew, rebind or release. Ring 0 decodes it
+// anyway — §16 forbids discarding a whole message over a misplaced option, and
+// the caller is the only one that can say whether it wanted the top level —
+// and ring 1 (proto.Machine6) reads addresses ONLY through IANAs(), journals
+// what it found at the top level, and never binds it.
+//
+// The other half of §21.6, preferred greater than valid, is NOT enforced here
+// either: it is IAAddr.Valid(), for the reason that comment gives.
 func (o OptionsV6) Addrs() ([]*IAAddr, error) {
 	var out []*IAAddr
 	for _, v := range o.All(OptV6IAAddr) {
@@ -499,8 +515,26 @@ const (
 	StatusNotOnLink    StatusCode = 4
 )
 
+// StatusMalformed is what Status() returns beside ErrV6BadOption, and it is
+// NOT a code RFC 9915 defines.
+//
+// It exists because the value on the error path used to be Status{}, which is
+// byte-identical to Success — defeat row A-4's own defect shape surviving in
+// the value, and the M7a review's finding 4. A caller that read the value and
+// forgot the error was told the server had said Success; a client that acted
+// on that would bind an address a NoAddrsAvail Reply never offered. Now the
+// forgetful caller gets a code that matches nothing it can branch on and
+// renders as "malformed".
+//
+// 0xffff rather than the next free small integer, because IANA allocates
+// status codes upward from 0 and a sentinel in that range becomes somebody
+// else's code the day it is registered.
+const StatusMalformed StatusCode = 0xFFFF
+
 func (s StatusCode) String() string {
 	switch s {
+	case StatusMalformed:
+		return "malformed"
 	case StatusSuccess:
 		return "Success"
 	case StatusUnspecFail:
@@ -564,9 +598,34 @@ func (o OptionsV6) Status() (Status, bool, error) {
 	}
 	s, err := DecodeStatus(v)
 	if err != nil {
-		return Status{}, true, err
+		return Status{Code: StatusMalformed}, true, err
 	}
 	return s, true, nil
+}
+
+// Preference returns §21.8's one-octet pref-value, and whether the option was
+// there.
+//
+// §21.8: "pref-value: The preference value for the server in this message.
+// Allowed values are from 0 (least) to 255 (most preferred). Absence of option
+// means preference 0." So the zero this returns when the option is absent is
+// the RFC's own answer and not a fallback — but the boolean is still here,
+// because §18.2.9's rule for 255 is "immediately begin a client-initiated
+// message exchange" and a caller that could not tell absence from an explicit
+// 0 could not report which Advertise carried a preference at all.
+//
+// A length other than one is refused rather than read from the first octet:
+// §21.8 gives "option-len: 1", so anything else is a server that did not build
+// this option, and its first octet is not a preference.
+func (o OptionsV6) Preference() (uint8, bool, error) {
+	v, ok := o.First(OptV6Preference)
+	if !ok {
+		return 0, false, nil
+	}
+	if len(v) != 1 {
+		return 0, true, fmt.Errorf("%w: Preference is %d octet(s), §21.8 says 1", ErrV6BadOption, len(v))
+	}
+	return v[0], true, nil
 }
 
 // ----------------------------------------------------------- Elapsed Time --

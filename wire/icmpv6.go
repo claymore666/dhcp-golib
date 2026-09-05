@@ -74,6 +74,19 @@ var (
 	// is invalid. Nodes MUST silently discard an ND packet that contains an
 	// option with length zero", or one whose length runs past the message.
 	ErrNDOption = errors.New("wire: ICMPv6 neighbor discovery option is malformed")
+	// ErrICMPv6Validity is a message that fails one of RFC 4861's per-type
+	// validity checks with the packet's own octets — the Code field, or the
+	// Neighbor Advertisement's Target Address.
+	//
+	// SEPARATE FROM ErrICMPv6Short AND ErrICMPv6Type, because the caller's
+	// next step differs: those two say the buffer is not this message, this
+	// one says it IS this message and RFC 4861 tells a node to discard it
+	// anyway. The checks this package CANNOT make are the ones whose evidence
+	// is outside the ICMPv6 body — §6.1.2's "IP Source Address is a link-local
+	// address" and "The IP Hop Limit field has a value of 255", and the
+	// checksum, which VerifyICMPv6Checksum takes the addresses for. Ring 3
+	// owns those three; this is the boundary between them.
+	ErrICMPv6Validity = errors.New("wire: ICMPv6 message fails an RFC 4861 validity check")
 	// ErrICMPv6Encode is a packet that cannot be encoded.
 	ErrICMPv6Encode = errors.New("wire: ICMPv6 packet cannot be encoded")
 	// ErrNotIPv6 is an address that is not an IPv6 address.
@@ -167,27 +180,30 @@ type ICMPv6Packet struct {
 // unspecified address if no address is assigned to the sending interface", and
 // the Source Link-Layer Address option "MUST NOT be included if the Source
 // Address is the unspecified address. Otherwise, it SHOULD be included on link
-// layers that have addresses." Both halves are enforced here rather than left
-// to the caller: an unspecified source with the option attached is a packet
-// §4.1 forbids, and a real source without it costs the router a neighbour
-// lookup before it can answer.
+// layers that have addresses."
+//
+// THE TWO HALVES ARE NOT THE SAME STRENGTH AND ARE NOT ENFORCED THE SAME WAY.
+// The unspecified-source half is a MUST NOT, so an option attached there is
+// refused. The other half is a SHOULD, and the condition it is conditioned on
+// — "on link layers that have addresses" — is one only the caller can answer:
+// a caller that passes no address is either on a link layer without one, where
+// §4.1 asks for nothing, or has made a mistake this function cannot tell apart
+// from that. So it is encoded without the option and no error is returned.
+// Refusing was this function's first shape and it rendered a SHOULD as a MUST
+// (M7a review finding 5).
 func EncodeRouterSolicit(src netip.Addr, linkHW []byte) (ICMPv6Packet, error) {
 	if err := requireIPv6(src, "router solicitation source"); err != nil {
 		return ICMPv6Packet{}, err
 	}
 	body := make([]byte, rsFixedLen)
 	body[0] = ICMPv6RouterSolicit
-	if !src.IsUnspecified() {
-		if len(linkHW) == 0 {
-			return ICMPv6Packet{}, fmt.Errorf("%w: a Router Solicitation from %s carries no link-layer address, and RFC 4861 section 4.1 says the option SHOULD be included on link layers that have addresses",
-				ErrICMPv6Encode, src)
-		}
+	if !src.IsUnspecified() && len(linkHW) != 0 {
 		opt, err := encodeLinkAddrOption(NDOptSourceLinkAddr, linkHW)
 		if err != nil {
 			return ICMPv6Packet{}, err
 		}
 		body = append(body, opt...)
-	} else if len(linkHW) != 0 {
+	} else if src.IsUnspecified() && len(linkHW) != 0 {
 		return ICMPv6Packet{}, fmt.Errorf("%w: a Router Solicitation from the unspecified address MUST NOT carry a Source Link-Layer Address option (RFC 4861 section 4.1)",
 			ErrICMPv6Encode)
 	}
@@ -306,6 +322,9 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 	}
 	if b[0] != ICMPv6RouterAdvert {
 		return nil, fmt.Errorf("%w: ICMPv6 type %d, want %d", ErrICMPv6Type, b[0], ICMPv6RouterAdvert)
+	}
+	if err := requireZeroCode(b[1], "Router Advertisement", "6.1.2"); err != nil {
+		return nil, err
 	}
 	ra := &RouterAdvert{
 		CurHopLimit:    b[4],
@@ -434,6 +453,19 @@ func DecodeNeighborAdvert(b []byte) (*NeighborAdvert, error) {
 	if b[0] != ICMPv6NeighborAdvert {
 		return nil, fmt.Errorf("%w: ICMPv6 type %d, want %d", ErrICMPv6Type, b[0], ICMPv6NeighborAdvert)
 	}
+	if err := requireZeroCode(b[1], "Neighbor Advertisement", "7.1.2"); err != nil {
+		return nil, err
+	}
+	target := netip.AddrFrom16([16]byte(b[8:24]))
+	if target.IsMulticast() {
+		// §7.1.2's fifth check, "Target Address is not a multicast address".
+		// It is the one on this list that changes what a CONSUMER does rather
+		// than only whether the frame parses: a duplicate-address check reads
+		// the target to decide whether the advertisement answers its probe, and
+		// a multicast target is an answer about nobody.
+		return nil, fmt.Errorf("%w: Neighbor Advertisement Target Address %s is multicast, which RFC 4861 section 7.1.2 makes the packet one to silently discard",
+			ErrICMPv6Validity, target)
+	}
 	// The options are walked and discarded: nothing here reads a Target
 	// Link-Layer Address, but a packet carrying a malformed option is one
 	// §4.6 says to discard, and discarding it here rather than ignoring it is
@@ -445,8 +477,28 @@ func DecodeNeighborAdvert(b []byte) (*NeighborAdvert, error) {
 		Router:    b[4]&naFlagRouter != 0,
 		Solicited: b[4]&naFlagSolicited != 0,
 		Override:  b[4]&naFlagOverride != 0,
-		Target:    netip.AddrFrom16([16]byte(b[8:24])),
+		Target:    target,
 	}, nil
+}
+
+// requireZeroCode is RFC 4861's "ICMP Code is 0", which appears in the
+// MUST-silently-discard list of every validation section this package decodes
+// for (§6.1.2 for a Router Advertisement, §7.1.2 for a Neighbor
+// Advertisement).
+//
+// IT IS NOT A FORMATTING CHECK. §6.1.2, immediately after the list:
+// "backward-incompatible changes may use different Code values." So a non-zero
+// Code is a frame written to a protocol this decoder does not implement, and
+// reading its flag octet — which is where the M and O bits that decide whether
+// DHCPv6 runs at all live — is reading a field whose MEANING the sender has
+// told us we do not know. Refusing costs nothing today: no fixture and no
+// captured frame on this box carries one.
+func requireZeroCode(code uint8, what, section string) error {
+	if code == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s ICMP Code is %d, and RFC 4861 section %s says a node MUST silently discard one that is not 0",
+		ErrICMPv6Validity, what, code, section)
 }
 
 // ------------------------------------------------------------ ND options --

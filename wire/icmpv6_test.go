@@ -416,8 +416,23 @@ func TestRouterSolicitCarriesItsSourceAndItsOption(t *testing.T) {
 	if _, err := EncodeRouterSolicit(netip.IPv6Unspecified(), mac); !errors.Is(err, ErrICMPv6Encode) {
 		t.Errorf("a solicitation from :: carrying a link-layer address: %v, want %v", err, ErrICMPv6Encode)
 	}
-	if _, err := EncodeRouterSolicit(ll, nil); !errors.Is(err, ErrICMPv6Encode) {
-		t.Errorf("a solicitation from a real source with no link-layer address: %v, want %v", err, ErrICMPv6Encode)
+	// A REAL SOURCE WITH NO LINK-LAYER ADDRESS IS ENCODED, NOT REFUSED, and
+	// this row replaces one that asserted the refusal (M7a review finding 5).
+	// §4.1: "Otherwise, it SHOULD be included on link layers that have
+	// addresses." The condition is about the LINK LAYER, which this function
+	// cannot see; a caller passing nothing is either on a link layer with no
+	// address, where §4.1 asks for nothing at all, or has made a mistake that
+	// looks identical from here. Rendering that SHOULD as a refusal made a
+	// conformant packet unconstructible.
+	bare, err := EncodeRouterSolicit(ll, nil)
+	if err != nil {
+		t.Fatalf("a solicitation from a real source with no link-layer address: %v, want it encoded (§4.1's SHOULD)", err)
+	}
+	if len(bare.Body) != rsFixedLen {
+		t.Errorf("it is %d octets, want %d — the option must be absent, not empty", len(bare.Body), rsFixedLen)
+	}
+	if !VerifyICMPv6Checksum(bare.Src, bare.Dst, bare.Body) {
+		t.Error("its checksum does not verify, so the SHOULD half was encoded wrong rather than omitted")
 	}
 	if _, err := EncodeRouterSolicit(addr(t, "192.0.2.1"), mac); !errors.Is(err, ErrNotIPv6) {
 		t.Errorf("a solicitation from an IPv4 address: %v, want %v", err, ErrNotIPv6)
