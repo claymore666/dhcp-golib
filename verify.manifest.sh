@@ -373,7 +373,13 @@ SELF_DRIVE_SURVIVES_N=5
 # The Go pin holds it from above (docNumberCeilingCap), because the cheap way
 # to make this row stop saying anything is to raise the ceiling rather than
 # delete the number.
-DOC_NUMBER_CEILING=64
+#
+# 2026-09-06, +2, and the two lines are enumerated because a bump without the
+# list is a ratchet nobody earned: docs/verifying.md's "In CI" section carries
+# the runner command (ORACLE_JOBS=1) and the one line that names the machine
+# the runner facts were measured on (kernel, dnsmasq and Go versions). Nothing
+# else in that section carries a bare number the sweep can see.
+DOC_NUMBER_CEILING=66
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
 # 77 scenarios MANIFEST_SCENARIOS now declares: 623s, from the verify-oracle

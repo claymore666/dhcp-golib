@@ -151,10 +151,15 @@ scenario exists because of that.
 
 The oracle step is the one that cannot be closed from the inside: see below.
 
-There is no CI on this repository and there will not be: the self-hosted
-runners belong to the plugin repository and cannot serve a second private repo
-without an organisation. `verify.sh` is the only arbiter there is, which is why
-it is one command and not a paragraph describing what a developer should run —
+The sentence that stood here until 2026-09-06 said there is no CI on this
+repository and there never would be, because the self-hosted runners belong to
+the plugin repository and cannot serve a second private repo without an
+organisation. The premise is still true; the conclusion never followed from it.
+A GitHub-HOSTED runner serves a private repository with no organisation and no
+self-hosted anything, and one now runs this script on every push — see **In
+CI** below. `verify.sh` is still the only arbiter there is, and CI is a second
+place it runs rather than a second opinion. Which is why it is one command and
+not a paragraph describing what a developer should run —
 and why it has an oracle of its own, `scripts/test-verify.sh`, which plants a
 defect in a copy of the tree and requires the row that owns that defect to be
 the row that fails. `verify.sh` runs it as a step.
@@ -261,7 +266,8 @@ removed together, the declared count speaks).
 evidence: it is gitignored and per-clone, and a stamp written BY HAND carrying
 the hash `verify.sh` computes grants a skip, because any hand can compute what
 `verify.sh` computes. So the merge rule is not "the stamp says it passed" — it
-is a reviewer's own `./verify.sh --oracle` run at the head being merged.
+is an `--oracle` run at the head being merged, and since 2026-09-06 that run is
+CI's, on a machine that has no stamp to inherit. See **In CI**.
 
 The second bound is that the hash covers the ARBITER, so a scenario that
 depends on the PRODUCT's shape can go stale without a covered byte moving.
@@ -326,6 +332,77 @@ drive:** its contract demands a verdict from that row, an omitted row records
 nothing, and a row that recorded nothing reads ABSENT. The manifest refuses the
 combination outright, in the shell and again in Go, so it cannot be written
 down.
+
+### In CI
+
+`.github/workflows/verify.yml`. Every push of every branch, and a manual
+`workflow_dispatch`, produces one run with one job on a GitHub-hosted
+`ubuntu-24.04` runner, and the job is:
+
+    ORACLE_JOBS=1 ./verify.sh --oracle
+
+**The job's verdict IS the arbiter's verdict.** Green means `verify.sh`
+printed `VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything
+else is red, including a run that never reached the arbiter at all — a failed
+checkout, a package that would not install, the job's own timeout. There is no
+branch filter and no path filter, because an absent run is not a green run and
+nothing about a commit should be able to decide that this job does not apply
+to it.
+
+**Always `--oracle`, and the last step is why that is not enough on its own.**
+The skip is a per-clone local cache and a fresh runner has none, so the flag
+changes nothing about what runs here; what it removes is the shape where it
+could. A `VERDICT: PASS` line reads the same whether the oracle ran or was
+skipped, so a job reading only the exit status, or only that line, cannot tell
+those two apart — nor either of them from an arbiter that printed nothing at
+all. The job's last step therefore refuses an empty output, requires the
+`verify-oracle` row to be a PASS carrying the oracle's own `ORACLE PASS:`
+account, and requires the verdict line to name the row count it SOURCES out of
+`verify.manifest.sh` while the job is running, rather than a number typed into
+the workflow. What that step is not is a second manifest: an edit that shrinks
+the roster and the count together still has to get past `manifest_check` and
+`internal/manifest`, and CI adds no layer there.
+
+**The merge rule.** A green run at the head SHA being merged, plus the
+reviewer's CLEAR. The reviewer no longer re-runs the oracle on their own box.
+Read that rule exactly: a green run at THAT SHA, because a force-push moves a
+branch and leaves its run behind, and an absent run is not among the things it
+accepts.
+
+**The bound, and it is the honest one: two executions of one script are not
+one execution.** The runner is not the box the ceilings, timeouts and floors in
+`verify.manifest.sh` were measured on, and its differences have already changed
+a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
+`Linux 6.17.0-1022-azure`, two cores, dnsmasq 2.91, Go 1.25.14:
+
+- **Namespaces.** The image restricts unprivileged user namespaces through
+  AppArmor. Left at its default the namespaced child STARTS — the namespace is
+  created — and then every netlink call inside it is refused, so `ip link add`
+  answers `Operation not permitted` and the `netns-suite` row goes red. The
+  workflow clears that with one sysctl before the arbiter runs; no test is
+  touched and the arbiter is still not run under sudo. The session box needs
+  nothing, which is the point: this is a property of an image, and a different
+  image is a different answer.
+- **Cores, against a ceiling derived elsewhere.** The pure suite's ceiling was
+  measured on a box with many times this runner's two cores. With the oracle
+  running two copies at once, the root run's suite and the copies' suites all
+  ran past that ceiling and nothing else was wrong with them. So the oracle
+  runs one copy at a time here, and the race build is compiled before anything
+  is timed against a ceiling — a cold build is not the drift the ceiling asks
+  about. Neither moves a bound; both cost wall clock. The numbers are in the
+  workflow, beside the decisions they made.
+- **Scheduling, and this one is not the runner's fault.**
+  `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlocks when the
+  frame it adds last is appended before the waiter rescans: the waiter then
+  returns through the match arm without a third report, and the test blocks on
+  a report that will never come. It is bounded only by `go test -timeout`.
+  MEASURED on the runner and reproduced on the session box under load. Until
+  that is fixed the merge rule above cannot be satisfied by a runner, because
+  the pure suite hangs there often enough to redden most runs.
+
+So a green runner run and a green session-box run are two measurements rather
+than one repeated, neither certifies the other, and where they disagree the
+disagreement is the finding.
 
 ### The two gates
 
