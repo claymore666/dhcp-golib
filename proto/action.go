@@ -139,6 +139,46 @@ const (
 	// would have to inspect the payload to know where to write it, which is
 	// ring 3 parsing ring 0's output to route it.
 	ActSendARP
+	// ActSendRouterSolicit asks ring 3 to send an RFC 4861 section 4.1 Router
+	// Solicitation, to prompt a Router Advertisement rather than wait for the
+	// next periodic one.
+	//
+	// It carries no packet, where ActSendARP carries one. The Router
+	// Solicitation's source address is an address the LIBRARY does not have —
+	// section 4.1 wants "an IP address assigned to the sending interface", and
+	// only ring 3 can read the link's link-local address — and its checksum
+	// covers that address (RFC 4443 section 2.3). So ring 1 asks, ring 3
+	// builds with wire.EncodeRouterSolicit, and the address the checksum
+	// covers is by construction the address it goes out from.
+	ActSendRouterSolicit
+	// ActStartDAD asks ring 3 to run RFC 4862 section 5.4's duplicate address
+	// detection on Target and report the outcome as EvDADResult.
+	//
+	// A REQUEST TO OBSERVE, not to configure. The library never installs an
+	// address (the seam design's rule), so DAD here is the probe-and-listen of
+	// section 5.4.2 performed on an address nothing is using yet — the same
+	// shape as M6's RFC 5227 probe, which is D30's rule applied: v6 takes v4's
+	// shape unless there is a reason not to.
+	ActStartDAD
+	// ActConfigured reports the outcome of an Information-request exchange:
+	// configuration and no address (RFC 9915 section 18.2.6).
+	//
+	// ITS OWN KIND, not an ActLeaseAcquired with a zero address. There is no
+	// lease, no T1, no T2 and nothing to renew — only a refresh time — and a
+	// lease-shaped value with every lease field empty is an error folded into
+	// a value: every caller would have to test the address before trusting the
+	// rest, and the one that forgot would install a route to "::".
+	ActConfigured
+	// ActRouterObserved reports what router discovery saw, for a caller that
+	// has to tell "no DHCPv6 server answered" from "there is no DHCPv6 server
+	// here".
+	//
+	// A DIAGNOSTIC, not a lease event. RFC 4861 section 4.2: "If neither M nor
+	// O flags are set, this indicates that no information is available via
+	// DHCPv6." A client that waits out its Solicit schedule on such a link has
+	// not failed; it has been told, and this is the action that carries the
+	// telling out to where an operator can read it.
+	ActRouterObserved
 )
 
 func (k ActionKind) String() string {
@@ -163,6 +203,14 @@ func (k ActionKind) String() string {
 		return "Journal"
 	case ActSendARP:
 		return "SendARP"
+	case ActSendRouterSolicit:
+		return "SendRouterSolicit"
+	case ActStartDAD:
+		return "StartDAD"
+	case ActConfigured:
+		return "Configured"
+	case ActRouterObserved:
+		return "RouterObserved"
 	default:
 		return fmt.Sprintf("action(%d)", uint8(k))
 	}
@@ -281,6 +329,16 @@ type Action struct {
 	// ARP is the packet to broadcast, on ActSendARP only.
 	ARP *wire.ARPPacket
 
+	// Target is the address to run duplicate address detection on, on
+	// ActStartDAD only.
+	Target netip.Addr
+
+	// Config is the stateless configuration, on ActConfigured only.
+	Config Config6
+
+	// Router is what router discovery saw, on ActRouterObserved only.
+	Router RouterObservation
+
 	Timer TimerID  // ActSetTimer, ActCancelTimer
 	After Duration // ActSetTimer
 
@@ -332,7 +390,58 @@ func (a Action) String() string {
 		return "Journal " + a.Note
 	case ActSendARP:
 		return "SendARP " + a.ARP.String()
+	case ActSendRouterSolicit:
+		return "SendRouterSolicit"
+	case ActStartDAD:
+		return "StartDAD " + a.Target.String()
+	case ActConfigured:
+		return "Configured " + a.Config.String()
+	case ActRouterObserved:
+		return "RouterObserved " + a.Router.String()
 	default:
 		return a.Kind.String()
 	}
+}
+
+// Config6 is the outcome of an RFC 9915 section 18.2.6 Information-request:
+// configuration parameters with no address bound to them.
+type Config6 struct {
+	// DNS is option 23's list, RFC 3646 section 3.
+	DNS []netip.Addr
+	// Search is option 24's list, RFC 3646 section 4.
+	Search []string
+	// RefreshTime is option 32's information-refresh-time (RFC 9915 section
+	// 21.23). Zero means the server sent none, and section 21.23 says what
+	// that means: "If the Reply to an Information-request message does not
+	// contain this option, the client MUST behave as if the option with the
+	// value IRT_DEFAULT was provided." Substituting IRT_DEFAULT here would
+	// destroy the distinction between a server that chose 86400 and one that
+	// said nothing; the machine applies the default, this carries the fact.
+	RefreshTime Duration
+}
+
+func (c Config6) String() string {
+	return fmt.Sprintf("dns=%d search=%d refresh=%s", len(c.DNS), len(c.Search), c.RefreshTime)
+}
+
+// RouterObservation is what the library saw of RFC 4861 router discovery on
+// this link.
+//
+// SEEN IS SEPARATE FROM THE TWO FLAGS, and that is the point of the type. An
+// RA with M and O both clear and NO RA AT ALL are different facts with the same
+// pair of booleans: the first is a router saying there is no DHCPv6 here, the
+// second is a link with no router on it, or one whose advertisements are not
+// reaching us. Folding them would make an absent observation look like a
+// negative one, and the operator's next step differs.
+type RouterObservation struct {
+	Seen    bool
+	Managed bool
+	Other   bool
+}
+
+func (r RouterObservation) String() string {
+	if !r.Seen {
+		return "no router advertisement seen"
+	}
+	return fmt.Sprintf("router advertisement M=%t O=%t", r.Managed, r.Other)
 }

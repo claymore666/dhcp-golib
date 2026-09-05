@@ -2,6 +2,7 @@ package proto
 
 import (
 	"fmt"
+	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/wire"
 )
@@ -63,6 +64,29 @@ const (
 	// a conflict at one moment is ordinary traffic at another. Collapsing the
 	// two would move that decision to whoever owns the socket.
 	EvARPReceived
+	// EvRouterAdvert carries one decoded ICMPv6 Router Advertisement, RFC
+	// 4861 section 4.2. It is the ONE thing router discovery contributes to a
+	// DHCPv6 client: whether the network says addresses are available over
+	// DHCPv6 (the M flag), whether it says other configuration is (the O
+	// flag), and which prefixes it advertises.
+	//
+	// DECLARED HERE, CONSUMED IN M7b. No state has an arm for it today, so it
+	// takes the same path EvARPReceived takes in a state that does not handle
+	// it: journalled as ignored. The kind exists now so that the ring gates,
+	// the totality test and the journal round trip see the shape before the
+	// machine that acts on it, rather than after.
+	EvRouterAdvert
+	// EvDADResult carries the outcome of RFC 4862 section 5.4's duplicate
+	// address detection on an address this client was offered.
+	//
+	// It is the v6 analogue of EvConflictDetected and it is NOT the same
+	// thing. During acquisition it is a GATE and not a fault: RFC 9915
+	// section 18.2.10.1 makes the client perform DAD before it uses an
+	// address, so the machine emits no Acquired until a result with
+	// Duplicate false arrives. EvConflictDetected is a verdict about an
+	// address already in use; this is the answer to a question the client
+	// asked.
+	EvDADResult
 )
 
 func (k EventKind) String() string {
@@ -89,6 +113,10 @@ func (k EventKind) String() string {
 		return "Release"
 	case EvARPReceived:
 		return "ARPReceived"
+	case EvRouterAdvert:
+		return "RouterAdvert"
+	case EvDADResult:
+		return "DADResult"
 	default:
 		return fmt.Sprintf("event(%d)", uint8(k))
 	}
@@ -99,7 +127,7 @@ func AllEventKinds() []EventKind {
 	return []EventKind{
 		EvStart, EvStop, EvReceived, EvTimerFired, EvLinkDown, EvLinkUp,
 		EvConflictDetected, EvAddressLost, EvActionFailed, EvRelease,
-		EvARPReceived,
+		EvARPReceived, EvRouterAdvert, EvDADResult,
 	}
 }
 
@@ -121,6 +149,13 @@ type Event struct {
 	// ARP is set when Kind is EvARPReceived, and may be nil even then, for
 	// the reason Msg may: Step is total, and ring 1 does not panic.
 	ARP *wire.ARPPacket
+
+	// RA is set when Kind is EvRouterAdvert, and may be nil even then, for
+	// the same reason.
+	RA *wire.RouterAdvert
+
+	// DAD is set when Kind is EvDADResult.
+	DAD DADOutcome
 
 	// Timer is set when Kind is EvTimerFired.
 	Timer TimerID
@@ -151,6 +186,33 @@ func ActionFailed(id ActionID, reason string) Event {
 // ARPReceived builds an EvARPReceived event.
 func ARPReceived(p *wire.ARPPacket) Event { return Event{Kind: EvARPReceived, ARP: p} }
 
+// DADOutcome is the result of duplicate address detection on one address.
+//
+// Duplicate is a bool and not an error, and Addr travels with it, because both
+// answers are ordinary: RFC 4862 section 5.4.5 makes a duplicate a reason to
+// stop using the address, and RFC 9915 section 18.2.10.1's client then sends a
+// Decline for THAT address. A result that did not name its address would leave
+// the machine declining whichever one it happened to be holding.
+type DADOutcome struct {
+	Addr      netip.Addr
+	Duplicate bool
+}
+
+func (d DADOutcome) String() string {
+	if d.Duplicate {
+		return d.Addr.String() + " duplicate"
+	}
+	return d.Addr.String() + " free"
+}
+
+// RouterAdvert builds an EvRouterAdvert event.
+func RouterAdvert(ra *wire.RouterAdvert) Event { return Event{Kind: EvRouterAdvert, RA: ra} }
+
+// DADResult builds an EvDADResult event.
+func DADResult(addr netip.Addr, duplicate bool) Event {
+	return Event{Kind: EvDADResult, DAD: DADOutcome{Addr: addr, Duplicate: duplicate}}
+}
+
 // Simple builds an event that carries nothing but its kind.
 func Simple(k EventKind) Event { return Event{Kind: k} }
 
@@ -167,6 +229,13 @@ func (e Event) String() string {
 			return "ARPReceived <nil>"
 		}
 		return "ARPReceived " + e.ARP.String()
+	case EvRouterAdvert:
+		if e.RA == nil {
+			return "RouterAdvert <nil>"
+		}
+		return "RouterAdvert " + e.RA.String()
+	case EvDADResult:
+		return "DADResult " + e.DAD.String()
 	default:
 		return e.Kind.String()
 	}
