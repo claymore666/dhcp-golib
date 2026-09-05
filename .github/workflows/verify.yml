@@ -1,0 +1,107 @@
+name: verify
+
+# One job, and its verdict IS ./verify.sh's verdict. Nothing here decides
+# anything the arbiter has not already decided; the last step exists only to
+# refuse a green run in which the arbiter did not speak.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: the arbiter
+    runs-on: ubuntu-24.04
+    # PROVISIONAL for the first run on this runner. Replaced by twice the
+    # measured wall clock, with the measurement beside it, once there is one.
+    timeout-minutes: 90
+    steps:
+      - name: Check out the commit under verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Go, from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # dnsmasq-base ships /usr/sbin/dnsmasq without the system service: the
+      # namespaced tests start their own server inside their own netns, and a
+      # service that binds :53 and :67 in the runner's namespace is a package
+      # postinst that can fail for reasons this repository does not own.
+      - name: Install what the arbiter shells out to
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dnsmasq-base iproute2 shellcheck
+
+      - name: Record the machine this measurement was taken on
+        run: |
+          {
+            echo "run:            ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}"
+            echo "commit:         ${GITHUB_SHA}"
+            echo "kernel:         $(uname -srm)"
+            echo "cores (nproc):  $(nproc)"
+            echo "dnsmasq:        $( (dnsmasq --version || true) | head -n 1)"
+            echo "go:             $(go version)"
+            echo "userns sysctl:  $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>&1 || true)"
+            echo "userns maxuser: $(sysctl -n user.max_user_namespaces 2>&1 || true)"
+          } | tee runner-facts.txt
+
+      # ALWAYS --oracle. The skip stamp is a per-clone local cache that a fresh
+      # runner cannot have, so the flag costs nothing here and removes the one
+      # shape in which this job could report PASS over an oracle that never ran.
+      - name: Run the arbiter — always with --oracle, never the cached skip
+        run: |
+          started="$(date +%s)"
+          set +e
+          ORACLE_JOBS="$(nproc)" ./verify.sh --oracle 2>&1 | tee verify-output.txt
+          rc="${PIPESTATUS[0]}"
+          set -e
+          printf 'arbiter exit status: %d\narbiter wall clock: %ds\n' \
+            "$rc" "$(( $(date +%s) - started ))" | tee -a runner-facts.txt
+          exit "$rc"
+
+      - name: Keep the output whatever the verdict was
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            verify-output.txt
+            runner-facts.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      # The vacuity refusal. A job whose only operand is an exit status cannot
+      # tell an arbiter that passed from an arbiter that printed nothing, and
+      # cannot tell a full verdict from one taken over a shrunken row roster or
+      # over a SKIPPED oracle. So read the arbiter's own two lines, and take
+      # the row count from the manifest at run time rather than typing it here.
+      - name: The verdict must be the arbiter's own, over every declared row
+        if: always()
+        run: |
+          out=verify-output.txt
+          if [ ! -s "$out" ]; then
+            echo "::error::the arbiter produced no output; a run that printed nothing is not a pass"
+            exit 1
+          fi
+
+          # shellcheck source=/dev/null
+          . ./verify.manifest.sh
+          n="$MANIFEST_ROWS_N"
+
+          if ! grep -Eq '^verify-oracle +PASS +ORACLE PASS:' "$out"; then
+            echo "::error::the oracle did not run to a PASS on this runner; --oracle must never yield a SKIPPED row here"
+            grep -E '^verify-oracle' "$out" || echo "there is no verify-oracle row in the output at all"
+            exit 1
+          fi
+
+          if ! grep -Fxq "VERDICT: PASS ($n steps)" "$out"; then
+            echo "::error::the arbiter did not print VERDICT: PASS ($n steps), the row count verify.manifest.sh declares"
+            grep -E '^VERDICT:' "$out" || echo "there is no VERDICT line in the output at all"
+            grep -E '^[a-z-]+ +FAIL ' "$out" || true
+            exit 1
+          fi
+
+          echo "the arbiter printed VERDICT: PASS ($n steps) and ran its own oracle."
