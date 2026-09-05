@@ -328,6 +328,19 @@ func newConflictClient(t *testing.T, mode proto.ConflictMode, acd proto.ACDParam
 // SURVIVES is proved by a renewal and dnsmasq's default T1 is a minute away.
 func newConflictClientCfg(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, cfg dnsmasqConfig) *conflictFixture {
 	t.Helper()
+	return newConflictClientCHAddr(t, mode, acd, hostname, cfg, nil)
+}
+
+// newConflictClientCHAddr is newConflictClientCfg with the DHCP client
+// hardware address open to the caller. A nil chaddr is the interface's own,
+// which is what every other run here uses and what DefaultParams gives.
+//
+// Only TestTheProbeCarriesTheLinkAddressAndNotCHAddr passes a different one,
+// and the two addresses being different is the whole of what it measures:
+// with them equal, a probe built from the interface and a probe built from
+// CHAddr are the same frame.
+func newConflictClientCHAddr(t *testing.T, mode proto.ConflictMode, acd proto.ACDParams, hostname string, cfg dnsmasqConfig, chaddr net.HardwareAddr) *conflictFixture {
+	t.Helper()
 
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
 	mustRun(t, "ip", "addr", "add", testServerIP+"/24", "dev", testServerIf)
@@ -353,6 +366,9 @@ func newConflictClientCfg(t *testing.T, mode proto.ConflictMode, acd proto.ACDPa
 	params.Conflict = mode
 	params.ACD = acd
 	params.Hostname = hostname
+	if chaddr != nil {
+		params.CHAddr = append(net.HardwareAddr(nil), chaddr...)
+	}
 
 	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
 	if err != nil {
@@ -1321,4 +1337,92 @@ func offClientOnAWire(t *testing.T) {
 		TargetIP: ev.Lease.Addr.Addr(),
 	})
 	sq.waitForSighting(fromMAC(f.clientMAC))
+}
+
+// ------------ M7a rider 1, ring 3: whose hardware address a Probe carries --
+
+func TestTheProbeCarriesTheLinkAddressAndNotCHAddr(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		probeCarriesTheLinkAddress(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+// probeCarriesTheLinkAddress is the ring-3 half of M7a's first rider, and it
+// exists because the ring-1 half cannot see ring 3's mistake.
+//
+// RFC 5227 section 2.1.1 says an ARP Probe's sender hardware address field is
+// "the hardware address of the interface sending the packet". proto builds
+// probes out of Params.LinkHWAddr and falls back to CHAddr when it is empty;
+// runtime.NewClient is the only thing in the library that knows what the
+// interface actually wears, and it fills LinkHWAddr from net.InterfaceByName.
+// Every other run in this file takes CHAddr from that same interface, so a
+// probe built from either field is the same frame: neither "ring 3 never
+// fills it" nor "ring 3 fills it from CHAddr" changes one byte on the wire.
+//
+// MEASURED 2026-09-05, by mutation: with the fill deleted, and again with it
+// sourced from CHAddr, the whole runtime suite stayed green.
+//
+// So this run moves the two fields apart — the DHCP client identifier is a
+// locally administered address that belongs to no NIC here, the interface
+// keeps its own — and reads the two halves off two different witnesses:
+//
+//   - dnsmasq's log carries the CHAddr, which is how "the two differ" becomes
+//     a fact about the exchange rather than a field this process set and read
+//     back out of its own struct;
+//   - the squatter's socket carries the Probes, and their sender hardware
+//     address is the INTERFACE's.
+//
+// Under either mutant the second assertion reads the fake address, because
+// ring 1's fallback and ring 1's mis-fill land on the same field.
+func probeCarriesTheLinkAddress(t *testing.T) {
+	// Locally administered (bit 1 of the first octet), unicast (bit 0 clear),
+	// and not the address of anything in this namespace.
+	fake := net.HardwareAddr{0x02, 0x00, 0x5e, 0x11, 0x22, 0x33}
+
+	acd := briskACD()
+	f := newConflictClientCHAddr(t, proto.ConflictWait, acd, "m7a-chaddr", dnsmasqConfig{}, fake)
+	if f.clientMAC == fake.String() {
+		t.Fatalf("the interface wears %s, which is the CHAddr this run sets: with the two equal nothing here is measurable", f.clientMAC)
+	}
+	sq := newSquatter(t, testServerIf, squatterObserve)
+	f.start(t, sq)
+
+	// ConflictWait: Acquired is after section 2.1's check, so every Probe the
+	// client will ever send for this address has already crossed the wire.
+	ev := awaitAcquired(t, f.client)
+	addr := ev.Lease.Addr.Addr()
+	if ev.ACD == proto.ACDProbing {
+		t.Fatalf("a waiting client reached Acquired while still probing (%s), so the frames counted below may not all have been sent yet", ev.ACD)
+	}
+
+	// WITNESS ONE: the server logged the fake address as the client's, so the
+	// two hardware addresses in this run really are different and the DHCP
+	// half of the exchange really used the one this test set.
+	f.srv.waitFor(t, "DHCPACK("+f.srv.iface+") "+addr.String()+" "+fake.String())
+
+	// WITNESS TWO: the frames, on another host's socket.
+	probes := sq.waitForCount(isProbeFor(addr), acd.ProbeNum)
+	for i, g := range probes {
+		if got := net.HardwareAddr(g.p.SenderHW).String(); got != f.clientMAC {
+			t.Fatalf("Probe %d carries sender hardware address %s; the interface wears %s and CHAddr is %s. "+
+				"RFC 5227 section 2.1.1 asks for the interface's.\nFrame: %s",
+				i+1, got, f.clientMAC, fake, g.p)
+		}
+	}
+	// The Announcements are built from the same field and are the frames the
+	// rest of the link caches, so they are checked too rather than assumed.
+	for i, g := range sq.waitForCount(isAnnouncementFor(addr), acd.AnnounceNum) {
+		if got := net.HardwareAddr(g.p.SenderHW).String(); got != f.clientMAC {
+			t.Fatalf("Announcement %d carries sender hardware address %s, want the interface's %s.\nFrame: %s",
+				i+1, got, f.clientMAC, g.p)
+		}
+	}
+
+	if n := f.srv.count("DHCPDECLINE(" + f.srv.iface + ")"); n != 0 {
+		t.Fatalf("the client sent %d DHCPDECLINE(s) on a wire with no squatter on it.\nLog:\n%s",
+			n, strings.Join(f.srv.lines(), "\n"))
+	}
+	f.quote(t, "the DHCP client identifier and the interface's address differ")
 }

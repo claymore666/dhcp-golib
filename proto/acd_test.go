@@ -1714,3 +1714,54 @@ func TestTheLinkHardwareAddressFallsBackToCHAddr(t *testing.T) {
 		t.Fatalf("linkHW() with LinkHWAddr set is %x, want %x", got, linkMAC)
 	}
 }
+
+// TestLinkHardwareAddressIsValidatedAndCopied guards the two things every other
+// byte-slice field in Params already has, and which a field added later is
+// exactly the field to be missing.
+//
+// The length bound: the ARP frame this address goes into has a one-octet hlen,
+// so an address that does not fit is a frame that cannot be built — and it
+// would be built at the first probe, several states after the caller's mistake.
+// The copy: a caller that reuses its buffer would otherwise change the address
+// the machine probes from, under a machine that has already started.
+func TestLinkHardwareAddressIsValidatedAndCopied(t *testing.T) {
+	p := acdParams(ConflictWait)
+	p.LinkHWAddr = make([]byte, 17)
+	if _, err := New(p); err == nil {
+		t.Fatalf("New accepted a %d-octet LinkHWAddr; ARP's hlen field holds one octet and CHAddr is bounded at 16 for the same reason",
+			len(p.LinkHWAddr))
+	}
+	p.LinkHWAddr = make([]byte, 16)
+	if _, err := New(p); err != nil {
+		t.Fatalf("New refused a 16-octet LinkHWAddr, which is the bound CHAddr is held to: %v", err)
+	}
+
+	buf := append([]byte(nil), linkMAC...)
+	p = acdParams(ConflictWait)
+	p.LinkHWAddr = buf
+	m, err := New(p)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := range buf {
+		buf[i] = 0xFF
+	}
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, testACDAddr, "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	_, acts = m.Step(at(2), 3, received(t, ackFor(req, testACDAddr, "192.168.99.1", 3600)))
+	delay, ok := armedACD(acts)
+	if !ok {
+		t.Fatal("no ACD timer was armed; the fixture never reached the probe window")
+	}
+	_, acts = m.Step(at(3).Add(delay), 4, TimerFired(TimerACD))
+	sent := arpSends(acts)
+	if len(sent) == 0 {
+		t.Fatal("no ARP frame was emitted, so the copy was not observed")
+	}
+	if !bytesEqualACD(sent[0].SenderHW, linkMAC) {
+		t.Errorf("the probe carries %x after the caller overwrote its buffer, want %x: Params.LinkHWAddr is aliased, not copied",
+			sent[0].SenderHW, linkMAC)
+	}
+}

@@ -759,6 +759,16 @@ func TestDomainSearchRefusesACompressionPointer(t *testing.T) {
 		})
 	}
 
+	// Two options, both walked, for the reason DNSServers gives: a client
+	// that read only the first would lose half its search list.
+	got, err = (OptionsV6{
+		{Code: OptV6DomainList, Data: mustHex("0161" + "00")},
+		{Code: OptV6DomainList, Data: mustHex("0162" + "00")},
+	}).DomainSearch()
+	if err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("two domain search options gave %q (%v), want [a b] in wire order", got, err)
+	}
+
 	// Two names in one option, the shape the option is FOR.
 	got, err = (OptionsV6{{Code: OptV6DomainList, Data: mustHex("0161" + "00" + "0162" + "00")}}).DomainSearch()
 	if err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
