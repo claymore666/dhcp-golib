@@ -41,13 +41,25 @@ var pinnedRows = []string{
 	"gofmt",
 	"shellcheck",
 	"doc-numbers",
+	"readme-usage",
 	"gate-roster",
 	"t1",
 	"t2",
 	"unit-suite",
+	"netns-suite",
 	"self-drive",
 	"verify-oracle",
 }
+
+// The three SUBSETS of that table, pinned by membership rather than by size.
+// Each names the rows one flag changes, and each is the kind of list that goes
+// wrong by growing: --inner is defined by what it does not run, --light by
+// what it leaves out, and SKIPPED by who may say it.
+var (
+	pinnedOuterRows     = []string{"netns-suite", "self-drive", "verify-oracle"}
+	pinnedScopedOutRows = []string{"unit-suite", "netns-suite"}
+	pinnedSkippableRows = []string{"verify-oracle"}
+)
 
 var pinnedGates = []string{"t1", "t2"}
 
@@ -71,7 +83,7 @@ var pinnedGates = []string{"t1", "t2"}
 // keeps the distance between the pin and the tree at zero, which is the only
 // value at which the pin is at full strength.
 const (
-	minScenarios     = 63
+	minScenarios     = 72
 	minShellScripts  = 4
 	minDeclaredTests = 382
 	minOracleSeconds = 8
@@ -89,7 +101,11 @@ const (
 // The classes a scenario contract may declare, and the verdicts it may name.
 var (
 	rcClasses = map[string]bool{"zero": true, "nonzero": true, "static": true}
-	verdicts  = map[string]bool{"PASS": true, "FAIL": true, "ABSENT": true}
+	// SKIPPED joined the verdicts on 2026-09-05 with the oracle stamp. It is
+	// the only verdict that is neither a measurement nor a refusal, which is
+	// why MANIFEST_SKIPPABLE_ROWS exists and is pinned above: a verdict that
+	// every row may give is not an exception, it is an exit.
+	verdicts = map[string]bool{"PASS": true, "FAIL": true, "ABSENT": true, "SKIPPED": true}
 )
 
 // static means the scenario does not run the subject, so it cannot read the
@@ -561,4 +577,114 @@ func plantedBy(name string, bodies map[string]string, seen map[string]bool) int 
 		}
 	}
 	return n
+}
+
+// TestManifestRowSubsetsAreThePinnedSubsets holds the three lists that say
+// which rows a FLAG changes: the rows an inner run does not have, the rows a
+// scoped run leaves out, and the rows that may record SKIPPED.
+//
+// Each is pinned by membership rather than by size, in a second language and a
+// second directory, for the reason the row list itself is: these are the lists
+// that go wrong by growing. A row added to MANIFEST_SCOPED_OUT_ROWS stops
+// being run by every light scenario at once, and nothing in the shell would
+// notice — the manifest would still agree with itself.
+func TestManifestRowSubsetsAreThePinnedSubsets(t *testing.T) {
+	src := readManifest(t)
+	rows := map[string]bool{}
+	for _, r := range list(t, src, "MANIFEST_ROWS") {
+		rows[r] = true
+	}
+	for _, c := range []struct {
+		name   string
+		pinned []string
+	}{
+		{"MANIFEST_OUTER_ROWS", pinnedOuterRows},
+		{"MANIFEST_SCOPED_OUT_ROWS", pinnedScopedOutRows},
+		{"MANIFEST_SKIPPABLE_ROWS", pinnedSkippableRows},
+	} {
+		got := list(t, src, c.name)
+		if n := number(t, src, c.name+"_N"); n != len(got) {
+			t.Errorf("%s has %d name(s), %s_N says %d", c.name, len(got), c.name, n)
+		}
+		if len(got) != len(c.pinned) {
+			t.Errorf("%s has %d name(s), this file pins %d: %v", c.name, len(got), len(c.pinned), got)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.pinned[i] {
+				t.Errorf("%s[%d]: manifest says %q, this file pins %q", c.name, i, got[i], c.pinned[i])
+			}
+			if !rows[got[i]] {
+				t.Errorf("%s names %q, which is not a row in MANIFEST_ROWS", c.name, got[i])
+			}
+		}
+		// Proper, in both directions. Empty and the flag means nothing;
+		// equal to the whole table and the flag is a run of nothing.
+		if len(got) == 0 || len(got) >= len(rows) {
+			t.Errorf("%s holds %d of %d row(s); it must be a non-empty PROPER subset", c.name, len(got), len(rows))
+		}
+	}
+}
+
+// TestLightScenariosCannotScopeAwayTheRowTheyDrive is the Go half of the
+// refusal item 2 turns on.
+//
+// A scenario that runs at the light scope does not run the rows in
+// MANIFEST_SCOPED_OUT_ROWS. If such a scenario's contract names one of those
+// rows, it has scoped away the row it exists to drive: the row records
+// nothing, the contract reads it ABSENT, and the scenario fails. That failure
+// is the safety net. This is the refusal — the combination cannot be written
+// down — and it is here rather than only in the shell because the shell's
+// version of it lives in the same file as the lists it compares.
+func TestLightScenariosCannotScopeAwayTheRowTheyDrive(t *testing.T) {
+	src := readManifest(t)
+	scoped := map[string]bool{}
+	for _, r := range list(t, src, "MANIFEST_SCOPED_OUT_ROWS") {
+		scoped[r] = true
+	}
+	declared := map[string]bool{}
+	for _, s := range list(t, src, "MANIFEST_SCENARIOS") {
+		declared[s] = true
+	}
+	byName := map[string]contract{}
+	for _, c := range contracts(t, src) {
+		byName[c.scenario] = c
+	}
+	light := list(t, src, "MANIFEST_LIGHT_SCENARIOS")
+	if n := number(t, src, "MANIFEST_LIGHT_SCENARIOS_N"); n != len(light) {
+		t.Errorf("MANIFEST_LIGHT_SCENARIOS has %d name(s), MANIFEST_LIGHT_SCENARIOS_N says %d", len(light), n)
+	}
+	seen := map[string]bool{}
+	for _, s := range light {
+		if seen[s] {
+			t.Errorf("MANIFEST_LIGHT_SCENARIOS names %q twice", s)
+		}
+		seen[s] = true
+		if !declared[s] {
+			t.Errorf("MANIFEST_LIGHT_SCENARIOS names %q, which is not a declared scenario", s)
+			continue
+		}
+		c, ok := byName[s]
+		if !ok {
+			t.Errorf("scenario %q is declared light and has no contract", s)
+			continue
+		}
+		if scoped[c.row] {
+			t.Errorf("scenario %q is declared light and its contract wants row %q, which a light run does not run; it would pass or fail on a row it scoped away", s, c.row)
+		}
+		if c.rcClass == "static" {
+			t.Errorf("scenario %q is static — it never runs the subject — so declaring a scope for it describes a run that does not happen", s)
+		}
+	}
+	// The control is the one scenario that must run everything: a control at a
+	// reduced scope controls a reduced thing.
+	if seen["control"] {
+		t.Error("the control is declared light; a control that does not run every row cannot say the arbiter is green on an untouched tree")
+	}
+	// Non-empty and proper, for the same reason as the row subsets: every
+	// scenario light is an oracle that never runs the suite, and none light is
+	// a list that costs a maintenance rule and buys nothing.
+	if len(light) == 0 || len(light) >= len(declared) {
+		t.Errorf("%d of %d scenario(s) are declared light; the set must be a non-empty PROPER subset", len(light), len(declared))
+	}
 }

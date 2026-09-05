@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -219,23 +220,39 @@ func (s *squatter) sightings() []squatterSighting {
 // A Probe is RFC 5227 section 2.1.1's: an ARP Request with an all-zero sender
 // IP. An Announcement is section 2.3's: an ARP Request with sender and target
 // IP both the address being claimed.
-func isProbeFor(addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == addr }
+//
+// A predicate carries its own DESCRIPTION. The wait helpers below announce
+// what they are waiting for before they block, and a description written at
+// the call site is a second spelling of the same fact: two places to edit, and
+// the one that goes stale is the one a person reads while the run is stuck.
+type arpPred struct {
+	what string
+	ok   func(*wire.ARPPacket) bool
 }
 
-func isAnnouncementFor(addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == addr
+func isProbeFor(addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an RFC 5227 section 2.1.1 Probe for " + addr.String(),
+		ok:   func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == addr },
+	}
+}
+
+func isAnnouncementFor(addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an RFC 5227 section 2.3 Announcement of " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == addr
+		},
 	}
 }
 
 // matching returns, in the order they crossed the wire, the frames the
 // squatter has read so far that pred accepts. It does not wait: every caller
 // below first waits on a LATER frame, so that what it then counts is complete.
-func (s *squatter) matching(pred func(*wire.ARPPacket) bool) []squatterSighting {
+func (s *squatter) matching(pred arpPred) []squatterSighting {
 	var out []squatterSighting
 	for _, g := range s.sightings() {
-		if pred(g.p) {
+		if pred.ok(g.p) {
 			out = append(out, g)
 		}
 	}
@@ -244,12 +261,17 @@ func (s *squatter) matching(pred func(*wire.ARPPacket) bool) []squatterSighting 
 
 // waitForSighting blocks until pred has matched a frame the squatter read.
 //
-// It carries no duration of its own: a frame that never comes hangs the test
-// until go test's own timeout, which says more than a deadline chosen here.
-func (s *squatter) waitForSighting(pred func(*wire.ARPPacket) bool) squatterSighting {
+// The DEADLINE is the child process's own -test.timeout, set by
+// reexecInNamespaces below the netns row's timeout, so a predicate that cannot
+// hold ends the CHILD rather than the parent — which is what keeps the child's
+// output, including dnsmasq's log, in the parent's report. What this helper
+// owes that deadline is the sentence naming what did not happen: the goroutine
+// dump names this function, and nothing in it names the frame.
+func (s *squatter) waitForSighting(pred arpPred) squatterSighting {
+	announceWait("the squatter to see "+pred.what, s.waitLog())
 	for {
 		for _, g := range s.sightings() {
-			if pred(g.p) {
+			if pred.ok(g.p) {
 				return g
 			}
 		}
@@ -258,13 +280,26 @@ func (s *squatter) waitForSighting(pred func(*wire.ARPPacket) bool) squatterSigh
 }
 
 // waitForCount blocks until pred has matched at least n of the frames read.
-func (s *squatter) waitForCount(pred func(*wire.ARPPacket) bool, n int) []squatterSighting {
+func (s *squatter) waitForCount(pred arpPred, n int) []squatterSighting {
+	announceWait(fmt.Sprintf("the squatter to see %d frame(s) matching %s", n, pred.what), s.waitLog())
 	for {
 		if out := s.matching(pred); len(out) >= n {
 			return out
 		}
 		<-s.heard
 	}
+}
+
+// waitLog is what the squatter has heard so far, one line per frame, for the
+// announcement above: "it never came" and "it came and the predicate reads a
+// different set" are the two diagnoses, and only the frames tell them apart.
+func (s *squatter) waitLog() []string {
+	var out []string
+	for _, g := range s.sightings() {
+		out = append(out, fmt.Sprintf("op=%d sender=%s/%s target=%s/%s",
+			g.p.Op, g.p.SenderIP, net.HardwareAddr(g.p.SenderHW), g.p.TargetIP, net.HardwareAddr(g.p.TargetHW)))
+	}
+	return out
 }
 
 func hwEqual(a, b []byte) bool {
@@ -526,7 +561,7 @@ func squatterInProbeWindow(t *testing.T, mode proto.ConflictMode) {
 	// from the datagram trick 1.x used, which poisons the ARP cache of every
 	// host that hears it.
 	target := netip.MustParseAddr(squatted)
-	g := sq.waitForSighting(func(p *wire.ARPPacket) bool { return p.IsProbe() && p.TargetIP == target })
+	g := sq.waitForSighting(isProbeFor(target))
 	if !g.p.SenderIP.IsUnspecified() {
 		t.Fatalf("the probe carried sender IP %s, want RFC 5227 1.1's all-zero", g.p.SenderIP)
 	}
@@ -893,10 +928,10 @@ func measureTheProbeDelay(t *testing.T) {
 // sent and pred accepts. It is a barrier, never evidence: what the client
 // believes it sent is exactly the thing the squatter's socket is here to
 // check independently.
-func countOutgoing(c *Client, pred func(*wire.ARPPacket) bool) int {
+func countOutgoing(c *Client, pred arpPred) int {
 	n := 0
 	for _, p := range c.Packets() {
-		if p.Dir == lease.DirOut && p.ARP != nil && pred(p.ARP) {
+		if p.Dir == lease.DirOut && p.ARP != nil && pred.ok(p.ARP) {
 			n++
 		}
 	}
@@ -984,23 +1019,32 @@ func slowACD() proto.ACDParams {
 // fromClient matches the frames the CLIENT's stack put on the wire: the
 // section 2.5 ARP Reply the kernel owes for the leased address, and the
 // ordinary ARP Request it sends resolving a neighbour from that address.
-func fromClientReplyFor(mac string, addr netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPReply && p.SenderIP == addr &&
-			net.HardwareAddr(p.SenderHW).String() == mac
+func fromClientReplyFor(mac string, addr netip.Addr) arpPred {
+	return arpPred{
+		what: "an ARP Reply from " + mac + " for " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPReply && p.SenderIP == addr &&
+				net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 
-func fromClientRequestTo(mac string, addr netip.Addr, target netip.Addr) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == target &&
-			net.HardwareAddr(p.SenderHW).String() == mac
+func fromClientRequestTo(mac string, addr netip.Addr, target netip.Addr) arpPred {
+	return arpPred{
+		what: "an ARP Request from " + mac + " for " + target.String() + " sent from " + addr.String(),
+		ok: func(p *wire.ARPPacket) bool {
+			return p.Op == wire.ARPRequest && p.SenderIP == addr && p.TargetIP == target &&
+				net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 
-func fromMAC(mac string) func(*wire.ARPPacket) bool {
-	return func(p *wire.ARPPacket) bool {
-		return net.HardwareAddr(p.SenderHW).String() == mac
+func fromMAC(mac string) arpPred {
+	return arpPred{
+		what: "any frame sent by " + mac,
+		ok: func(p *wire.ARPPacket) bool {
+			return net.HardwareAddr(p.SenderHW).String() == mac
+		},
 	}
 }
 

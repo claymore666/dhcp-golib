@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
@@ -109,7 +111,7 @@ func reexecInNamespaces(t *testing.T) {
 		t.Fatalf("the ip command is not on PATH (%v); the namespace cannot be wired up", err)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^"+name+"$", "-test.v=true", "-test.count=1")
+	cmd := exec.Command(os.Args[0], netnsChildArgs(name)...)
 	cmd.Env = append(os.Environ(), nsChildEnv+"=1", "LC_ALL=C", "LANG=C")
 	// uid 0 inside the namespace, and it has to be 0: capabilities are
 	// recalculated at execve, and a process that is not root in its user
@@ -130,14 +132,137 @@ func reexecInNamespaces(t *testing.T) {
 		GidMappingsEnableSetgroups: false,
 	}
 
-	out, err := cmd.CombinedOutput()
+	// The child's output is TEE'd to this process's stderr as it arrives,
+	// instead of being collected by CombinedOutput and printed at the end.
+	// M6 carried row 4: a buffer is only printed by the code after it, and
+	// when the parent is killed by its own -test.timeout there is no code
+	// after it — the dnsmasq log and the wait announcements, the only things
+	// that say WHICH wait was stuck, died in the buffer. Streamed, they have
+	// already been emitted when the kill arrives.
+	var buf bytes.Buffer
+	sink := io.MultiWriter(&buf, os.Stderr)
+	cmd.Stdout = sink
+	cmd.Stderr = sink
+	err := cmd.Run()
+	out := buf.Bytes()
 	if err != nil {
-		t.Fatalf("the namespaced run failed (%v). Its output follows.\n%s", err, out)
+		t.Fatalf("the namespaced run failed (%v); its output is above, streamed as it arrived.\n%s", err, out)
 	}
 	if reportErr := childReport(string(out), name); reportErr != nil {
 		t.Fatalf("the namespaced run exited 0, but %v — so this test measured nothing.\nchild output:\n%s", reportErr, out)
 	}
-	t.Logf("namespaced run output:\n%s", out)
+	// Not the output itself: it went to stderr line by line above, and
+	// printing it twice is how a log stops being read.
+	t.Logf("the namespaced run reported %s over %d byte(s) of child output", name, len(out))
+}
+
+// netnsChildTimeout is the CHILD's own deadline, and it is the deadline every
+// wait in this file ultimately has.
+//
+// M6 carried row 4, MEASURED there: a predicate that cannot hold reported as a
+// hang of roughly 300s under mutation, and the child's dnsmasq log went with
+// it — the parent's `go test -timeout` kills the whole process group, so the
+// output that would say WHICH wait was stuck never reaches anybody.
+//
+// T2 forbids a timer in a test file, and it is right to: a deadline chosen in
+// Go here would be a wall-clock wait like any other. So the deadline is the
+// child's own -test.timeout, passed as a flag. When it fires, the CHILD dies
+// first, prints its goroutine dump and everything it has written, and the
+// parent reports that output in full.
+//
+// It must stay strictly below NETNS_TIMEOUT_SECONDS in verify.sh, which is
+// what the parent runs under; the `bounds` row checks that, because a child
+// budget above the parent's is exactly the state this replaces.
+const netnsChildTimeout = "45s"
+
+// netnsChildArgs is the child's command line, as a pure function of the test's
+// name, so the two things that make a namespaced run measurable — the filter
+// that selects the one test, and the deadline that bounds it — are driven by a
+// table rather than by entering a namespace. See TestNetnsChildArgsBoundTheChild.
+func netnsChildArgs(name string) []string {
+	return []string{
+		"-test.run=^" + name + "$",
+		"-test.v=true",
+		"-test.count=1",
+		"-test.timeout=" + netnsChildTimeout,
+	}
+}
+
+const netnsWaitBanner = "netns wait:"
+
+// netnsWaitReport is what a wait says about itself BEFORE it blocks: the
+// predicate in words, and the log as it stood when the wait began.
+//
+// The predicate half is the part a goroutine dump cannot give — a dump names
+// waitForCount, never the frame it is counting. The log half is the part that
+// tells "it never came" from "it came and this predicate reads a different
+// set".
+func netnsWaitReport(what string, log []string) string {
+	var b strings.Builder
+	b.WriteString(netnsWaitBanner + " waiting for " + what + "\n")
+	if len(log) == 0 {
+		b.WriteString(netnsWaitBanner + "   nothing logged yet\n")
+		return b.String()
+	}
+	for _, ln := range log {
+		b.WriteString(netnsWaitBanner + "   " + ln + "\n")
+	}
+	return b.String()
+}
+
+// announceWait writes the report to the child's stderr rather than through
+// t.Logf, for two reasons: a Logf from a goroutine that outlives its test
+// panics, and stderr is already flushed when the child is killed.
+func announceWait(what string, log []string) {
+	fmt.Fprint(os.Stderr, netnsWaitReport(what, log))
+}
+
+// TestNetnsChildArgsBoundTheChild drives the two properties the child's
+// command line carries: the run filter is anchored on the one test's name, and
+// the child holds a deadline of its own. Without the second, a stuck wait is
+// bounded only by the parent, which kills the child's output with it.
+func TestNetnsChildArgsBoundTheChild(t *testing.T) {
+	args := netnsChildArgs("TestSomeNetnsTest")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-test.run=^TestSomeNetnsTest$") {
+		t.Errorf("the child's filter is not anchored on the caller's name: %v", args)
+	}
+	var deadline string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-test.timeout=") {
+			deadline = strings.TrimPrefix(a, "-test.timeout=")
+		}
+	}
+	if deadline == "" {
+		t.Fatalf("the child carries no -test.timeout, so every wait in it is bounded only by the parent: %v", args)
+	}
+	d, err := time.ParseDuration(deadline)
+	if err != nil {
+		t.Fatalf("-test.timeout=%q is not a duration go test will accept: %v", deadline, err)
+	}
+	if d <= 0 {
+		t.Errorf("-test.timeout=%q is not positive", deadline)
+	}
+}
+
+// TestNetnsWaitReportNamesThePredicateAndTheLog drives the sentence a stuck
+// run leaves behind, in both directions: with something logged and with
+// nothing logged, because "nothing arrived" is the case the empty report has
+// to state rather than omit.
+func TestNetnsWaitReportNamesThePredicateAndTheLog(t *testing.T) {
+	got := netnsWaitReport("a DHCPACK for 192.0.2.10", []string{"DHCPDISCOVER(x)", "DHCPOFFER(x) 192.0.2.10"})
+	for _, want := range []string{"a DHCPACK for 192.0.2.10", "DHCPDISCOVER(x)", "DHCPOFFER(x) 192.0.2.10"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the report does not carry %q:\n%s", want, got)
+		}
+	}
+	empty := netnsWaitReport("a frame that will never come", nil)
+	if !strings.Contains(empty, "a frame that will never come") {
+		t.Errorf("the empty report does not name the predicate:\n%s", empty)
+	}
+	if !strings.Contains(empty, "nothing logged yet") {
+		t.Errorf("the empty report does not say the log was empty, which is the observation:\n%s", empty)
+	}
 }
 
 // childReport reports whether out is a test binary's account of having RUN the
@@ -589,6 +714,10 @@ func (s *dnsmasqServer) read(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := sc.Text()
+		// Streamed, not only buffered. The buffer is dumped in a Cleanup,
+		// and a Cleanup does not run when the child is killed on its own
+		// deadline — which is the one occasion the log is worth having.
+		fmt.Fprintf(os.Stderr, "dnsmasq| %s\n", line)
 		s.mu.Lock()
 		s.buf = append(s.buf, line)
 		s.mu.Unlock()
@@ -616,6 +745,7 @@ func (s *dnsmasqServer) waitCount(t *testing.T, want string, n int, why string) 
 	if s.count(want) >= n {
 		return
 	}
+	announceWait(fmt.Sprintf("%d dnsmasq log line(s) containing %q (%s)", n, want, why), s.lines())
 	for range s.arrived {
 		if s.count(want) >= n {
 			return
@@ -634,6 +764,7 @@ func (s *dnsmasqServer) waitFor(t *testing.T, want string) {
 	if containsLine(s.lines(), want) {
 		return
 	}
+	announceWait(fmt.Sprintf("a dnsmasq log line containing %q", want), s.lines())
 	for line := range s.arrived {
 		if strings.Contains(line, want) {
 			return
@@ -835,6 +966,7 @@ func awaitAcquired(t *testing.T, c *Client) lease.Event {
 
 func awaitEvent(t *testing.T, c *Client, kind lease.EventKind) lease.Event {
 	t.Helper()
+	announceWait("a client event of kind "+kind.String(), nil)
 	for ev := range c.Events() {
 		t.Logf("client event: %s", ev)
 		if ev.Kind == kind {
@@ -1159,6 +1291,7 @@ func addrRange(t *testing.T, lo, hi string) []string {
 // unread in the event stream.
 func awaitEventTolerating(t *testing.T, c *Client, kind lease.EventKind) lease.Event {
 	t.Helper()
+	announceWait("a client event of kind "+kind.String(), nil)
 	for ev := range c.Events() {
 		t.Logf("client event: %s", ev)
 		if ev.Kind == kind {

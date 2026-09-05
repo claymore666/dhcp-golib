@@ -6,13 +6,15 @@ One command, one verdict. Exit 0 is PASS and is the normal state; exit 1 is
 FAIL. A step that cannot be measured is a FAIL, never a skip.
 
 It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
-gate roster cross-check, the T1 and T2 gates, the race-enabled unit suite under
-a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a test
-that never returns — it is computed after `go test` comes back), a check that
-the flags the suite runs with carry a hang timeout that exceeds that ceiling
-and that the suite invocation expands them, a check that every test function
-DECLARED in a `_test.go` file actually ran, a citation check, and its own
-oracle.
+gate roster cross-check, the T1 and T2 gates, the race-enabled pure unit suite
+under a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a
+test that never returns — it is computed after `go test` comes back), the
+namespaced dnsmasq tests under a ceiling and a timeout of their own, a check
+that the flags each of those runs with carry a hang timeout that exceeds its
+ceiling and that each invocation expands its own flag array, a check that every
+test function DECLARED in a `_test.go` file actually ran, a citation check, a
+byte-for-byte comparison of the README's Usage block against `ExampleClient`,
+and its own oracle.
 
 **No row can report PASS on an exit status alone.** A row records PASS only by
 also stating how many things it examined, and a count that is absent or zero is
@@ -165,6 +167,96 @@ unused; composing past that one objection gives a clean PASS verdict with the
 arbiter's own arbiter silently gone. Running
 `scripts/test-verify.sh` directly is the check for that, and it is a human act,
 not a wired one. The rest of what neither can see is in `docs/gates.md`.
+
+### The rows added on 2026-09-05, and the two verdicts that came with them
+
+**`netns-suite`, and why the unit suite got smaller.** The tests that
+re-execute themselves into a user and network namespace and talk to a real
+dnsmasq used to run inside the unit suite, under the same wall-clock ceiling.
+That ceiling is T2's second instrument — it asks whether the suite has drifted
+into waiting — and it was measuring two populations at once: a pure suite that
+should never wait, and a set of runs whose whole job is to wait out real DHCP
+and ARP intervals. MEASURED on the session box the day of the split: the pure
+half runs in a fraction of its ceiling now, the namespaced half takes most of a
+minute, and together they had left the ceiling with seconds of headroom while
+M7 was about to add more namespaced runs.
+
+The two populations are a PARTITION derived from ONE roster:
+`internal/tools/testroster -netns` reports the tests that call the re-exec
+helper, the pure suite is told to skip exactly those names, and the netns row
+is told to run exactly those names. **A test that is excluded from both rows is
+the failure this shape exists to refuse**, and it cannot happen by omission: a
+test the classifier does not recognise is not skipped, so it runs in the pure
+suite and its seconds land on the pure suite's ceiling. A roster that cannot be
+derived at all fails BOTH rows rather than falling back to running everything.
+Both rows report how many tests they examined; the netns row additionally
+requires the set of names the run REPORTED to equal the roster, because a
+`-run` regexp that matches nothing exits zero, and it treats a `SKIP` as a
+failure, because those tests fail closed rather than skipping.
+
+The netns row is an OUTER row: `--inner` does not have it, so the oracle's
+copies of this tree do not each raise namespaces and a dnsmasq of their own.
+What that leaves open is written down rather than argued away — the row is
+driven inside the oracle by three scenarios, and a namespaced test failing for
+a PRODUCT reason is driven by the real run and by no scenario. The three are
+`netns-row-empty-domain` (the roster cannot be derived at all),
+`netns-row-control` (the honest pass, both rows green with their counts) and
+`netns-row-partition-broken` (the row's own `-run` narrowed to a single name,
+so the run exits zero over a subset of its population and the set comparison is
+the only thing that can see it).
+
+**`readme-usage`.** README.md's Usage section prints a Go function and the
+sentence under it says it is `ExampleClient` in `runtime/example_test.go`
+*byte for byte*. Nothing checked that; a claim of identity between two files
+was being made by prose. The row extracts both and `diff`s them verbatim — no
+normalising, because the sentence says byte for byte and a row comparing a
+normalised form would leave that sentence false while passing. Either side
+extracting to nothing is a FAIL and not an agreement, since two empty files
+diff clean. Driven in both directions: `readme-usage-drifts-in-the-readme`
+takes the block out of the README, `readme-usage-drifts-in-the-example` moves
+one byte of the function.
+
+**`SKIPPED`, the third verdict, and the only one that means "not measured".**
+The oracle is most of the run's wall clock and its subject is `verify.sh`
+itself, the manifest and `scripts/`. When those files are byte for byte what
+they were the last time the oracle passed here, `verify-oracle` records
+SKIPPED, naming the hash and the file set it covers, and the verdict line still
+says PASS only because every row that was not skipped passed. `./verify.sh
+--oracle` runs it regardless, and that is what should be run before a merge.
+
+The skip is keyed on the CONTENT of those files, recorded in a stamp that is
+gitignored and per-clone. A `git diff` against a ref was ruled out for a
+specific reason: a fresh clone at a commit that changed the arbiter has nothing
+to diff against and would skip, where a stamp makes a fresh clone run the
+oracle once. What binds the stamp to a real pass: it is written in one place,
+after every check the row makes, and only when `record()` ACCEPTED the pass; it
+names the root it was written for, so a stamp copied into another tree — every
+oracle scenario copies this one — grants nothing there. Only `verify-oracle`
+may record SKIPPED; `record()` rewrites a SKIPPED from any other row to FAIL,
+and both directions are driven in-process by the `self-check` row on every run.
+
+**Two bounds on the skip, both real.** A stamp written BY HAND carrying the
+right hash grants a skip — forging it is a single-file edit, like every other
+thing a single file decides in this tree. And the hash covers the ARBITER, so a
+scenario that depends on the PRODUCT's shape can go stale without a covered
+byte moving: `hang-bounded`, `ceiling-control`, `ceiling-fires`, the `suite-*`
+family, `min-declared-tests-floor` and `-margin`, and the netns pair. Those are
+the scenarios a skipped run is not re-checking.
+
+**`--light`, the scope, and why a scenario cannot hide behind it.** The oracle
+plants one defect in a copy of the tree and runs the copy's `verify.sh` end to
+end, once per scenario. A scenario that plants a shell or a document defect was
+paying for the whole unit suite in its own copy in order to watch a lint row go
+red. Those scenarios now run `--inner --light`, which omits the two expensive
+rows and nothing else, and a run at that scope NAMES the rows it did not run on
+its own verdict line. Which scenarios are light is declared in the manifest
+beside the contract, applied by the oracle's dispatcher and by no scenario
+body, and recorded as an observation that `verify.sh` compares against the
+declaration. **A scenario cannot pass by scoping away the row it exists to
+drive:** its contract demands a verdict from that row, an omitted row records
+nothing, and a row that recorded nothing reads ABSENT. The manifest refuses the
+combination outright, in the shell and again in Go, so it cannot be written
+down.
 
 ### The two gates
 

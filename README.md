@@ -196,5 +196,10 @@ Stated because a bound nobody writes down is read as a guarantee:
 verdict line, PASS or FAIL, with no row allowed to report PASS without also
 saying how many things it examined. Its dnsmasq tests run inside an
 unprivileged user namespace, so none of it needs root, a password, or any host
-state. What each row measures is in `docs/verifying.md`; what the two ring
+state; they have a row and a wall-clock bound of their own, separate from the
+pure suite's. One row may report a third verdict: the arbiter's own oracle
+records SKIPPED when `verify.sh`, the manifest and `scripts/` are byte for byte
+what they were the last time it passed here, and `./verify.sh --oracle` runs it
+regardless — which is what to run before a merge. What each row measures, and
+what a skip is not re-checking, is in `docs/verifying.md`; what the two ring
 gates cannot see is in `docs/gates.md`.
