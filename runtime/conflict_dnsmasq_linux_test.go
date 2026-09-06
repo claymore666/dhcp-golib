@@ -273,6 +273,13 @@ func (s *squatter) waitForSighting(pred arpPred) squatterSighting {
 	for {
 		for _, g := range s.sightings() {
 			if pred.ok(g.p) {
+				// The frame that ENDS the wait is a frame that arrived during
+				// it, so it is owed the same report as the ones that did not
+				// match. Reporting it on the way out is also what makes the
+				// number of reports a function of the frames rather than of
+				// the scheduler: without this the matching frame is reported
+				// only when the scan happens to miss it first.
+				w.note(s.waitLog())
 				return g
 			}
 		}
