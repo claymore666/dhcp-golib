@@ -5,9 +5,11 @@ package runtime
 import (
 	"net"
 	"net/netip"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
@@ -441,5 +443,81 @@ func TestTheOwnFramePredicateIsLengthSafe(t *testing.T) {
 				t.Errorf("isOwn(%s) = %v, want %v", tc.hw, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAProbeThatCouldNotSendDeclinesNothing is the third answer, driven.
+//
+// THE DEFECT IT PINS DOWN. A p.nd.Send that failed used to report
+// duplicate=true, and every consequence of that is wrong in the same
+// direction: ring 1 turns EvDADResult{Duplicate:true} into RFC 9915 section
+// 18.2.10.1's DHCPDECLINE, dnsmasq takes the Decline at its word and puts the
+// address out of service — ten minutes, measured, in this milestone's own log
+// excerpt — and lease.Stats.DADConflicts records a conflict that did not
+// happen. The evidence for a conflict is another node answering for the
+// address, and what actually happened here is that nothing was asked.
+//
+// WHAT IT REPORTS INSTEAD IS NOTHING, and the silence is not a hang: ring 1
+// armed proto.DefaultDADTimeout before ring 3 was ever called, so the
+// acquisition fails with proto.ReasonDADIncomplete — whose own documentation
+// names this case — and no message is sent to the server at all. The proto
+// half is already driven by TestTheDADDeadlineIsAFaultAndNotAnAcquisition,
+// which asserts both the reason and that no Decline goes out; this row is the
+// ring-3 half, where the send fails.
+//
+// THE SOCKET IS A PIPE, which is what makes the send fail for a reason that is
+// not this library's: sendto(2) on a descriptor that is not a socket is
+// ENOTSOCK, from the kernel, on the same code path a real interface that went
+// away takes. Setting NDSocket's own closed flag would drive the guard at the
+// top of Send instead, which is this library refusing rather than the send
+// failing.
+func TestAProbeThatCouldNotSendDeclinesNothing(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
+
+	nd := &NDSocket{
+		f:       w,
+		hw:      cliMAC,
+		inbound: make(chan lease.NDInbound, 1),
+		frames:  make(chan NDFrame, 1),
+	}
+	p, err := NewDADProbe(nd)
+	if err != nil {
+		t.Fatalf("NewDADProbe: %v", err)
+	}
+
+	addr := netip.MustParseAddr("fd00:99::1a3")
+	reports := make(chan bool, 1)
+	p.Start(addr, func(_ netip.Addr, duplicate bool) { reports <- duplicate })
+
+	// Close joins the probe's goroutine, so by here the schedule has run as
+	// far as it is going to. No wall clock is consulted: the send fails on the
+	// first solicitation, before the first RetransTimer wait.
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case duplicate := <-reports:
+		t.Fatalf("the probe reported duplicate=%v for %s after failing to put a single Neighbor Solicitation on the wire; a Decline for an address nobody answered for takes it out of service at the server", duplicate, addr)
+	default:
+	}
+
+	st := p.Stats()
+	if st.SendFailures != 1 {
+		t.Errorf("DADStats.SendFailures = %d, want 1: the failure has to be visible somewhere, or a probe that asked nothing is indistinguishable from one that was cancelled", st.SendFailures)
+	}
+	if st.Free != 0 || st.Duplicate != 0 {
+		t.Errorf("DADStats Free=%d Duplicate=%d, want 0 and 0: neither verdict was earned", st.Free, st.Duplicate)
+	}
+	if st.Started != 1 {
+		t.Errorf("DADStats.Started = %d, want 1", st.Started)
+	}
+	if st.Solicits != 0 {
+		t.Errorf("DADStats.Solicits = %d; nothing left the socket", st.Solicits)
 	}
 }

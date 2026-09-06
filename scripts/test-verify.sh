@@ -295,6 +295,20 @@ why() {
 # A here-string has no producer process to kill, so the match decides.
 out_has() { grep -q "$@" <<<"$OUT"; }
 
+# str_has TEXT [grep-flags] PATTERN — out_has for a capture a scenario holds in
+# a LOCAL variable rather than in $OUT.
+#
+# ONE FIX DOES NOT REACH THE COPIES, which is why this exists as well. The
+# helper above closed 47 sites that read $OUT; six more read a nested run's
+# output out of a local `out`, through the identical
+# `printf '%s\n' "$out" | grep -q` pipeline, and are identically wrong under
+# `set -o pipefail` as soon as that capture is large enough for grep to exit
+# while printf is still writing. Those six captures are single-scenario runs
+# and small today — none of them can reach the size at which the 141 was
+# MEASURED — so this is the class being closed, not a failure being fixed, and
+# the class is one this project has now fixed in one file at a time twice.
+str_has() { local text="$1"; shift; grep -q "$@" <<<"$text"; }
+
 FAILS=()
 note() { FAILS+=("$*"); }
 
@@ -1325,9 +1339,9 @@ sc_scenario_death_is_reported() {
 	copy_tree "$d"
 	kill_scenario_body "$d/scripts/test-verify.sh" sc_control
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario control 2>&1 || true)"
-	printf '%s\n' "$out" | grep -q '^RESULT control FAIL obs=.*died before reporting' ||
+	str_has "$out" '^RESULT control FAIL obs=.*died before reporting' ||
 		note "a scenario that died did not report its own death: $out"
-	printf '%s\n' "$out" | grep -q 'not a subject failure' ||
+	str_has "$out" 'not a subject failure' ||
 		note "the death line does not distinguish a broken plant from a broken subject"
 	# ROUND 13, N8. The token used to be the literal string "reported", written
 	# here rather than read from the child: a body cut down to that one line
@@ -1499,7 +1513,7 @@ sc_scenario_rc_follows_the_verdict() {
 	copy_tree "$d"
 	rc=0
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
-	printf '%s\n' "$out" | grep -q '^RESULT ceiling-band PASS' ||
+	str_has "$out" '^RESULT ceiling-band PASS' ||
 		note "the unplanted control did not report PASS, so this scenario is measuring something else: $out"
 	[ "$rc" -eq 0 ] || note "an unplanted scenario run exited $rc; a run that cannot exit 0 cannot show a FAIL by its exit status"
 	obs "scenario-rc-pass:$rc"
@@ -1509,7 +1523,7 @@ sc_scenario_rc_follows_the_verdict() {
 	edit "$d/verify.sh" 'SUITE_CEILING_SECONDS=60' 'SUITE_CEILING_SECONDS=0'
 	rc=0
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
-	printf '%s\n' "$out" | grep -q '^RESULT ceiling-band FAIL' ||
+	str_has "$out" '^RESULT ceiling-band FAIL' ||
 		note "the planted scenario did not report FAIL, so its exit status is not the thing under test: $out"
 	[ "$rc" -ne 0 ] || note "a scenario that reported FAIL exited 0; the verdict is not in the exit status, and every caller that reads rc reads a pass"
 	obs "scenario-rc-fail:$rc"
@@ -1799,11 +1813,28 @@ sc_v6_fixture_mode_drift() {
 		note "the netns row did not notice the fixture had drifted: $(row netns-suite) — $(why netns-suite)"
 	out_has 'TestASLAACOnlyLinkSaysThereIsNoDHCPv6' ||
 		note "the diagnosis does not name the proof whose fixture drifted"
-	# The preservation control: the OTHER rows are unmoved. A plant that broke
-	# the build, or the pure suite, would satisfy every check above while
-	# saying nothing about the fixture.
-	[ "$(row unit-suite)" = PASS ] ||
-		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
+	# AND THE PURE SUITE CATCHES IT TOO, in a second and without a namespace.
+	#
+	# This assertion is NEW at M7c's carried rows and the change of shape is
+	# the finding: the pure suite used to be this scenario's preservation
+	# control, i.e. the row that had to stay green. Now that v6Mode.serves is
+	# re-derived from the argument vector the fixture is about to exec,
+	# ",ra-stateless," is a mode that SERVES DHCPv6 while its row still
+	# declares serves=false, and TestTheFixtureReadsItsOwnDnsmasqArguments
+	# says so before dnsmasq is started at all. A plant that reddens the
+	# cheap row and the expensive one is not a weaker plant; it is the same
+	# defect caught twice, and the netns half above still has to fire.
+	[ "$(row unit-suite)" = FAIL ] ||
+		note "the pure suite did not notice the drifted mode: $(row unit-suite) — $(why unit-suite); the fixture's own argument check reads that table"
+	out_has 'TestTheFixtureReadsItsOwnDnsmasqArguments' ||
+		note "the diagnosis does not name the fixture check that reads the mode table"
+	# The preservation control, moved to rows this plant cannot reach: a plant
+	# that broke the build or the formatting would satisfy every check above
+	# while saying nothing about the fixture.
+	[ "$(row build)" = PASS ] ||
+		note "the build failed; this run failed for a reason this scenario does not name: $(row build) — $(why build)"
+	[ "$(row gofmt)" = PASS ] ||
+		note "gofmt failed; this run failed for a reason this scenario does not name: $(row gofmt) — $(why gofmt)"
 }
 
 sc_v6_ra_absent() {
@@ -2080,7 +2111,7 @@ sc_scenario_body_emptied() {
 	local want_scope=full
 	in_list record-refuses-uncounted-pass "${MANIFEST_LIGHT_SCENARIOS[@]}" && want_scope=light
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario record-refuses-uncounted-pass 2>&1)"
-	printf '%s\n' "$out" | grep -q "^RESULT record-refuses-uncounted-pass PASS obs=scope:$want_scope\$" ||
+	str_has "$out" "^RESULT record-refuses-uncounted-pass PASS obs=scope:$want_scope\$" ||
 		note "an emptied body did not report an empty observation (only the dispatcher's scope:$want_scope was expected): $out"
 
 	# Half two: an empty observation fails the row, through verify.sh, against
@@ -2114,7 +2145,7 @@ sc_observation_recorder_stubbed() {
 	# make every contract vacuous in one edit, which is the worst failure
 	# available to this design.
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario gofmt-violation 2>&1)"
-	printf '%s\n' "$out" | grep -q '^RESULT gofmt-violation PASS obs=$' ||
+	str_has "$out" '^RESULT gofmt-violation PASS obs=$' ||
 		note "a gutted recorder did not produce an empty observation: $out"
 
 	# Half two: all observations empty fails the row, and names scenarios.

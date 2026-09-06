@@ -23,6 +23,7 @@ type TransportStatsV6 struct {
 	Uncompleted  uint64
 	ZeroChecksum uint64
 	BadChecksum  uint64
+	Foreign      uint64
 	Dropped      uint64
 }
 

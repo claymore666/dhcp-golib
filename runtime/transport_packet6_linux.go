@@ -66,12 +66,44 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //
 //   - NO BPF FILTER, for PacketTransport's reason. Every IPv6 frame on the
 //     link is read and narrowed by ParseIPv6UDP, and Stats.Skipped is the cost.
+//
+//   - A REPLY FOR ANOTHER CLIENT ON THE LINK IS DISCARDED HERE, at ring 3, on
+//     the IPv6 DESTINATION, and counted as Stats.Foreign. ParseIPv6UDP narrows
+//     on the two ports and nothing else, so on a shared segment — which is the
+//     plugin's bridge and macvlan case, and every container host — every other
+//     client's Advertise and Reply satisfies it. RFC 9915 section 18.3.10 says
+//     where a server sends one: "the server unicasts the Advertise or Reply
+//     message directly to the client using the address in the source address
+//     field from the IP datagram in which the original message was received",
+//     and that address is this transport's Source() for our own exchanges and
+//     somebody else's for theirs. Discarding on it also implements section
+//     16's "Clients SHOULD NOT accept multicast messages" without a second
+//     rule, because a multicast destination is not this address either.
+//
+//     RING 1 WOULD HAVE DISCARDED THEM TOO, on the Client Identifier (section
+//     16.3: "the contents of the Client Identifier option do not match the
+//     client's DUID"), so this is not a correctness fix — it is a cost one,
+//     and the cost was real: every foreign exchange took a decode, a counter,
+//     a bounded journal entry and a slot in the ring, so on a busy bridge one
+//     container's DHCPv6 traffic pushed another container's own history out of
+//     its journal. The reading that would make this narrowing WRONG is a
+//     server that answers to an address other than the one it received the
+//     message from, which section 18.3.10 forbids in the same sentence.
+//
+//   - AND THE ADDRESS IT NARROWS ON IS READ ONCE, at construction. A kernel
+//     that replaced the interface's link-local underneath a running client
+//     would leave this transport counting every reply as Foreign rather than
+//     acquiring — the same exposure Source() already carries for the sending
+//     half, stated here because the receiving half now depends on it too.
+//
 //   - NO UNICAST DESTINATION AND NO NEIGHBOUR RESOLUTION. Every message goes
 //     to ff02::1:2, whose link-layer address is a pure function of the IPv6
 //     one (RFC 2464 section 7), so there is nothing to resolve and no peer map
 //     — which also removes v4's relay bound rather than reproducing it.
+//
 //   - THE SOURCE ADDRESS IS THE KERNEL'S, READ AND NOT DERIVED. See
 //     InterfaceLinkLocal, which carries the argument and the measurement.
+//
 //   - THIS HOST'S OWN FRAMES DO NOT COME BACK on this socket, and that is
 //     MEASURED rather than inherited from the v4 milestone's answer for
 //     ETH_P_ARP. A socket bound to a SPECIFIC EtherType is registered in the
@@ -85,6 +117,7 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //     port check would exclude such a frame anyway — but NDSocket's
 //     duplicate-address rules would have relied on it, so it is stated where
 //     both can see it.
+//
 //   - NO FRAGMENT REASSEMBLY (see ipv6Upper).
 type PacketTransportV6 struct {
 	f       *os.File
@@ -102,6 +135,7 @@ type PacketTransportV6 struct {
 	uncompleted  atomic.Uint64
 	zeroChecksum atomic.Uint64
 	badChecksum  atomic.Uint64
+	foreign      atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -140,6 +174,18 @@ type TransportStatsV6 struct {
 	// BadChecksum counts inbound datagrams whose checksum was present and
 	// wrong.
 	BadChecksum uint64
+	// Foreign counts well-formed DHCPv6 replies addressed to ANOTHER node's
+	// link-local address on this link — another container's exchange on the
+	// same bridge. They are discarded here rather than carried to ring 1; see
+	// this transport's BOUNDS for why the narrowing is a cost fix and not a
+	// correctness one, and for the one reading that would make it wrong.
+	//
+	// It is separate from Skipped because the two answer different questions.
+	// Skipped is "this link is busy"; Foreign is "this link has other DHCPv6
+	// clients on it", which is the fact a caller debugging a slow acquisition
+	// on a shared bridge actually wants, and it is zero on a link with one
+	// client rather than permanently zero everywhere.
+	Foreign uint64
 	// Dropped counts replies that parsed and were then thrown away because
 	// the consumer had not drained the channel. Not Skipped, for
 	// TransportStats.Dropped's reason.
@@ -272,6 +318,7 @@ func (t *PacketTransportV6) Stats() TransportStatsV6 {
 		Uncompleted:  t.uncompleted.Load(),
 		ZeroChecksum: t.zeroChecksum.Load(),
 		BadChecksum:  t.badChecksum.Load(),
+		Foreign:      t.foreign.Load(),
 		Dropped:      t.dropped.Load(),
 	}
 }
@@ -329,12 +376,6 @@ func (t *PacketTransportV6) fail(err error) {
 func (t *PacketTransportV6) deliver(frame []byte) {
 	defer t.reads.Add(1)
 	dg, perr := ParseIPv6UDP(frame)
-	if perr == nil && !dg.Checksum.Verified() {
-		// Accepted and counted. The only unverified state ParseIPv6UDP
-		// returns is ChecksumUncompleted; the zero-checksum one is a refusal
-		// and lands below.
-		t.uncompleted.Add(1)
-	}
 	if perr != nil {
 		// The two checksum refusals are counted apart from everything else:
 		// "nothing on this link was for us" and "a reply for us arrived and
@@ -349,6 +390,18 @@ func (t *PacketTransportV6) deliver(frame []byte) {
 			t.skipped.Add(1)
 		}
 		return
+	}
+	if dg.Dst != t.src {
+		// Another client's reply on a shared link. See BOUNDS.
+		t.foreign.Add(1)
+		return
+	}
+	if !dg.Checksum.Verified() {
+		// Accepted and counted, and counted only for a datagram that is
+		// actually ours: the only unverified state ParseIPv6UDP returns is
+		// ChecksumUncompleted, and the zero-checksum one is a refusal handled
+		// above.
+		t.uncompleted.Add(1)
 	}
 
 	// The payload aliases buf, which the next read overwrites.

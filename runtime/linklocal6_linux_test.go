@@ -8,10 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking drives every
-// arm of InterfaceLinkLocal's parse from a fabricated /proc/net/if_inet6.
+// arm of the parse from a fabricated /proc/net/if_inet6.
+//
+// IT DRIVES readLinkLocal AND NOT InterfaceLinkLocal, which is the half of the
+// split that costs nothing and the reason the split exists: the exported
+// function repeats this parse until linkLocalWait runs out, so four refusing
+// rows through it would spend twelve seconds proving something about a parser.
+// The wait is driven where it can be driven honestly — against a real link
+// whose address arrives late, and against one that never gets an address —
+// in dnsmasq6_linux_test.go.
 //
 // IT EXISTS BECAUSE THE INTERESTING ROWS CANNOT BE ARRANGED ON A REAL LINK.
 // The tentative window is about a second wide on a freshly-upped veth and
@@ -124,10 +133,10 @@ func TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking(t *testing.T
 			ifInet6Path = p
 			defer func() { ifInet6Path = old }()
 
-			got, err := InterfaceLinkLocal("v6cli0")
+			got, err := readLinkLocal("v6cli0")
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("InterfaceLinkLocal returned %s; want a refusal", got)
+					t.Fatalf("readLinkLocal returned %s; want a refusal", got)
 				}
 				if !errors.Is(err, ErrNoLinkLocal) {
 					t.Errorf("error %v does not wrap ErrNoLinkLocal, so a caller cannot tell this apart from a read failure", err)
@@ -138,10 +147,10 @@ func TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking(t *testing.T
 				return
 			}
 			if err != nil {
-				t.Fatalf("InterfaceLinkLocal: %v", err)
+				t.Fatalf("readLinkLocal: %v", err)
 			}
 			if got.String() != tc.want {
-				t.Errorf("InterfaceLinkLocal = %s, want %s", got, tc.want)
+				t.Errorf("readLinkLocal = %s, want %s", got, tc.want)
 			}
 		})
 	}
@@ -150,18 +159,26 @@ func TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking(t *testing.T
 // TestInterfaceLinkLocalReportsAFileItCannotRead is the other direction: a
 // missing file is an ERROR and never "this interface has no address".
 //
-// The distinction is the one InterfaceLinkLocal's own message draws — a caller
-// told ErrNoLinkLocal waits for the link to settle, and waiting for a link
-// that is fine because /proc is not mounted is a hang with a wrong
-// explanation.
+// The distinction is the one InterfaceLinkLocal now ACTS on: an interface with
+// no address yet is waited for, and a file that cannot be read is not. So this
+// row is also the only place the exported function's refusal path is driven
+// without a network namespace, and it asserts the timing as well as the error
+// — a read failure retried for linkLocalWait would still return the right
+// error, four seconds later, on every client this library ever builds on a
+// host with no /proc.
 func TestInterfaceLinkLocalReportsAFileItCannotRead(t *testing.T) {
 	old := ifInet6Path
 	ifInet6Path = filepath.Join(t.TempDir(), "there-is-no-such-file")
 	defer func() { ifInet6Path = old }()
 
+	start := time.Now()
 	_, err := InterfaceLinkLocal("v6cli0")
+	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("InterfaceLinkLocal succeeded with no file to read")
+	}
+	if elapsed >= linkLocalWait {
+		t.Errorf("the refusal took %s, which is linkLocalWait (%s) or more: an unreadable file was retried as though the link had not settled", elapsed, linkLocalWait)
 	}
 	if errors.Is(err, ErrNoLinkLocal) {
 		t.Errorf("error %v wraps ErrNoLinkLocal; an unreadable file is not an interface without an address", err)

@@ -160,64 +160,86 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # loaded figure, because the M7 rounds add more of these waits; the pure suite
 # keeps its 60s with five times the headroom it had this morning.
 #
-# The bound that number does NOT give: a box slow enough to change what these
-# tests wait for (a dnsmasq that starts late, a kernel that is slow to build a
-# namespace) moves the figure in a way a CPU load does not, and the ceiling is
-# the headroom for that, measured on nothing.
+# The bound that number did NOT give when it was written: a box slow enough to
+# change what these tests wait for (a dnsmasq that starts late, a kernel that
+# is slow to build a namespace) moves the figure in a way a CPU load does not,
+# and the ceiling was the headroom for that, measured on nothing. It is no
+# longer measured on nothing: the end of the block below carries the two-core
+# CI runner's own figure for this row against this box's.
 #
-# RAISED 90 -> 120 AT M7c (v6 runtime), and the enumeration is the licence for
-# raising it rather than a summary of it. MEASURED 2026-09-06 on the session
-# box, the two rows run back to back and exactly as this file runs them
-# (-race -count=1 -v), base f901589 first and this head second so the two
-# figures share a machine state: the row was 53s at the base and is 78s here.
-# Per test, taking the outer (re-exec parent) figure, base -> head in seconds:
+# RAISED 90 -> 120 AT M7c (v6 runtime), then 120 -> 140 at M7c's carried rows,
+# and the enumeration is the licence for raising it rather than a summary of
+# it. MEASURED 2026-09-06 on the session box, run back to back and exactly as
+# this file runs the row (-race -count=1 -v): 53s at f901589, 78s at M7c's
+# head e173966, and 94s here (90s on a warm build cache; the larger figure is
+# the one the ceiling is set off). Per test, taking the outer (re-exec parent)
+# figure, M7c's head -> here, in seconds:
 #
-#   TestARefusedResumeRestartsAgainstRealDnsmasq            1.28 -> 1.33
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq           1.29 -> 1.32
-#   TestASquatterAfterBoundTakesSection24sPath              2.47 -> 2.46
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline 2.55 -> 2.58
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline  2.35 -> 2.37
-#   TestASquatterInTheProbeWindowStillDeclines...Configured 2.27 -> 2.23
-#   TestAcquiresFromRealDnsmasq                             1.18 -> 1.19
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq          1.31 -> 1.31
-#   TestAnOffClientPutsNoARPOnTheWire                       4.17 -> 4.22
-#   TestDeclineAndReleaseReachRealDnsmasq                   2.20 -> 2.16
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease 4.21 -> 4.28
-#   TestPacketTransportDropsWhenTheConsumerStalls           3.50 -> 3.64
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress    1.33 -> 1.30
+#   TestARefusedResumeRestartsAgainstRealDnsmasq            1.33 -> 1.29
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq           1.32 -> 1.31
+#   TestASquatterAfterBoundTakesSection24sPath              2.46 -> 2.51
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline 2.58 -> 2.54
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline  2.37 -> 2.34
+#   TestASquatterInTheProbeWindowStillDeclines...Configured 2.23 -> 2.25
+#   TestAcquiresFromRealDnsmasq                             1.19 -> 1.17
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq          1.31 -> 1.32
+#   TestAnOffClientPutsNoARPOnTheWire                       4.22 -> 4.18
+#   TestDeclineAndReleaseReachRealDnsmasq                   2.16 -> 2.17
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease 4.28 -> 4.24
+#   TestPacketTransportDropsWhenTheConsumerStalls           3.64 -> 3.63
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress    1.30 -> 1.28
 #   TestPacketTransportOnARealLink                          1.24 -> 1.24
-#   TestRenewalAndNakReachRealDnsmasq                       7.18 -> 7.18
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn              1.15 -> 1.18
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic     8.67 -> 7.73
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr           1.60 -> 1.66
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile         1.49 -> 1.48
-#   TestAClientOnALinkWithNoRouterStillAcquires                = 3.39  (new)
-#   TestADuplicateAddressOnTheLinkIsDeclined                   = 1.29  (new)
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne    = 2.82  (new)
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq              = 4.90  (new)
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                      = 1.27  (new)
-#   TestAV6ClientAcquiresFromRealDnsmasq                       = 2.69  (new)
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased      = 2.30  (new)
-#   TestAV6ReleaseReachesRealDnsmasq                           = 4.54  (new)
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn               = 3.24  (new)
+#   TestRenewalAndNakReachRealDnsmasq                       7.18 -> 7.22
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn              1.18 -> 1.20
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic     7.73 -> 8.39
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr           1.66 -> 1.59
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile         1.48 -> 1.41
+#   TestAClientOnALinkWithNoRouterStillAcquires             3.39 -> 3.08
+#   TestADuplicateAddressOnTheLinkIsDeclined                1.29 -> 1.77
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne 2.82 -> 2.28
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq           4.90 -> 4.34
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                   1.27 -> 1.22
+#   TestAV6ClientAcquiresFromRealDnsmasq                    2.69 -> 3.01
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased   2.30 -> 2.00
+#   TestAV6ReleaseReachesRealDnsmasq                        4.54 -> 4.25
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn            3.24 -> 2.30
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport     = 4.78  (new)
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress    = 5.04  (new)
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress  = 2.79  (new)
 #
-# THE OLD TESTS DID NOT MOVE. Eighteen of the nineteen change by at most 0.14s.
-# The nineteenth, TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic, moves
-# 0.94s DOWNWARD, which is the direction that cannot be caused by work this
-# round added: it is a test that waits out RFC 5227's randomised initial delay,
-# so its figure is a draw from that distribution and not a cost. The whole
-# increase is the nine new rows, 26.44s of per-test time between them, which is
-# what says the v6 proofs were added beside the v4 ones rather than slowing
-# them down: 50.86s of old per-test time here against 51.44s at the base.
+# THE TWENTY-EIGHT TESTS THIS ROUND DID NOT ADD MEASURE 75.53s AGAINST 77.30s
+# at M7c's head — downward, so the whole of the 12.61s increase is the three
+# new rows and none of it is the old ones slowing. Two of the twenty-eight
+# move up by more than a tenth and both are this round's work, named rather
+# than averaged away: TestAV6ClientAcquiresFromRealDnsmasq (+0.32) now opens an
+# ETH_P_ALL watch and reads the EtherType the solicit left with, which is what
+# turns a wrong-ethertype transport into a named red in a second instead of the
+# child's 45s timeout; TestADuplicateAddressOnTheLinkIsDeclined (+0.48) pays
+# for the serves half of assertMode, a second read of dnsmasq's log at
+# Cleanup. The third mover, TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic
+# (+0.66), waits out RFC 5227's randomised initial delay: its figure is a draw
+# from that distribution, and it moved 0.94s the other way last round.
 #
-# The per-test figures sum to 77.30s against a 78s wall clock; the difference is
-# the build, the race instrumentation and the re-exec, and it is why the ceiling
-# is set off the WALL figure.
+# The per-test figures sum to 88.14s against a 94s wall clock; the difference
+# is the build, the race instrumentation and the re-exec, and it is why the
+# ceiling is set off the WALL figure.
 #
-# 120 keeps 42s of headroom (35 percent) where 90 kept 37s (41 percent) before
-# this round. It is still below NETNS_TIMEOUT_SECONDS, which is what makes a
-# row that overruns the ceiling a diagnosis rather than a kill.
-NETNS_CEILING_SECONDS=120
+# 140 keeps 46s of headroom (49 percent) where 120 kept 42s (54 percent)
+# before this round; the number is set so the ratio to the measured row does
+# not shrink round on round, since a ceiling that erodes is one that stops
+# diagnosing before anybody notices. It is still below NETNS_TIMEOUT_SECONDS,
+# which is what makes a row that overruns the ceiling a diagnosis rather than
+# a kill, and still above the child's own 45s budget.
+#
+# THE BOUND THIS NUMBER STILL DOES NOT GIVE is above: a box slow enough to
+# change what these tests WAIT FOR moves the figure in a way a CPU load does
+# not. What is measured against that: the two-core CI runner ran this row in
+# 48s at run 33995090303 where the session box measured 54s for the same head
+# — FASTER, on a box 6.4x to 8.7x slower for the oracle — because these tests
+# wait on DHCP, ARP and DAD intervals rather than competing for the CPU. That
+# is why a figure measured on this box is allowed to set the ceiling CI runs
+# under, and it is a measurement, not an assumption.
+NETNS_CEILING_SECONDS=140
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 

@@ -28,10 +28,37 @@ type DADStats struct {
 	// mid-flight.
 	Solicits uint64
 	// Free and Duplicate count the verdicts reported. Their sum is Started
-	// minus the probes Close or a Restart cut short, which is the arithmetic
-	// that makes a probe that silently stopped answering visible.
+	// minus the probes Close or a Restart cut short and minus SendFailures,
+	// which is the arithmetic that makes a probe that silently stopped
+	// answering visible.
 	Free      uint64
 	Duplicate uint64
+	// SendFailures counts probes that reported NOTHING because the
+	// solicitation could not be put on the wire at all — the socket was
+	// closed under the probe, or the interface went away between the Reply
+	// and the check.
+	//
+	// IT IS A COUNTER AND NOT A VERDICT, and that is the whole point of the
+	// field. RFC 4862 section 5.4 has three outcomes and a send failure is
+	// none of them: the address is not free, because nothing was asked, and
+	// it is not a duplicate, because nobody claimed it. Reporting a duplicate
+	// would make ring 1 send a DHCPDECLINE (RFC 9915 section 18.2.10.1) for
+	// an address no node on the link has answered for, and a server that
+	// takes a Decline at its word puts that address out of service — dnsmasq
+	// for ten minutes, measured. So the probe says nothing, ring 1's own
+	// deadline fires, and the acquisition fails with proto.ReasonDADIncomplete,
+	// whose documentation already names exactly this case: "this host's own
+	// machinery not reporting, which is a local fault and is followed by
+	// nothing being said to the server at all".
+	//
+	// THE COST IS proto.DefaultDADTimeout OF WAITING, said rather than
+	// implied. A send that fails is known here immediately and the client
+	// still sits out the deadline before it can retry. Reporting the failure
+	// through the callback would save those seconds, and it would need a
+	// third value in a port whose whole signature is (address, duplicate) —
+	// which is a ring-1 change to save four seconds on a fault that ends in
+	// a retry either way.
+	SendFailures uint64
 	// OwnIgnored counts Neighbor Discovery frames for a tentative address that
 	// carried THIS interface's link-layer source: RFC 4862 section 5.4.3's
 	// "If the solicitation is from the node itself (because the node loops
@@ -193,6 +220,7 @@ type DADProbe struct {
 	solicits          atomic.Uint64
 	free              atomic.Uint64
 	duplicate         atomic.Uint64
+	sendFailures      atomic.Uint64
 	ownIgnored        atomic.Uint64
 	foreignSolicits   atomic.Uint64
 	resolvingSolicits atomic.Uint64
@@ -332,6 +360,7 @@ func (p *DADProbe) Stats() DADStats {
 		Solicits:          p.solicits.Load(),
 		Free:              p.free.Load(),
 		Duplicate:         p.duplicate.Load(),
+		SendFailures:      p.sendFailures.Load(),
 		OwnIgnored:        p.ownIgnored.Load(),
 		ForeignSolicits:   p.foreignSolicits.Load(),
 		ResolvingSolicits: p.resolvingSolicits.Load(),
@@ -366,10 +395,15 @@ func (p *DADProbe) probe(addr netip.Addr, solicit wire.ICMPv6Packet, run *dadRun
 
 	for i := 0; i < transmits; i++ {
 		if err := p.nd.Send(solicit); err != nil {
-			// A send that failed is not silence: reporting the address free
-			// on the strength of a solicitation that never left would be the
-			// vacuous pass this whole runner exists to prevent.
-			p.deliver(addr, run, true)
+			// A SEND THAT FAILED IS NEITHER OF THE TWO VERDICTS. Reporting
+			// the address free on the strength of a solicitation that never
+			// left would be the vacuous pass this whole runner exists to
+			// prevent; reporting it a duplicate — which this line did, until
+			// the third answer was written down — declines an address nothing
+			// on the link has claimed. So it reports nothing, and ring 1's
+			// deadline turns the silence into proto.ReasonDADIncomplete. See
+			// DADStats.SendFailures for the argument and the cost.
+			p.sendFailures.Add(1)
 			return
 		}
 		p.solicits.Add(1)

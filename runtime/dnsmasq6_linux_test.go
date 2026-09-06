@@ -5,6 +5,8 @@ package runtime
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	gosched "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -56,6 +59,13 @@ import (
 const (
 	test6ClientIf = "v6cli0"
 	test6ServerIf = "v6srv0"
+
+	// test6ClientIf2 is a SECOND client on the SAME link: a macvlan over the
+	// client end of the veth, which is what the plugin's macvlan mode builds
+	// and is the cheapest honest way to put two DHCPv6 clients with two
+	// different link-local addresses on one segment. See
+	// TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport.
+	test6ClientIf2 = "v6cli1"
 
 	test6ServerIP = "fd00:99::1"
 	test6Prefix   = "fd00:99::"
@@ -145,7 +155,24 @@ type v6Mode struct {
 	// prefix is on-link only, and it is the field that tells the managed mode
 	// from the stateless one when M and O would not.
 	autonomous bool
-	// serves says whether this mode answers a DHCPv6 Solicit.
+	// serves says whether dnsmasq ANSWERS a DHCPv6 client in this mode at
+	// all — an Advertise, a Reply, or the "no addresses available" Advertise
+	// a stateless server sends. It is the column that separates the managed
+	// mode from the managed-silent one, which agree on every other field in
+	// this struct and on both channels assertMode reads: same readiness line,
+	// same absent lines, same M, O and A flags.
+	//
+	// IT IS CHECKED TWICE, in the two places a mode can be wrong. startDnsmasq6
+	// derives it from the ARGUMENTS before dnsmasq is even started, so a
+	// fixture whose command line and whose claim disagree is red before any
+	// proof body runs; assertMode registers a check of dnsmasq's OWN LOG at
+	// the end of the test, so a fixture whose arguments were fine and whose
+	// server behaved otherwise is red too. MEASURED: mis-spelling
+	// --dhcp-ignore=tag:dhcpv6 as tag:dhcpv6zz — which matches no client, so
+	// the silent server answers — used to leave assertMode reporting "mode
+	// managed-silent confirmed on two channels", and the drift was caught
+	// only by one proof's own DHCPADVERTISE count eight lines later. Both
+	// checks below fail on it now.
 	serves bool
 }
 
@@ -241,16 +268,85 @@ var (
 // namespace by TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking.
 func wireUpV6(t *testing.T) {
 	t.Helper()
+	wireUpV6Link(t, v6LinkReady)
+}
+
+// v6LinkMode is the state the CLIENT end of the fixture link comes up in.
+//
+// The server end is the same in all three: accept_dad off, one global address,
+// up. What varies is whether the client end has a usable link-local address
+// when it comes up, because that is what the two link-local proofs are about.
+type v6LinkMode int
+
+const (
+	// v6LinkReady is every other proof in this file: the kernel's own
+	// duplicate check is off, so the link-local is usable as soon as it
+	// exists. See wireUpV6's own comment for why turning it off is not the
+	// defect it looks like.
+	v6LinkReady v6LinkMode = iota
+	// v6LinkTentative leaves the kernel's check ON at the client end, so the
+	// address the client must send from spends RFC 4862 section 5.4's
+	// tentative window unusable — one to two seconds on Linux at the
+	// defaults — starting the instant the link comes up.
+	v6LinkTentative
+	// v6LinkNoIPv6 brings the client end up with net.ipv6.conf.<if>.
+	// disable_ipv6 set, so the kernel forms no link-local for it at all and
+	// never will.
+	v6LinkNoIPv6
+)
+
+// wireUpV6Link is wireUpV6 with the client end's state as a parameter.
+func wireUpV6Link(t *testing.T, mode v6LinkMode) {
+	t.Helper()
 	mustRun(t, "ip", "link", "add", test6ClientIf, "type", "veth", "peer", "name", test6ServerIf)
-	for _, ifName := range []string{test6ClientIf, test6ServerIf} {
+	dad := map[string]string{test6ServerIf: "0", test6ClientIf: "0"}
+	if mode == v6LinkTentative {
+		dad[test6ClientIf] = "1"
+	}
+	for ifName, v := range dad {
 		p := "/proc/sys/net/ipv6/conf/" + ifName + "/accept_dad"
-		if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte(v+"\n"), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+	if mode == v6LinkNoIPv6 {
+		p := "/proc/sys/net/ipv6/conf/" + test6ClientIf + "/disable_ipv6"
+		if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
 			t.Fatalf("writing %s: %v", p, err)
 		}
 	}
 	mustRun(t, "ip", "-6", "addr", "add", test6ServerIP+"/"+fmt.Sprint(test6PrefixLn), "dev", test6ServerIf)
 	mustRun(t, "ip", "link", "set", test6ServerIf, "up")
 	mustRun(t, "ip", "link", "set", test6ClientIf, "up")
+}
+
+// clientLinkLocal reports the link-local address the KERNEL currently lists for
+// the client interface — the 32-hex-digit form /proc/net/if_inet6 prints, and
+// that row's flags column.
+//
+// It is the fixture's own reading and NOT readLinkLocal's. The proofs below
+// assert what the kernel held at a particular moment, and an observation taken
+// with the function under test would make the observer and the subject one
+// piece of code: a reader that never saw the address would report the address
+// as absent and agree with itself.
+func clientLinkLocal(t *testing.T) (string, uint64, bool) {
+	t.Helper()
+	b, err := os.ReadFile("/proc/net/if_inet6")
+	if err != nil {
+		t.Fatalf("reading /proc/net/if_inet6: %v", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 6 || f[5] != test6ClientIf || !strings.HasPrefix(f[0], "fe80") {
+			continue
+		}
+		flags, err := strconv.ParseUint(f[4], 16, 32)
+		if err != nil {
+			t.Fatalf("the kernel printed %q as the flags of %s on %s", f[4], f[0], test6ClientIf)
+		}
+		return f[0], flags, true
+	}
+	return "", 0, false
 }
 
 // startDnsmasq6 starts the server in one of the five modes and waits for that
@@ -295,6 +391,15 @@ func startDnsmasq6(t *testing.T, mode v6Mode) *dnsmasqServer {
 	}
 	args = append(args, mode.args...)
 
+	// THE SERVES COLUMN AGAINST THE COMMAND LINE, before dnsmasq exists. A
+	// mode that claims to answer nothing and is built out of arguments that
+	// answer everything is a Trap 2 fixture, and this is the earliest moment
+	// it can be caught.
+	if got := modeServesDHCPv6(args); got != mode.serves {
+		t.Fatalf("mode %s declares serves=%t and its arguments make dnsmasq serves=%t; the fixture and what it claims to be disagree, so every assertion in this test would be about a link nobody built.\nArguments: %s",
+			mode.name, mode.serves, got, strings.Join(mode.args, " "))
+	}
+
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 
@@ -316,6 +421,58 @@ func startDnsmasq6(t *testing.T, mode v6Mode) *dnsmasqServer {
 
 	s.waitFor(t, mode.ready)
 	return s
+}
+
+// modeServesDHCPv6 derives from a dnsmasq command line whether it will answer a
+// DHCPv6 client, and it is the fixture's own reading of its own arguments.
+//
+// TWO ARGUMENTS DECIDE IT, and both are read as dnsmasq 2.91 reads them.
+//
+// A --dhcp-range carrying the ra-only keyword configures router advertisements
+// and NO DHCPv6 service: src/option.c sets CONTEXT_RA on the context without
+// CONTEXT_DHCP, so there is nothing listening for a Solicit. Any other
+// --dhcp-range serves — including ra-stateless, which answers an
+// Information-request and answers a Solicit with "no addresses available".
+//
+// --dhcp-ignore=tag:dhcpv6 silences it again. dnsmasq tags every DHCPv6 client
+// "dhcpv6" (src/rfc3315.c), so THAT EXACT STRING is the argument that makes a
+// server hear a Solicit and answer nothing. A tag that is not that one matches
+// no client and changes nothing, which is why the comparison is an equality
+// and not a prefix: the mis-spelling is the whole point.
+func modeServesDHCPv6(args []string) bool {
+	serves := false
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--dhcp-range=") && !strings.Contains(a, ",ra-only,"):
+			serves = true
+		case a == "--dhcp-ignore=tag:dhcpv6":
+			return false
+		}
+	}
+	return serves
+}
+
+// TestTheFixtureReadsItsOwnDnsmasqArguments drives modeServesDHCPv6 over the
+// five modes and over the mis-spelling that made this column necessary.
+//
+// The derivation is fixture code, so nothing else in this package can fail
+// when it is wrong: a derivation that always returned the declared value would
+// make the check above pass for every mode, including the broken one.
+func TestTheFixtureReadsItsOwnDnsmasqArguments(t *testing.T) {
+	for _, m := range []v6Mode{v6Managed, v6Stateless, v6SLAAC, v6NoRA, v6ManagedSilent} {
+		if got := modeServesDHCPv6(m.args); got != m.serves {
+			t.Errorf("mode %s: modeServesDHCPv6 = %t, the mode declares %t", m.name, got, m.serves)
+		}
+	}
+	misspelt := append([]string(nil), v6ManagedSilent.args...)
+	for i, a := range misspelt {
+		if a == "--dhcp-ignore=tag:dhcpv6" {
+			misspelt[i] = "--dhcp-ignore=tag:dhcpv6zz"
+		}
+	}
+	if !modeServesDHCPv6(misspelt) {
+		t.Errorf("modeServesDHCPv6 still reads %v as a server that answers nothing; dnsmasq tags its DHCPv6 clients \"dhcpv6\" and matches no other tag, so this command line serves", misspelt)
+	}
 }
 
 // ------------------------------------------------- the second observer --
@@ -433,6 +590,133 @@ func (w *raWatch) none(t *testing.T, why string, within time.Duration) {
 	}
 }
 
+// -------------------------------------------- the outgoing-frame watch --
+
+// test6SendWindow is how long assertTheSolicitLeftAsIPv6 keeps listening.
+//
+// RFC 9915 section 18.2.1 delays the first Solicit "by a random amount of time
+// between 0 and SOL_MAX_DELAY" — one second (proto.DefaultParams6). Five is
+// that plus four seconds of slack for a loaded two-core box, and it is spent
+// only by a client whose messages are not leaving.
+const test6SendWindow = 5 * time.Second
+
+// txWatch is a packet socket reading THIS HOST'S OWN transmissions.
+//
+// IT IS BOUND TO ETH_P_ALL AND THAT IS THE ONLY BINDING THAT WORKS, which is
+// the same measurement PacketTransportV6's BOUNDS carries from the other side:
+// the kernel clones an outgoing frame only to sockets bound to ETH_P_ALL, so a
+// socket bound to ETH_P_IPV6 — this file's raWatch, and the client's own
+// transport — reads none of this host's own frames. That is exactly why it can
+// be used to check WHICH EtherType a frame left with: the answer is in the
+// sockaddr the kernel hands back, not in the buffer.
+type txWatch struct {
+	f *os.File
+}
+
+// newTXWatch opens the observer, and like every observer in this file it must
+// be opened before the client is constructed: an outgoing frame is not
+// buffered anywhere a later reader can find it.
+func newTXWatch(t *testing.T, ifName string) *txWatch {
+	t.Helper()
+	iface, err := net.InterfaceByName(ifName)
+	if err != nil {
+		t.Fatalf("InterfaceByName(%s): %v", ifName, err)
+	}
+	fd, err := syscall.Socket(syscall.AF_PACKET,
+		syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK,
+		int(htons(syscall.ETH_P_ALL)))
+	if err != nil {
+		t.Fatalf("the send observer's socket(AF_PACKET, ETH_P_ALL): %v", err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrLinklayer{
+		Protocol: htons(syscall.ETH_P_ALL), Ifindex: iface.Index,
+	}); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("the send observer's bind(%s): %v", ifName, err)
+	}
+	w := &txWatch{f: os.NewFile(uintptr(fd), "tx_watch:"+ifName)}
+	t.Cleanup(func() { _ = w.f.Close() })
+	return w
+}
+
+// assertTheSolicitLeftAsIPv6 is defeat row F-6's observer, and it is BOUNDED
+// where the acquisition it precedes is not.
+//
+// WHY IT EXISTS. awaitV6 has no duration in it on purpose — a client that is
+// slow on a loaded box must not be reported as broken — so a transport that
+// cannot reach the server at all does not fail there; it HANGS, until the
+// namespaced child's own -test.timeout ends the run 45 seconds later with a
+// goroutine dump for a diagnosis. MEASURED with mutate.sh: rebinding this
+// transport's socket, bind and sendto to ETH_P_IP (0x0800) leaves the golden
+// path in awaitV6 for 45.13s and exits 2, and this project scores a hang as a
+// third verdict and explicitly not as a kill.
+//
+// WHAT IT ASSERTS is the one fact that separates that mutant from a slow box:
+// a DHCPv6 message left this host, and it left as IPv6. The EtherType comes
+// out of the sockaddr the kernel fills in, so it is the value the wire
+// carried and not a re-reading of the buffer the client built. The window is a
+// socket read deadline, enforced by the runtime poller — gate T2's reason for
+// refusing time.After does not apply to a deadline on a descriptor.
+func (w *txWatch) assertTheSolicitLeftAsIPv6(t *testing.T, within time.Duration) {
+	t.Helper()
+	if err := w.f.SetReadDeadline(time.Now().Add(within)); err != nil {
+		t.Fatalf("the send observer's read deadline: %v", err)
+	}
+	buf := make([]byte, maxFrame)
+	var outgoing int
+	for {
+		n, from, err := w.readFrom(buf)
+		if err != nil {
+			t.Fatalf("no DHCPv6 message left %s within %s, over %d outgoing frame(s): a client that cannot put its Solicit on the wire never acquires, and waiting for the lease instead of for the send is a %s hang with no name on it (%v)",
+				test6ClientIf, within, outgoing, within, err)
+		}
+		lla, ok := from.(*syscall.SockaddrLinklayer)
+		if !ok || lla.Pkttype != syscall.PACKET_OUTGOING {
+			continue
+		}
+		outgoing++
+		frame := buf[:n]
+		// The four fields that say "this is one of ours": an IPv6 packet,
+		// carrying UDP, from the DHCPv6 client port to the server port.
+		// Written out here rather than handed to ParseIPv6UDP, which narrows
+		// on the ports the other way round because it reads REPLIES.
+		if n < ipv6HeaderLen+8 || frame[0]>>4 != ipv6Version || frame[6] != protoUDP {
+			continue
+		}
+		u := frame[ipv6HeaderLen:]
+		if binary.BigEndian.Uint16(u[0:2]) != ClientPort6 || binary.BigEndian.Uint16(u[2:4]) != ServerPort6 {
+			continue
+		}
+		if got := htons(lla.Protocol); got != ethPIPv6 {
+			t.Fatalf("this client's DHCPv6 message left %s with EtherType %#04x, not IPv6 (%#04x): the frame is on the wire and no IPv6 receiver on the link will look at it",
+				test6ClientIf, got, ethPIPv6)
+		}
+		return
+	}
+}
+
+// readFrom is Recvfrom through the runtime poller, so the deadline set above
+// is the thing that ends the wait.
+func (w *txWatch) readFrom(buf []byte) (int, syscall.Sockaddr, error) {
+	rc, err := w.f.SyscallConn()
+	if err != nil {
+		return 0, nil, err
+	}
+	var (
+		n    int
+		from syscall.Sockaddr
+		rerr error
+	)
+	cerr := rc.Read(func(fd uintptr) bool {
+		n, from, rerr = syscall.Recvfrom(int(fd), buf, 0)
+		return rerr != syscall.EAGAIN
+	})
+	if cerr != nil {
+		return 0, nil, cerr
+	}
+	return n, from, rerr
+}
+
 // ------------------------------------------------------ the mode check --
 
 // assertMode is design section A.4's signature check, and it runs BEFORE any
@@ -454,6 +738,32 @@ func (w *raWatch) none(t *testing.T, why string, within time.Duration) {
 // against what the client reported.
 func assertMode(t *testing.T, s *dnsmasqServer, w *raWatch, mode v6Mode) *wire.RouterAdvert {
 	t.Helper()
+
+	// THE SERVES COLUMN ON THE SECOND CHANNEL, deferred to the end of the
+	// test because it is the one part of the signature that cannot be read
+	// before a client has spoken: a server that ignores its DHCPv6 clients
+	// says so by staying silent, and silence is only evidence after somebody
+	// has asked. dnsmasq under --log-dhcp writes one "sent size:" line per
+	// option of every message it SENDS (2.91 src/rfc3315.c log6_opts), which
+	// is its own record of having answered at all — and it covers the
+	// stateless mode, whose Advertise carries "no addresses available" and is
+	// logged under no DHCPADVERTISE line.
+	//
+	// THE GUARD HAS A DIRECTION. A proof that failed before its exchange ever
+	// happened proves nothing about whether a serving fixture would have
+	// answered, and reporting that as a second failure would bury the first
+	// one about the subject. The opposite case carries no such doubt: a
+	// server that answered when this mode says it answers nothing is a fact
+	// about the fixture whether or not the proof also failed, and it is the
+	// fact that explains the failure.
+	t.Cleanup(func() {
+		answered := s.count(" sent size:") > 0
+		if answered == mode.serves || (mode.serves && t.Failed()) {
+			return
+		}
+		t.Errorf("mode %s declares serves=%t and dnsmasq answered=%t over this whole test; the fixture did not behave like the mode this test named.\nLog:\n%s",
+			mode.name, mode.serves, answered, strings.Join(s.lines(), "\n"))
+	})
 
 	// The readiness lines this mode must NOT have printed. startDnsmasq6 has
 	// already waited for the one it must, so by here the configuration
@@ -698,6 +1008,7 @@ func v6AcquireAgainstDnsmasq(t *testing.T) {
 	wireUpV6(t)
 	srv := startDnsmasq6(t, v6Managed)
 	watch := newRAWatch(t, test6ClientIf)
+	tx := newTXWatch(t, test6ClientIf)
 
 	c, hw := newV6Client(t)
 	t.Logf("client interface %s has hardware address %s and link-local %s", test6ClientIf, hw, c.Source())
@@ -708,6 +1019,11 @@ func v6AcquireAgainstDnsmasq(t *testing.T) {
 	// channels must agree that this link is the managed one before a single
 	// client fact is read.
 	ra := assertMode(t, srv, watch, v6Managed)
+
+	// AND THE FIRST MESSAGE LEFT THE HOST, before anything waits for a lease
+	// with no deadline on it. See assertTheSolicitLeftAsIPv6: this is where
+	// defeat row F-6 turns from a 45-second hang into a named failure.
+	tx.assertTheSolicitLeftAsIPv6(t, test6SendWindow)
 
 	ev := awaitV6(t, c, lease.Acquired)
 	addr := ev.Lease.Addr.Addr()
@@ -1564,4 +1880,248 @@ func newV6ClientErr(ifName string) (*Client6, net.HardwareAddr, error) {
 	p.ORO = proto.DefaultORO()
 	c, err := NewClient6(ClientConfig6{Interface: ifName, Params6: p, EventBuffer: 8})
 	return c, iface.HardwareAddr, err
+}
+
+// ------------------------------------------ the kernel's own link-local --
+
+// TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress is the runner's
+// defect, driven.
+//
+// MEASURED on a two-core CI runner: this package's namespace proof failed with
+// "interface has no assigned IPv6 link-local address: v6cli0 (0 tentative, 0
+// failed duplicate address detection)" while dnsmasq in the same namespace was
+// already bound to that link, and the control row of the same suite passed in
+// the same run — so it was load and not configuration. InterfaceLinkLocal read
+// /proc/net/if_inet6 ONCE and nothing waited: a client built the instant the
+// link came up asked a question about an interface the kernel had not finished
+// configuring, and got the answer that belongs to an interface which will never
+// have an address.
+//
+// THE ADDRESS IS UNUSABLE WHEN THE CONSTRUCTOR STARTS, AND THAT IS ASSERTED
+// AND NOT ASSUMED. This is the one proof in this file that leaves the kernel's
+// own duplicate address detection ON at the client end, so the link-local is
+// tentative for RFC 4862 section 5.4's window — one to two seconds at Linux's
+// defaults, which is a thousand times the width of the race a channel handshake
+// would have left. The state is read out of /proc immediately before the
+// client is built and immediately after, so the proof is that the CONSTRUCTOR
+// crossed the window, not that the window existed.
+//
+// Which of the two unusable states it starts in does not matter and both are
+// accepted: tentative here, absent on the runner. readLinkLocal refuses both
+// the same way and the wait repeats the same read.
+func TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6LinkLocalArrivesLate(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6LinkLocalArrivesLate(t *testing.T) {
+	wireUpV6Link(t, v6LinkTentative)
+
+	// THE PRECONDITION. The link came up microseconds ago; the kernel has
+	// either not written the address yet or has written it tentative, and a
+	// settled one here would mean this proof measured nothing.
+	before, flags, present := clientLinkLocal(t)
+	switch {
+	case !present:
+		t.Logf("the kernel has not written a link-local for %s yet: the constructor starts on an interface with no address at all, which is the runner's own shape", test6ClientIf)
+	case flags&ifaTentative != 0:
+		t.Logf("the kernel holds %s tentative (flags %#x): the constructor starts on an address RFC 4862 section 5.4 forbids sending from", before, flags)
+	default:
+		t.Fatalf("the kernel had already settled %s on %s (flags %#x) before the client was built; accept_dad did not take and this proof would pass without any wait at all",
+			before, test6ClientIf, flags)
+	}
+
+	start := time.Now()
+	c, _, err := newV6ClientErr(test6ClientIf)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("NewClient6 was refused while the kernel was still finishing with the interface's link-local address, after %s: %v — a client built the instant a link comes up must wait for the address, not report that there is none",
+			elapsed.Round(time.Millisecond), err)
+	}
+	stop := runV6Client(t, c)
+	defer stop()
+
+	// AND THE ADDRESS IT TOOK IS THE KERNEL'S, SETTLED. Read back out of
+	// /proc by this fixture rather than derived: the whole point of waiting is
+	// to send from the address the kernel will answer Neighbor Solicitations
+	// for, and an address still tentative here would mean the wait returned
+	// early rather than that it waited.
+	after, flags, present := clientLinkLocal(t)
+	if !present {
+		t.Fatalf("the kernel lists no link-local for %s although the client was built with %s", test6ClientIf, c.Source())
+	}
+	if flags&ifaTentative != 0 {
+		t.Errorf("the client was built with %s while the kernel still has it tentative (flags %#x)", c.Source(), flags)
+	}
+	if got := hex.EncodeToString(c.Source().AsSlice()); got != after {
+		t.Errorf("the client sends from %s and the kernel holds %s; the two readings of one interface disagree", got, after)
+	}
+	t.Logf("the constructor waited %s for %s and took the kernel's %s", elapsed.Round(time.Millisecond), test6ClientIf, c.Source())
+}
+
+// TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress is the other
+// direction, and it is the one that says the wait is BOUNDED.
+//
+// A wait with no bound is the defect the wait was added to fix, wearing the
+// other sign: a link that will never carry an IPv6 address — this one has IPv6
+// switched off and nothing switches it back on — must be refused with the
+// reason, in seconds, and not hang until the namespaced child's own
+// -test.timeout ends the run 45 seconds later with a goroutine dump for an
+// answer.
+//
+// It also asserts the SENTENCE. "This interface has no link-local address" and
+// "this interface has no link-local address and I waited four seconds for one"
+// send a reader to different places, and the second is the one that is true.
+func TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6LinkLocalNeverArrives(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6LinkLocalNeverArrives(t *testing.T) {
+	wireUpV6Link(t, v6LinkNoIPv6)
+	if addr, flags, ok := clientLinkLocal(t); ok {
+		t.Fatalf("%s carries the link-local %s (flags %#x) with IPv6 disabled on it; this proof needs a link that never gets one", test6ClientIf, addr, flags)
+	}
+
+	start := time.Now()
+	c, _, err := newV6ClientErr(test6ClientIf)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("NewClient6 built a client on a link with IPv6 disabled; it sends from %s, which the kernel does not hold", c.Source())
+	}
+	if !errors.Is(err, ErrNoLinkLocal) {
+		t.Fatalf("NewClient6 failed with %v, which does not wrap ErrNoLinkLocal; a caller cannot tell this apart from a socket it could not open", err)
+	}
+	if !strings.Contains(err.Error(), "after waiting") {
+		t.Errorf("the refusal %q does not say that it waited; a reader cannot tell a bound that was spent from a read that was never repeated", err)
+	}
+	if elapsed < linkLocalWait {
+		t.Errorf("the refusal came after %s, before linkLocalWait (%s): the address was refused rather than waited for", elapsed, linkLocalWait)
+	}
+	if elapsed >= 2*linkLocalWait {
+		t.Errorf("the refusal came after %s, twice linkLocalWait (%s) or more: a bound that is not held is the 45-second timeout with extra steps", elapsed, linkLocalWait)
+	}
+	t.Logf("refused in %s: %v", elapsed.Round(time.Millisecond), err)
+}
+
+// ------------------------------------------ two clients, one link --
+
+// TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport is the shared-segment
+// row, and the fixture is the plugin's own macvlan case.
+//
+// WHAT REACHES THIS CLIENT THAT IS NOT FOR IT. ParseIPv6UDP narrows on the two
+// UDP ports and nothing else, so a server's unicast Advertise or Reply for
+// ANOTHER client on the link satisfies it completely: right ports, right
+// direction, a valid checksum over its own pseudo-header. Ring 1 discards such
+// a message on the Client Identifier (RFC 9915 section 16.3), so nothing was
+// ever mis-leased — the cost is a decode, a counter, a journal entry and a slot
+// in a bounded ring, per foreign exchange, on a link that may carry dozens.
+//
+// THE SECOND CLIENT IS A MACVLAN OVER THE FIRST CLIENT'S INTERFACE, and that
+// is not an approximation of the shared segment; it is one. A macvlan has its
+// own hardware address and therefore its own link-local, the lower device sees
+// every frame the peer transmits, and an AF_PACKET socket on the lower device
+// is tapped before the demux that would have sorted them — so this client
+// reads the other's replies exactly as a container on a flooding bridge does.
+//
+// THE OTHER DIRECTION IS ASSERTED TOO. The macvlan is NOT promiscuous, so the
+// second client does not see the first one's replies at all, and its Foreign
+// counter must stay at zero. Without that half the row would pass just as well
+// against a transport that counted every frame it read as foreign.
+func TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6TwoClientsOnOneLink(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6TwoClientsOnOneLink(t *testing.T) {
+	wireUpV6(t)
+	srv := startDnsmasq6(t, v6Managed)
+	watch := newRAWatch(t, test6ClientIf)
+
+	first, _ := newV6Client(t)
+	stopFirst := runV6Client(t, first)
+	defer stopFirst()
+
+	assertMode(t, srv, watch, v6Managed)
+
+	evFirst := awaitV6(t, first, lease.Acquired)
+	addrFirst := evFirst.Lease.Addr.Addr()
+	srv.waitFor(t, "DHCPREPLY("+test6ServerIf+") "+addrFirst.String())
+	base := first.TransportStats()
+	if base.Foreign != 0 {
+		t.Fatalf("the first client had already counted %d foreign repl(ies) on a link with nothing else on it: %+v", base.Foreign, base)
+	}
+
+	// The second client, on its own hardware address over the same wire.
+	mustRun(t, "ip", "link", "add", test6ClientIf2, "link", test6ClientIf, "type", "macvlan", "mode", "bridge")
+	p := "/proc/sys/net/ipv6/conf/" + test6ClientIf2 + "/accept_dad"
+	if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", p, err)
+	}
+	mustRun(t, "ip", "link", "set", test6ClientIf2, "up")
+
+	second, _, err := newV6ClientErr(test6ClientIf2)
+	if err != nil {
+		t.Fatalf("building the second client on %s: %v", test6ClientIf2, err)
+	}
+	stopSecond := runV6Client(t, second)
+	defer stopSecond()
+
+	if first.Source() == second.Source() {
+		t.Fatalf("both clients send from %s; two clients sharing one link-local address cannot tell each other's replies apart, and this row would measure nothing", first.Source())
+	}
+
+	evSecond := awaitV6(t, second, lease.Acquired)
+	addrSecond := evSecond.Lease.Addr.Addr()
+	if addrSecond == addrFirst {
+		t.Fatalf("dnsmasq gave both clients %s", addrFirst)
+	}
+	srv.waitFor(t, "DHCPREPLY("+test6ServerIf+") "+addrSecond.String())
+
+	// THE BARRIER IS Reads AND NOT Foreign, which is what makes the mutant a
+	// failure instead of a hang: every frame moves Reads whether or not the
+	// destination is checked, so a transport that does not narrow reaches this
+	// point too — and then fails on the count below, by name, instead of
+	// spinning until the child's own timeout.
+	st := awaitTransportReads(t, first, base.Reads+2)
+	if st.Foreign < 2 {
+		t.Errorf("the first client counted %d foreign repl(ies) after the second client's Advertise and Reply crossed the link; a reply addressed to %s is not this client's and is not this transport's to deliver — %+v",
+			st.Foreign, second.Source(), st)
+	}
+	if l, ok := first.Lease(); !ok || l.Addr.Addr() != addrFirst {
+		t.Errorf("the first client's lease is %v (held=%v) after another client's exchange, want %s", l.Addr, ok, addrFirst)
+	}
+
+	// The control: the macvlan sees only what is addressed to it.
+	if sst := second.TransportStats(); sst.Foreign != 0 {
+		t.Errorf("the second client counted %d foreign repl(ies); the macvlan is not promiscuous and the first client's replies are addressed to a hardware address it does not hold — %+v", sst.Foreign, sst)
+	}
+	t.Logf("the first client read %d frame(s) and discarded %d of them as another client's", st.Reads, st.Foreign)
+}
+
+// awaitTransportReads blocks until the transport has read at least n frames and
+// returns the counters as they stood then.
+//
+// IT SPINS ON THE COUNTER THAT MOVES UNCONDITIONALLY. Reads is bumped in a
+// defer at the end of deliver, after every classification, so it is a barrier
+// for the frame having been classified — whatever the classification was. A
+// barrier on the counter under test would only ever be reached by a transport
+// that already passes.
+func awaitTransportReads(t *testing.T, c *Client6, n uint64) TransportStatsV6 {
+	t.Helper()
+	for {
+		if st := c.TransportStats(); st.Reads >= n {
+			return st
+		}
+		gosched.Gosched()
+	}
 }

@@ -203,9 +203,23 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #     NeighborSolicitRefusesWhatSection711Refuses, OurOwnDADSolicitDecodesBack,
 #     TheKernelsOwnDADSolicitDecodes
 #
+# M7c's CARRIED ROWS: 580 -> 587, measured the same way (two testroster runs,
+# at e173966 and here; nothing renamed or removed between them). Seven, per
+# file, and each one is the observer for a row the review or the CI runner
+# named rather than a test added to raise a number:
+#
+#   runtime/dad6_linux_test.go              (1)  AProbeThatCouldNotSend
+#     DeclinesNothing
+#   runtime/dnsmasq6_linux_test.go          (4)  AV6ClientDiscardsAnother
+#     ClientsReplyAtTheTransport, AV6ClientRefusesALinkThatNeverGetsA
+#     LinkLocalAddress, AV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress,
+#     TheFixtureReadsItsOwnDnsmasqArguments
+#   runtime/transport_packet6_linux_test.go (2)  AnUncompletedChecksumIs
+#     CountedOnlyForThisClient, TheV6TransportCountsEachRefusalApart
+#
 # The "Test" prefix is left off each name above so the lines fit; every one of
 # them carries it in the tree.
-MIN_DECLARED_TESTS=580
+MIN_DECLARED_TESTS=587
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

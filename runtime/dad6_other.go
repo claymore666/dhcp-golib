@@ -15,6 +15,7 @@ type DADStats struct {
 	Solicits          uint64
 	Free              uint64
 	Duplicate         uint64
+	SendFailures      uint64
 	OwnIgnored        uint64
 	ForeignSolicits   uint64
 	ResolvingSolicits uint64
