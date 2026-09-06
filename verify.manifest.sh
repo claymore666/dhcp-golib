@@ -629,7 +629,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"test-cache|nonzero|unit-suite:FAIL|go test reported a cached result"
 	"ceiling-fires|nonzero|unit-suite:FAIL|passed but took"
 	"ceiling-control|zero|unit-suite:PASS|started here and none of the"
-	"ceiling-band|static|ceiling-seconds:60|no row"
+	"ceiling-band|static|ceiling-seconds:102|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

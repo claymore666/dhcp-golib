@@ -110,9 +110,25 @@ row_omitted() { # NAME
 # instrument, reading the clock where the identifier gate reads source.
 #
 # BOUND: a threshold only holds AT the threshold. A 200ms sleep does not move a
-# 60s ceiling, so this catches a suite that has drifted into waiting, not one
+# 102s ceiling, so this catches a suite that has drifted into waiting, not one
 # test that waits a little.
-SUITE_CEILING_SECONDS=60
+#
+# 2026-09-06, 60 -> 102, and the derivation is the whole justification. The
+# rule: twice the slowest measurement of the UNMUTATED suite in the shape CI
+# runs it. MEASURED on a two-core hosted runner — 51s at 529 declared tests on
+# run 34008425787, and 43s at 445 before that; twice 51 is 102. The 63s a copy
+# of that run reached is covered by the number rather than being its input,
+# because a copy is not the shape. The old 60 was measured on a box with
+# sixteen times the cores and it had stopped being a drift detector there: one
+# copy in seventy-five breached it while drifting nowhere.
+#
+# WHAT IT COSTS, said plainly rather than buried: on the session box the pure
+# suite runs about 20s, so the detector now sits at roughly five times the
+# suite it watches instead of three. It catches less there. That is the price
+# of one number serving two machines, and it is paid deliberately — the
+# alternative shapes (an environment override, a machine-relative derivation)
+# were measured or ruled out first.
+SUITE_CEILING_SECONDS=102
 
 # The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
 # cannot bound a hang: it is computed after `go test` returns (scenario
