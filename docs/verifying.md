@@ -391,16 +391,20 @@ a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
   is timed against a ceiling — a cold build is not the drift the ceiling asks
   about. Neither moves a bound; both cost wall clock. The numbers are in the
   workflow, beside the decisions they made.
-- **Scheduling, and this one is not the runner's fault.**
-  `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlocks when the
-  frame it adds last is appended before the waiter rescans: the waiter then
-  returns through the match arm without a third report, and the test blocks on
-  a report that will never come. It is bounded only by `go test -timeout`.
-  MEASURED on the runner and reproduced on the session box under load. On run
-  33999661871 it was the ONLY thing left red — every row of the root run
-  passed, no suite anywhere went over its ceiling, and the oracle failed
-  because three of its copies hung in that one test. Until it is fixed the
-  merge rule above cannot be satisfied by a runner.
+- **Scheduling, and this is the one that found a real defect.** Two cores made
+  `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlock: the waiter it
+  drives returned through its match arm without reporting the frame that ended
+  the wait, so the number of reports depended on which of two goroutines the
+  scheduler ran first, and the test — which takes delivery of each report —
+  blocked forever on one that was never written. Bounded only by `go test
+  -timeout`, so it read as a suite hang, never as a failure. MEASURED on runs
+  33999661871 and 34003796997, where it was the ONLY thing left red: every row
+  of the root run passed, no suite anywhere went over its ceiling, and the
+  oracle failed on copies that hung in that one test. Fixed in the same change
+  as this section — the waiter now reports the matching frame on the way out —
+  and the fix is what makes the report count a function of the frames instead
+  of the scheduler. This box never showed it: it takes contention, and the
+  first machine to have any was the runner.
 
 So a green runner run and a green session-box run are two measurements rather
 than one repeated, neither certifies the other, and where they disagree the
