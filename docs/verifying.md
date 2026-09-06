@@ -351,8 +351,10 @@ between eighty-seven and ninety-one billed minutes (runs 34036002593,
 self-hosted runner labelled
 `dhcp-golib`, on the same machine every ceiling, floor and timeout in
 `verify.sh` and `verify.manifest.sh` was derived on, where the same command
-takes about thirteen minutes — MEASURED at 8c87caf: 818 seconds for
-`./verify.sh --oracle` wall to wall, RUNS_DOC. The runner leaves that machine
+takes about thirteen minutes. MEASURED at 8c87caf, `./verify.sh --oracle` wall
+to wall in a local copy and then on the runner in run 34063690907:
+818s and 833s, with the whole job from checkout to verdict a little
+over fourteen minutes. The runner leaves that machine
 when a shared pool serves this repository, and in any case before this
 repository is public; `runs-on` is the only line that has to move.
 

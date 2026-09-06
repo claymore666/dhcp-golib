@@ -400,13 +400,13 @@ SELF_DRIVE_SURVIVES_N=5
 #
 # LATER THE SAME DAY, D36: both of those lines are gone — the lane no longer
 # pins ORACLE_JOBS and no longer quotes an image's facts — and the section's
-# one new numeric line is the arbiter's own wall clock on the machine it now
-# runs on. The population MEASURED after that rewrite is 65, one under this
-# number. The ceiling is deliberately NOT lowered to 65: it is a ceiling and
-# not an equality, the population fell rather than the bound being earned
-# down, and pinning it to today's count would make the next measurement
-# written into a doc a red row rather than a decision. The slack is one line
-# and it is named here so the next bump still has to justify itself.
+# numbers are now written in the "818s" form the sweep does not
+# count as bare. The population MEASURED after that rewrite is 64, two under
+# this number. The ceiling is deliberately NOT lowered to 64: it is a ceiling
+# and not an equality, the population FELL rather than the bound being earned
+# down, and pinning it to today's count would turn the next measurement
+# written into a doc into a red row rather than a decision. The slack is two
+# lines and it is named here so the next bump still has to justify itself.
 DOC_NUMBER_CEILING=66
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the

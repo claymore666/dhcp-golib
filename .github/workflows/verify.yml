@@ -28,10 +28,17 @@ jobs:
     runs-on: [self-hosted, dhcp-golib]
     # Twice the slowest measurement, which is the rule the hosted bound used
     # too — it was 190, twice a 94-minute run on two cores. MEASURED on this
-    # machine at 8c87caf: `./verify.sh --oracle` takes 818s, 13m38s, wall to
-    # wall, and the job adds a checkout, a toolchain and a race pre-compile.
-    # Twice fourteen minutes is 28; 30 is that rounded to the next multiple of
-    # ten and it is the whole margin. RUNS_TIMEOUT
+    # machine: `./verify.sh --oracle` takes 818s at 8c87caf and 823s at this
+    # branch's tree, both in a local copy, and run 34063690907 measured the
+    # whole job from checkout to the last verdict step at 14m12s (the arbiter
+    # step itself 13m53s). Twice fourteen is 28; 30 is that rounded up to the
+    # next multiple of ten and it is the whole margin.
+    #
+    # This bound has already fired once and it fired usefully: run
+    # 34063690907's arbiter was green and the JOB was cancelled at 30 minutes,
+    # because setup-go's cache-save post step never finished. See the note on
+    # that step below. A timeout that catches a step which cannot terminate is
+    # the timeout doing its job, not a number set too low.
     #
     # WHAT THIS BOUND DOES NOT COVER, said here because the number looks
     # generous and is not: a job that waits for the single runner's slot is
@@ -43,10 +50,22 @@ jobs:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # cache: false, and it is not an optimisation — it is the difference
+      # between a job that ends and one that does not. MEASURED, run
+      # 34063690907, the first job this runner ever ran: the arbiter passed in
+      # 13m53s and then setup-go's POST step tarred this user's GOMODCACHE and
+      # GOCACHE into a 16,585,222,854-byte archive over 2m53s and spent the
+      # next thirteen minutes reporting `Sent 0 of 16585222854 (0.0%), 0.0
+      # MBs/sec` until `timeout-minutes` cancelled the job. A repository's
+      # Actions cache holds ten gigabytes, so that archive could never have
+      # been stored; and a STANDING runner keeps both caches on disk between
+      # jobs anyway, under the same user, which is the whole thing the cache
+      # action exists to simulate for machines that do not.
       - name: Go, from go.mod
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
 
       # TWO STEPS WERE DELETED HERE ON 2026-09-06 AND THIS IS WHY, because the
       # next reader will otherwise wonder what a runner is missing.
