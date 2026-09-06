@@ -15,12 +15,11 @@ jobs:
     name: the arbiter
     runs-on: ubuntu-24.04
     # Twice the measurement, and the measurement is here so the next person
-    # does not have to guess what it was: run 33995090303, the serialised
-    # shape below, took 4823s in the arbiter step and 81 minutes end to end.
-    # That run was RED and carried three suites that ran into their own 180s
-    # hang timeout, so a green run is shorter, not longer; this bound is
-    # deliberately taken over the slower of the two shapes measured.
-    timeout-minutes: 160
+    # does not have to guess what it was: run 33999661871, the serialised shape
+    # below, took 5551s in the arbiter step and 94 minutes end to end. That is
+    # the slowest of the three runs measured on this image (55, 81, 94), and it
+    # is the one this bound is taken over.
+    timeout-minutes: 190
     steps:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

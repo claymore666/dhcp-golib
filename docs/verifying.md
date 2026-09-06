@@ -396,9 +396,11 @@ a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
   frame it adds last is appended before the waiter rescans: the waiter then
   returns through the match arm without a third report, and the test blocks on
   a report that will never come. It is bounded only by `go test -timeout`.
-  MEASURED on the runner and reproduced on the session box under load. Until
-  that is fixed the merge rule above cannot be satisfied by a runner, because
-  the pure suite hangs there often enough to redden most runs.
+  MEASURED on the runner and reproduced on the session box under load. On run
+  33999661871 it was the ONLY thing left red — every row of the root run
+  passed, no suite anywhere went over its ceiling, and the oracle failed
+  because three of its copies hung in that one test. Until it is fixed the
+  merge rule above cannot be satisfied by a runner.
 
 So a green runner run and a green session-box run are two measurements rather
 than one repeated, neither certifies the other, and where they disagree the
