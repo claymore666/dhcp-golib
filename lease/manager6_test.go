@@ -3,6 +3,7 @@ package lease
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,13 +187,45 @@ func TestTheV6ManagerReportsTheStatelessConfiguration(t *testing.T) {
 	}
 	r := newRig6(t, testParams6(), behaviour)
 
+	// THREE BARRIERS, AND ONLY ONE OF THEM IS settle. Interlock 1 is a rule
+	// about the SELECTING6 arm, so all three facts have to hold before the
+	// send can be read, and each needs a different barrier.
+	//
+	// FIRST, THE CLIENT MUST HAVE SOLICITED. newRig6 returns as soon as the
+	// manager is running, and the initial Solicit leaves on the machine's own
+	// goroutine; an advertisement injected before it is stepped in INIT6,
+	// where interlock 1 does not apply, and the Solicit then arrives after it.
+	// The observed failure was exactly that: "the last message the server saw
+	// is SOLICIT, want INFORMATION-REQUEST".
+	//
+	// SECOND, THE MACHINE MUST HAVE STEPPED THE ADVERTISEMENT, and settle does
+	// not say that: settle fires the marker timer and waits for its Step,
+	// while Manager.Run selects between the ND channel and the timer channel,
+	// so an advertisement already queued has an even chance of being served
+	// after the marker. **A proxy repeats in the same file** — this is the
+	// coin toss waitDADStepped was written for, one producer over.
+	//
+	// THIRD, THE ACTIONS OF THAT STEP MUST HAVE DRAINED, and the journal entry
+	// does not say that either: Manager.dispatch appends the entry BEFORE it
+	// drains the entry's own actions (see waitSent). settle is the barrier for
+	// that half, and it is sound here because the advertisement has already
+	// been taken.
+	//
+	// MEASURED 2026-09-06: with settle alone, 2 failures in 480 runs under an
+	// eight-way parallel load, and one of them reddened the
+	// suite-domain-unmeasured-module oracle scenario, which has nothing to do
+	// with DHCPv6. With the journal barrier added but no waitSent, 1 in 480.
+	//
+	// None of the three waits for the Information-request itself, which is the
+	// point: asserting the send BEFORE reading the event is what turns
+	// "interlock 1 does not fire" from a hang on nextEvent into a failure.
+	// MEASURED: the mutant that deletes the SELECTING6 arm of the switch was
+	// scored HUNG against a wait for the thing it removes.
+	r.waitSent(t, wire.MsgSolicit)
 	r.nd.inject(raOtherOnly)
-
-	// The switch happens inside the Router Advertisement's own dispatch, so
-	// settling on it is enough to say whether the Information-request went
-	// out. Asserting that BEFORE reading the event is what turns "interlock 1
-	// does not fire" from a hang on nextEvent into a failure. MEASURED: the
-	// mutant that deletes the SELECTING6 arm of the switch was scored HUNG.
+	r.journal.waitAppended(t, "the Router Advertisement", func(e proto.JournalEntry6) bool {
+		return e.Kind == proto.EvRouterAdvert
+	})
 	r.settle(t)
 	if got := lastSent6(t, r, wire.MsgInformationRequest); got == nil {
 		t.Fatal("M=0 O=1 arrived while soliciting and no Information-request left the host: design §A.3.3 interlock 1")
@@ -260,6 +293,49 @@ func TestADuplicateAddressDeclinesAndNeverAcquires(t *testing.T) {
 	addrs, err := declined[0].Options.Addrs()
 	if err != nil || len(addrs) != 1 || addrs[0].Addr.String() != test6Addr {
 		t.Fatalf("the Decline names %v, want the address the check refused, %s", addrs, test6Addr)
+	}
+}
+
+// TestAV6ConflictIsCountedAndReportedAsOne is the ring-2 half of proto's
+// TestADuplicateOnAFreshAcquisitionIsReportedAndNotOnlyJournalled.
+//
+// THE COUNTER IS THE CLAIM, and it was wrong in two places at once. Stats
+// documents DADChecksStarted and DADConflicts as a pair whose difference is
+// not "how many passed", and WireCounters documents DADConflicts as the v6
+// share of Conflicts, "so their difference is how many came from RFC 5227's
+// check rather than RFC 4862's". On the ordinary v6 duplicate — the check runs
+// BEFORE the lease is announced, so nothing was ever held — ring 1 emitted no
+// action a counter could be derived from, and ring 2's ActFailed arm counted
+// only ConflictsDetected. A reader of a record from a client that had just
+// declined a duplicate address saw one conflict, attributed to ARP.
+//
+// The event is asserted beside the two counters because they are separate
+// failures: a chassis watching Events() was told nothing at all.
+func TestAV6ConflictIsCountedAndReportedAsOne(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.settleDAD(t, test6Addr, true)
+	r.settle(t)
+
+	e := r.takeEvent(t)
+	if e.Kind != Failed {
+		t.Fatalf("the duplicate produced a %s event, want %s", e.Kind, Failed)
+	}
+	if e.Reason != proto.ReasonConflict {
+		t.Errorf("reason %s, want %s", e.Reason, proto.ReasonConflict)
+	}
+
+	s := r.mgr.Stats()
+	if s.DADChecksStarted != 1 {
+		t.Errorf("DADChecksStarted = %d, want 1", s.DADChecksStarted)
+	}
+	if s.ConflictsDetected != 1 {
+		t.Errorf("ConflictsDetected = %d, want 1", s.ConflictsDetected)
+	}
+	if s.DADConflicts != 1 {
+		t.Errorf("DADConflicts = %d, want 1: a v6 conflict counted only in ConflictsDetected reads, through WireCounters, as one that came from RFC 5227's check", s.DADConflicts)
+	}
+	if s.LeasesLost != 0 {
+		t.Errorf("LeasesLost = %d; nothing was ever announced to lose, and a conflict counted in both arms is counted twice", s.LeasesLost)
 	}
 }
 
@@ -382,4 +458,122 @@ func sameBytes(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// TestTheConfiguredRunnerIsAskedAndItsAnswerIsTheMachines drives the whole of
+// the DADRunner seam in one pass, with NOTHING in the test answering the
+// machine.
+//
+// EVERY OTHER v6 TEST IN THIS PACKAGE CALLS ReportDADResult BY HAND, which is
+// the shape M7b left behind and is exactly why this row exists: a manager
+// wired to real sockets and left alone would ask nobody, and every one of
+// those tests would still pass. rig6.acquire6's own comment says so — "the DAD
+// result is fed by the test because ring 3 is not built yet". Here the answer
+// comes from the port, and the test only watches.
+func TestTheConfiguredRunnerIsAskedAndItsAnswerIsTheMachines(t *testing.T) {
+	dad := &fakeDAD{}
+	r := newRig6(t, testParams6(), answerNormally6(t), withDAD(dad))
+
+	// THREE BARRIERS AND NOT ONE READ, because the read this test wants is the
+	// one every mutant here turns into a hang. waitDADRequested says the
+	// machine asked (and stops on the three ways it can fail to); answered
+	// says the runner's verdict is in the manager's request channel, or that
+	// there was no runner call to wait for; and waitDADStepped says the
+	// manager has stepped it. rig6.settle's own comment carries the general
+	// version of this argument, fakeDAD.answered and rig6.waitDADStepped the
+	// two measurements — including why a count of settles is not a barrier at
+	// all here. takeEvent settles for the drain.
+	r.waitDADRequested(t, test6Addr)
+	dad.answered()
+	r.waitDADStepped(t)
+
+	e := r.takeEvent(t)
+	if e.Kind != Acquired {
+		t.Fatalf("the first event is %s, want acquired; the machine's last Steps were:\n%s", e.Kind, r.tail6(6))
+	}
+
+	// THE ADDRESS IS ASSERTED, not just the count. A runner asked about the
+	// wrong address would still answer, the machine would still journal an
+	// EvDADResult it did not want, and the acquisition would then fail on ring
+	// 1's deadline rather than here — a slower and much less legible failure.
+	asked := dad.asked()
+	if len(asked) != 1 || asked[0].String() != test6Addr {
+		t.Fatalf("the runner was asked about %v, want exactly [%s]", asked, test6Addr)
+	}
+	if got := r.mgr.Stats().DADChecksStarted; got != 1 {
+		t.Errorf("DADChecksStarted = %d, want 1", got)
+	}
+	if _, held := r.mgr.Lease(); !held {
+		t.Error("no lease is held after the runner reported the address free")
+	}
+}
+
+// TestTheConfiguredRunnersDuplicateVerdictDeclines is the other verdict
+// through the same seam.
+//
+// It is a separate row rather than a table because the two answers exercise
+// different halves: the row above shows the seam CARRIES a verdict, and this
+// one shows it carries THE verdict. A runner whose answer were ignored — or a
+// seam that reported free regardless — would pass the row above and lose the
+// only check RFC 9915 section 18.2.10.1 makes a MUST.
+func TestTheConfiguredRunnersDuplicateVerdictDeclines(t *testing.T) {
+	dad := &fakeDAD{verdict: true}
+	r := newRig6(t, testParams6(), answerNormally6(t), withDAD(dad))
+
+	// The same three barriers as above, and then a READ. A client that took
+	// the verdict and dropped the address without declining it sends nothing,
+	// so waiting for the Decline would hang on that defect instead of naming
+	// it — which is the argument TestADuplicateAddressDeclinesAndNeverAcquires
+	// makes about the same message.
+	r.waitDADRequested(t, test6Addr)
+	dad.answered()
+	r.waitDADStepped(t)
+	// And one settle for the DRAIN: waitDADStepped returns before the Step's
+	// actions have run, and the Decline read below is one of them.
+	r.settle(t)
+
+	if _, held := r.mgr.Lease(); held {
+		t.Error("the manager holds a lease for an address the runner reported in use")
+	}
+	if findSent6(r, wire.MsgDecline6) == nil {
+		t.Fatalf("no Decline left the host after the runner reported a duplicate (RFC 9915 section 18.2.10.1 makes it a MUST); the machine's last Steps were:\n%s", r.tail6(6))
+	}
+	if asked := dad.asked(); len(asked) != 1 || asked[0].String() != test6Addr {
+		t.Fatalf("the runner was asked about %v, want exactly [%s]", asked, test6Addr)
+	}
+}
+
+// TestWithoutARunnerTheCallerStillOwesTheResult is the preservation control.
+//
+// The seam is a WIDENING of Config, and a widening needs a row saying the old
+// shape still behaves: every caller built before lease.DADRunner existed
+// passes no runner and answers by hand, and this is the test that would fail
+// if the new arm had swallowed that path. It also pins the difference where a
+// reader will find it — the two journal notes are not the same sentence, and
+// the one written here names who owes the answer.
+func TestWithoutARunnerTheCallerStillOwesTheResult(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+
+	// The caller answers, exactly as every v6 test in this package did before
+	// the port existed, and the machine acquires. settleDAD is the barrier for
+	// both halves: it returns only once the request has been journalled AND
+	// the answer stepped, so the snapshot below is taken after both.
+	r.settleDAD(t, test6Addr, false)
+	if e := r.takeEvent(t); e.Kind != Acquired {
+		t.Fatalf("the first event is %s, want acquired", e.Kind)
+	}
+
+	if got := r.mgr.Stats().DADChecksStarted; got != 1 {
+		t.Errorf("DADChecksStarted = %d, want 1; the request is counted with or without a runner", got)
+	}
+
+	var note string
+	for _, e := range r.mgr.Journal6() {
+		if e.Note && strings.Contains(e.Reason, "duplicate address detection") {
+			note = e.Reason
+		}
+	}
+	if !strings.Contains(note, "no runner configured, the caller owes the result") {
+		t.Fatalf("the journal note for a runner-less client reads %q; a reader cannot tell it from a client whose runner was asked", note)
+	}
 }

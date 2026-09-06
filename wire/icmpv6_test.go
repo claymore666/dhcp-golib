@@ -736,3 +736,188 @@ func FuzzDecodeRouterAdvert(f *testing.F) {
 		}
 	})
 }
+
+// ------------------------------------------------- Neighbor Solicitation --
+
+// TestTheKernelsOwnDADSolicitDecodes settles the decoder against a frame this
+// package did not build.
+//
+// The fixture is Linux's own duplicate-address-detection solicitation for
+// fd00:99::5150, captured in the namespace. It is the message RFC 4862 §5.4.3
+// is written about, and it is worth more than a generated one for two reasons:
+// its source is the unspecified address, which is the condition that separates
+// a duplicate from an address resolution, and it carries RFC 7527's Nonce
+// option (type 14) — an option this package does not decode and therefore has
+// to WALK PAST. A decoder that refused an unknown option would refuse every
+// Linux host's DAD probe and report every contested address free.
+func TestTheKernelsOwnDADSolicitDecodes(t *testing.T) {
+	ns, err := DecodeNeighborSolicit(capKernelDAD)
+	if err != nil {
+		t.Fatalf("DecodeNeighborSolicit(kernel DAD): %v", err)
+	}
+	if want := addr(t, "fd00:99::5150"); ns.Target != want {
+		t.Errorf("Target = %s, want %s", ns.Target, want)
+	}
+	// §4.3: the Source Link-Layer Address option "MUST NOT be included when
+	// the source IP address is the unspecified address", and the kernel does
+	// not include one. A decoder reporting it present here would make ring 3's
+	// §7.1.1 check refuse the frame.
+	if ns.HasSourceLinkAddr {
+		t.Errorf("HasSourceLinkAddr = true on a solicitation whose only option is the Nonce")
+	}
+	// The frame's own checksum verifies over the pseudo-header of the two
+	// addresses it was sent between, which is what says the octets above are
+	// the octets that crossed the link.
+	if !VerifyICMPv6Checksum(addr(t, capKernelDADSrc), addr(t, capKernelDADDst), capKernelDAD) {
+		t.Errorf("the captured kernel DAD solicitation does not verify against its own addresses")
+	}
+}
+
+// TestOurOwnDADSolicitDecodesBack is the round trip, and it is here to keep
+// the pair honest rather than to prove the encoder: capOurDAD is the frame
+// EncodeDADNeighborSolicit produced, recorded off an AF_PACKET socket where no
+// kernel touched it. Decoding it back is the only row that says the two halves
+// of this package agree about where the Target Address sits.
+func TestOurOwnDADSolicitDecodesBack(t *testing.T) {
+	ns, err := DecodeNeighborSolicit(capOurDAD)
+	if err != nil {
+		t.Fatalf("DecodeNeighborSolicit(our DAD): %v", err)
+	}
+	if want := addr(t, "fd00:99::defe"); ns.Target != want {
+		t.Errorf("Target = %s, want %s", ns.Target, want)
+	}
+	if ns.HasSourceLinkAddr {
+		t.Errorf("HasSourceLinkAddr = true on a message the encoder puts no option in")
+	}
+}
+
+// TestNeighborSolicitReadsTheSourceLinkAddrOption drives the OTHER value of
+// the flag, which no captured frame in this package carries.
+//
+// It is the address-resolution solicitation an ordinary node sends: a unicast
+// source, and therefore §4.3's option present. Without this row
+// HasSourceLinkAddr is false in every test and a decoder that never set it
+// would pass them all — and ring 3's §7.1.1 check ("If the IP source address
+// is the unspecified address, there is no source link-layer address option in
+// the message") would then never refuse anything.
+func TestNeighborSolicitReadsTheSourceLinkAddrOption(t *testing.T) {
+	target := addr(t, "fd00:99::100")
+	body := make([]byte, nsFixedLen)
+	body[0] = ICMPv6NeighborSolicit
+	t16 := target.As16()
+	copy(body[8:24], t16[:])
+	opt, err := encodeLinkAddrOption(NDOptSourceLinkAddr, []byte{0xea, 0x49, 0x4e, 0xe5, 0x31, 0xed})
+	if err != nil {
+		t.Fatalf("encodeLinkAddrOption: %v", err)
+	}
+	body = append(body, opt...)
+
+	ns, err := DecodeNeighborSolicit(body)
+	if err != nil {
+		t.Fatalf("DecodeNeighborSolicit: %v", err)
+	}
+	if ns.Target != target {
+		t.Errorf("Target = %s, want %s", ns.Target, target)
+	}
+	if !ns.HasSourceLinkAddr {
+		t.Errorf("HasSourceLinkAddr = false on a solicitation carrying option type %d", NDOptSourceLinkAddr)
+	}
+	if got, want := ns.String(), "NS target=fd00:99::100 +sllao"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+// TestNeighborSolicitRefusesWhatSection711Refuses drives every refusal the
+// decoder can make from the message's own octets, and names the one it must
+// NOT make.
+//
+// The last row is the point of the table. §7.1.1's remaining checks are about
+// the IPv6 header — the hop limit, the checksum and the two conditions on the
+// source address — and a decoder that tried to make them here would have to
+// invent the evidence. runtime.NDSocket makes them, and the "unknown option"
+// row is the same boundary from the other side: an option this package cannot
+// read is not a malformed packet.
+func TestNeighborSolicitRefusesWhatSection711Refuses(t *testing.T) {
+	good := func() []byte {
+		b := make([]byte, nsFixedLen)
+		b[0] = ICMPv6NeighborSolicit
+		a := addr(t, "fd00:99::100").As16()
+		copy(b[8:24], a[:])
+		return b
+	}
+	for _, tc := range []struct {
+		name string
+		body func() []byte
+		want error
+	}{
+		{
+			// §7.1.1: "ICMP length (derived from the IP length) is 24 or more
+			// octets."
+			name: "shorter than the fixed part",
+			body: func() []byte { return good()[:nsFixedLen-1] },
+			want: ErrICMPv6Short,
+		},
+		{
+			name: "a different ICMPv6 type",
+			body: func() []byte { b := good(); b[0] = ICMPv6NeighborAdvert; return b },
+			want: ErrICMPv6Type,
+		},
+		{
+			// §7.1.1: "ICMP Code is 0."
+			name: "a non-zero Code",
+			body: func() []byte { b := good(); b[1] = 1; return b },
+			want: ErrICMPv6Validity,
+		},
+		{
+			// §7.1.1: "Target Address is not a multicast address."
+			name: "a multicast Target Address",
+			body: func() []byte {
+				b := good()
+				m := addr(t, "ff02::1").As16()
+				copy(b[8:24], m[:])
+				return b
+			},
+			want: ErrICMPv6Validity,
+		},
+		{
+			// §4.6: "The value 0 is invalid. Nodes MUST silently discard an ND
+			// packet that contains an option with length zero."
+			name: "an option declaring length zero",
+			body: func() []byte { return append(good(), NDOptSourceLinkAddr, 0, 0, 0, 0, 0, 0, 0) },
+			want: ErrNDOption,
+		},
+		{
+			name: "an option running past the message",
+			body: func() []byte { return append(good(), NDOptSourceLinkAddr, 4, 0, 0) },
+			want: ErrNDOption,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, err := DecodeNeighborSolicit(tc.body())
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if ns != nil {
+				t.Errorf("a refused solicitation returned %v", ns)
+			}
+		})
+	}
+
+	t.Run("an option this package cannot read is walked past", func(t *testing.T) {
+		// RFC 7527's Nonce is one such option and the kernel sends it; so is
+		// anything a future RFC adds. §4.6: "Future versions of this protocol
+		// may define new option types.  Receivers MUST silently ignore any
+		// options they do not recognize and continue processing the message."
+		body := append(good(), 0xFE, 1, 0, 0, 0, 0, 0, 0)
+		ns, err := DecodeNeighborSolicit(body)
+		if err != nil {
+			t.Fatalf("DecodeNeighborSolicit with an unknown option: %v", err)
+		}
+		if want := addr(t, "fd00:99::100"); ns.Target != want {
+			t.Errorf("Target = %s, want %s", ns.Target, want)
+		}
+		if ns.HasSourceLinkAddr {
+			t.Errorf("HasSourceLinkAddr = true, but the only option present is type 0xFE")
+		}
+	})
+}

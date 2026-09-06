@@ -1318,11 +1318,32 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	// can produce. The SHOULD is declined here, in writing, rather than
 	// implemented untested.
 	bad := m.pending
-	out.journal(m, fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs)))
+	note := fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs))
+	out.journal(m, note)
+
+	// WHAT THE CHASSIS IS TOLD WHEN NOTHING WAS ACQUIRED, and it is
+	// machine_acd.go's acdConflict arm read for this family. A duplicate found
+	// here produces no ActLeaseLost, because loseLease is guarded on holding a
+	// lease and this address was only pending; without this action the whole
+	// event would exist in the journal alone, which is not something a counter
+	// can be derived from. The asymmetry it removes is sharper than the v4
+	// one: the DAD DEADLINE arm above already reports ReasonDADIncomplete, so
+	// before this line "no answer arrived" reached the caller and "the answer
+	// was: another node has it" did not.
+	//
+	// held is read BEFORE declineAll, and the two outcomes are MUTUALLY
+	// EXCLUSIVE for ring 2's reason: a renewal that moved onto a new address
+	// runs this check with a lease still held, and that path announces the
+	// loss through ActLeaseLost instead. Ring 2 adds the two into one
+	// ConflictsDetected, so a machine that emitted both would double-count.
+	held := m.haveLse
 	m.dropPending()
 	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
 		m.restartDiscovery(n, r, o)
 	})
+	if !held {
+		out.failed(m, ReasonConflict, note)
+	}
 }
 
 // ---------------------------------------------------------- bound states --

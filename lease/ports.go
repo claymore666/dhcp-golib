@@ -331,3 +331,39 @@ type PacketRingV6 interface {
 	Record(CapturedPacketV6)
 	Packets() []CapturedPacketV6
 }
+
+// DADRunner performs RFC 4862 section 5.4's duplicate address detection for
+// one address and reports the verdict.
+//
+// IT IS THE OTHER HALF OF proto.ActStartDAD, and it exists because that action
+// otherwise reached nobody. The machine emits it, arms proto.DADTimeout, and
+// waits for exactly one proto.EvDADResult per address; before this port the
+// only thing that could supply that result was a caller calling
+// Manager.ReportDADResult by hand, so a client wired to real sockets and left
+// alone would fail every acquisition on the deadline. See Manager's
+// ActStartDAD arm.
+//
+// IT IS OPTIONAL, AND THE NIL VALUE IS THE BEHAVIOUR THAT SHIPPED BEFORE IT.
+// A Config without one counts the request and journals it and nothing else,
+// exactly as before, so a caller supplying its own answer through
+// ReportDADResult is unaffected and no test that did so has to change.
+// runtime.NewClient6 always supplies one, because a client that owns the
+// sockets has no excuse not to.
+//
+// Start MUST NOT BLOCK. It is called from the manager's own goroutine in the
+// middle of a Step, and RFC 4862 section 5.4.2's schedule is at least
+// RetransTimer long; a Start that waited for the verdict would stop the
+// manager answering anything for the duration, including the very exchange the
+// address came from.
+//
+// report IS CALLED EXACTLY ONCE PER Start, from another goroutine, and it is a
+// callback rather than a reference back to the Manager for a construction
+// reason: a runner holding the manager and a manager holding the runner is a
+// cycle, and the place that has to break it is the place a test cannot reach.
+// Calling it twice for one address answers a question ring 1 asked once —
+// proto.Machine6's takeDADResult ignores and journals the second, so the
+// damage is bounded, but the count is then wrong and the count is the evidence.
+// Not calling it at all is the case proto.DADTimeout exists for.
+type DADRunner interface {
+	Start(addr netip.Addr, report func(addr netip.Addr, duplicate bool))
+}

@@ -109,6 +109,12 @@ type Config struct {
 	LinkLocal netip.Addr
 	LinkHW    []byte
 
+	// DAD is what performs RFC 4862 section 5.4's duplicate address
+	// detection when the machine asks for it. It is optional and the nil
+	// value is the behaviour that shipped before the port existed; see
+	// DADRunner and the ActStartDAD arm below.
+	DAD DADRunner
+
 	// Journal6 and PacketsV6 are the v6 halves of Journal and Packets, and
 	// they are optional the same way.
 	Journal6  Journal6
@@ -927,16 +933,32 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 
 		case proto.ActStartDAD:
 			// RING 3 OWNS THE EXCHANGE AND THIS RING OWNS NOTHING BUT THE
-			// COUNT. RFC 4862 section 5.4's Neighbor Solicitations, the join
-			// of the solicited-node multicast group, and RFC 7527 section
-			// 4.1's looped-back frames are M7c's; what reaches ring 1 is one
-			// proto.EvDADResult per address. Until that lands there is
-			// nothing here to do but say the address was handed over — and
-			// the machine has already armed its own deadline for the answer,
-			// so a ring 3 that never answers produces a fault rather than a
-			// wait.
+			// HANDOVER. RFC 4862 section 5.4's Neighbor Solicitations, the
+			// join of the solicited-node multicast group, and RFC 7527
+			// section 4.1's looped-back frames all need a socket, which is
+			// runtime.DADProbe's; what comes back is one proto.EvDADResult
+			// per address, through the callback below.
+			//
+			// THE CALLBACK GOES THROUGH ReportDADResult AND NOT STRAIGHT INTO
+			// THE MACHINE. It arrives on another goroutine — the runner's —
+			// and every other outside input to this manager takes the same
+			// request channel for that reason; a direct Step from a runner's
+			// goroutine would race every Step this loop makes. It also means
+			// a result the machine no longer wants is dropped and journalled
+			// there rather than here, in the one place that rule is written.
+			//
+			// A Config WITHOUT A RUNNER counts and journals and nothing else,
+			// which is what this arm did before the port existed. The machine
+			// has already armed its own deadline, so such a client fails the
+			// acquisition with proto.ReasonDADIncomplete rather than waiting
+			// — a fault, not a hang, and that is the point.
 			mg.bump(func(s *Stats) { s.DADChecksStarted++ })
-			mg.journalNote("duplicate address detection requested for " + a.Target.String() + " (RFC 4862 section 5.4; ring 3 performs it)")
+			if mg.cfg.DAD != nil {
+				mg.journalNote("duplicate address detection started for " + a.Target.String() + " (RFC 4862 section 5.4)")
+				mg.cfg.DAD.Start(a.Target, mg.ReportDADResult)
+			} else {
+				mg.journalNote("duplicate address detection requested for " + a.Target.String() + " (RFC 4862 section 5.4; no runner configured, the caller owes the result)")
+			}
 
 		case proto.ActRouterObserved:
 			// A diagnostic and NOTHING ELSE (design Q2): nothing in this
@@ -1054,6 +1076,17 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 					// construction — ring 1 emits ActFailed with this reason
 					// only when no lease is held.
 					s.ConflictsDetected++
+					if mg.machine6 != nil {
+						// The same split the Lost arm makes, and the v6 path
+						// arrives here rather than there in the case that
+						// matters: RFC 4862 section 5.4 runs BEFORE the lease
+						// is announced, so a duplicate on a fresh acquisition
+						// never held one. Counting it only in the Lost arm
+						// left DADConflicts at zero for the ordinary
+						// duplicate and told WireCounters' reader that a v6
+						// conflict had come from RFC 5227's check.
+						s.DADConflicts++
+					}
 				}
 			})
 			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})

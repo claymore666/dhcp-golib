@@ -275,6 +275,26 @@ why() {
 	table | awk -v n="$1" '$1 == n { $1 = ""; $2 = ""; sub(/^[ \t]+/, ""); print; found = 1 } END { if (!found) print "(row absent)" }'
 }
 
+# out_has [grep-flags] PATTERN — does the run's captured output carry PATTERN?
+#
+# MEASURED 2026-09-06, and it is the reason this helper exists at all:
+#
+#     out_has PATTERN
+#
+# returns 141, not 0, whenever PATTERN matches early enough that grep exits
+# while printf still has bytes to write. grep -q stops at the first match and
+# closes the pipe; printf takes SIGPIPE; `set -o pipefail` reports the
+# PRODUCER's death and the caller reads a match as a miss. The failure is
+# keyed on the SIZE of $OUT and the POSITION of the match, so it is invisible
+# in every scenario whose subject prints little and appears the day one
+# scenario's subject prints a lot — v6-fixture-mode-drift captured a full
+# outer run, 1.4 MB, and reported "the diagnosis does not name the proof"
+# about a diagnosis that named it on the line the row itself had just
+# recorded.
+#
+# A here-string has no producer process to kill, so the match decides.
+out_has() { grep -q "$@" <<<"$OUT"; }
+
 FAILS=()
 note() { FAILS+=("$*"); }
 
@@ -287,7 +307,7 @@ sc_control() {
 	copy_tree "$d"
 	run_verify "$d"
 	[ "$RC" -eq 0 ] || note "an unmutated copy did not pass: exit $RC"
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: PASS' || note "no PASS verdict on a clean copy"
+	out_has '^VERDICT: PASS' || note "no PASS verdict on a clean copy"
 	# The copy must NOT have run this script again: if --inner did not take,
 	# every scenario below is measuring a doubly-nested run of unknown depth.
 	[ "$(row verify-oracle)" = ABSENT ] || note "--inner did not suppress the oracle; the run recursed"
@@ -308,9 +328,9 @@ sc_verdict_on_abort() {
 	# about WHERE the run stopped.
 	[ "$(row gate-roster)" = ABSENT ] ||
 		note "the run aborted but gate-roster is still in the table: $(row gate-roster)"
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: FAIL' ||
+	out_has '^VERDICT: FAIL' ||
 		note "an aborted verifier printed no FAIL verdict (this is the defect the EXIT trap exists for)"
-	printf '%s\n' "$OUT" | grep -q 'aborted before reaching its verdict' ||
+	out_has 'aborted before reaching its verdict' ||
 		note "the abort verdict does not say it aborted"
 }
 
@@ -322,7 +342,7 @@ sc_verdict_without_gomod() {
 	[ "$RC" -ne 0 ] || note "a tree with no go.mod passed"
 	# MEASURED 2026-08-28 by review: this route used to exit 1 printing no
 	# verdict line at all.
-	printf '%s\n' "$OUT" | grep -q '^VERDICT: FAIL' || note "no FAIL verdict with go.mod deleted"
+	out_has '^VERDICT: FAIL' || note "no FAIL verdict with go.mod deleted"
 	[ "$(row gate-roster)" = FAIL ] || note "gate-roster did not report the unmeasurable roster: $(row gate-roster)"
 }
 
@@ -453,7 +473,7 @@ sc_test_cache() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a cached suite result passed; nothing observes -count=1"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the cached result: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'cached' || note "the cached-result failure does not say it was cached"
+	out_has 'cached' || note "the cached-result failure does not say it was cached"
 }
 
 # verify_const NAME FILE — the value FILE declares for a numeric constant.
@@ -504,7 +524,7 @@ sc_ceiling_fires() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite over the ceiling passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the ceiling: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'ceiling' || note "the over-ceiling failure does not name the ceiling"
+	out_has 'ceiling' || note "the over-ceiling failure does not name the ceiling"
 	[ "$(row t2)" = PASS ] || note "the busy loop tripped T2; the ceiling is not what failed this run"
 }
 
@@ -590,7 +610,7 @@ GO
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite containing a test that never returns passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite did not report the hang: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'test timed out' || note "the failure does not name the timeout; something else failed this run"
+	out_has 'test timed out' || note "the failure does not name the timeout; something else failed this run"
 	[ "$(row t2)" = PASS ] || note "the planted hang tripped T2; the timeout is not what failed this run"
 }
 
@@ -673,8 +693,8 @@ sc_citation_underscore() {
 	[ "$RC" -ne 0 ] || note "citations of a Test_ and a Benchmark that do not exist passed"
 	[ "$(row citations)" = FAIL ] || note "citations did not see the underscore/Benchmark names: $(row citations)"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
-	printf '%s\n' "$OUT" | grep -q 'Test_neverWrittenAtAll' || note "the diagnosis does not name the Test_ token"
-	printf '%s\n' "$OUT" | grep -q 'BenchmarkNeverWrittenEither' || note "the diagnosis does not name the Benchmark token"
+	out_has 'Test_neverWrittenAtAll' || note "the diagnosis does not name the Test_ token"
+	out_has 'BenchmarkNeverWrittenEither' || note "the diagnosis does not name the Benchmark token"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -694,7 +714,7 @@ var whitewashProbe = "TestWhitewashedByAStringLiteral"'
 	[ "$RC" -ne 0 ] || note "a stale citation was whitewashed by a string literal in the same file"
 	[ "$(row citations)" = FAIL ] || note "citations was whitewashed: $(row citations)"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
-	printf '%s\n' "$OUT" | grep -q 'TestWhitewashedByAStringLiteral' || note "the diagnosis does not name the whitewashed token"
+	out_has 'TestWhitewashedByAStringLiteral' || note "the diagnosis does not name the whitewashed token"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -709,7 +729,7 @@ sc_citation_vacuous() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a citations scan that found no domain at all passed"
 	[ "$(row citations)" = FAIL ] || note "an empty citation domain did not fail the row: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'measured nothing' || note "the diagnosis does not say the scan measured nothing"
+	out_has 'measured nothing' || note "the diagnosis does not say the scan measured nothing"
 	[ "$(row unit-suite)" = PASS ] || note "the plant broke the suite: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -776,7 +796,7 @@ var probeDocURL2 = "https://example.invalid/x" // See TestRevCPhantomAfterAURL.'
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a stale citation following a URL on the same line passed"
 	[ "$(row citations)" = FAIL ] || note "citations went blind to the comment after a URL: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'TestRevCPhantomAfterAURL' || note "the diagnosis does not name the token after the URL"
+	out_has 'TestRevCPhantomAfterAURL' || note "the diagnosis does not name the token after the URL"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -797,7 +817,7 @@ sc_suite_args_detached() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a suite invocation that stops reading SUITE_ARGS passed"
 	[ "$(row bounds)" = FAIL ] || note "bounds did not see the detached invocation: $(row bounds)"
-	printf '%s\n' "$OUT" | grep -q 'expanding SUITE_ARGS' || note "the diagnosis does not name the missing expansion"
+	out_has 'expanding SUITE_ARGS' || note "the diagnosis does not name the missing expansion"
 }
 
 # disable_tests DIR GLOB — add `ignore` to the build constraint of each
@@ -843,7 +863,7 @@ sc_suite_one_package_disabled() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "one package's tests were switched off and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with a package's tests disabled: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'dhcp-golib/wire' || note "the diagnosis does not name the package that ran no test"
+	out_has 'dhcp-golib/wire' || note "the diagnosis does not name the package that ran no test"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -858,7 +878,7 @@ sc_suite_domain_unmeasured_module() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with its domain built from an empty module path"
 	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable domain did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
 sc_suite_domain_unmeasured_walk() {
@@ -870,7 +890,7 @@ sc_suite_domain_unmeasured_walk() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with no package in its domain at all"
 	[ "$(row unit-suite)" = FAIL ] || note "an empty domain walk did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the domain was unmeasured"
 }
 
 sc_suite_files_disabled_partial() {
@@ -899,7 +919,7 @@ sc_suite_files_disabled_partial() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "ten test files were switched off, every package kept one, and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "unit-suite passed with most of the suite disabled: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'declared but never run' || note "the diagnosis does not name the declared tests that did not run"
+	out_has 'declared but never run' || note "the diagnosis does not name the declared tests that did not run"
 	[ "$(row gofmt)" = PASS ] || note "the plant is unformatted; this run failed for a reason this scenario does not name"
 }
 
@@ -913,7 +933,7 @@ sc_suite_roster_unmeasured() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unit-suite passed with its declared-test roster unmeasurable"
 	[ "$(row unit-suite)" = FAIL ] || note "an unmeasurable roster did not fail the row: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'UNMEASURED' || note "the diagnosis does not say the roster was unmeasured"
+	out_has 'UNMEASURED' || note "the diagnosis does not say the roster was unmeasured"
 }
 
 sc_record_refuses_uncounted_pass() {
@@ -926,7 +946,7 @@ sc_record_refuses_uncounted_pass() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a row recorded PASS with no domain size and the run passed"
 	[ "$(row gofmt)" = FAIL ] || note "an uncounted PASS was not rewritten to FAIL: $(row gofmt)"
-	printf '%s\n' "$OUT" | grep -q 'no numeric domain size' || note "the diagnosis does not name the missing count"
+	out_has 'no numeric domain size' || note "the diagnosis does not name the missing count"
 }
 
 sc_record_refuses_zero_count() {
@@ -938,7 +958,7 @@ sc_record_refuses_zero_count() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a row recorded PASS having examined zero items and the run passed"
 	[ "$(row gofmt)" = FAIL ] || note "a zero-domain PASS was not rewritten to FAIL: $(row gofmt)"
-	printf '%s\n' "$OUT" | grep -q 'examined 0 items' || note "the diagnosis does not say the domain was empty"
+	out_has 'examined 0 items' || note "the diagnosis does not say the domain was empty"
 }
 
 sc_row_deleted() {
@@ -951,7 +971,7 @@ sc_row_deleted() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a deleted row left the run passing"
 	[ "$(row vet)" = ABSENT ] || note "this scenario is not measuring a deleted row: vet is $(row vet)"
-	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+	out_has 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
 }
 
 sc_row_added() {
@@ -967,7 +987,7 @@ record "undeclared-row" PASS "invented" 1'
 	# would pass over a run that failed for some other reason entirely.
 	[ "$(row undeclared-row)" = PASS ] ||
 		note "the invented row is not in the table, so this scenario is not measuring an undeclared row: $(row undeclared-row)"
-	printf '%s\n' "$OUT" | grep -q 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
+	out_has 'the rows recorded are not the rows required' || note "the verdict does not name the roster mismatch"
 }
 
 sc_oracle_stub_total() {
@@ -984,7 +1004,7 @@ sc_oracle_stub_total() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "the oracle was replaced by 'exit 0' and the arbiter still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a stubbed oracle did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
+	out_has 'not the account of a run' || note "the diagnosis does not say the oracle's answer was not an answer"
 }
 
 sc_oracle_stub_partial() {
@@ -1005,7 +1025,7 @@ sc_oracle_stub_partial() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle claiming 3 scenarios against a manifest declaring ${#MANIFEST_SCENARIOS[@]} still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a partial stub did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'verify.manifest.sh declares' || note "the diagnosis does not compare reported against declared"
+	out_has 'verify.manifest.sh declares' || note "the diagnosis does not compare reported against declared"
 }
 
 sc_oracle_names_fabricated() {
@@ -1025,7 +1045,7 @@ sc_oracle_names_fabricated() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported the right number and ran nothing still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a name-free stub did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'reported no passing result for scenario' ||
+	out_has 'reported no passing result for scenario' ||
 		note "the diagnosis does not say which declared scenarios went unaccounted for"
 }
 
@@ -1059,7 +1079,7 @@ sc_manifest_missing() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the arbiter ran with no statement of what must be there"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded without a manifest: citations is $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'no statement of what must be there' ||
+	out_has 'no statement of what must be there' ||
 		note "the diagnosis does not say the expectation itself was missing"
 }
 
@@ -1095,7 +1115,7 @@ sc_manifest_count_lies() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the manifest disagreed with itself and the run passed"
 	[ "$(row citations)" = ABSENT ] || note "rows were recorded over an incoherent manifest: citations is $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'does not agree with itself' || note "the diagnosis does not name the disagreement"
+	out_has 'does not agree with itself' || note "the diagnosis does not name the disagreement"
 }
 
 sc_manifest_scenario_removed() {
@@ -1161,7 +1181,7 @@ sc_self_check_guard_deleted() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "record's guard was removed and the run passed"
 	[ "$(row self-check)" = FAIL ] || note "the in-process probe did not notice its own guard was gone: $(row self-check)"
-	printf '%s\n' "$OUT" | grep -q 'not enforcing its contract' || note "the diagnosis does not name the choke point"
+	out_has 'not enforcing its contract' || note "the diagnosis does not name the choke point"
 }
 
 sc_self_check_skip_arm_deleted() {
@@ -1191,12 +1211,12 @@ sc_self_check_skip_arm_deleted() {
 	[ "$RC" -ne 0 ] || note "the SKIPPED arm and the probe that drives it were deleted together and the run passed"
 	[ "$(row self-check)" = FAIL ] ||
 		note "the row did not notice a probe was missing: $(row self-check) — $(why self-check)"
-	printf '%s\n' "$OUT" | grep -q 'a probe that dies with the arm it drives' ||
+	out_has 'a probe that dies with the arm it drives' ||
 		note "the diagnosis does not say that a probe was deleted with its arm"
 	# The negative control for the same run: the count arm's own probes are
 	# untouched, so record() is still enforcing its contract. Without this the
 	# scenario is satisfied by a plant that breaks record() outright.
-	printf '%s\n' "$OUT" | grep -q 'not enforcing its contract' &&
+	out_has 'not enforcing its contract' &&
 		note "record() stopped enforcing its contract; this run failed for a reason this scenario does not name"
 	return 0
 }
@@ -1215,7 +1235,7 @@ sc_min_declared_tests_floor() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a whole test package was deleted and every derived population moved with it"
 	[ "$(row unit-suite)" = FAIL ] || note "the declared-test floor did not fire: unit-suite is $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'below the floor of' || note "the diagnosis does not name the floor"
+	out_has 'below the floor of' || note "the diagnosis does not name the floor"
 }
 
 sc_citation_embedded_identifier() {
@@ -1246,7 +1266,7 @@ sc_citation_word_start() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a citation at a word start was not caught"
 	[ "$(row citations)" = FAIL ] || note "the word-boundary rule blinded the scan: $(row citations)"
-	printf '%s\n' "$OUT" | grep -q 'TestRevCWordStartNeverWritten' || note "the diagnosis does not name the token"
+	out_has 'TestRevCWordStartNeverWritten' || note "the diagnosis does not name the token"
 }
 
 sc_gate_panic() {
@@ -1367,7 +1387,7 @@ sc_doc_number_reintroduced() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a number an instrument recomputes came back into prose and the run passed"
 	[ "$(row doc-numbers)" = FAIL ] || note "the doc sweep did not see a removed number return: $(row doc-numbers)"
-	printf '%s\n' "$OUT" | grep -q 'name the instrument' ||
+	out_has 'name the instrument' ||
 		note "the diagnosis does not say what to do instead of writing the number"
 }
 
@@ -1541,7 +1561,7 @@ sc_control() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that lost a scenario without a word still passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a silent scenario did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'Silent: control' ||
+	out_has 'Silent: control' ||
 		note "the refusal does not NAME the scenario that went silent; the count alone is a diff of two sorted lists"
 }
 
@@ -1571,7 +1591,7 @@ sc_oracle_skip_on_unchanged_arbiter() {
 	# The skip must SAY what it covered. A verdict that means "not measured"
 	# and gives no account of what it declined to measure is the shape this
 	# whole row exists to refuse.
-	printf '%s\n' "$OUT" | grep -q 'arbiter file(s)' ||
+	out_has 'arbiter file(s)' ||
 		note "the skip does not name the file set its hash covers"
 	# The stamp TRAVELS: every scenario in this file copies the tree, and a
 	# stamp that granted a skip wherever it was copied would hand each of them
@@ -1677,7 +1697,7 @@ sc_netns_row_partition_broken() {
 	[ "$RC" -ne 0 ] || note "a netns row that ran one test of its roster and exited zero passed the run"
 	[ "$(row netns-suite)" = FAIL ] ||
 		note "the netns row did not notice its run had shrunk: $(row netns-suite) — $(why netns-suite)"
-	printf '%s\n' "$OUT" | grep -q 'reported no verdict for' ||
+	out_has 'reported no verdict for' ||
 		note "the diagnosis does not name the tests the run never reported"
 	[ "$(row unit-suite)" = PASS ] ||
 		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
@@ -1716,9 +1736,9 @@ sc_suite_partition_skip_inert() {
 	[ "$RC" -ne 0 ] || note "the pure suite ran a test the netns row owns and the run passed"
 	[ "$(row unit-suite)" = FAIL ] ||
 		note "the pure suite did not notice it had run the other row's test: $(row unit-suite) — $(why unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'did not hold them back' ||
+	out_has 'did not hold them back' ||
 		note "the diagnosis does not name the filter that failed"
-	printf '%s\n' "$OUT" | grep -qF "$leaked" ||
+	out_has -F "$leaked" ||
 		note "the diagnosis does not name $leaked, the test that leaked across the partition"
 }
 
@@ -1733,6 +1753,98 @@ sc_netns_row_control() {
 	[ "$RC" -eq 0 ] || note "an untouched tree did not pass with the netns row in it"
 	[ "$(row netns-suite)" = PASS ] || note "the netns row did not pass on an untouched tree: $(row netns-suite) — $(why netns-suite)"
 	[ "$(row unit-suite)" = PASS ] || note "the pure suite did not pass beside it: $(row unit-suite) — $(why unit-suite)"
+}
+
+# --------------------------------------- the v6 fixture's two traps (M7c) ----
+#
+# Design section A.4 names two ways a v6 netns proof goes green while measuring
+# nothing, and neither is visible from inside the proof:
+#
+#   Trap 1  green because no Router Advertisement ever arrived, so every
+#           assertion about one was made against a zero value or skipped.
+#   Trap 2  green because dnsmasq was serving a DIFFERENT mode from the one
+#           the test named, and the mode it was serving happened to satisfy
+#           the assertions that were made.
+#
+# Both scenarios plant in the FIXTURE rather than in the assertions, because
+# that is where the traps live: a test that measures nothing passes an
+# untouched fixture and a wrong one alike.
+
+sc_v6_fixture_mode_drift() {
+	# TRAP 2, driven. The SLAAC-only mode's dnsmasq argument is changed from
+	# "ra-only" to "ra-stateless": the fixture now runs a link that offers
+	# DHCPv6 for configuration, while TestASLAACOnlyLinkSaysThereIsNoDHCPv6
+	# still says the link offers no DHCPv6 at all.
+	#
+	# It is a ONE-WORD edit to an argument list and it changes nothing the
+	# test names — the interface, the prefix, the readiness line
+	# ("router advertisement on fd00:99::") are all still what they were, and
+	# dnsmasq still starts and still advertises. What changes is the answer:
+	# the O flag goes to 1 and dnsmasq logs "DHCPv6 stateless on", which is
+	# the line that mode declares it must NOT print.
+	#
+	# MEASURED 2026-09-06: before v6Mode grew its `absent` list this plant was
+	# INVISIBLE. The readiness line the SLAAC mode waited for is printed by
+	# three of the five modes, so waiting for it confirmed only that dnsmasq
+	# had started.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "v6-fixture-mode-drift"
+	edit "$d/runtime/dnsmasq6_linux_test.go" \
+		'",ra-only,64," + fmt.Sprint(test6LeaseSec)' \
+		'",ra-stateless,64," + fmt.Sprint(test6LeaseSec)'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "the v6 proofs passed against a fixture serving a mode they did not name"
+	[ "$(row netns-suite)" = FAIL ] ||
+		note "the netns row did not notice the fixture had drifted: $(row netns-suite) — $(why netns-suite)"
+	out_has 'TestASLAACOnlyLinkSaysThereIsNoDHCPv6' ||
+		note "the diagnosis does not name the proof whose fixture drifted"
+	# The preservation control: the OTHER rows are unmoved. A plant that broke
+	# the build, or the pure suite, would satisfy every check above while
+	# saying nothing about the fixture.
+	[ "$(row unit-suite)" = PASS ] ||
+		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
+}
+
+sc_v6_ra_absent() {
+	# TRAP 1, driven. --enable-ra is taken off the MANAGED-SILENT mode, so no
+	# Router Advertisement is emitted on that link at all while everything
+	# else about it is unchanged: dnsmasq still starts, still prints
+	# "DHCPv6, IP range fd00:99::10", still hears the Solicit and still
+	# answers nothing — so every DHCPv6 claim
+	# TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne makes remains
+	# true. The ONLY thing gone is the advertisement, which is the half of
+	# that test that separates "the server is there and is not answering" from
+	# "there is no router here at all".
+	#
+	# If the row still passes, every RA measurement in the file is decoration.
+	# That is exactly what Trap 1 is, and this is the scenario that catches it.
+	#
+	# WHICH MODE, and why it is this one. MEASURED 2026-09-06 against the
+	# dnsmasq 2.91 source: a --dhcp-range carrying ra-only or ra-stateless
+	# sets CONTEXT_RA and advertises whether or not --enable-ra is given, so
+	# the first draft of this scenario — which took the flag off the STATELESS
+	# mode — was a plant that changed nothing, and the row it was driving
+	# stayed green because there was nothing to notice. The flag decides the
+	# advertisement only where the range carries no ra-* keyword, which is
+	# v6Managed and v6ManagedSilent. v6ManagedSilent is the one used by
+	# exactly one proof, so the plant reddens one named test rather than
+	# whichever of six ran first.
+	local d="$1"
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "v6-ra-absent"
+	edit "$d/runtime/dnsmasq6_linux_test.go" \
+		'"--enable-ra",
+			// The server is up' \
+		'// The server is up'
+	run_verify_outer "$d"
+	[ "$RC" -ne 0 ] || note "the silent-server proof passed on a link that advertised nothing"
+	[ "$(row netns-suite)" = FAIL ] ||
+		note "the netns row did not notice the advertisement was gone: $(row netns-suite) — $(why netns-suite)"
+	out_has 'TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne' ||
+		note "the diagnosis does not name the proof that lost its advertisement"
+	[ "$(row unit-suite)" = PASS ] ||
+		note "the pure suite failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
 }
 
 # ------------------------------------------- README vs ExampleClient (6) ----
@@ -1773,7 +1885,7 @@ sc_readme_usage_drifts_in_the_example() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "the example drifted from the README and the run passed"
 	[ "$(row readme-usage)" = FAIL ] || note "the row did not see the example move: $(row readme-usage) — $(why readme-usage)"
-	printf '%s\n' "$OUT" | grep -q 'byte for byte' ||
+	out_has 'byte for byte' ||
 		note "the diagnosis does not say what the claim was that failed"
 }
 
@@ -1792,7 +1904,7 @@ sc_oracle_scope_fabricated() {
 	run_verify_outer "$d"
 	[ "$RC" -ne 0 ] || note "an oracle claiming the control ran at a scope it is not declared for passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a fabricated scope did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'scope:full' ||
+	out_has 'scope:full' ||
 		note "the breach does not name the scope the manifest declares"
 }
 
@@ -1935,7 +2047,7 @@ sc_oracle_too_fast() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported a perfect account in zero seconds passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "an instant fabrication did not fail its row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without doing the work' || note "the diagnosis does not say the oracle did not run"
+	out_has 'without doing the work' || note "the diagnosis does not say the oracle did not run"
 }
 
 sc_scenario_body_emptied() {
@@ -1978,9 +2090,9 @@ sc_scenario_body_emptied() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "a scenario reported PASS having observed nothing and the run passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "an emptied body did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+	out_has 'without observing what verify.manifest.sh says' ||
 		note "the diagnosis does not say the scenario observed nothing"
-	printf '%s\n' "$OUT" | grep -q 'record-refuses-uncounted-pass' ||
+	out_has 'record-refuses-uncounted-pass' ||
 		note "the diagnosis does not name which scenario stopped working"
 }
 
@@ -2011,7 +2123,7 @@ sc_observation_recorder_stubbed() {
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "every scenario observed nothing and the run passed"
 	[ "$(row verify-oracle)" = FAIL ] || note "a gutted recorder did not fail the oracle row: $(row verify-oracle)"
-	printf '%s\n' "$OUT" | grep -q 'without observing what verify.manifest.sh says' ||
+	out_has 'without observing what verify.manifest.sh says' ||
 		note "the diagnosis does not say the scenarios observed nothing"
 }
 
@@ -2040,7 +2152,7 @@ sc_min_declared_tests_margin() {
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "tests were added past the band, the manifest was not updated, and the run passed"
 	[ "$(row unit-suite)" = FAIL ] || note "the declared-test band did not fire upward: $(row unit-suite)"
-	printf '%s\n' "$OUT" | grep -q 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
+	out_has 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
 }
 
 # ------------------------------------------------------------------- driver --

@@ -399,6 +399,76 @@ func EncodeDADNeighborSolicit(target netip.Addr) (ICMPv6Packet, error) {
 	return ICMPv6Packet{Src: src, Dst: dst, Body: body}, nil
 }
 
+// NeighborSolicit is a decoded Neighbor Solicitation, RFC 4861 section 4.3 —
+// only the field a duplicate address detection reads.
+//
+// IT EXISTS FOR RFC 4862 section 5.4.3's DUPLICATE CASE and for nothing else.
+// A node running duplicate address detection has to read the solicitations it
+// receives, not only the advertisements: "If the source address of the
+// Neighbor Solicitation is the unspecified address, the solicitation is from a
+// node performing Duplicate Address Detection.  If the solicitation is from
+// another node, the tentative address is a duplicate and should not be used
+// (by either node)." Without a decoder for the inbound message that arm cannot
+// be implemented, and the check then reports a duplicate as free whenever the
+// other node also runs DAD rather than answering.
+//
+// The SOURCE ADDRESS is not in this struct because it is not in the ICMPv6
+// message: it is the IPv6 header's, which is ring 3's to read and to pass to
+// the same VerifyICMPv6Checksum call.
+type NeighborSolicit struct {
+	Target netip.Addr
+	// HasSourceLinkAddr says whether a Source Link-Layer Address option was
+	// present. It is carried because section 7.1.1 makes it a validity
+	// condition against the IP source address — "If the IP source address is
+	// the unspecified address, there is no source link-layer address option
+	// in the message" — and that source address is outside this message.
+	HasSourceLinkAddr bool
+}
+
+func (n *NeighborSolicit) String() string {
+	if n.HasSourceLinkAddr {
+		return fmt.Sprintf("NS target=%s +sllao", n.Target)
+	}
+	return fmt.Sprintf("NS target=%s", n.Target)
+}
+
+// DecodeNeighborSolicit parses one Neighbor Solicitation, RFC 4861 section 4.3.
+//
+// It makes the section 7.1.1 checks whose evidence is inside the ICMPv6
+// message — the Code octet, the length, the Target Address, and the option
+// walk — and no others. The remaining four are about the IPv6 header (hop
+// limit, checksum, and the two conditions on the source address) and are ring
+// 3's, exactly as DecodeRouterAdvert's are: ErrICMPv6Validity's doc draws that
+// boundary and this decoder sits on the same side of it.
+func DecodeNeighborSolicit(b []byte) (*NeighborSolicit, error) {
+	if len(b) < nsFixedLen {
+		return nil, fmt.Errorf("%w: Neighbor Solicitation is %d octet(s), want at least %d",
+			ErrICMPv6Short, len(b), nsFixedLen)
+	}
+	if b[0] != ICMPv6NeighborSolicit {
+		return nil, fmt.Errorf("%w: ICMPv6 type %d, want %d", ErrICMPv6Type, b[0], ICMPv6NeighborSolicit)
+	}
+	if err := requireZeroCode(b[1], "Neighbor Solicitation", "7.1.1"); err != nil {
+		return nil, err
+	}
+	target := netip.AddrFrom16([16]byte(b[8:24]))
+	if target.IsMulticast() {
+		return nil, fmt.Errorf("%w: Neighbor Solicitation Target Address %s is multicast, which RFC 4861 section 7.1.1 makes the packet one to silently discard",
+			ErrICMPv6Validity, target)
+	}
+	ns := &NeighborSolicit{Target: target}
+	err := walkNDOptions(b[nsFixedLen:], func(typ uint8, _ []byte) error {
+		if typ == NDOptSourceLinkAddr {
+			ns.HasSourceLinkAddr = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ns, nil
+}
+
 // ------------------------------------------------- Neighbor Advertisement --
 
 // NeighborAdvert is a decoded Neighbor Advertisement, RFC 4861 §4.4.

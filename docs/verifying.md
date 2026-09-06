@@ -294,6 +294,8 @@ roster-gate-deleted
 stale-citation
 t1-violation
 t2-violation
+v6-fixture-mode-drift
+v6-ra-absent
 verdict-without-gomod
 vet-violation
 ```

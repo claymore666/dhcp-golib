@@ -153,7 +153,59 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # The Go pin holds a separate literal as a low-water mark, `>=` only. That one
 # is NOT maintained in step and is not meant to be: it exists so that lowering
 # the number here cannot go below a level somebody once measured.
-MIN_DECLARED_TESTS=529
+#
+# M7c (v6 runtime): 529 -> 580, and the fifty-one are enumerated per file so
+# that the number is a record of what was added rather than a number somebody
+# raised until the row went green. Measured as the difference of two
+# `go run ./internal/tools/testroster` outputs, at f901589 and here; no test
+# was renamed or removed between them.
+#
+#   lease/manager6_test.go          (4)  AV6ConflictIsCountedAndReportedAsOne,
+#     TheConfiguredRunnerIsAskedAndItsAnswerIsTheMachines,
+#     TheConfiguredRunnersDuplicateVerdictDeclines,
+#     WithoutARunnerTheCallerStillOwesTheResult
+#   proto/machine6_test.go          (2)  ADuplicateOnAFreshAcquisitionIsReported
+#     AndNotOnlyJournalled, ADuplicateUnderAHeldLeaseReportsTheLossAndNotAFailure
+#   runtime/dad6_linux_test.go      (8)  ACancelledProbeAnswersNothing,
+#     AnAddressTheCodecRefusesIsReportedTakenNotFree,
+#     AVerdictDuringTheWaitWindowIsTheAnswer, OneRunReportsExactlyOnce,
+#     SilenceThroughTheWindowIsNotAVerdict, StartWithNoReportDoesNothing,
+#     TheDuplicateCheckSortsOneFrameTheWayRFC4862Does,
+#     TheOwnFramePredicateIsLengthSafe
+#   runtime/dnsmasq6_linux_test.go  (9)  AClientOnALinkWithNoRouterStillAcquires,
+#     ADuplicateAddressOnTheLinkIsDeclined,
+#     AManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne,
+#     AResumedV6LeaseConfirmsAgainstRealDnsmasq,
+#     ASLAACOnlyLinkSaysThereIsNoDHCPv6, AV6ClientAcquiresFromRealDnsmasq,
+#     AV6ClientOnAStatelessLinkIsConfiguredAndNotLeased,
+#     AV6ReleaseReachesRealDnsmasq, TheV6ClientKeepsTheNamespaceItWasBuiltIn
+#   runtime/ipudp6_test.go         (14)  ARealAdvertiseIsAcceptedAsUncompleted,
+#     ARealSolicitVerifiesAgainstItsOwnAddresses,
+#     AVerifiedFrameIsNotReportedUncompleted,
+#     BuildIPv6ICMPPutsExactlyTheChecksumsAddressesInTheHeader,
+#     BuildIPv6UDPWritesTheHeaderTheChecksumCovers,
+#     BuildRefusesAnAddressItCannotSend, IPv6UpperRefusesWhatItCannotWalk,
+#     ParseIPv6ICMPReadsARealRouterAdvertisement,
+#     ParseIPv6ICMPRefusesWhatIsNotICMPv6, ParseIPv6UDPChecksBothPorts,
+#     ParseIPv6UDPDiscardsAZeroChecksum, ParseIPv6UDPRefusesACorruptChecksum,
+#     TheKernelsPartialChecksumIsOurPseudoHeaderSum,
+#     TheV6ChecksumIsBoundedByThePayloadLengthAndNotTheFrame
+#   runtime/linklocal6_linux_test.go (2) InterfaceLinkLocalRefusesAn
+#     AddressTheKernelIsStillChecking, InterfaceLinkLocalReportsAFileItCannotRead
+#   runtime/nd_linux_test.go        (5)  TheMulticastMACIsRFC2464s,
+#     TheNDSocketDropsWhenAConsumerStalls,
+#     TheNDSocketMakesTheFourChecksItOwnsAndCountsEachApart,
+#     TheNDSocketRefusesAUnicastDestination,
+#     ThisHostsOwnFrameIsCountedAndKeptOffTheLeasePort
+#   runtime/platform_parity_test.go (3)  DADStatsDeclarationsAgree,
+#     NDStatsDeclarationsAgree, TransportStatsV6DeclarationsAgree
+#   wire/icmpv6_test.go             (4)  NeighborSolicitReadsTheSourceLinkAddrOption,
+#     NeighborSolicitRefusesWhatSection711Refuses, OurOwnDADSolicitDecodesBack,
+#     TheKernelsOwnDADSolicitDecodes
+#
+# The "Test" prefix is left off each name above so the lines fit; every one of
+# them carries it in the tree.
+MIN_DECLARED_TESTS=580
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -296,7 +348,19 @@ SELF_DRIVE_SURVIVES_N=5
 # delete the number.
 DOC_NUMBER_CEILING=64
 
-ORACLE_MEASURED_SECONDS=440
+# RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
+# 77 scenarios MANIFEST_SCENARIOS now declares: 623s, from the verify-oracle
+# row's own figure on a PASS. The population moved by two and the netns row
+# every full-scope scenario runs moved 53s -> 78s, which is where the rest of
+# the increase over the 440s above comes from.
+#
+# THE FEEDBACK IS STATED RATHER THAN HIDDEN, because this number pays for
+# itself: raising it raises ORACLE_MIN_SECONDS from 22s to 31s, and the fifteen
+# scenarios that reach the floor through fabricating_stub each sleep the floor
+# plus one, so the NEXT measurement of this same tree is about 34s higher
+# again (135s of sleep over four jobs). It is a low-water mark and understating
+# it is the safe direction, so it is not chased upward within a round.
+ORACLE_MEASURED_SECONDS=623
 ORACLE_MIN_PERCENT=5
 ORACLE_MIN_SECONDS=$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))
 
@@ -379,8 +443,10 @@ MANIFEST_SCENARIOS=(
 	self-check-skip-arm-deleted
 	suite-partition-skip-inert
 	scenario-rc-follows-the-verdict
+	v6-fixture-mode-drift
+	v6-ra-absent
 )
-MANIFEST_SCENARIOS_N=75
+MANIFEST_SCENARIOS_N=77
 
 # The scenarios that run the subject at the LIGHT scope: --inner --light, which
 # is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
@@ -591,9 +657,11 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"oracle-scope-fabricated|nonzero|verify-oracle:FAIL|ABSENT scope full"
 	"self-check-skip-arm-deleted|nonzero|self-check:FAIL|a probe that dies with the arm it drives leaves the arm undriven"
 	"suite-partition-skip-inert|nonzero|unit-suite:FAIL|the skip filter did not hold them back"
+	"v6-fixture-mode-drift|nonzero|netns-suite:FAIL|TestASLAACOnlyLinkSaysThereIsNoDHCPv"
+	"v6-ra-absent|nonzero|netns-suite:FAIL|TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne"
 	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=75
+MANIFEST_SCENARIO_CONTRACTS_N=77
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members

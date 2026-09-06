@@ -370,6 +370,95 @@ func withRateLimit(l RateLimit) rig6Option { return func(c *Config) { c.RateLimi
 
 func withResume6(l Lease) rig6Option { return func(c *Config) { c.Resume6 = &l } }
 
+func withDAD(d DADRunner) rig6Option { return func(c *Config) { c.DAD = d } }
+
+// fakeDAD is a DADRunner, and it is the port's contract rather than a stand-in
+// for runtime.DADProbe's exchange: it records the addresses it was asked
+// about and answers each with a fixed verdict.
+//
+// IT ANSWERS FROM ANOTHER GOROUTINE BECAUSE THE PORT SAYS report IS CALLED
+// FROM ONE. Manager calls Start while dispatching a Step, and
+// Manager.ReportDADResult posts into the same request channel that dispatch is
+// draining, so a runner that reported inline would deadlock the manager on its
+// first acquisition. A fake that got that wrong would pass this suite and the
+// real runner would hang; answering the way the doc comment requires is what
+// makes this fake evidence about the seam.
+type fakeDAD struct {
+	verdict bool
+	// silent models a runner that takes the question and never answers, which
+	// is the case ring 1's own deadline exists for.
+	silent bool
+
+	mu       sync.Mutex
+	done     *sync.Cond
+	started  []netip.Addr
+	inflight int
+}
+
+// idle returns the condition the answered barrier waits on, built on first use
+// under the lock its caller already holds.
+//
+// A sync.WaitGroup stood here and it was a RACE, MEASURED 2026-09-06 by the
+// race detector inside the arbiter's own unit-suite row: the manager goroutine
+// calls Start — and so Add — while the test goroutine is already inside Wait,
+// which is precisely the ordering WaitGroup forbids. It reproduced about one
+// run in three and it failed the whole pure suite when it did, so it was worth
+// more than the four lines it costs to state the wait over a counter this
+// fake owns.
+func (d *fakeDAD) idle() *sync.Cond {
+	if d.done == nil {
+		d.done = sync.NewCond(&d.mu)
+	}
+	return d.done
+}
+
+func (d *fakeDAD) Start(addr netip.Addr, report func(netip.Addr, bool)) {
+	d.mu.Lock()
+	d.started = append(d.started, addr)
+	if d.silent {
+		d.mu.Unlock()
+		return
+	}
+	d.inflight++
+	d.mu.Unlock()
+	go func() {
+		report(addr, d.verdict)
+		d.mu.Lock()
+		d.inflight--
+		d.idle().Broadcast()
+		d.mu.Unlock()
+	}()
+}
+
+// answered blocks until every report goroutine this fake started has posted
+// its verdict into the manager's request channel.
+//
+// IT IS WHAT KEEPS A REMOVED SEAM A FAILURE RATHER THAN A HANG. A test that
+// waited for the Acquired event instead would hang on exactly the mutant it
+// exists to catch — the ActStartDAD arm not calling Start at all — and
+// mutate.sh scores a hang as its own verdict and explicitly not as a kill.
+// MEASURED 2026-09-06: with `mg.cfg.DAD.Start(a.Target, mg.ReportDADResult)`
+// removed, a rig6.nextEvent-based version of these tests hung for the full 60s
+// timeout. With this barrier plus rig6.settle they FAIL, naming the missing
+// call.
+//
+// It returns IMMEDIATELY when nothing was started, which is the whole point:
+// "the runner answered" and "the runner was never asked" then differ by what
+// the journal and the event channel hold, which a settled read can state.
+func (d *fakeDAD) answered() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for d.inflight > 0 {
+		d.idle().Wait()
+	}
+}
+
+func (d *fakeDAD) asked() []netip.Addr {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]netip.Addr(nil), d.started...)
+}
+
 func newRig6(t *testing.T, p proto.Params6, behaviour server6Behaviour, opts ...rig6Option) *rig6 {
 	t.Helper()
 	return newRig6On(t, newFakeClock(), p, behaviour, opts...)
@@ -551,7 +640,30 @@ func (r *rig6) settleDAD(t *testing.T, addr string, duplicate bool) {
 	t.Helper()
 	r.waitDADRequested(t, addr)
 	r.mgr.ReportDADResult(netip.MustParseAddr(addr), duplicate)
-	r.journal.waitAppended(t, "the duplicate address detection answer for "+addr,
+	r.waitDADStepped(t)
+}
+
+// waitDADStepped blocks until the machine has STEPPED a duplicate-address
+// verdict — not until one was posted, which is a different claim.
+//
+// IT IS HERE BECAUSE settle CANNOT MAKE THIS CLAIM, and two settles cannot
+// make it either. settle fires the marker timer and waits for its Step;
+// Manager.Run selects between the timer channel and the request channel, so a
+// verdict already queued has an even chance of being served after the marker.
+// A second settle is a second coin toss, not a proof. MEASURED 2026-09-06:
+// with two settles and no journal barrier, the two tests that use this
+// helper's siblings — TestTheConfiguredRunnersDuplicateVerdictDeclines and
+// TestTheConfiguredRunnerIsAskedAndItsAnswerIsTheMachines — each failed about
+// two runs in thirty ("no event was emitted; the machine has settled in
+// DAD6"), and they took three oracle scenarios down with them.
+//
+// The journal entry is appended BEFORE the Step's actions drain (see
+// Manager.dispatch), so this barrier says the verdict was seen and NOT that
+// what it produced has happened. A caller that reads an event, a sent message
+// or a counter still needs a settle after it — takeEvent carries its own.
+func (r *rig6) waitDADStepped(t *testing.T) {
+	t.Helper()
+	r.journal.waitAppended(t, "the machine's Step on the runner's verdict",
 		func(e proto.JournalEntry6) bool { return e.Kind == proto.EvDADResult })
 }
 

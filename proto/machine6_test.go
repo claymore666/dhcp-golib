@@ -391,6 +391,69 @@ func TestADuplicateDeclinesAndRestarts(t *testing.T) {
 	}
 }
 
+// TestADuplicateOnAFreshAcquisitionIsReportedAndNotOnlyJournalled is the
+// counterpart of TestTheDADDeadlineIsAFaultAndNotAnAcquisition, and it exists
+// because the two arms disagreed.
+//
+// A deadline with no result already produced ActFailed{ReasonDADIncomplete}.
+// A result that said "another node has this address" produced a Decline, a
+// restart, and NOTHING the caller could see — so the more informative outcome
+// was the silent one, and ring 2's ConflictsDetected and DADConflicts stayed
+// at zero through a conflict that actually happened. Measured against real
+// dnsmasq with a second holder on the link (runtime's
+// TestADuplicateAddressOnTheLinkIsDeclined) before it was fixed here.
+//
+// machine_acd.go's acdConflict arm is the v4 statement of the same rule, and
+// its comment is the argument: a conflict "visible only in the journal ... is
+// not something a counter can be derived from".
+func TestADuplicateOnAFreshAcquisitionIsReportedAndNotOnlyJournalled(t *testing.T) {
+	m, _ := solicit6(t, testParams6())
+	m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+	m.Step(at(3), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr))
+
+	_, acts := m.Step(at(4), 9, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), true))
+
+	f, ok := find(acts, ActFailed)
+	if !ok {
+		t.Fatal("a duplicate on an address that was never bound produced no ActFailed: the conflict reached the caller only as a journal line")
+	}
+	if f.Reason != ReasonConflict {
+		t.Errorf("reason %s, want %s: somebody else answered for the address, which is not the same as nobody answering at all", f.Reason, ReasonConflict)
+	}
+	if f.Note == "" {
+		t.Error("the ActFailed carries no note; the journal line it is derived from names how many addresses of the IA were in use")
+	}
+	// AND NOT BOTH. Ring 2 adds ActLeaseLost{ReasonConflict} and
+	// ActFailed{ReasonConflict} into one ConflictsDetected, so a machine that
+	// emitted both here would count this conflict twice.
+	if _, ok := find(acts, ActLeaseLost); ok {
+		t.Error("the same conflict produced ActLeaseLost as well as ActFailed; ring 2 counts both, so this conflict would be counted twice")
+	}
+}
+
+// TestADuplicateUnderAHeldLeaseReportsTheLossAndNotAFailure is the other half
+// of the exclusivity above, driven from the state where a lease IS held.
+//
+// §18.2.6-era renewals can move a client onto an address it did not have, and
+// freshAddrs runs the check on exactly those. The caller must be told the
+// lease is gone — which is an ActLeaseLost — and must NOT also be told an
+// acquisition failed, because ring 2 adds the two.
+func TestADuplicateUnderAHeldLeaseReportsTheLossAndNotAFailure(t *testing.T) {
+	m := bind6(t, testParams6(), dnsmasqLeasedAddr)
+	_, acts := m.Step(at(100), 9, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), true))
+
+	l, ok := find(acts, ActLeaseLost)
+	if !ok {
+		t.Fatal("a duplicate under a bound lease produced no ActLeaseLost")
+	}
+	if l.Reason != ReasonConflict {
+		t.Errorf("ActLeaseLost reason %s, want %s", l.Reason, ReasonConflict)
+	}
+	if _, ok := find(acts, ActFailed); ok {
+		t.Error("the same conflict produced ActFailed as well as ActLeaseLost; ring 2 counts both, so this conflict would be counted twice")
+	}
+}
+
 // TestTheDeclineGivesUpAtDecMaxRC is §18.2.8's "MRC: DEC_MAX_RC".
 func TestTheDeclineGivesUpAtDecMaxRC(t *testing.T) {
 	p := testParams6()

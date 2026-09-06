@@ -281,11 +281,12 @@ const (
 	// look at which pointer was non-nil to decide where to write it, which is
 	// ring 3 reading ring 0's output to route it.
 	//
-	// Dest.Src IS ZERO HERE AND RING 3 FILLS IT. RFC 9915 §16 requires the
-	// source of a client message to be an address on the sending interface,
-	// and the only one a client has before it is bound is the link-local the
-	// kernel formed — which ring 1 cannot read, for the same reason
-	// ActSendRouterSolicit carries no packet.
+	// Dest.Src IS ZERO HERE AND RING 3 FILLS IT. RFC 9915 §5: "The client uses
+	// a link-local source address or addresses determined through other
+	// mechanisms for transmitting and receiving DHCP messages", and the only
+	// one a client has before it is bound is the link-local the kernel formed
+	// — which ring 1 cannot read, for the same reason ActSendRouterSolicit
+	// carries no packet.
 	ActSendV6
 )
 

@@ -162,9 +162,62 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 #
 # The bound that number does NOT give: a box slow enough to change what these
 # tests wait for (a dnsmasq that starts late, a kernel that is slow to build a
-# namespace) moves the figure in a way a CPU load does not, and 90s is the
-# headroom for that, measured on nothing.
-NETNS_CEILING_SECONDS=90
+# namespace) moves the figure in a way a CPU load does not, and the ceiling is
+# the headroom for that, measured on nothing.
+#
+# RAISED 90 -> 120 AT M7c (v6 runtime), and the enumeration is the licence for
+# raising it rather than a summary of it. MEASURED 2026-09-06 on the session
+# box, the two rows run back to back and exactly as this file runs them
+# (-race -count=1 -v), base f901589 first and this head second so the two
+# figures share a machine state: the row was 53s at the base and is 78s here.
+# Per test, taking the outer (re-exec parent) figure, base -> head in seconds:
+#
+#   TestARefusedResumeRestartsAgainstRealDnsmasq            1.28 -> 1.33
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq           1.29 -> 1.32
+#   TestASquatterAfterBoundTakesSection24sPath              2.47 -> 2.46
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline 2.55 -> 2.58
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline  2.35 -> 2.37
+#   TestASquatterInTheProbeWindowStillDeclines...Configured 2.27 -> 2.23
+#   TestAcquiresFromRealDnsmasq                             1.18 -> 1.19
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq          1.31 -> 1.31
+#   TestAnOffClientPutsNoARPOnTheWire                       4.17 -> 4.22
+#   TestDeclineAndReleaseReachRealDnsmasq                   2.20 -> 2.16
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease 4.21 -> 4.28
+#   TestPacketTransportDropsWhenTheConsumerStalls           3.50 -> 3.64
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress    1.33 -> 1.30
+#   TestPacketTransportOnARealLink                          1.24 -> 1.24
+#   TestRenewalAndNakReachRealDnsmasq                       7.18 -> 7.18
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn              1.15 -> 1.18
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic     8.67 -> 7.73
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr           1.60 -> 1.66
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile         1.49 -> 1.48
+#   TestAClientOnALinkWithNoRouterStillAcquires                = 3.39  (new)
+#   TestADuplicateAddressOnTheLinkIsDeclined                   = 1.29  (new)
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne    = 2.82  (new)
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq              = 4.90  (new)
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                      = 1.27  (new)
+#   TestAV6ClientAcquiresFromRealDnsmasq                       = 2.69  (new)
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased      = 2.30  (new)
+#   TestAV6ReleaseReachesRealDnsmasq                           = 4.54  (new)
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn               = 3.24  (new)
+#
+# THE OLD TESTS DID NOT MOVE. Eighteen of the nineteen change by at most 0.14s.
+# The nineteenth, TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic, moves
+# 0.94s DOWNWARD, which is the direction that cannot be caused by work this
+# round added: it is a test that waits out RFC 5227's randomised initial delay,
+# so its figure is a draw from that distribution and not a cost. The whole
+# increase is the nine new rows, 26.44s of per-test time between them, which is
+# what says the v6 proofs were added beside the v4 ones rather than slowing
+# them down: 50.86s of old per-test time here against 51.44s at the base.
+#
+# The per-test figures sum to 77.30s against a 78s wall clock; the difference is
+# the build, the race instrumentation and the re-exec, and it is why the ceiling
+# is set off the WALL figure.
+#
+# 120 keeps 42s of headroom (35 percent) where 90 kept 37s (41 percent) before
+# this round. It is still below NETNS_TIMEOUT_SECONDS, which is what makes a
+# row that overruns the ceiling a diagnosis rather than a kill.
+NETNS_CEILING_SECONDS=120
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 

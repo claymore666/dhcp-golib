@@ -83,7 +83,14 @@ var pinnedGates = []string{"t1", "t2"}
 // keeps the distance between the pin and the tree at zero, which is the only
 // value at which the pin is at full strength.
 const (
-	minScenarios     = 75
+	// 75 -> 77 at M7c, per the maintenance rule two paragraphs above and for
+	// the reason it exists: MEASURED 2026-09-06, with the pin left at 75
+	// against a 77-scenario manifest, the manifest-scenario-removed scenario
+	// stopped being caught by THIS test at all — deleting a scenario left 76,
+	// which is still above 75, and the run only went red because the deleted
+	// name happened to sit in docs/verifying.md's derived stale-anchor block.
+	// A count backstop holds only AT the threshold.
+	minScenarios     = 77
 	minShellScripts  = 4
 	minDeclaredTests = 382
 	// The self-check row's probes and the refusals record() owes them. Pinned
