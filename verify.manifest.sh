@@ -629,7 +629,13 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"test-cache|nonzero|unit-suite:FAIL|go test reported a cached result"
 	"ceiling-fires|nonzero|unit-suite:FAIL|passed but took"
 	"ceiling-control|zero|unit-suite:PASS|started here and none of the"
-	"ceiling-band|static|ceiling-seconds:102|no row"
+	# The one token that spans TWO observations. ceiling-band emits
+	# ceiling-seconds: and netns-ceiling-seconds:, run_one sorts them, and
+	# they sort adjacent — so pinning them as one comma-joined token pins
+	# both numbers with the single token a contract is allowed. Raising
+	# EITHER ceiling in verify.sh without editing this line reddens the
+	# verify-oracle row.
+	"ceiling-band|static|ceiling-seconds:102,netns-ceiling-seconds:140|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"
@@ -700,8 +706,9 @@ MANIFEST_SCENARIO_CONTRACTS_N=77
 # verify.sh at all, so it can read no row of the subject's table; both members
 # still have to observe something derived from what they DID run.
 #
-#   ceiling-band                reads SUITE_CEILING_SECONDS out of verify.sh
-#                               and observes the value.
+#   ceiling-band                reads SUITE_CEILING_SECONDS and
+#                               NETNS_CEILING_SECONDS out of verify.sh and
+#                               observes both values.
 #   scenario-death-is-reported  runs the ORACLE in a copy, not verify.sh, and
 #                               observes the child's own death line.
 #   scenario-rc-follows-the-verdict

@@ -240,12 +240,36 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # is the build, the race instrumentation and the re-exec, and it is why the
 # ceiling is set off the WALL figure.
 #
-# 140 keeps 46s of headroom (49 percent) where 120 kept 42s (54 percent)
-# before this round; the number is set so the ratio to the measured row does
-# not shrink round on round, since a ceiling that erodes is one that stops
-# diagnosing before anybody notices. It is still below NETNS_TIMEOUT_SECONDS,
-# which is what makes a row that overruns the ceiling a diagnosis rather than
-# a kill, and still above the child's own 45s budget.
+# WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
+# derived half and the ceiling is the sum.
+#
+# The rule the headroom answers to: it must cover at least TWO more rounds of
+# the largest round-on-round increase this row has just shown. This round's
+# increase was 16s (78s at e173966, 94s here), so the floor is 32s and 46s
+# clears it.
+#
+# An earlier version of this paragraph said the number was set so that the
+# headroom's RATIO to the measured row does not shrink round on round. That
+# was false against its own two figures, and it is withdrawn: 46/94 is 49
+# percent where 42/78 was 54 percent, so the ratio did shrink. It shrank
+# because the ratio is the wrong invariant — it makes the ceiling a fixed
+# multiple of a row that grows, so every round raises it whether or not the
+# row has come any closer. What a round can actually consume is the ABSOLUTE
+# headroom, and that grew, 42s to 46s, against an increase that halved, 25s to
+# 16s: in rounds of the increase that produced them, 120 covered 1.7 and 140
+# covers 2.9.
+#
+# 120 is also what this rule REFUSES, which is the reason to write it down:
+# 42s against the 25s increase that produced it is 1.7 rounds, short of the
+# 50s the rule asks, and this ceiling then had to move twice inside one
+# milestone rather than once.
+#
+# It is still below NETNS_TIMEOUT_SECONDS, which is what makes a row that
+# overruns the ceiling a diagnosis rather than a kill, and still above the
+# child's own 45s budget. Two readers outside this file hold the number to
+# that: the oracle's ceiling-band scenario refuses a value outside 30..175,
+# and verify.manifest.sh pins the value itself — so moving this ceiling is a
+# deliberate edit in two files, the same shape SUITE_CEILING_SECONDS has.
 #
 # THE BOUND THIS NUMBER STILL DOES NOT GIVE is above: a box slow enough to
 # change what these tests WAIT FOR moves the figure in a way a CPU load does

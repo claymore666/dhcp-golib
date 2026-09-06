@@ -1947,20 +1947,48 @@ sc_ceiling_band() {
 	# and a raised one, i.e. minutes of wall clock per run. This still kills the
 	# two mutations that matter: deleting the line, and raising it beyond any
 	# suite's reach.
-	local v
+	#
+	# BOTH ceilings since 2026-09-06. The netns row got a ceiling of its own at
+	# the machinery batch and then moved 90 -> 120 -> 140 inside one milestone
+	# with nothing outside verify.sh reading the number — which is exactly the
+	# state this scenario exists to end for the suite ceiling.
+	local v nv
 	v="$(sed -n 's/^SUITE_CEILING_SECONDS=\([0-9][0-9]*\)$/\1/p' "$ROOT/verify.sh")"
+	nv="$(sed -n 's/^NETNS_CEILING_SECONDS=\([0-9][0-9]*\)$/\1/p' "$ROOT/verify.sh")"
 	[ -n "$v" ] || {
 		note "verify.sh declares no numeric SUITE_CEILING_SECONDS; the wall-clock ceiling is gone"
 		return
 	}
+	[ -n "$nv" ] || {
+		note "verify.sh declares no numeric NETNS_CEILING_SECONDS; the netns row's wall-clock ceiling is gone"
+		return
+	}
 	[ "$v" -ge 5 ] && [ "$v" -le 120 ] ||
 		note "SUITE_CEILING_SECONDS=$v is outside 5..120; a ceiling no suite can reach is not a ceiling"
-	# The value READ, not the fact of having looked. This is the only static
-	# contract, and it used to demand nothing at all — an emptied body and a
-	# working one were the same line of output. The manifest names the number,
-	# so raising the ceiling is now a deliberate edit in two files rather than
-	# one, which is what the round-10 instruction asked for.
+	# The netns band's edges are NOT the suite's, and neither is guessed. 175 is
+	# the last value below NETNS_TIMEOUT_SECONDS=180: a netns ceiling at or
+	# above the hang timeout can never fire, because the parent kills the run
+	# before the ceiling can diagnose it. verify.sh's bounds row refuses that
+	# relation too, from the constants themselves; the two gates are meant to
+	# agree, and this one also catches the value BEFORE it is that far out. 30
+	# is under a third of the 94s the row measures unloaded, so a ceiling cut to
+	# a figure the HEALTHY row cannot meet — which reddens every green run and
+	# gets the row discharged — is refused at the same place.
+	[ "$nv" -ge 30 ] && [ "$nv" -le 175 ] ||
+		note "NETNS_CEILING_SECONDS=$nv is outside 30..175; a netns ceiling at or above the 180s hang timeout never fires, and one below the healthy row's own figure reddens every run"
+	# The values READ, not the fact of having looked. This contract used to
+	# demand nothing at all — an emptied body and a working one were the same
+	# line of output. The manifest names both numbers, so raising either ceiling
+	# is a deliberate edit in two files rather than one, which is what the
+	# round-10 instruction asked for and what the netns ceiling did not have.
+	#
+	# The manifest pins the PAIR as one comma-joined token: run_one sorts the
+	# observation lines, "ceiling-seconds:" sorts immediately before
+	# "netns-ceiling-seconds:", and this scenario emits no others. An
+	# observation landing between them breaks the contract loudly rather than
+	# quietly dropping half the pin.
 	obs "ceiling-seconds:$v"
+	obs "netns-ceiling-seconds:$nv"
 }
 
 # fabricating_stub FILE SLEEP MARKER — an oracle that reports a perfect account
