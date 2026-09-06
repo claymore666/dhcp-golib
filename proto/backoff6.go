@@ -2,6 +2,7 @@ package proto
 
 import (
 	"math/bits"
+	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/wire"
 )
@@ -77,9 +78,79 @@ type Params6 struct {
 	// capabilities after waiting at least the shorter of RT and
 	// MAX_WAIT_TIME".
 	MaxWaitTime Duration
+
+	// ------------------------------------------------ this client's own --
+	//
+	// The fields below are NOT in §7.6's table. They are the client's
+	// identity, the caller's preferences, and the two schedules RFC 4861 and
+	// RFC 4862 own rather than RFC 9915. They sit in the same struct because
+	// one Machine6 takes one configuration value: a second struct beside this
+	// one would make "which of the two holds SOL_MAX_RT" a question every
+	// caller has to answer, and the server can rewrite SolMaxRT at run time
+	// while nothing can rewrite DUID, so the two halves are already
+	// distinguished by who may change them. params6.go holds their
+	// validation, their defaults and the derivation of DADTimeout.
+
+	// DUID is §21.2's client DUID, as the bytes to send. Build it with
+	// wire.DUIDLL or wire.DUIDUUID; the machine never invents one, because
+	// §11 says a DUID "SHOULD NOT change over time if at all possible" and a
+	// value the library generated per process is one that changes on every
+	// restart.
+	DUID []byte
+
+	// IAID is §21.4's "IAID: The unique identifier for this IA_NA; the
+	// IAID must be unique among the identifiers for all of this client's
+	// IA_NAs." Zero is a legal value and is not a sentinel here.
+	IAID uint32
+
+	// Hint is the address the caller would like, sent as an IA Address
+	// option inside the Solicit's IA_NA. §18.2.1: "The client MAY include
+	// addresses in IA Address options (see Section 21.6) encapsulated within
+	// IA_NA option as hints to the server about the addresses for which the
+	// client has a preference." The zero value sends no hint, and a server
+	// is free to ignore one that is sent.
+	Hint netip.Addr
+
+	// ORO is the option codes the caller wants beyond the ones the machine
+	// requests on its own. §21.24 and §21.25 make 82 and 83 mandatory on the
+	// Solicit and the Information-request respectively, and §21.23 makes 32
+	// mandatory on the Information-request; those are added by the machine,
+	// so a caller that leaves this nil still sends a conformant ORO.
+	ORO []wire.OptionCodeV6
+
+	// Resume is the binding remembered from a previous run, or nil.
+	//
+	// It maps to Confirm the way Params.Resume maps to INIT-REBOOT in v4
+	// (D30): §18.2.12 says "When the client detects that it may have moved to
+	// a new link and it has obtained addresses and no delegated prefixes from
+	// a server, the client SHOULD initiate a Confirm/Reply message exchange."
+	// A client that has just been restarted by its chassis is exactly the
+	// first bullet of that section's list, "The client reboots (and has stable
+	// storage and persistent DHCP state)".
+	Resume *Resume6
+
+	// DADTimeout is how long the machine waits for the EvDADResult that ring
+	// 3 owes it. DefaultDADTimeout says where the value comes from.
+	DADTimeout Duration
+
+	// RouterSolicitations and RouterSolicitInterval are RFC 4861 §6.3.7's
+	// MAX_RTR_SOLICITATIONS and RTR_SOLICITATION_INTERVAL, both listed in
+	// §10 under "Host constants".
+	RouterSolicitations   int
+	RouterSolicitInterval Duration
+
+	// MaxSendFailures is how many consecutive ActSendV6 failures end the
+	// acquisition with ReasonTransport. It is Params.MaxSendFailures's
+	// counterpart and exists for R2's reason: a machine whose every send
+	// fails otherwise sits in SELECTING forever looking healthy.
+	MaxSendFailures int
 }
 
-// DefaultParams6 is RFC 9915 §7.6's Table 1, unmodified.
+// DefaultParams6 is RFC 9915 §7.6's Table 1, unmodified, plus the defaults for
+// the fields §7.6 does not carry: the two RFC 4861 §10 host constants, the
+// DAD deadline params6.go derives, and this library's send-failure budget. It
+// leaves DUID, IAID, Hint, ORO and Resume at their zero values, because those
+// are the caller's and there is no defensible default for an identity.
 func DefaultParams6() Params6 {
 	return Params6{
 		SolMaxDelay: 1 * Second,
@@ -113,6 +184,11 @@ func DefaultParams6() Params6 {
 		IRTMinimum: 600 * Second,
 
 		MaxWaitTime: 60 * Second,
+
+		DADTimeout:            DefaultDADTimeout,
+		RouterSolicitations:   MaxRtrSolicitations,
+		RouterSolicitInterval: RtrSolicitationInterval,
+		MaxSendFailures:       DefaultMaxSendFailures6,
 	}
 }
 

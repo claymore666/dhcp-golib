@@ -610,8 +610,10 @@ func (o OptionsV6) Status() (Status, bool, error) {
 // Allowed values are from 0 (least) to 255 (most preferred). Absence of option
 // means preference 0." So the zero this returns when the option is absent is
 // the RFC's own answer and not a fallback — but the boolean is still here,
-// because §18.2.9's rule for 255 is "immediately begin a client-initiated
-// message exchange" and a caller that could not tell absence from an explicit
+// because §18.2.9's rule for 255 is that "the client immediately begins a
+// client-initiated message exchange (as described in Section 18.2.2) by
+// sending a Request message to the server from which the Advertise message was
+// received", and a caller that could not tell absence from an explicit
 // 0 could not report which Advertise carried a preference at all.
 //
 // A length other than one is refused rather than read from the first octet:
@@ -884,9 +886,9 @@ const (
 	PortV6Server = 547
 )
 
-// AllDHCPRelayAgentsAndServers is §7.1's ff02::1:2, "a link-scoped multicast
+// AllDHCPRelayAgentsAndServers is §7.1's ff02::1:2, "A link-scoped multicast
 // address used by a client to communicate with neighboring (i.e., on-link)
-// relay agents and servers".
+// relay agents and servers."
 //
 // It is the ONLY destination this client has. §16 obsoletes the Server Unicast
 // option, so there is no path by which a server can move a conformant client

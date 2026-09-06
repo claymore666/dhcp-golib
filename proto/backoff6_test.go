@@ -2,6 +2,7 @@ package proto
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/wire"
@@ -538,7 +539,7 @@ func TestApplyOptionsReportsWhatItIgnored(t *testing.T) {
 		if err != nil || len(applied) != 0 || len(ignored) != 0 {
 			t.Errorf("ApplyOptions with neither option: %v %v %v", applied, ignored, err)
 		}
-		if p != DefaultParams6() {
+		if !reflect.DeepEqual(p, DefaultParams6()) {
 			t.Error("a message with neither option changed the parameters")
 		}
 	})
@@ -548,7 +549,7 @@ func TestApplyOptionsReportsWhatItIgnored(t *testing.T) {
 		if err == nil {
 			t.Fatal("a 3-octet SOL_MAX_RT was accepted; a short option is a different fault from a value out of range")
 		}
-		if p != DefaultParams6() {
+		if !reflect.DeepEqual(p, DefaultParams6()) {
 			t.Error("a malformed option changed the parameters")
 		}
 	})

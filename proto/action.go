@@ -58,6 +58,69 @@ const (
 	// first. That is not true of TimerRenew and TimerRebind, which is why
 	// those are two.
 	TimerACD
+
+	// The DHCPv6 timers. They share the TimerID space with the v4 ones rather
+	// than forming a second one, because ring 3's timer table is indexed BY
+	// the id (runtime.numTimers) and a second space would need a second table
+	// keyed on something the port cannot see. One manager runs one family, so
+	// no machine ever arms more than its own half; both machines nonetheless
+	// cancel the WHOLE set on every path to idle, so "holds nothing" and
+	// "nothing armed" stay the same state whichever machine is running.
+
+	// Timer6Retransmit is RFC 9915 §15's RT for the message in flight, live
+	// in every state that has one.
+	//
+	// IN SELECTING IT IS ALSO §18.2.1's COLLECTION WINDOW: "the client
+	// collects valid Advertise messages until the first RT has elapsed". The
+	// first firing therefore has two possible meanings — select what arrived,
+	// or retransmit because nothing did — and they are one timer because they
+	// are one deadline.
+	Timer6Retransmit
+	// Timer6Delay is the random pre-transmission delay §18.2.1, §18.2.3 and
+	// §18.2.6 each put in front of the FIRST message of an exchange:
+	// SOL_MAX_DELAY, CNF_MAX_DELAY and INF_MAX_DELAY.
+	//
+	// One id for all three, because they are sequential in exactly the sense
+	// TimerACD's comment gives: a machine is delaying the start of ONE
+	// exchange, and the next delay can only be armed by a state that has
+	// already left this one.
+	Timer6Delay
+	// Timer6Expire is the moment the last valid lifetime in the IA runs out
+	// (§21.6). It is the v6 lease expiry.
+	Timer6Expire
+	// Timer6Renew is T1 (§21.4, §18.2.4).
+	Timer6Renew
+	// Timer6Rebind is T2 (§21.4, §18.2.5). Separate from Timer6Renew for the
+	// reason TimerRebind is separate from TimerRenew: both are live at once
+	// while the machine is renewing.
+	Timer6Rebind
+	// Timer6DAD is the deadline for an EvDADResult that ring 3 owes the
+	// machine.
+	//
+	// IT IS THE MACHINE'S OWN DEADLINE AND NOT RING 3's. Ring 3 sends the
+	// Neighbor Solicitations and reads the answers; if it dies, is starved, or
+	// simply loses the frame, no event ever arrives and the machine would sit
+	// in DAD6 forever holding an address it has not announced and cannot use.
+	// Params6.DADTimeout says how the value is derived.
+	Timer6DAD
+	// Timer6Refresh is §21.23's Information Refresh Time: when it fires, the
+	// machine sends another Information-request.
+	//
+	// Separate from Timer6Renew because the two are not the same exchange and
+	// can both be pending on a client that has an address AND took stateless
+	// configuration: §21.23's option "is only used in Reply messages in
+	// response to Information-request messages".
+	Timer6Refresh
+	// Timer6RouterSolicit is RFC 4861 §6.3.7's gap between Router
+	// Solicitations, "each separated by at least RTR_SOLICITATION_INTERVAL
+	// seconds".
+	//
+	// It runs BESIDE the DHCPv6 exchange and not inside it, which is why it is
+	// its own id: design §A.3.3 interlock 1 has the machine solicit at
+	// EvStart regardless of any router, so the two schedules are concurrent
+	// and one timer for both would cancel the DHCP retransmission every time a
+	// solicitation went out.
+	Timer6RouterSolicit
 )
 
 func (t TimerID) String() string {
@@ -76,16 +139,42 @@ func (t TimerID) String() string {
 		return "rebind"
 	case TimerACD:
 		return "acd"
+	case Timer6Retransmit:
+		return "retransmit6"
+	case Timer6Delay:
+		return "delay6"
+	case Timer6Expire:
+		return "expire6"
+	case Timer6Renew:
+		return "renew6"
+	case Timer6Rebind:
+		return "rebind6"
+	case Timer6DAD:
+		return "dad6"
+	case Timer6Refresh:
+		return "refresh6"
+	case Timer6RouterSolicit:
+		return "router-solicit6"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
 }
 
-// AllTimerIDs is every TimerID.
+// AllTimerIDs is every TimerID, both families.
+//
+// BOTH MACHINES CANCEL THE WHOLE SET, and that is deliberate rather than
+// tidiness: cancelAll is what makes "holding nothing" and "nothing armed" the
+// same state, and a per-family list would make that invariant a claim about
+// which machine wrote the list. A cancel for a timer nothing armed is defined
+// and does nothing (see ActCancelTimer), so the cost is action-list length and
+// the benefit is that adding a timer to either family cannot leave the other
+// family's idle paths short.
 func AllTimerIDs() []TimerID {
 	return []TimerID{
 		TimerRetransmit, TimerDesync, TimerExpire, TimerRestart, TimerRenew,
 		TimerRebind, TimerACD,
+		Timer6Retransmit, Timer6Delay, Timer6Expire, Timer6Renew,
+		Timer6Rebind, Timer6DAD, Timer6Refresh, Timer6RouterSolicit,
 	}
 }
 
@@ -145,8 +234,10 @@ const (
 	//
 	// It carries no packet, where ActSendARP carries one. The Router
 	// Solicitation's source address is an address the LIBRARY does not have —
-	// section 4.1 wants "an IP address assigned to the sending interface", and
-	// only ring 3 can read the link's link-local address — and its checksum
+	// section 4.1's Source Address is "An IP address assigned to the sending
+	// interface, or the unspecified address if no address is assigned to the
+	// sending interface", and only ring 3 can read the link's link-local
+	// address — and its checksum
 	// covers that address (RFC 4443 section 2.3). So ring 1 asks, ring 3
 	// builds with wire.EncodeRouterSolicit, and the address the checksum
 	// covers is by construction the address it goes out from.
@@ -179,6 +270,23 @@ const (
 	// not failed; it has been told, and this is the action that carries the
 	// telling out to where an operator can read it.
 	ActRouterObserved
+	// ActSendV6 transmits one DHCPv6 message. Dest says where.
+	//
+	// A SEPARATE KIND FROM ActSend, for the reason ActSendARP is one. The two
+	// leave the host by different routes — ActSend's payload goes out an
+	// AF_PACKET socket on ETH_P_IP with an IP and UDP header this library
+	// builds itself, this one's goes out an ordinary UDP socket bound to port
+	// 546 — and they are built by different encoders (wire.Encode versus
+	// wire.EncodeV6). A caller that folded them into one kind would have to
+	// look at which pointer was non-nil to decide where to write it, which is
+	// ring 3 reading ring 0's output to route it.
+	//
+	// Dest.Src IS ZERO HERE AND RING 3 FILLS IT. RFC 9915 §16 requires the
+	// source of a client message to be an address on the sending interface,
+	// and the only one a client has before it is bound is the link-local the
+	// kernel formed — which ring 1 cannot read, for the same reason
+	// ActSendRouterSolicit carries no packet.
+	ActSendV6
 )
 
 func (k ActionKind) String() string {
@@ -211,6 +319,8 @@ func (k ActionKind) String() string {
 		return "Configured"
 	case ActRouterObserved:
 		return "RouterObserved"
+	case ActSendV6:
+		return "SendV6"
 	default:
 		return fmt.Sprintf("action(%d)", uint8(k))
 	}
@@ -284,6 +394,18 @@ const (
 	// R2's visible consequence: without it a machine whose sends all fail sits
 	// in SELECTING forever looking healthy.
 	ReasonTransport
+	// ReasonDADIncomplete means duplicate address detection was asked for and
+	// never answered: RFC 4862 section 5.4's check neither succeeded nor found
+	// a duplicate, because ring 3 produced no result before the deadline.
+	//
+	// IT IS NOT ReasonConflict AND THE DIFFERENCE IS THE OPERATOR's NEXT STEP.
+	// A conflict is another host answering for the address, which is a network
+	// fact and is followed by a Decline (RFC 9915 section 18.2.10.1). This is
+	// this host's own machinery not reporting, which is a local fault and is
+	// followed by nothing being said to the server at all — declining an
+	// address on evidence nobody produced would hand a perfectly good address
+	// back and mark it suspect at the server.
+	ReasonDADIncomplete
 	// ReasonReleased means the caller asked for the lease to be given back and
 	// a DHCPRELEASE was sent. Distinct from ReasonStopped: a stopped client
 	// still holds its binding at the server until the lease runs out, a
@@ -311,6 +433,8 @@ func (r Reason) String() string {
 		return "conflict"
 	case ReasonTransport:
 		return "transport"
+	case ReasonDADIncomplete:
+		return "dad-incomplete"
 	case ReasonReleased:
 		return "released"
 	default:
@@ -324,7 +448,10 @@ type Action struct {
 	Kind ActionKind
 
 	Msg  *wire.Message // ActSend
-	Dest Dest          // ActSend
+	Dest Dest          // ActSend, ActSendV6
+
+	// MsgV6 is the DHCPv6 message to send, on ActSendV6 only.
+	MsgV6 *wire.MessageV6
 
 	// ARP is the packet to broadcast, on ActSendARP only.
 	ARP *wire.ARPPacket
@@ -342,7 +469,8 @@ type Action struct {
 	Timer TimerID  // ActSetTimer, ActCancelTimer
 	After Duration // ActSetTimer
 
-	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed
+	Lease  Lease  // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed (v4)
+	Lease6 Lease6 // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed (v6)
 	Reason Reason // ActLeaseLost, ActFailed
 	Note   string // ActJournal, and detail beside Reason
 
@@ -374,14 +502,14 @@ func (a Action) String() string {
 	case ActCancelTimer:
 		return fmt.Sprintf("CancelTimer %s", a.Timer)
 	case ActLeaseAcquired:
-		if a.Requested.IsValid() && !a.Requested.IsUnspecified() && a.Requested != a.Lease.Addr.Addr() {
-			return fmt.Sprintf("LeaseAcquired %s (asked for %s)", a.Lease, a.Requested)
+		if a.Requested.IsValid() && !a.Requested.IsUnspecified() && a.Requested != a.leaseAddr() {
+			return fmt.Sprintf("LeaseAcquired %s (asked for %s)", a.leaseText(), a.Requested)
 		}
-		return fmt.Sprintf("LeaseAcquired %s", a.Lease)
+		return fmt.Sprintf("LeaseAcquired %s", a.leaseText())
 	case ActLeaseChanged:
-		return fmt.Sprintf("LeaseChanged %s", a.Lease)
+		return fmt.Sprintf("LeaseChanged %s", a.leaseText())
 	case ActLeaseRenewed:
-		return fmt.Sprintf("LeaseRenewed %s", a.Lease)
+		return fmt.Sprintf("LeaseRenewed %s", a.leaseText())
 	case ActLeaseLost:
 		return fmt.Sprintf("LeaseLost %s", a.Reason)
 	case ActFailed:
@@ -398,9 +526,35 @@ func (a Action) String() string {
 		return "Configured " + a.Config.String()
 	case ActRouterObserved:
 		return "RouterObserved " + a.Router.String()
+	case ActSendV6:
+		return fmt.Sprintf("SendV6 %s to %s", a.MsgV6.Summary(), a.Dest)
 	default:
 		return a.Kind.String()
 	}
+}
+
+// leaseText renders whichever of the two lease fields this action carries.
+//
+// THE DISCRIMINATOR IS THE V6 ADDRESS LIST AND NOT A FAMILY FLAG, because a
+// flag would be a third thing to keep in step with the two values: an action
+// whose flag said v6 and whose Lease6 was empty would render an empty string
+// and the journal line would say a lease was acquired with nothing in it. A
+// v6 lease with no addresses is never acquired — leaseFromReply refuses it —
+// so the list is present exactly when the v6 field is the live one.
+func (a Action) leaseText() string {
+	if len(a.Lease6.Addrs) > 0 {
+		return a.Lease6.String()
+	}
+	return a.Lease.String()
+}
+
+// leaseAddr is the address this action's lease carries, for the one comparison
+// Requested needs.
+func (a Action) leaseAddr() netip.Addr {
+	if len(a.Lease6.Addrs) > 0 {
+		return a.Lease6.Addrs[0].Addr
+	}
+	return a.Lease.Addr.Addr()
 }
 
 // Config6 is the outcome of an RFC 9915 section 18.2.6 Information-request:

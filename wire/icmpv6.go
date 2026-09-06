@@ -59,8 +59,8 @@ const (
 	nsFixedLen = 24
 	naFixedLen = 24
 	// pioLen is the Prefix Information option's whole length. §4.6.2 gives it
-	// as Length 4, and §4.6's Length is "the length of the option (including
-	// the type and length fields) in units of 8 octets".
+	// as Length 4, and §4.6's Length is "The length of the option (including
+	// the type and length fields) in units of 8 octets."
 	pioLen = 32
 )
 
@@ -248,7 +248,7 @@ func (p PrefixInfo) String() string {
 // RouterAdvert is a decoded Router Advertisement, RFC 4861 §4.2 — only the
 // fields a DHCPv6 client reads.
 type RouterAdvert struct {
-	// CurHopLimit is "the default value that should be placed in the Hop Count
+	// CurHopLimit is "The default value that should be placed in the Hop Count
 	// field of the IP header for outgoing IP packets. A value of zero means
 	// unspecified (by this router)."
 	CurHopLimit uint8

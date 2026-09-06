@@ -141,6 +141,15 @@ type Event struct {
 	// panic in ring 1 takes the whole plugin down.
 	Msg *wire.Message
 
+	// MsgV6 is set when Kind is EvReceived on the v6 machine, and may be nil
+	// even then, for the reason Msg may.
+	//
+	// A SECOND FIELD RATHER THAN AN INTERFACE, because the two are decoded by
+	// two functions with two error sets and consumed by two machines: an
+	// Event carrying "a message" would put a type switch in front of every
+	// arm that reads one, and the arm that forgot it would compile.
+	MsgV6 *wire.MessageV6
+
 	// Raw is the bytes Msg was decoded from, when available. The journal
 	// stores it so a replay re-decodes rather than trusting an already-decoded
 	// struct, which puts ring 0 back inside the replay.
@@ -153,6 +162,12 @@ type Event struct {
 	// RA is set when Kind is EvRouterAdvert, and may be nil even then, for
 	// the same reason.
 	RA *wire.RouterAdvert
+
+	// RARaw is the ICMPv6 bytes RA was decoded from, when available. The
+	// journal stores them and a replay re-decodes, which is what Raw does for
+	// a DHCP packet and for the same reason: a replay from an already-decoded
+	// struct agrees with itself even when the codec is wrong.
+	RARaw []byte
 
 	// DAD is set when Kind is EvDADResult.
 	DAD DADOutcome
@@ -173,6 +188,11 @@ type Event struct {
 // Received builds an EvReceived event.
 func Received(m *wire.Message, raw []byte) Event {
 	return Event{Kind: EvReceived, Msg: m, Raw: raw}
+}
+
+// ReceivedV6 builds an EvReceived event carrying a DHCPv6 message.
+func ReceivedV6(m *wire.MessageV6, raw []byte) Event {
+	return Event{Kind: EvReceived, MsgV6: m, Raw: raw}
 }
 
 // TimerFired builds an EvTimerFired event.
@@ -205,8 +225,19 @@ func (d DADOutcome) String() string {
 	return d.Addr.String() + " free"
 }
 
-// RouterAdvert builds an EvRouterAdvert event.
+// RouterAdvert builds an EvRouterAdvert event with no bytes behind it.
+//
+// A JOURNAL OF THESE CANNOT BE REPLAYED, and Replay says so rather than
+// replaying a client with no router: see ErrJournalNoRA. Use RouterAdvertRaw
+// wherever the frame is at hand, which is everywhere a real transport
+// delivered it; this constructor stays for the callers that are testing the
+// decoded value itself.
 func RouterAdvert(ra *wire.RouterAdvert) Event { return Event{Kind: EvRouterAdvert, RA: ra} }
+
+// RouterAdvertRaw builds an EvRouterAdvert event that can be replayed.
+func RouterAdvertRaw(ra *wire.RouterAdvert, raw []byte) Event {
+	return Event{Kind: EvRouterAdvert, RA: ra, RARaw: raw}
+}
 
 // DADResult builds an EvDADResult event.
 func DADResult(addr netip.Addr, duplicate bool) Event {
@@ -219,6 +250,12 @@ func Simple(k EventKind) Event { return Event{Kind: k} }
 func (e Event) String() string {
 	switch e.Kind {
 	case EvReceived:
+		if e.MsgV6 != nil {
+			return "Received " + e.MsgV6.Summary()
+		}
+		if e.Msg == nil {
+			return "Received <nil>"
+		}
 		return "Received " + e.Msg.Summary()
 	case EvTimerFired:
 		return "TimerFired " + e.Timer.String()
