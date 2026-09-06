@@ -122,12 +122,23 @@ row_omitted() { # NAME
 # sixteen times the cores and it had stopped being a drift detector there: one
 # copy in seventy-five breached it while drifting nowhere.
 #
-# WHAT IT COSTS, said plainly rather than buried: on the session box the pure
-# suite runs about 20s, so the detector now sits at roughly five times the
-# suite it watches instead of three. It catches less there. That is the price
-# of one number serving two machines, and it is paid deliberately — the
-# alternative shapes (an environment override, a machine-relative derivation)
-# were measured or ruled out first.
+# WHAT IT COSTS, said plainly rather than buried: the pure suite runs about
+# 20s here (MEASURED 2026-09-06 at 8c87caf, unit-suite row: 20s), so the
+# detector sits at roughly five times the suite it watches instead of three.
+# It catches less. That was the price of one number serving two machines, and
+# it was paid deliberately — the alternative shapes (an environment override,
+# a machine-relative derivation) were measured or ruled out first.
+#
+# 2026-09-06, D36: there is now ONE machine. CI runs on the box this
+# paragraph calls "the session box", so the number no longer serves two, and
+# the 102 above is a hosted-runner measurement kept in force over a machine
+# that never produced it. It is NOT re-derived down here, and that is a
+# choice: a ceiling derived from a 51s two-core run is loose on this box but
+# it is loose in the safe direction, the runner arrangement is temporary, and
+# lowering it would have to be undone the day the lane moves to a pool whose
+# cores are nobody's to predict. What the looseness costs is stated above and
+# is unchanged. Re-deriving it is owed to whichever round makes the lane's
+# machine permanent.
 SUITE_CEILING_SECONDS=102
 
 # The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
@@ -180,68 +191,75 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # change what these tests wait for (a dnsmasq that starts late, a kernel that
 # is slow to build a namespace) moves the figure in a way a CPU load does not,
 # and the ceiling was the headroom for that, measured on nothing. It is no
-# longer measured on nothing: the end of the block below carries the two-core
-# CI runner's own figure for this row against this box's.
+# longer measured on nothing: the end of the block below carries the figure a
+# two-core hosted CI runner produced for this row against this box's — and
+# says why that comparison is history since D36.
 #
-# RAISED 90 -> 120 AT M7c (v6 runtime), then 120 -> 140 at M7c's carried rows,
-# and the enumeration is the licence for raising it rather than a summary of
-# it. MEASURED 2026-09-06 on the session box, run back to back and exactly as
-# this file runs the row (-race -count=1 -v): 53s at f901589, 78s at M7c's
-# head e173966, and 94s here (90s on a warm build cache; the larger figure is
-# the one the ceiling is set off). Per test, taking the outer (re-exec parent)
-# figure, M7c's head -> here, in seconds:
+# RAISED 90 -> 120 AT M7c (v6 runtime), then 120 -> 140 at M7c's carried rows.
+# The enumeration below is the LICENCE for the number rather than a summary of
+# it, and 2026-09-06 it was found to be an enumeration of 31 tests where the
+# roster held 32: TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn
+# arrived with a rebase and was never measured into it (carried review row R5).
+# It is measured in now, and the whole list is RE-MEASURED rather than patched,
+# because a list where one row comes from a different run is not a sum.
 #
-#   TestARefusedResumeRestartsAgainstRealDnsmasq            1.33 -> 1.29
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq           1.32 -> 1.31
-#   TestASquatterAfterBoundTakesSection24sPath              2.46 -> 2.51
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline 2.58 -> 2.54
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline  2.37 -> 2.34
-#   TestASquatterInTheProbeWindowStillDeclines...Configured 2.23 -> 2.25
-#   TestAcquiresFromRealDnsmasq                             1.19 -> 1.17
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq          1.31 -> 1.32
-#   TestAnOffClientPutsNoARPOnTheWire                       4.22 -> 4.18
-#   TestDeclineAndReleaseReachRealDnsmasq                   2.16 -> 2.17
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease 4.28 -> 4.24
-#   TestPacketTransportDropsWhenTheConsumerStalls           3.64 -> 3.63
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress    1.30 -> 1.28
-#   TestPacketTransportOnARealLink                          1.24 -> 1.24
-#   TestRenewalAndNakReachRealDnsmasq                       7.18 -> 7.22
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn              1.18 -> 1.20
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic     7.73 -> 8.39
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr           1.66 -> 1.59
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile         1.48 -> 1.41
-#   TestAClientOnALinkWithNoRouterStillAcquires             3.39 -> 3.08
-#   TestADuplicateAddressOnTheLinkIsDeclined                1.29 -> 1.77
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne 2.82 -> 2.28
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq           4.90 -> 4.34
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                   1.27 -> 1.22
-#   TestAV6ClientAcquiresFromRealDnsmasq                    2.69 -> 3.01
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased   2.30 -> 2.00
-#   TestAV6ReleaseReachesRealDnsmasq                        4.54 -> 4.25
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn            3.24 -> 2.30
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport     = 4.78  (new)
-#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress    = 5.04  (new)
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress  = 2.79  (new)
+# MEASURED 2026-09-06 on the session box at 8c87caf, exactly as this file runs
+# the row (-race -count=1 -v -timeout 180s, -run over the roster), taking the
+# OUTER (re-exec parent) figure per test. This is now also the machine CI runs
+# on (D36), so this table and the CI row measure the same hardware:
 #
-# THE TWENTY-EIGHT TESTS THIS ROUND DID NOT ADD MEASURE 75.53s AGAINST 77.30s
-# at M7c's head — downward, so the whole of the 12.61s increase is the three
-# new rows and none of it is the old ones slowing. Two of the twenty-eight
-# move up by more than a tenth and both are this round's work, named rather
-# than averaged away: TestAV6ClientAcquiresFromRealDnsmasq (+0.32) now opens an
-# ETH_P_ALL watch and reads the EtherType the solicit left with, which is what
-# turns a wrong-ethertype transport into a named red in a second instead of the
-# child's 45s timeout; TestADuplicateAddressOnTheLinkIsDeclined (+0.48) pays
-# for the serves half of assertMode, a second read of dnsmasq's log at
-# Cleanup. The third mover, TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic
-# (+0.66), waits out RFC 5227's randomised initial delay: its figure is a draw
-# from that distribution, and it moved 0.94s the other way last round.
+#   TestAClientOnALinkWithNoRouterStillAcquires                 3.74
+#   TestADuplicateAddressOnTheLinkIsDeclined                    1.86
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne     2.52
+#   TestARefusedResumeRestartsAgainstRealDnsmasq                1.35
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq               1.32
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq               4.56
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                       1.24
+#   TestASquatterAfterBoundTakesSection24sPath                  2.50
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline     2.46
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline      2.36
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.24
+#   TestAV6ClientAcquiresFromRealDnsmasq                        2.61
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport      4.86
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased       2.06
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress     5.03
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress   3.08
+#   TestAV6ReleaseReachesRealDnsmasq                            4.84
+#   TestAcquiresFromRealDnsmasq                                 1.18
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq              1.30
+#   TestAnOffClientPutsNoARPOnTheWire                           4.20
+#   TestDeclineAndReleaseReachRealDnsmasq                       2.18
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease     4.26
+#   TestPacketTransportDropsWhenTheConsumerStalls               3.64
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress        1.32
+#   TestPacketTransportOnARealLink                              1.26
+#   TestRenewalAndNakReachRealDnsmasq                           7.21
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn                  1.18
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic         8.64
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr               1.65
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile             1.48
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                2.65
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn     1.14
 #
-# The per-test figures sum to 88.14s against a 94s wall clock; the difference
+# The per-test figures sum to 91.92s against a 93s wall clock; the difference
 # is the build, the race instrumentation and the re-exec, and it is why the
-# ceiling is set off the WALL figure.
+# ceiling is set off the WALL figure. The wall has NOT moved: 94s when 140 was
+# derived at M7c, 93s here over a roster one test larger. The 3.78s the
+# thirty-one previously enumerated tests differ by (88.14 -> 91.92 minus the
+# new row's 1.14s, so 2.64s over 31 tests) is draw-to-draw variation in tests
+# that WAIT on real DHCP, ARP and DAD intervals; one test carries 0.91s of it
+# (TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic, 7.73 -> 8.64, which
+# waits out RFC 5227's randomised initial delay and moved 0.94s the other way
+# the round before).
+#
+# WHAT THIS ENUMERATION STILL DOES NOT HAVE: a gate. Nothing compares the
+# names here against internal/tools/testroster -netns, which is how it came to
+# be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
 # WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum.
+# derived half and the ceiling is the sum. The re-measurement above does not
+# move it: 93s at 8c87caf over a roster one test larger is inside the 94s the
+# number was derived on, so nothing here is re-derived, only re-checked.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
 # the largest round-on-round increase this row has just shown. This round's
@@ -273,12 +291,21 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 #
 # THE BOUND THIS NUMBER STILL DOES NOT GIVE is above: a box slow enough to
 # change what these tests WAIT FOR moves the figure in a way a CPU load does
-# not. What is measured against that: the two-core CI runner ran this row in
-# 48s at run 33995090303 where the session box measured 54s for the same head
-# — FASTER, on a box 6.4x to 8.7x slower for the oracle — because these tests
-# wait on DHCP, ARP and DAD intervals rather than competing for the CPU. That
-# is why a figure measured on this box is allowed to set the ceiling CI runs
-# under, and it is a measurement, not an assumption.
+# not.
+#
+# That bound used to be answered by a comparison — the two-core hosted CI
+# runner ran this row in 48s at run 33995090303 where the session box measured
+# 54s for the same head, FASTER on a machine six to nine times slower for the
+# oracle, because these tests WAIT rather than compute. Since D36 (2026-09-06)
+# CI runs on the session box itself, so that comparison is history and not a
+# live guarantee: there is currently ONE machine, and a figure measured here
+# sets a ceiling enforced here. The reassurance is smaller and honest — the
+# two measurements can no longer disagree, so they can no longer warn.
+#
+# What still holds the bound is the fact the comparison established: this row
+# is dominated by waits, not by cycles. What is NOT held any more is the case
+# where the lane's machine is not this one; when the runner moves off this box
+# the two-measurement shape returns and this paragraph is owed a re-derivation.
 NETNS_CEILING_SECONDS=140
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
@@ -1327,13 +1354,16 @@ if [ "$INNER" -eq 0 ]; then
 		[ "$stamp_root" = "$ROOT" ] &&
 		[ "$stamp_hash" = "$oracle_hash" ] &&
 		[ "$stamp_scn" = "${#MANIFEST_SCENARIOS[@]}" ]; then
-		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ORACLE PASS: $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
 	elif [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		orc_start=$(date +%s)
 		orc_rc=0
 		orc_out="$("$ROOT/scripts/test-verify.sh" 2>&1)" || orc_rc=$?
 		orc_elapsed=$(($(date +%s) - orc_start))
-		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n 's/^ORACLE PASS: \([0-9][0-9]*\) scenarios.*/\1/p' | tail -1)"
+		# The spelling comes from verify.manifest.sh, which the oracle also
+		# prints it from: three files agreeing by coincidence was carried
+		# review row R1.
+		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n "s/^${MANIFEST_ORACLE_PASS_PREFIX} \([0-9][0-9]*\) scenarios.*/\1/p" | tail -1)"
 		accounted=0
 		unaccounted=""
 		breached=""
@@ -1428,7 +1458,7 @@ if [ "$INNER" -eq 0 ]; then
 			printf '\n--- verify-oracle FAILED (exit %s) ---\n' "$orc_rc" >&2
 			quote_block "$orc_out" >&2
 		elif [ -z "$oracle_reported" ]; then
-			record "verify-oracle" FAIL "the oracle exited 0 but printed no 'ORACLE PASS: <n> scenarios' line; its answer is not the account of a run"
+			record "verify-oracle" FAIL "the oracle exited 0 but printed no '${MANIFEST_ORACLE_PASS_PREFIX} <n> scenarios' line; its answer is not the account of a run"
 			printf '\n--- verify-oracle produced no verdict line ---\n' >&2
 			quote_block "$orc_out" >&2
 		elif [ -n "$unaccounted" ]; then
@@ -1452,7 +1482,14 @@ if [ "$INNER" -eq 0 ]; then
 			printf '\n--- verify-oracle returned too fast to have run ---\n' >&2
 			quote_block "$orc_out" >&2
 		else
-			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | tail -1), ${orc_elapsed}s" "$accounted"
+			# The detail is the account line this row was JUST validated
+			# against, not `tail -1` of the oracle's output. Carried review
+			# row R1: the two were the same line only because the account is
+			# the last thing the oracle prints, and a run that printed one
+			# more line afterwards produced a genuine PASS row whose detail
+			# carried none of the account — which the CI job then refused as
+			# an oracle that had not run.
+			record "verify-oracle" PASS "$(printf '%s\n' "$orc_out" | grep -E "^${MANIFEST_ORACLE_PASS_PREFIX} " | tail -1), ${orc_elapsed}s" "$accounted"
 			# The one place the stamp is written, and it is written only if
 			# the row above it was ACCEPTED: record() rewrites an uncountable
 			# PASS to FAIL, and a stamp written before that check would record

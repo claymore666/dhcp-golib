@@ -336,61 +336,91 @@ down.
 ### In CI
 
 `.github/workflows/verify.yml`. Every push of every branch, and a manual
-`workflow_dispatch`, produces one run with one job on a GitHub-hosted
-`ubuntu-24.04` runner, and the job is:
+`workflow_dispatch`, produces one run with one job, and the job is:
 
-    ORACLE_JOBS=1 ./verify.sh --oracle
+    ./verify.sh --oracle
 
-**The job's verdict IS the arbiter's verdict.** Green means `verify.sh`
-printed `VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything
-else is red, including a run that never reached the arbiter at all — a failed
-checkout, a package that would not install, the job's own timeout. There is no
-branch filter and no path filter, because an absent run is not a green run and
-nothing about a commit should be able to decide that this job does not apply
-to it.
+byte for byte the command this document gives a developer, at the oracle's own
+default job count.
+
+**Where it runs, and this is TEMPORARY.** Until 2026-09-06 the job ran on a
+GitHub-hosted two-core `ubuntu-24.04` image and took about ninety minutes:
+twelve runs measured, the four unmutated ones at the end of that period each
+between eighty-seven and ninety-one billed minutes (runs 34036002593,
+34040618756, 34045474164, 34050089381). Since D36 it runs on a standing
+self-hosted runner labelled
+`dhcp-golib`, on the same machine every ceiling, floor and timeout in
+`verify.sh` and `verify.manifest.sh` was derived on, where the same command
+takes about thirteen minutes — MEASURED at 8c87caf: 818 seconds for
+`./verify.sh --oracle` wall to wall, RUNS_DOC. The runner leaves that machine
+when a shared pool serves this repository, and in any case before this
+repository is public; `runs-on` is the only line that has to move.
+
+Two consequences worth stating rather than discovering:
+
+- **One runner is one job at a time.** GitHub queues the rest. Nothing here
+  serialises anything and no bound was changed for it; `timeout-minutes`
+  counts execution, not the wait for a slot.
+- **The lane shares the machine with the people who read it.** A reviewer
+  running `./verify.sh --oracle` on that box is competing with the job for the
+  same cores, and both are timed against wall-clock ceilings. Measured, not
+  assumed — the figures are in `.claude` and the ruling is simple: one runner,
+  one lane job, and a local full arbiter is not run against a lane job that
+  matters. No ceiling was moved to accommodate it.
+
+**The job's verdict IS the arbiter's verdict.** Green means `verify.sh` printed
+`VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything else is
+red, including a run that never reached the arbiter at all — a failed checkout,
+the job's own timeout. There is no branch filter and no path filter, because an
+absent run is not a green run and nothing about a commit should be able to
+decide that this job does not apply to it.
 
 **Always `--oracle`, and the last step is why that is not enough on its own.**
-The skip is a per-clone local cache and a fresh runner has none, so the flag
-changes nothing about what runs here; what it removes is the shape where it
-could. A `VERDICT: PASS` line reads the same whether the oracle ran or was
-skipped, so a job reading only the exit status, or only that line, cannot tell
-those two apart — nor either of them from an arbiter that printed nothing at
-all. The job's last step therefore refuses an empty output, requires the
-`verify-oracle` row to be a PASS carrying the oracle's own `ORACLE PASS:`
-account, and requires the verdict line to name the row count it SOURCES out of
-`verify.manifest.sh` while the job is running, rather than a number typed into
-the workflow. What that step is not is a second manifest: an edit that shrinks
-the roster and the count together still has to get past `manifest_check` and
-`internal/manifest`, and CI adds no layer there.
+The skip is a per-clone local cache. A standing runner is exactly the machine
+that could carry one from a previous job, so the flag stops being a formality
+here — and the checkout step's own clean removes the stamp before it can
+matter. What the flag removes is the shape where a `VERDICT: PASS` line reads
+the same whether the oracle ran or was skipped. A job reading only the exit
+status, or only that line, cannot tell those two apart, nor either of them from
+an arbiter that printed nothing at all.
+
+So the job's last step refuses an empty output; requires a `PASS` row for
+**every** name in `MANIFEST_ROWS`, sourced from the manifest while the job
+runs, and refuses any row that recorded something else; requires the
+`verify-oracle` row to carry the oracle's own account over the scenario count
+the manifest declares; and requires one verdict line naming the manifest's row
+count. What that step is not is a second manifest: it types no name and no
+number of its own, and an edit that shrinks the roster and the counts together
+still has to get past `manifest_check` and `internal/manifest`, where CI adds
+no layer.
 
 **The merge rule.** A green run at the head SHA being merged, plus the
 reviewer's CLEAR. The reviewer no longer re-runs the oracle on their own box.
 Read that rule exactly: a green run at THAT SHA, because a force-push moves a
 branch and leaves its run behind, and an absent run is not among the things it
-accepts.
+accepts. A cancelled run at that SHA is neither green nor red; it is not a
+verdict, and the green run is the one to read.
 
-**The bound, and it is the honest one: two executions of one script are not
-one execution.** The runner is not the box the ceilings, timeouts and floors in
-`verify.manifest.sh` were measured on, and its differences have already changed
-a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
-`Linux 6.17.0-1022-azure`, two cores, dnsmasq 2.91, Go 1.25.14:
+**The bound, and it has changed shape.** While the lane ran on a hosted image,
+the honest statement was that two executions of one script are not one
+execution: the runner was not the box the ceilings, timeouts and floors were
+measured on, and its differences changed a verdict **four** times. MEASURED,
+and each cause named with the runs that show it:
 
-- **Namespaces.** The image restricts unprivileged user namespaces through
-  AppArmor. Left at its default the namespaced child STARTS — the namespace is
-  created — and then every netlink call inside it is refused, so `ip link add`
-  answers `Operation not permitted` and the `netns-suite` row goes red. The
-  workflow clears that with one sysctl before the arbiter runs; no test is
-  touched and the arbiter is still not run under sudo. The session box needs
-  nothing, which is the point: this is a property of an image, and a different
-  image is a different answer.
+- **Namespaces.** The image restricted unprivileged user namespaces through
+  AppArmor. Left at its default the namespaced child STARTED — the namespace
+  was created — and then every netlink call inside it was refused, so `ip link
+  add` answered `Operation not permitted` and the `netns-suite` row went red
+  (run 33992151078). The workflow cleared that with one sysctl. That step is
+  gone with the image: this kernel has no such knob, and the netns rows have
+  run unprivileged on this machine since 2026-08-29.
 - **Cores, against a ceiling derived elsewhere.** The pure suite's ceiling was
-  measured on a box with many times this runner's two cores. With the oracle
+  measured on a box with many times that runner's two cores. With the oracle
   running two copies at once, the root run's suite and the copies' suites all
-  ran past that ceiling and nothing else was wrong with them. So the oracle
-  runs one copy at a time here, and the race build is compiled before anything
-  is timed against a ceiling — a cold build is not the drift the ceiling asks
-  about. Neither moves a bound; both cost wall clock. The numbers are in the
-  workflow, beside the decisions they made.
+  ran past the ceiling and nothing else was wrong with them (runs 33992151078,
+  34008425787). So the hosted lane ran one copy at a time and pinned
+  `ORACLE_JOBS`. That pin is gone too: this is the machine the ceiling was
+  derived on.
 - **Scheduling, and this is the one that found a real defect.** Two cores made
   `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlock: the waiter it
   drives returned through its match arm without reporting the frame that ended
@@ -398,19 +428,25 @@ a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
   scheduler ran first, and the test — which takes delivery of each report —
   blocked forever on one that was never written. Bounded only by `go test
   -timeout`, so it read as a suite hang, never as a failure. MEASURED on runs
-  33999661871 and 34003796997, where it was the ONLY thing left red: every row
-  of the root run passed, no suite anywhere went over its ceiling, and the
-  oracle failed on copies that hung in that one test. Fixed in the same change
-  as this section — the waiter now reports the matching frame on the way out —
-  and the fix is what makes the report count a function of the frames instead
-  of the scheduler. Run 34008425787 is the one that carries the fix: no hang
-  anywhere, fifteen of the sixteen rows green, and the oracle down to a single
-  scenario. This box never showed the defect at all: it takes contention, and
-  the first machine to have any was the runner.
+  33995090303, 33999661871 and 34003796997. Run 34008425787 carries the fix.
+  This box never showed the defect at all: it takes contention, and the first
+  machine to have any was the runner.
+- **A namespace read on the wrong thread.** The v6 client read the link-local
+  address of whichever thread the Go runtime happened to schedule it on rather
+  than the one it was built in, which is a race that a two-core machine loses
+  and a many-core one usually wins. It reddened runs 34012610376 and
+  34024003237 and nothing on this box. Fixed on `main` at 6290220. This is the
+  strongest instance of the whole paragraph, and it went unnamed here for a
+  day — the fourth cause the sentence above used to undercount.
 
-So a green runner run and a green session-box run are two measurements rather
-than one repeated, neither certifies the other, and where they disagree the
-disagreement is the finding.
+**What that bound is now.** There is one machine. The lane's ceilings and the
+lane's runs describe the same hardware, so they can no longer disagree — and
+therefore can no longer warn. The two-measurement shape returns the day the
+runner moves off this box, and every paragraph that rests on it (the netns
+ceiling's closing bound in `verify.sh`, the suite ceiling's) says so where it
+stands. A green run and a green local arbiter are now one measurement taken
+twice, which is a weaker thing than what this section used to be able to claim.
+
 
 ### The two gates
 

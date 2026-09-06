@@ -13,13 +13,32 @@ permissions:
 jobs:
   verify:
     name: the arbiter
-    runs-on: ubuntu-24.04
-    # Twice the measurement, and the measurement is here so the next person
-    # does not have to guess what it was: run 33999661871, the serialised shape
-    # below, took 5551s in the arbiter step and 94 minutes end to end. That is
-    # the slowest of the three runs measured on this image (55, 81, 94), and it
-    # is the one this bound is taken over.
-    timeout-minutes: 190
+    # DECISION 2026-09-06 (D36), and it is TEMPORARY. This lane ran on a
+    # GitHub-hosted two-core `ubuntu-24.04` for twelve runs and cost about 90
+    # minutes each. It now runs on a standing self-hosted runner labelled
+    # `dhcp-golib`, on the same many-core machine every ceiling and floor in
+    # verify.sh and verify.manifest.sh was derived on, where the same command
+    # takes about a seventh of that. The runner leaves that machine when a
+    # shared pool serves this repository, and in any case before this
+    # repository is public; `runs-on` is then the only line that moves.
+    #
+    # ONE runner means ONE job at a time and the rest queued. That is a
+    # scheduling property, not a bound: nothing here serialises anything, and
+    # `timeout-minutes` below counts execution, not the wait for a slot.
+    runs-on: [self-hosted, dhcp-golib]
+    # Twice the slowest measurement, which is the rule the hosted bound used
+    # too — it was 190, twice a 94-minute run on two cores. MEASURED on this
+    # machine at 8c87caf: `./verify.sh --oracle` takes 818s, 13m38s, wall to
+    # wall, and the job adds a checkout, a toolchain and a race pre-compile.
+    # Twice fourteen minutes is 28; 30 is that rounded to the next multiple of
+    # ten and it is the whole margin. RUNS_TIMEOUT
+    #
+    # WHAT THIS BOUND DOES NOT COVER, said here because the number looks
+    # generous and is not: a job that waits for the single runner's slot is
+    # not consuming this budget, but a job sharing the machine with a
+    # reviewer's own `./verify.sh --oracle` IS. That case is measured rather
+    # than assumed — see docs/verifying.md, "In CI".
+    timeout-minutes: 30
     steps:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,29 +48,29 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # dnsmasq-base ships /usr/sbin/dnsmasq without the system service: the
-      # namespaced tests start their own server inside their own netns, and a
-      # service that binds :53 and :67 in the runner's namespace is a package
-      # postinst that can fail for reasons this repository does not own.
-      - name: Install what the arbiter shells out to
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dnsmasq-base iproute2 shellcheck
-
-      # MEASURED, run 33992151078 on ubuntu-24.04, with this sysctl left at its
-      # Ubuntu default of 1: the namespaced child STARTS — the user namespace is
-      # created — and then every capability inside it is denied. The row read
-      #   netns-suite FAIL exit 1 after 1s: --- FAIL: TestASquatterInTheProbeWindowMakesAWaitingClientDecline (0.00s)
-      # over `ip link add cli0 type veth peer name srv0: exit status 2 /
-      # RTNETLINK answers: Operation not permitted` and, for the one test that
-      # nests a second namespace, `unshare(CLONE_NEWNET): operation not
-      # permitted`. AppArmor transitions an unconfined process that creates an
-      # unprivileged user namespace into a profile that holds no capabilities.
+      # TWO STEPS WERE DELETED HERE ON 2026-09-06 AND THIS IS WHY, because the
+      # next reader will otherwise wonder what a runner is missing.
       #
-      # This is the smallest thing that lets the SAME tests run unprivileged:
-      # the arbiter step below is not run under sudo, and no test changed.
-      - name: Let an unprivileged user namespace keep the capabilities it creates
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      #   - `apt-get install dnsmasq-base iproute2 shellcheck` existed to put
+      #     the three binaries the arbiter shells out to on a fresh hosted
+      #     image. This runner has no sudo — it runs as an unprivileged user —
+      #     so the step could not work here; and it has nothing to do, because
+      #     the local arbiter runs on this machine before every push and would
+      #     fail its shellcheck, netns-suite or dnsmasq rows if any of them
+      #     were absent. The netns tests find dnsmasq on PATH or in the usual
+      #     sbin directories, which is where this machine keeps it.
+      #   - `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` existed
+      #     because the hosted image's AppArmor let an unprivileged user
+      #     namespace be created and then denied every capability inside it.
+      #     This kernel has no such knob at all — the sysctl does not exist —
+      #     and unprivileged user namespaces keep their capabilities, which
+      #     every netns-suite run on this machine has demonstrated since
+      #     2026-08-29. The facts step below records the namespace limit that
+      #     does exist, so an absence is visible rather than assumed.
+      #
+      # Neither deletion moves a bound and neither touches a test. If a future
+      # runner needs either step back, it needs it back with its own
+      # measurement, not with this comment.
 
       - name: Record the machine this measurement was taken on
         run: |
@@ -60,39 +79,65 @@ jobs:
             echo "commit:         ${GITHUB_SHA}"
             echo "kernel:         $(uname -srm)"
             echo "cores (nproc):  $(nproc)"
-            echo "dnsmasq:        $( (dnsmasq --version || true) | head -n 1)"
+            echo "dnsmasq:        $( (command -v dnsmasq >/dev/null && dnsmasq --version || /usr/sbin/dnsmasq --version || true) | head -n 1)"
             echo "go:             $(go version)"
-            echo "userns sysctl:  $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>&1 || true)"
-            echo "userns maxuser: $(sysctl -n user.max_user_namespaces 2>&1 || true)"
+            echo "userns maxuser: $(cat /proc/sys/user/max_user_namespaces 2>&1 || true)"
+            echo "shellcheck:     $( (shellcheck --version || true) | sed -n 's/^version: //p')"
           } | tee runner-facts.txt
 
-      # The unit-suite row is a WALL CLOCK against a 60s ceiling, and that
-      # ceiling asks one question: has the suite drifted into waiting. A cold
-      # -race build is not waiting, and on the session box the ceiling was
-      # derived against a cache a developer has already warmed. MEASURED: the
-      # same suite on two cores of the session box takes 35s cold and 25s warm,
-      # and run 33992151078 took 67s cold here. Compiling the race build before
-      # the arbiter starts changes nothing the row measures — same flags, same
-      # binaries, no test touched — it only puts this runner in the state the
-      # ceiling was derived in.
+      # Deliberately `uname -srm` and not `uname -a` or `uname -n`: this
+      # artefact is kept for thirty days, it is read by anyone who can read the
+      # run, and this repository does not put the name of a machine on the
+      # public record. Nothing else here prints a host name or an address.
+
+      # The unit-suite row is a WALL CLOCK against a ceiling, and that ceiling
+      # asks one question: has the suite drifted into waiting. A cold -race
+      # build is not waiting, and the ceiling was derived against a cache a
+      # developer has already warmed.
+      #
+      # RE-MEASURED on this machine 2026-09-06, since the number this step used
+      # to carry (67s cold) was a two-core hosted figure: this command takes 8s
+      # against an empty GOCACHE and 3s against the warm one, and the row it
+      # protects measures 20s against a 102s ceiling. So the step is nearly
+      # free and buys much less than it did — it is KEPT rather than deleted
+      # because the cache it relies on is not guaranteed: a standing runner
+      # warms it, and `setup-go` installing a different toolchain empties it
+      # again in one step, which is exactly the day the row would otherwise be
+      # timing a compile.
       - name: Compile the race build before anything is timed against a ceiling
         run: go test -race -count=1 -run '^$' ./... > /dev/null
 
-      # ALWAYS --oracle. The skip stamp is a per-clone local cache that a fresh
-      # runner cannot have, so the flag costs nothing here and removes the one
-      # shape in which this job could report PASS over an oracle that never ran.
-      # ORACLE_JOBS is 1 and it is DERIVED, not chosen for speed. This runner
-      # has two cores. MEASURED, run 33992151078 at two jobs: the root run's
-      # suite took 67s and the oracle's own copies took 77s to 99s, all over
-      # the 60s ceiling, and fifteen of the seventeen scenarios that did not
-      # behave failed for that and nothing else. One job gives a copy the whole
-      # machine, which is the only state in which the shipped ceiling has ever
-      # been measured to hold. It costs wall clock; it does not move a bound.
+      # ALWAYS --oracle. The skip stamp is a per-clone local cache, and a
+      # standing runner CAN carry one from a previous job in principle — this
+      # flag is what makes that impossible to matter, and the last step refuses
+      # a SKIPPED oracle row outright.
+      #
+      # ORACLE_JOBS IS NOT SET, and that is the change D36 makes here. The
+      # hosted lane pinned it to 1 because two cores could not run two race
+      # suites inside the unit-suite ceiling. This is the machine that ceiling
+      # was derived on, so the lane runs the oracle at its own default — the
+      # same command, at the same job count, that a reviewer runs on this
+      # machine.
+      #
+      # MEASURED 2026-09-06 at 8c87caf, `./verify.sh --oracle` on this box with
+      # ORACLE_JOBS unset: the oracle's own row reported 675s over 77
+      # scenarios, the whole arbiter 818s, unit-suite 20s against its 102s
+      # ceiling and netns-suite 93s against its 140s. No copy came near a
+      # ceiling. The oracle's default is four jobs (scripts/test-verify.sh),
+      # which is also the figure ORACLE_MEASURED_SECONDS in verify.manifest.sh
+      # was taken at, so the floor, the lane and a reviewer's run all describe
+      # one job count.
+      #
+      # THE ESCAPE, stated beside the claim: "unset" means the value comes from
+      # the environment the runner's service was started in. That service
+      # declares none, so the default is what runs; an ORACLE_JOBS exported
+      # into that environment would silently change the lane's job count and
+      # nothing in this repository could see it.
       - name: Run the arbiter — always with --oracle, never the cached skip
         run: |
           started="$(date +%s)"
           set +e
-          ORACLE_JOBS=1 ./verify.sh --oracle 2>&1 | tee verify-output.txt
+          ./verify.sh --oracle 2>&1 | tee verify-output.txt
           rc="${PIPESTATUS[0]}"
           set -e
           printf 'arbiter exit status: %d\narbiter wall clock: %ds\n' \
@@ -113,8 +158,9 @@ jobs:
       # The vacuity refusal. A job whose only operand is an exit status cannot
       # tell an arbiter that passed from an arbiter that printed nothing, and
       # cannot tell a full verdict from one taken over a shrunken row roster or
-      # over a SKIPPED oracle. So read the arbiter's own two lines, and take
-      # the row count from the manifest at run time rather than typing it here.
+      # over a SKIPPED oracle. So read the arbiter's own table, and take every
+      # name and count in it out of the manifest at run time rather than
+      # typing any of them here.
       - name: The verdict must be the arbiter's own, over every declared row
         if: always()
         run: |
@@ -128,8 +174,38 @@ jobs:
           . ./verify.manifest.sh
           n="$MANIFEST_ROWS_N"
 
-          if ! grep -Eq '^verify-oracle +PASS +ORACLE PASS:' "$out"; then
-            echo "::error::the oracle did not run to a PASS on this runner; --oracle must never yield a SKIPPED row here"
+          # EVERY declared row, by name, and no row recording anything else.
+          #
+          # 2026-09-06, carried review row R2. This step used to read the row
+          # COUNT off the verdict line and nothing else, and its acceptance set
+          # was then far wider than the docs describe: a file holding only the
+          # oracle row and the verdict line passed it, and so did a green
+          # output with a `unit-suite FAIL` row appended after it. Reading the
+          # roster instead of the count also makes this an independent read —
+          # the count alone backstopped only a verify.sh that had stopped
+          # reconciling its own roster against the manifest.
+          bad=0
+          for r in "${MANIFEST_ROWS[@]}"; do
+            if ! grep -Eq "^${r} +PASS( |\$)" "$out"; then
+              echo "::error::the arbiter recorded no PASS for the declared row ${r}"
+              grep -E "^${r} +" "$out" || echo "there is no ${r} row in the output at all"
+              bad=1
+            fi
+            if grep -Eq "^${r} +(FAIL|SKIPPED)( |\$)" "$out"; then
+              echo "::error::the output carries a ${r} row that is not a PASS"
+              grep -E "^${r} +(FAIL|SKIPPED)( |\$)" "$out"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
+          # The oracle's own account, with the scenario count SOURCED from the
+          # manifest: a hand-typed `ORACLE PASS: 0 scenarios` row is an oracle
+          # that ran nothing and used to pass this step. The spelling comes
+          # from the manifest too, so the oracle, the arbiter and this job
+          # cannot drift apart (carried review row R1).
+          if ! grep -Eq "^verify-oracle +PASS +${MANIFEST_ORACLE_PASS_PREFIX} ${#MANIFEST_SCENARIOS[@]} scenarios" "$out"; then
+            echo "::error::the verify-oracle row does not carry the oracle's own account of ${#MANIFEST_SCENARIOS[@]} scenarios; the row printed below says which state this actually is — a SKIPPED oracle, an account over a different population, or a PASS whose detail is not the account"
             grep -E '^verify-oracle' "$out" || echo "there is no verify-oracle row in the output at all"
             exit 1
           fi
@@ -141,4 +217,14 @@ jobs:
             exit 1
           fi
 
-          echo "the arbiter printed VERDICT: PASS ($n steps) and ran its own oracle."
+          # One run, one verdict. A green output with a second verdict line
+          # after it is not a green run, and the check above cannot see the
+          # second line.
+          verdicts="$(grep -cE '^VERDICT:' "$out" || true)"
+          if [ "$verdicts" -ne 1 ]; then
+            echo "::error::the output carries ${verdicts} VERDICT lines; one run states one verdict"
+            grep -E '^VERDICT:' "$out"
+            exit 1
+          fi
+
+          echo "the arbiter printed VERDICT: PASS ($n steps) and ran its own oracle over ${#MANIFEST_SCENARIOS[@]} scenarios."

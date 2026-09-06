@@ -96,6 +96,25 @@ MANIFEST_SKIPPABLE_ROWS=(
 )
 MANIFEST_SKIPPABLE_ROWS_N=1
 
+# The one spelling of the oracle's own verdict line, and the reason it is here
+# rather than in any of the four files that use it.
+#
+# 2026-09-06, D36, carried review row R1. The oracle prints this line; verify.sh
+# parses it for the scenario count and puts it in the verify-oracle row's
+# detail; the CI job greps that row for it. Three producers and three consumers
+# of one token, with nothing tying them together: a rename in the oracle left
+# the arbiter's parse and the job's grep looking for a line that no longer
+# exists, and the job's diagnosis then named a state ("the oracle did not run")
+# that had not occurred. The oracle's two fabricating stubs read it too, because
+# a stub whose whole purpose is to print a CONVINCING account stops being the
+# strongest fake the moment the real spelling moves away from it.
+#
+# What deliberately does NOT read it: MANIFEST_SCENARIO_CONTRACTS' diagnosis
+# tokens. A contract is this file's independent statement of what a message must
+# say; one that followed the token automatically would agree with any rename,
+# which is the whole shape this file exists to refuse.
+MANIFEST_ORACLE_PASS_PREFIX='ORACLE PASS:'
+
 # The self-check row's own population: how many probe verdicts it puts through
 # record() before any real row, and how many of those record() must REFUSE.
 #
@@ -374,11 +393,20 @@ SELF_DRIVE_SURVIVES_N=5
 # to make this row stop saying anything is to raise the ceiling rather than
 # delete the number.
 #
-# 2026-09-06, +2, and the two lines are enumerated because a bump without the
-# list is a ratchet nobody earned: docs/verifying.md's "In CI" section carries
-# the runner command (ORACLE_JOBS=1) and the one line that names the machine
-# the runner facts were measured on (kernel, dnsmasq and Go versions). Nothing
-# else in that section carries a bare number the sweep can see.
+# 2026-09-06, +2, and the two lines were enumerated because a bump without the
+# list is a ratchet nobody earned: docs/verifying.md's "In CI" section carried
+# the runner command (ORACLE_JOBS=1) and the one line that named the machine
+# the runner facts were measured on (kernel, dnsmasq and Go versions).
+#
+# LATER THE SAME DAY, D36: both of those lines are gone — the lane no longer
+# pins ORACLE_JOBS and no longer quotes an image's facts — and the section's
+# one new numeric line is the arbiter's own wall clock on the machine it now
+# runs on. The population MEASURED after that rewrite is 65, one under this
+# number. The ceiling is deliberately NOT lowered to 65: it is a ceiling and
+# not an equality, the population fell rather than the bound being earned
+# down, and pinning it to today's count would make the next measurement
+# written into a doc a red row rather than a decision. The slack is one line
+# and it is named here so the next bump still has to justify itself.
 DOC_NUMBER_CEILING=66
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
@@ -777,6 +805,15 @@ manifest_check() {
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
 	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
+	# The oracle's verdict token, held to what its three consumers need of it.
+	# Empty, and every anchored grep for it matches every line, which turns the
+	# CI job's oracle check and this arbiter's own parse into checks with one
+	# verdict. A slash, and verify.sh's `sed -n "s/^$prefix ...
+	# /\1/p"` stops being the expression it reads as.
+	case "$MANIFEST_ORACLE_PASS_PREFIX" in
+	"") bad="$bad MANIFEST_ORACLE_PASS_PREFIX is empty; an empty token makes every grep for it match everything;" ;;
+	*/*) bad="$bad MANIFEST_ORACLE_PASS_PREFIX contains a slash, which verify.sh's sed uses as its delimiter;" ;;
+	esac
 	# Both halves non-empty and the refusals a PROPER subset of the probes: a
 	# self-check that refuses every probe it runs has no preservation control,
 	# and one that refuses none of them is not a guard.

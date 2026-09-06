@@ -1053,8 +1053,8 @@ sc_oracle_names_fabricated() {
 	# manifest and are written nowhere in the file it replaced.
 	local d="$1"
 	copy_tree "$d"
-	printf '#!/bin/sh\necho "ORACLE PASS: %s scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' \
-		"${#MANIFEST_SCENARIOS[@]}" >"$d/scripts/test-verify.sh"
+	printf '#!/bin/sh\necho "%s %s scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' \
+		"$MANIFEST_ORACLE_PASS_PREFIX" "${#MANIFEST_SCENARIOS[@]}" >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that reported the right number and ran nothing still passed"
@@ -2045,7 +2045,7 @@ fabricating_stub() {
 			if [ "$rc" != static ]; then o="$o,scope:$scope"; fi
 			printf 'echo "  RESULT %s PASS obs=%s"\n' "$n" "$o"
 		done
-		printf 'echo "ORACLE PASS: %s scenarios, %s"\nexit 0\n' "$claim" "$marker"
+		printf 'echo "%s %s scenarios, %s"\nexit 0\n' "$MANIFEST_ORACLE_PASS_PREFIX" "$claim" "$marker"
 	)"
 	# The shebang belongs to the file, not to the injected block.
 	block="${block#\#!/bin/sh}"
@@ -2391,7 +2391,7 @@ sort -k2,2 "$results" | sed 's/^/  /'
 bad="$(grep -c '^RESULT [^ ]* FAIL' "$results" || true)"
 echo "---"
 if [ "$bad" -eq 0 ]; then
-	echo "ORACLE PASS: ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
+	echo "$MANIFEST_ORACLE_PASS_PREFIX ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
 	exit 0
 fi
 echo "ORACLE FAIL: $bad of ${#SCENARIOS[@]} scenarios did not behave"

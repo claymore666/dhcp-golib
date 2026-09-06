@@ -1,0 +1,7 @@
+# The labels this repository's own runner answers to. actionlint knows GitHub's
+# hosted labels and nothing else, so a self-hosted label reads as a typo unless
+# it is declared here. `dhcp-golib` is the standing runner D36 put the arbiter
+# lane on, 2026-09-06; it is temporary, and this file goes when it does.
+self-hosted-runner:
+  labels:
+    - dhcp-golib
