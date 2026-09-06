@@ -143,8 +143,8 @@ func asDivergence(err error, out *Divergence) bool {
 
 // TestReplay6StepsOverARing2Note is the JournalEntry6.Note contract.
 //
-// RFC 9915 §14.1's refused send is recorded in the journal — the brief's
-// "journalled with the count, not dropped silently" — and it happens between
+// RFC 9915 §14.1's refused send is recorded in the journal with the count
+// rather than dropped silently — and it happens between
 // two Steps, in ring 2, with no event and no transition. THE MUTANT THIS KILLS
 // is a Replay6 that treats such a line as a Step: it reads From as the zero
 // State6, finds the machine somewhere else, and reports a divergence that says

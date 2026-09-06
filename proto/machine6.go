@@ -179,6 +179,19 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6RouterSolicit:
 		m.routerSolicitTick(&out)
 		return m.state, out.list
+	case ev.Kind == EvTimerFired && ev.Timer == Timer6Expire:
+		// The valid lifetime running out means the same thing in every state,
+		// and it is handled here for interlock 1's reason above and for one
+		// MEASURED this round: it was handled in BOUND6 and in the two renewal
+		// states only, so a lease the caller had been told about and that the
+		// machine still held while re-discovering — after a Renew answered
+		// with an IA_NA carrying no address, after the duplicate address
+		// detection deadline, after a duplicate on a renewal's new address —
+		// reached its valid lifetime in INIT6 or DAD6 and was journalled
+		// "ignored". The caller kept an expired IPv6 address installed with no
+		// event, forever.
+		m.expireLease(now, rnd, &out)
+		return m.state, out.list
 	case ev.Kind == EvActionFailed:
 		// R2, in one arm rather than ten: an action that did not happen means
 		// the same thing in every state, and a per-state arm is how the state
@@ -487,6 +500,15 @@ func (m *Machine6) stepDAD6(now Instant, rnd uint64, ev Event, out *actions) {
 			// D22's shape: an address nothing verified is not used, and the
 			// evidence for a Decline — another node answering for the address
 			// — is exactly what did not arrive.
+			//
+			// A LEASE ALREADY IN HAND — this is a renewal's new address, or a
+			// resume being confirmed — IS NOT ENDED HERE. §18.2.8 says what
+			// failing to acquire a binding means for a client that has one:
+			// "The client SHOULD treat the failure to acquire a binding (due
+			// to the conflict) as equivalent to not having received the
+			// binding, insofar as how it behaves when sending Renew and Rebind
+			// messages." Not having received it leaves the old one standing,
+			// with its expiry armed; expireLease ends it on time.
 			out.cancel(m, Timer6DAD)
 			out.failed(m, ReasonDADIncomplete, fmt.Sprintf("no EvDADResult for %v within %s", m.dadWait, m.params.dadTimeout()))
 			m.dropPending()
@@ -548,10 +570,6 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 			// recommendation produced no renewal time, or when a renewal was
 			// never armed.
 			m.enterRebinding(now, rnd, out)
-		case Timer6Expire:
-			out.journal(m, "every valid lifetime in the IA has expired")
-			m.loseLease(out, ReasonExpired)
-			m.restartDiscovery(now, rnd, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -561,9 +579,9 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 		// somebody else has it. The server is told, because a binding this
 		// client cannot use is one the server should not hand back to it.
 		out.journal(m, "the address was withdrawn under a bound lease: declining it and restarting discovery (sequencing §8.2)")
-		addrs := m.leaseAddrs()
+		lost := m.lease
 		m.loseLease(out, ReasonConflict)
-		m.declineAll(now, rnd, addrs, out, func(n Instant, r uint64, o *actions) {
+		m.declineAll(now, rnd, lost, out, func(n Instant, r uint64, o *actions) {
 			m.restartDiscovery(n, r, o)
 		})
 	case EvDADResult:
@@ -572,9 +590,9 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 			return
 		}
 		out.journal(m, "duplicate address detection reported "+ev.DAD.String()+" for a bound lease: declining it and restarting discovery")
-		addrs := m.leaseAddrs()
+		lost := m.lease
 		m.loseLease(out, ReasonConflict)
-		m.declineAll(now, rnd, addrs, out, func(n Instant, r uint64, o *actions) {
+		m.declineAll(now, rnd, lost, out, func(n Instant, r uint64, o *actions) {
 			m.restartDiscovery(n, r, o)
 		})
 	case EvRelease:
@@ -617,15 +635,6 @@ func (m *Machine6) stepRenewal6(now Instant, rnd uint64, ev Event, out *actions)
 				return
 			}
 			out.journal(m, "the rebind timer fired while already rebinding: ignored")
-		case Timer6Expire:
-			// §18.2.5: "The message exchange is terminated when the valid
-			// lifetimes of all leases across all IAs have expired, at which
-			// time the client uses the Solicit message to locate a new DHCP
-			// server and sends a Request for the expired IAs to the new
-			// server."
-			out.journal(m, "every valid lifetime in the IA expired while "+m.state.String())
-			m.loseLease(out, ReasonExpired)
-			m.restartDiscovery(now, rnd, out)
 		case Timer6Renew:
 			out.journal(m, "the renew timer fired while already renewing: ignored")
 		default:
@@ -633,9 +642,9 @@ func (m *Machine6) stepRenewal6(now Instant, rnd uint64, ev Event, out *actions)
 		}
 	case EvAddressLost:
 		out.journal(m, "the address was withdrawn while "+m.state.String()+": declining it and restarting discovery")
-		addrs := m.leaseAddrs()
+		lost := m.lease
 		m.loseLease(out, ReasonConflict)
-		m.declineAll(now, rnd, addrs, out, func(n Instant, r uint64, o *actions) {
+		m.declineAll(now, rnd, lost, out, func(n Instant, r uint64, o *actions) {
 			m.restartDiscovery(n, r, o)
 		})
 	case EvRelease:
@@ -684,8 +693,30 @@ func (m *Machine6) begin(now Instant, rnd uint64, out *actions) {
 
 // restartDiscovery is §18's server discovery, entered from every path that
 // found the current binding unusable.
+//
+// RESTARTING DISCOVERY DOES NOT END A LEASE, and that is the one rule that
+// makes every arm below consistent. A lease ends when its valid lifetimes run
+// out (expireLease), when the address is taken by another node (the Decline
+// arms), or when the caller stops, releases or loses the link — never merely
+// because the machine went looking for a server again. §18.2.10.1 is explicit
+// for the arm that forced the question, a Renew answered with an IA_NA that
+// carries no address: "Leave unchanged any information about leases the client
+// has recorded in the IA but that were not included in the IA from the server."
+// §18.2.8 says the same of a Decline's aftermath: "The client SHOULD treat the
+// failure to acquire a binding (due to the conflict) as equivalent to not
+// having received the binding, insofar as how it behaves when sending Renew and
+// Rebind messages."
+//
+// THE TIMERS ARE MADE TO AGREE WITH THAT. The renewal schedule belongs to the
+// exchange that just ended and is cancelled; the expiry belongs to the lease
+// and survives exactly as long as the lease does.
 func (m *Machine6) restartDiscovery(now Instant, rnd uint64, out *actions) {
 	m.resume = nil
+	out.cancel(m, Timer6Renew)
+	out.cancel(m, Timer6Rebind)
+	if !m.haveLse {
+		out.cancel(m, Timer6Expire)
+	}
 	m.begin(now, rnd, out)
 }
 
@@ -808,6 +839,35 @@ func (m *Machine6) halt(out *actions, r Reason) {
 	out.cancelAll(m)
 }
 
+// expireLease ends a lease whose valid lifetimes have all run out, in whatever
+// state the machine is in.
+//
+// §18.2.5: "The message exchange is terminated when the valid lifetimes of all
+// leases across all IAs have expired, at which time the client uses the Solicit
+// message to locate a new DHCP server and sends a Request for the expired IAs
+// to the new server."
+//
+// IT RESTARTS DISCOVERY ONLY FROM THE THREE STATES THAT WERE USING THE LEASE.
+// From BOUND6, RENEWING6 and REBINDING6 the expiry is the end of the client's
+// relationship with its server and §18.2.5 says what follows. From the
+// discovery states the machine is ALREADY looking for a server — that is why
+// it is holding an expiring lease there at all — and restarting would draw a
+// fresh transaction id and reset the retransmission schedule of an exchange
+// that is in flight. So the expiry there ends the lease and nothing else.
+func (m *Machine6) expireLease(now Instant, rnd uint64, out *actions) {
+	out.cancel(m, Timer6Expire)
+	if !m.haveLse {
+		out.journal(m, "the expiry timer fired with no lease held: nothing to end")
+		return
+	}
+	out.journal(m, "every valid lifetime in the IA has expired while "+m.state.String()+" (§18.2.5)")
+	m.loseLease(out, ReasonExpired)
+	switch m.state {
+	case State6Bound, State6Renewing, State6Rebinding:
+		m.restartDiscovery(now, rnd, out)
+	}
+}
+
 func (m *Machine6) loseLease(out *actions, r Reason) {
 	if !m.haveLse {
 		return
@@ -823,9 +883,13 @@ func (m *Machine6) dropPending() {
 	m.dadWait, m.dadBad = nil, nil
 }
 
-func (m *Machine6) leaseAddrs() []netip.Addr {
-	out := make([]netip.Addr, 0, len(m.lease.Addrs))
-	for _, a := range m.lease.Addrs {
+// addrsOf is the addresses of a lease. It is a function of the LEASE rather
+// than a method that reads m.lease, because every caller needs the addresses of
+// a lease it is about to stop holding, and reading the field after loseLease
+// has cleared it is how a decline loses its subject.
+func addrsOf(l Lease6) []netip.Addr {
+	out := make([]netip.Addr, 0, len(l.Addrs))
+	for _, a := range l.Addrs {
 		out = append(out, a.Addr)
 	}
 	return out
@@ -1089,6 +1153,23 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// Section 21.14) or a Request, the client can either reissue the
 		// message without specifying any addresses or restart the DHCP server
 		// discovery process (see Section 18 or Section 18.2.13)."
+		//
+		// A STATED BOUND, not a quotation: that sentence and §18.2.10.3's
+		// ("When the client only receives one or more Reply messages with the
+		// NotOnLink status in response to a Confirm message, the client
+		// performs DHCP server discovery as described in Section 18.") are
+		// both written for a client that holds no lease yet, and the RFC says
+		// nothing about a NotOnLink answering a Renew or a Rebind. THIS
+		// CLIENT ENDS THE LEASE AT THE TRANSITION, because NotOnLink is the
+		// server saying the address is not on the link the client is on, and
+		// that is the one status under which continuing to use it is the
+		// failure this plugin exists to avoid. It is v4's DHCPNAK arm
+		// (RFC 2131 3.2(3), "it cannot reuse its remembered network address")
+		// answered the same way, which is D30.
+		if m.haveLse {
+			out.journal(m, "Reply says NotOnLink while a lease is held: the address is not on this link, ending the lease (stated bound; §18.2.10.1 and §18.2.10.3 both address a client that holds none)")
+			m.loseLease(out, ReasonNak)
+		}
 		out.journal(m, "Reply says NotOnLink: restarting discovery (§18.2.10.1)")
 		m.restartDiscovery(now, rnd, out)
 		return
@@ -1124,6 +1205,12 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 				return
 			}
 		}
+		// THE LEASE IN HAND SURVIVES THIS, and §18.2.10.1 says so of exactly
+		// this case: "Leave unchanged any information about leases the client
+		// has recorded in the IA but that were not included in the IA from the
+		// server." So discovery restarts with the lease still held and its
+		// expiry still armed; expireLease ends it when the valid lifetimes run
+		// out, in whatever state the search has reached by then.
 		out.journal(m, "no usable address in the Reply: restarting discovery (§18.2.10.1)")
 		m.restartDiscovery(now, rnd, out)
 		return
@@ -1230,13 +1317,10 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	// address, so the retained set is empty in every configuration this library
 	// can produce. The SHOULD is declined here, in writing, rather than
 	// implemented untested.
-	all := make([]netip.Addr, 0, len(m.pending.Addrs))
-	for _, a := range m.pending.Addrs {
-		all = append(all, a.Addr)
-	}
-	out.journal(m, fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(all)))
+	bad := m.pending
+	out.journal(m, fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs)))
 	m.dropPending()
-	m.declineAll(now, rnd, all, out, func(n Instant, r uint64, o *actions) {
+	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
 		m.restartDiscovery(n, r, o)
 	})
 }
@@ -1394,15 +1478,42 @@ func (m *Machine6) release(now Instant, rnd uint64, out *actions) {
 // exchange would put DECLINING and RELEASING in AllStates6 with one arm each,
 // and the totality test's domain would grow by two states in which the only
 // thing that can happen is the exchange that named them.
-func (m *Machine6) declineAll(now Instant, rnd uint64, addrs []netip.Addr, out *actions, then func(Instant, uint64, *actions)) {
-	if len(addrs) == 0 || len(m.server) == 0 {
-		// §18.2.8's Server Identifier is a MUST, and an address list is what
-		// the message is about. Without either there is nothing to send, so
-		// the machine goes straight to what follows the decline.
-		out.journal(m, "nothing to decline: no address or no server identifier (§18.2.8)")
+//
+// THE SERVER IDENTIFIER COMES FROM THE LEASE BEING DECLINED AND NOT FROM
+// m.server, and that is §18.2.8 read literally: "The client MUST include a
+// Server Identifier option (see Section 21.3) in the Decline message,
+// identifying the server that allocated the lease(s)." The server that
+// allocated the lease is a property of the lease; m.server is the server of
+// the exchange currently in flight, which is a different fact and is not set
+// on every path that can reach a Decline.
+//
+// MEASURED 2026-09-06, and it is why this takes a Lease6 rather than a list of
+// addresses: m.server is assigned only on the Solicit path, in the NoBinding
+// arm, in takeReply, in enterRenewing and in release, and is set to nil in
+// enterRebinding. continueFromResume — the whole resume path — never set it,
+// so a client that came back from a restart, confirmed its addresses and then
+// found one in use journalled "declining it" immediately followed by "nothing
+// to decline", and no Decline ever left the host. §18.2.5 makes the same hole
+// in REBINDING, where the Rebind carries no Server Identifier at all: the
+// exchange has no server, and the LEASE still names the one that allocated it.
+func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, then func(Instant, uint64, *actions)) {
+	addrs := addrsOf(l)
+	if len(addrs) == 0 {
+		out.journal(m, "nothing to decline: the lease carries no address (§18.2.8)")
 		then(now, rnd, out)
 		return
 	}
+	if len(l.ServerDUID) == 0 {
+		// §18.2.8's Server Identifier is a MUST and this client cannot invent
+		// one. This is a STATED BOUND rather than a silent refusal: a lease
+		// with no server DUID can only come from a Resume6 the caller built
+		// without one, and the server learns the address is in use when the
+		// binding is not renewed.
+		out.journal(m, "the lease names no server: no Decline can be sent (§18.2.8 requires a Server Identifier identifying the server that allocated the lease)")
+		then(now, rnd, out)
+		return
+	}
+	m.server = append([]byte(nil), l.ServerDUID...)
 	m.declining = append([]netip.Addr(nil), addrs...)
 	m.afterDecline = then
 	m.state = State6DAD
@@ -1445,8 +1556,17 @@ func (m *Machine6) takeConfig(now Instant, msg *wire.MessageV6, out *actions) {
 		c.RefreshTime = SecondsToDuration(secs)
 	}
 
+	// ONE FACT, DERIVED ONCE. §21.23's floor and its default are what this
+	// client will actually do, so they are what the caller is TOLD: the raw
+	// option value is used to compute the bounded one and then never seen
+	// again. MEASURED 2026-09-06: reported and armed were derived separately
+	// and disagreed — an absent option reported 0 (which Configuration.Refresh
+	// documents as "never") while 86400s was armed, and 60s reported 60s while
+	// 600s was armed. A caller that logged the reported value could not have
+	// told when the next Information-request was due.
+	c.RefreshTime = m.refreshTime(c.RefreshTime, ok, out)
 	m.config = c
-	m.refresh = m.refreshTime(c.RefreshTime, ok, out)
+	m.refresh = c.RefreshTime
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
 	out.stamp(m, Action{Kind: ActConfigured, Config: c})

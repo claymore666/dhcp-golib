@@ -181,26 +181,36 @@ func TestTheIARulesDiscardWhatTheRFCSaysToDiscard(t *testing.T) {
 		name string
 		opt  wire.OptionV6
 		note string
+		// line is the journal text this discard must produce. A discard is
+		// invisible in a passing test — the lease is absent either way — so
+		// the arm that did the discarding has to be named. MEASURED
+		// 2026-09-06: the foreign-IAID arm's behaviour was driven and its
+		// note was not, so deleting the note left the suite green.
+		line string
 	}{
 		{
 			"T1 greater than T2, both non-zero",
 			optIANA(t, capIAID, 300, 200, []iaAddrSpec{{"fd00:99::183", 400, 400}}),
 			"§21.4: \"If a client receives an IA_NA with T1 greater than T2 and both T1 and T2 are greater than 0, the client discards the IA_NA option and processes the remainder of the message as though the server had not included the invalid IA_NA option.\"",
+			"is greater than T2 200s",
 		},
 		{
 			"a preferred lifetime greater than the valid lifetime",
 			optIANA(t, capIAID, 150, 240, []iaAddrSpec{{"fd00:99::183", 500, 300}}),
-			"§21.6: \"A client discards any addresses for which the preferred lifetime is greater than the valid lifetime.\"",
+			"§21.6: \"The client MUST discard any addresses for which the preferred lifetime is greater than the valid lifetime.\"",
+			"preferred 500 greater than valid 300",
 		},
 		{
 			"a valid lifetime of zero",
 			optIANA(t, capIAID, 150, 240, []iaAddrSpec{{"fd00:99::183", 0, 0}}),
 			"§18.2.10.1: an address whose valid lifetime is 0 has expired and is not a binding",
+			"valid lifetime",
 		},
 		{
 			"another client's IAID",
 			optIANA(t, capIAID+1, 150, 240, []iaAddrSpec{{"fd00:99::183", 300, 300}}),
 			"the IA_NA is keyed on the IAID this client sent",
+			"is not ours",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,6 +230,9 @@ func TestTheIARulesDiscardWhatTheRFCSaysToDiscard(t *testing.T) {
 			if s != State6Init && s != State6Selecting {
 				t.Errorf("an unusable Reply left the machine in %s, want discovery restarted", s)
 			}
+			if !journalHas(acts, tc.line) {
+				t.Errorf("the discard was not journalled as %q; the machine said:%s", tc.line, journalLines(acts))
+			}
 		})
 	}
 
@@ -233,6 +246,72 @@ func TestTheIARulesDiscardWhatTheRFCSaysToDiscard(t *testing.T) {
 		}
 		if l.T1 != 150*Second || l.T2 != 240*Second {
 			t.Errorf("T1=%s T2=%s, want the values the fixture's IA_NA carries", l.T1, l.T2)
+		}
+	})
+}
+
+// TestATopLevelIAAddressOptionIsIgnored drives the third of ruling 5's discard
+// arms, which had behaviour and no test: an IA Address option sitting at the
+// top level of a Reply, outside any IA_NA.
+//
+// §21.6's option is "only specified to be encapsulated within an IA_NA", and
+// §16 forbids throwing the message away over a misplaced option — "Clients and
+// servers MAY choose to either (1) extract information from such a message if
+// the information is of use to the recipient or (2) ignore such a message
+// completely and just discard it". So the OPTION is dropped and the message is
+// still read. An address with no IA_NA around it has no IAID, and this client
+// could never renew, rebind or release it.
+//
+// TWO ROWS, because either one alone can pass with the arm deleted: the bare
+// one would still yield no lease (there is no IA_NA to read), and the row
+// beside a real IA_NA would still bind. What the arm is answerable for is that
+// the top-level address is NOT TAKEN and that the drop is named.
+func TestATopLevelIAAddressOptionIsIgnored(t *testing.T) {
+	const stray = "fd00:99::dead"
+	t.Run("alone in the Reply", func(t *testing.T) {
+		m, _ := solicit6(t, testParams6())
+		m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+		s, acts := m.Step(at(3), 5, receivedV6(t, wire.MsgReply, uint32(capXIDRequest),
+			optClientID(capDUID), optServerID(testServerDUID),
+			optIAAddrTop(t, iaAddrSpec{stray, 300, 300})))
+		if _, ok := find(acts, ActLeaseAcquired); ok {
+			t.Error("a lease was acquired from an IA Address option with no IA_NA around it")
+		}
+		if dad, ok := find(acts, ActStartDAD); ok {
+			t.Errorf("duplicate address detection started on %s, which arrived outside any IA_NA", dad.Target)
+		}
+		if s == State6Bound || s == State6DAD {
+			t.Errorf("a Reply whose only address is misplaced left the machine in %s", s)
+		}
+		if !journalHas(acts, "at the top level, outside any IA_NA") {
+			t.Errorf("the misplaced option was not journalled; the machine said:%s", journalLines(acts))
+		}
+	})
+
+	t.Run("beside our IA_NA", func(t *testing.T) {
+		m, _ := solicit6(t, testParams6())
+		m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+		s, acts := m.Step(at(3), 5, receivedV6(t, wire.MsgReply, uint32(capXIDRequest),
+			optClientID(capDUID), optServerID(testServerDUID),
+			optIANA(t, capIAID, 150, 240, []iaAddrSpec{{"fd00:99::183", 300, 300}}),
+			optIAAddrTop(t, iaAddrSpec{stray, 300, 300})))
+		if s != State6DAD {
+			t.Fatalf("the Reply left the machine in %s, want duplicate address detection on the IA_NA's address", s)
+		}
+		if !journalHas(acts, "at the top level, outside any IA_NA") {
+			t.Errorf("the misplaced option was not journalled; the machine said:%s", journalLines(acts))
+		}
+		for _, a := range acts {
+			if a.Kind == ActStartDAD && a.Target.String() == stray {
+				t.Errorf("duplicate address detection started on %s, which arrived outside any IA_NA", stray)
+			}
+		}
+		dad, ok := find(acts, ActStartDAD)
+		if !ok {
+			t.Fatal("the IA_NA's own address never reached duplicate address detection")
+		}
+		if dad.Target.String() != "fd00:99::183" {
+			t.Errorf("duplicate address detection started on %s, want the IA_NA's address", dad.Target)
 		}
 	})
 }

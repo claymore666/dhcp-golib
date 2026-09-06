@@ -118,7 +118,8 @@ func machine6In(t *testing.T, s State6) *Machine6 {
 }
 
 // raOtherOnly is a Router Advertisement with M clear and O set: RFC 4861
-// §4.2's "other configuration is available via DHCPv6, addresses are not".
+// §4.2's "other configuration information is available via DHCPv6" — and no
+// addresses, because M is what would have offered those.
 var raOtherOnly = []byte{
 	134, 0, 0, 0,
 	64, 0x40, 0x07, 0x08,
@@ -343,39 +344,50 @@ func TestNoAcquiredBeforeDuplicateAddressDetection(t *testing.T) {
 // TestADuplicateDeclinesAndRestarts is §18.2.10.1's "If any of the addresses
 // are found to be in use on the link, the client sends a Decline message to
 // the server for those addresses as described in Section 18.2.8."
+//
+// OVER BOTH ORIGINS. The resumed row is the reviewer's scenario (a) — a
+// Resume6 with a ServerDUID, a Confirm answered Success, then a duplicate —
+// and it is the row that fails against a machine whose server identity is set
+// only on the Solicit path.
 func TestADuplicateDeclinesAndRestarts(t *testing.T) {
-	m, _ := solicit6(t, testParams6())
-	m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
-	m.Step(at(3), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr))
+	for _, o := range leaseOrigins6() {
+		t.Run(o.name, func(t *testing.T) {
+			m := o.dad(t, testParams6())
 
-	s, acts := m.Step(at(4), 9, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), true))
-	if s != State6DAD {
-		t.Fatalf("a duplicate left the machine in %s; the Decline exchange runs from %s", s, State6DAD)
-	}
-	dec := mustSendV6(t, acts, wire.MsgDecline6)
-	if _, ok := dec.Options.First(wire.OptV6ServerID); !ok {
-		t.Error("the Decline carries no Server Identifier; §18.2.8 makes it a MUST")
-	}
-	ias, err := dec.Options.IANAs()
-	if err != nil || len(ias) != 1 {
-		t.Fatalf("the Decline's IA_NA: %v %v", ias, err)
-	}
-	addrs, err := ias[0].Options.Addrs()
-	if err != nil || len(addrs) != 1 || addrs[0].Addr.String() != dnsmasqLeasedAddr {
-		t.Fatalf("the Decline names %v, want the duplicate address %s", addrs, dnsmasqLeasedAddr)
-	}
-	if _, ok := find(acts, ActLeaseAcquired); ok {
-		t.Fatal("a duplicate produced a lease")
-	}
+			s, acts := m.Step(at(4), 9, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), true))
+			if s != State6DAD {
+				t.Fatalf("a duplicate left the machine in %s; the Decline exchange runs from %s", s, State6DAD)
+			}
+			dec := mustSendV6(t, acts, wire.MsgDecline6)
+			sid, ok := dec.Options.First(wire.OptV6ServerID)
+			if !ok {
+				t.Fatal("the Decline carries no Server Identifier; §18.2.8 makes it a MUST")
+			}
+			if string(sid) != string(testServerDUID) {
+				t.Errorf("the Decline names the server %x, want %x: §18.2.8 wants \"the server that allocated the lease(s)\"", sid, testServerDUID)
+			}
+			ias, err := dec.Options.IANAs()
+			if err != nil || len(ias) != 1 {
+				t.Fatalf("the Decline's IA_NA: %v %v", ias, err)
+			}
+			addrs, err := ias[0].Options.Addrs()
+			if err != nil || len(addrs) != 1 || addrs[0].Addr.String() != dnsmasqLeasedAddr {
+				t.Fatalf("the Decline names %v, want the duplicate address %s", addrs, dnsmasqLeasedAddr)
+			}
+			if _, ok := find(acts, ActLeaseAcquired); ok {
+				t.Fatal("a duplicate produced a lease")
+			}
 
-	// The Reply to the Decline completes it and discovery restarts.
-	s, acts = m.Step(at(5), 0, receivedV6(t, wire.MsgReply, dec.XID,
-		optClientID(capDUID), optServerID(testServerDUID)))
-	if s != State6Init {
-		t.Fatalf("the Reply to the Decline left the machine in %s, want %s (discovery restarts)", s, State6Init)
-	}
-	if _, ok := timerSet(acts, Timer6Delay); !ok {
-		t.Error("discovery restarted without the §18.2.1 pre-transmission delay")
+			// The Reply to the Decline completes it and discovery restarts.
+			s, acts = m.Step(at(5), 0, receivedV6(t, wire.MsgReply, dec.XID,
+				optClientID(capDUID), optServerID(testServerDUID)))
+			if s != State6Init {
+				t.Fatalf("the Reply to the Decline left the machine in %s, want %s (discovery restarts)", s, State6Init)
+			}
+			if _, ok := timerSet(acts, Timer6Delay); !ok {
+				t.Error("discovery restarted without the §18.2.1 pre-transmission delay")
+			}
+		})
 	}
 }
 

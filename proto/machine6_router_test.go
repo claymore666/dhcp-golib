@@ -142,7 +142,7 @@ func TestMZeroOOneWhileSolicitingSwitchesToInformationRequest(t *testing.T) {
 	}
 	inf := mustSendV6(t, acts, wire.MsgInformationRequest)
 	if _, ok := inf.Options.First(wire.OptV6IANA); ok {
-		t.Error("the Information-request carries an IA_NA; §18.2.6: \"The client MUST NOT include any IA options in the Information-request message\"")
+		t.Error("the Information-request carries an IA_NA; §16: \"an IA option is not allowed to appear in an Information-request message\"")
 	}
 	if !timerCancelled(acts, Timer6Retransmit) || !hasSendV6(acts, wire.MsgInformationRequest) {
 		// The retransmit timer is re-armed for the new exchange, so the

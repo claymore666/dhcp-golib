@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/claymore666/dhcp-golib/proto"
 	"github.com/claymore666/dhcp-golib/wire"
@@ -175,7 +176,11 @@ func TestTheV6ManagerReportsTheStatelessConfiguration(t *testing.T) {
 				optV6(wire.OptV6ServerID, test6ServerDUID),
 				optV6(wire.OptV6DNSServers, dns[:]),
 				optV6(wire.OptV6DomainList, search),
-				optV6(wire.OptV6InfoRefresh, []byte{0, 0, 0x0E, 0x10}),
+				// 60 seconds, which is OUTSIDE §21.23's bounds on purpose:
+				// IRT_MINIMUM is 600. A fixture inside the bounds cannot
+				// tell the reported value from the raw one, and this test
+				// is the ring-2 end of that fact.
+				optV6(wire.OptV6InfoRefresh, []byte{0, 0, 0, 60}),
 			},
 		}}
 	}
@@ -206,8 +211,11 @@ func TestTheV6ManagerReportsTheStatelessConfiguration(t *testing.T) {
 	if len(e.Config.Search) != 1 || e.Config.Search[0] != test6Search {
 		t.Errorf("the configuration carries the search list %v, want %s", e.Config.Search, test6Search)
 	}
-	if e.Config.Refresh.IsZero() {
-		t.Error("the configuration carries no refresh time; the Reply sent 3600 seconds (§21.23)")
+	// The fake clock does not move unless a test moves it, and this one does
+	// not, so the instant the configuration names is exactly now + the bound.
+	if want := r.clock.Wall().Add(600 * time.Second); !e.Config.Refresh.Equal(want) {
+		t.Errorf("the configuration says the client asks again at %s, want %s: the Reply sent 60 seconds and §21.23 says \"A client MUST use the refresh time IRT_MINIMUM if it receives the option with a value less than IRT_MINIMUM.\"",
+			e.Config.Refresh, want)
 	}
 	if got := r.mgr.Stats().ConfiguredEvents; got != 1 {
 		t.Errorf("ConfiguredEvents = %d, want 1", got)
@@ -218,8 +226,8 @@ func TestTheV6ManagerReportsTheStatelessConfiguration(t *testing.T) {
 	}
 }
 
-// raOtherOnly is M=0, O=1: RFC 4861 §4.2's "other configuration is available
-// via DHCPv6" with no addresses.
+// raOtherOnly is M=0, O=1: RFC 4861 §4.2's "other configuration information is
+// available via DHCPv6", with no addresses.
 var raOtherOnly = []byte{
 	134, 0, 0, 0,
 	64, 0x40, 0x07, 0x08,

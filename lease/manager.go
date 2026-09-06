@@ -296,9 +296,9 @@ type Stats struct {
 	// section 14.1 bucket.
 	//
 	// RateLimited counts messages RFC 9915 section 14.1's bucket refused. It
-	// is the number that separates "the server is not answering" from "this
-	// client is talking too fast to be allowed to ask": both look like
-	// silence on the wire, and only one of them is the network's fault.
+	// is the number that separates a server that is not answering from a
+	// client talking too fast to be allowed to ask: both look like silence
+	// on the wire, and only one of them is the network's fault.
 	RateLimited uint64
 
 	// NDSeen is every Neighbor Discovery frame the link delivered and
@@ -948,7 +948,7 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			// to name the action and to keep it out of the default one.
 
 		case proto.ActConfigured:
-			cfg := toConfig(a.Config, a.Config.RefreshTime, bridgeAt)
+			cfg := toConfig(a.Config, bridgeAt)
 			mg.mu.Lock()
 			mg.config = cfg
 			mg.stats.ConfiguredEvents++

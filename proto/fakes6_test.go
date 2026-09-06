@@ -129,6 +129,23 @@ func optIANA(t *testing.T, iaid, t1, t2 uint32, addrs []iaAddrSpec, extra ...wir
 	return wire.OptionV6{Code: wire.OptV6IANA, Data: v}
 }
 
+// optIAAddrTop is one §21.6 IA Address option at the TOP LEVEL of a message,
+// outside any IA_NA. It exists because that is a shape a server can send and
+// this client must refuse, and because a fixture that can only build the legal
+// nesting cannot drive the refusal.
+func optIAAddrTop(t *testing.T, a iaAddrSpec) wire.OptionV6 {
+	t.Helper()
+	v, err := wire.EncodeIAAddr(&wire.IAAddr{
+		Addr:              netip.MustParseAddr(a.addr),
+		PreferredLifetime: a.preferred,
+		ValidLifetime:     a.vali,
+	})
+	if err != nil {
+		t.Fatalf("EncodeIAAddr: %v", err)
+	}
+	return wire.OptionV6{Code: wire.OptV6IAAddr, Data: v}
+}
+
 var testServerDUID = mustHexBytes("00010001322ecbbfea494ee531ed")
 
 // msgV6 assembles a server message, ENCODED AND RE-DECODED rather than handed
@@ -206,6 +223,73 @@ func bind6(t *testing.T, p Params6, addr string) *Machine6 {
 	s, _ = m.Step(at(4), 0, DADResult(netip.MustParseAddr(addr), false))
 	if s != State6Bound {
 		t.Fatalf("a clean DAD result left the machine in %s, want %s", s, State6Bound)
+	}
+	return m
+}
+
+// leaseOrigin6 is how a machine came to hold the lease a test is about.
+//
+// THE TWO ORIGINS ARE A FIXTURE DIMENSION AND NOT TWO TESTS, and the reason is
+// MEASURED 2026-09-06: every v6 fixture in round 1 came through bind6, which
+// is the Solicit path, and the Solicit path was the only one that set the
+// machine's server identity. Everything a Decline needs was therefore present
+// in every test and absent from every resume — a client that came back from a
+// restart, confirmed its addresses and found one in use journalled "declining
+// it" and sent nothing. A test that asserts a Decline runs against BOTH.
+type leaseOrigin6 struct {
+	name string
+	// dad leaves the machine in DAD6 with dnsmasqLeasedAddr pending.
+	dad func(t *testing.T, p Params6) *Machine6
+	// bound leaves the machine in BOUND6 holding dnsmasqLeasedAddr.
+	bound func(t *testing.T, p Params6) *Machine6
+}
+
+// leaseOrigins6 is every way this machine can come to hold a lease.
+func leaseOrigins6() []leaseOrigin6 {
+	return []leaseOrigin6{
+		{
+			name: "solicited",
+			dad: func(t *testing.T, p Params6) *Machine6 {
+				t.Helper()
+				m, _ := solicit6(t, p)
+				m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+				if s, _ := m.Step(at(3), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr)); s != State6DAD {
+					t.Fatalf("the solicited Reply left the machine in %s, want %s", s, State6DAD)
+				}
+				return m
+			},
+			bound: func(t *testing.T, p Params6) *Machine6 {
+				t.Helper()
+				return bind6(t, p, dnsmasqLeasedAddr)
+			},
+		},
+		{
+			name: "resumed",
+			dad:  confirmed6,
+			bound: func(t *testing.T, p Params6) *Machine6 {
+				t.Helper()
+				m := confirmed6(t, p)
+				if s, _ := m.Step(at(3), 3, DADResult(addr6(dnsmasqLeasedAddr), false)); s != State6Bound {
+					t.Fatalf("the confirmed address did not bind: %s", s)
+				}
+				return m
+			},
+		},
+	}
+}
+
+// confirmed6 takes a machine through the resume path to DAD6: EvStart with a
+// Resume6, the Confirm, and a Reply saying Success. §18.2.10.3: "If the client
+// receives any Reply messages that indicate a status of Success (explicit or
+// implicit), the client can use the addresses in the IA".
+func confirmed6(t *testing.T, p Params6) *Machine6 {
+	t.Helper()
+	m, acts := confirming6(t, p)
+	conf := mustSendV6(t, acts, wire.MsgConfirm)
+	s, _ := m.Step(at(2), 3, receivedV6(t, wire.MsgReply, conf.XID,
+		optClientID(capDUID), optServerID(testServerDUID), optStatus(wire.StatusSuccess)))
+	if s != State6DAD {
+		t.Fatalf("a confirming Reply left the machine in %s, want %s", s, State6DAD)
 	}
 	return m
 }

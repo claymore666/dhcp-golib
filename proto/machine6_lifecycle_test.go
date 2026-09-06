@@ -169,36 +169,94 @@ func TestASilentConfirmKeepsTheAddresses(t *testing.T) {
 // cannot use is one the server should not hand back to it. That is why the
 // action list carries BOTH an ActLeaseLost with ReasonConflict and a Decline.
 func TestAddressLostWhileBoundDeclinesAndRestarts(t *testing.T) {
-	m := bind6(t, testParams6(), dnsmasqLeasedAddr)
-	s, acts := m.Step(at(100), 3, Simple(EvAddressLost))
+	for _, o := range leaseOrigins6() {
+		t.Run(o.name, func(t *testing.T) {
+			m := o.bound(t, testParams6())
+			s, acts := m.Step(at(100), 3, Simple(EvAddressLost))
 
-	lost, ok := find(acts, ActLeaseLost)
+			lost, ok := find(acts, ActLeaseLost)
+			if !ok {
+				t.Fatal("the withdrawal did not report the lease lost")
+			}
+			if lost.Reason != ReasonConflict {
+				t.Errorf("the lease was lost for %s, want %s: the address was withdrawn under us", lost.Reason, ReasonConflict)
+			}
+			if lost.Lease6.Addrs[0].Addr.String() != dnsmasqLeasedAddr {
+				t.Errorf("the lost lease names %v", lost.Lease6.Addrs)
+			}
+			dec := mustSendV6(t, acts, wire.MsgDecline6)
+			assertDeclineNamesTheServer(t, dec)
+			addrs := declinedAddrs(t, dec)
+			if len(addrs) != 1 || addrs[0].Addr.String() != dnsmasqLeasedAddr {
+				t.Errorf("the Decline names %v, want %s", addrs, dnsmasqLeasedAddr)
+			}
+			if s != State6DAD {
+				t.Fatalf("the withdrawal left the machine in %s; the Decline exchange runs from %s", s, State6DAD)
+			}
+			if _, held := m.Lease(); held {
+				t.Error("the machine still reports a held lease after the address was withdrawn")
+			}
+
+			// The Reply to the Decline restarts discovery.
+			s, _ = m.Step(at(101), 3, receivedV6(t, wire.MsgReply, dec.XID,
+				optClientID(capDUID), optServerID(testServerDUID)))
+			if s != State6Init {
+				t.Errorf("the Reply to the Decline left the machine in %s, want discovery restarted", s)
+			}
+		})
+	}
+}
+
+// TestAddressLostWhileRebindingDeclines is the reviewer's scenario (c) and the
+// one the RFC nearly forbids.
+//
+// §18.2.5 builds the Rebind "as described in Section 18.2.4, with the following
+// differences: ... The client does not include the Server Identifier option
+// (see Section 21.3) in the Rebind message." So while REBINDING the EXCHANGE
+// has no server — enterRebinding clears the machine's — and a Decline built
+// from the exchange could not be sent at all.
+//
+// §18.2.8 says where the Decline's own Server Identifier comes from, and it is
+// not the exchange: "The client MUST include a Server Identifier option (see
+// Section 21.3) in the Decline message, identifying the server that allocated
+// the lease(s)." The LEASE names that server, and the lease is what is being
+// declined. So the Decline is possible in REBINDING and this is the row that
+// says so.
+func TestAddressLostWhileRebindingDeclines(t *testing.T) {
+	for _, o := range leaseOrigins6() {
+		t.Run(o.name, func(t *testing.T) {
+			m := o.bound(t, testParams6())
+			if s, _ := m.Step(at(90), 7, TimerFired(Timer6Rebind)); s != State6Rebinding {
+				t.Fatalf("T2 left the machine in %s, want %s", s, State6Rebinding)
+			}
+			s, acts := m.Step(at(100), 3, Simple(EvAddressLost))
+			if s != State6DAD {
+				t.Fatalf("the withdrawal left the machine in %s; the Decline exchange runs from %s.%s", s, State6DAD, journalLines(acts))
+			}
+			dec := mustSendV6(t, acts, wire.MsgDecline6)
+			assertDeclineNamesTheServer(t, dec)
+			addrs := declinedAddrs(t, dec)
+			if len(addrs) != 1 || addrs[0].Addr.String() != dnsmasqLeasedAddr {
+				t.Errorf("the Decline names %v, want %s", addrs, dnsmasqLeasedAddr)
+			}
+			if _, ok := find(acts, ActLeaseLost); !ok {
+				t.Error("the withdrawal did not report the lease lost")
+			}
+		})
+	}
+}
+
+// assertDeclineNamesTheServer is §18.2.8's MUST, checked by VALUE: a Decline
+// carrying somebody else's Server Identifier satisfies "an option is present"
+// and identifies the wrong binding.
+func assertDeclineNamesTheServer(t *testing.T, dec *wire.MessageV6) {
+	t.Helper()
+	sid, ok := dec.Options.First(wire.OptV6ServerID)
 	if !ok {
-		t.Fatal("the withdrawal did not report the lease lost")
+		t.Fatalf("the Decline carries no Server Identifier; §18.2.8: \"The client MUST include a Server Identifier option (see Section 21.3) in the Decline message, identifying the server that allocated the lease(s).\"")
 	}
-	if lost.Reason != ReasonConflict {
-		t.Errorf("the lease was lost for %s, want %s: the address was withdrawn under us", lost.Reason, ReasonConflict)
-	}
-	if lost.Lease6.Addrs[0].Addr.String() != dnsmasqLeasedAddr {
-		t.Errorf("the lost lease names %v", lost.Lease6.Addrs)
-	}
-	dec := mustSendV6(t, acts, wire.MsgDecline6)
-	addrs := declinedAddrs(t, dec)
-	if len(addrs) != 1 || addrs[0].Addr.String() != dnsmasqLeasedAddr {
-		t.Errorf("the Decline names %v, want %s", addrs, dnsmasqLeasedAddr)
-	}
-	if s != State6DAD {
-		t.Fatalf("the withdrawal left the machine in %s; the Decline exchange runs from %s", s, State6DAD)
-	}
-	if _, held := m.Lease(); held {
-		t.Error("the machine still reports a held lease after the address was withdrawn")
-	}
-
-	// The Reply to the Decline restarts discovery.
-	s, _ = m.Step(at(101), 3, receivedV6(t, wire.MsgReply, dec.XID,
-		optClientID(capDUID), optServerID(testServerDUID)))
-	if s != State6Init {
-		t.Errorf("the Reply to the Decline left the machine in %s, want discovery restarted", s)
+	if string(sid) != string(testServerDUID) {
+		t.Errorf("the Decline names the server %x, want the one that allocated the lease, %x", sid, testServerDUID)
 	}
 }
 
@@ -369,30 +427,39 @@ func TestTheInformationRefreshTimeIsBounded(t *testing.T) {
 		want    Duration
 		armed   bool
 		journal string
+		// report is what ActConfigured must carry. It is a separate column
+		// from want because the two were separately DERIVED and disagreed —
+		// the caller was told the raw option value while the bounded one was
+		// armed — and a column that read `want` for both could not tell.
+		report Duration
 	}{
 		{
 			"absent",
 			nil,
 			p.IRTDefault, true,
 			"using IRT_DEFAULT",
+			p.IRTDefault,
 		},
 		{
 			"below IRT_MINIMUM",
 			[]wire.OptionV6{optU32(wire.OptV6InfoRefresh, 60)},
 			p.IRTMinimum, true,
 			"below IRT_MINIMUM",
+			p.IRTMinimum,
 		},
 		{
 			"exactly IRT_MINIMUM",
 			[]wire.OptionV6{optU32(wire.OptV6InfoRefresh, 600)},
 			600 * Second, true,
 			"",
+			600 * Second,
 		},
 		{
 			"infinite",
 			[]wire.OptionV6{optU32(wire.OptV6InfoRefresh, 0xffffffff)},
 			0, false,
 			"no refresh is armed",
+			Infinite,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,6 +482,17 @@ func TestTheInformationRefreshTimeIsBounded(t *testing.T) {
 			}
 			if tc.journal != "" && !journalHas(acts, tc.journal) {
 				t.Errorf("the rule was not journalled as %q; the machine said:%s", tc.journal, journalLines(acts))
+			}
+			// The value the CALLER is told, which is the half §21.23's rules
+			// were not reaching. Configuration.Refresh promises the bounds;
+			// this is where that promise is either kept or not.
+			cfg, ok := find(acts, ActConfigured)
+			if !ok {
+				t.Fatal("the Reply produced no ActConfigured")
+			}
+			if cfg.Config.RefreshTime != tc.report {
+				t.Errorf("the caller was told the refresh time is %s, want %s: §21.23's rules decide what this client does and so decide what it reports",
+					cfg.Config.RefreshTime, tc.report)
 			}
 		})
 	}

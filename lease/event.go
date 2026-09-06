@@ -17,11 +17,12 @@ type Lease struct {
 	// 1 mask for v4, and a /128 for v6.
 	//
 	// IT IS A /128 FOR v6 AND THAT IS NOT A NARROWING. RFC 9915 §21.6's IA
-	// Address option carries "an IPv6 address" and no prefix length at all —
-	// "The client MUST NOT form an implicit prefix with a length other than
-	// 128 for this address" (§21.6) — so the on-link prefix comes from a
-	// Router Advertisement (RFC 4861 §4.6.2) and never from DHCPv6. A caller
-	// that needs it reads Event.Router, not this field.
+	// Address option carries an IPv6 address and no prefix length at all, and
+	// §18.2.10.1 says of it: "Addresses obtained from an IA Address option
+	// MUST NOT be used to form an implicit prefix with a length other than
+	// 128." So the on-link prefix comes from a Router Advertisement (RFC 4861
+	// §4.6.2) and never from DHCPv6. A caller that needs it reads
+	// Event.Router, not this field.
 	Addr    netip.Prefix
 	Gateway netip.Addr
 	DNS     []netip.Addr
@@ -33,8 +34,9 @@ type Lease struct {
 	// option 54's IPv4 address, ServerDUID is RFC 9915 §21.3's opaque octets.
 	//
 	// They are two fields rather than one because they are not the same kind
-	// of thing. §11: a DUID is "treated as an opaque value" with no structure
-	// a client interprets, and it is not an address — a v6 server is reached
+	// of thing. §11: "Clients and servers MUST treat DUIDs as opaque values
+	// and MUST only compare DUIDs for equality." — no structure a client
+	// interprets, and not an address: a v6 server is reached
 	// by multicasting to All_DHCP_Relay_Agents_and_Servers, not by sending to
 	// its DUID. Folding them into one netip.Addr would require inventing an
 	// address for a value that has none.
@@ -423,13 +425,20 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 }
 
 // toConfig converts ring 1's stateless configuration into the outward one.
-func toConfig(c proto.Config6, refresh proto.Duration, b clockBridge) Configuration {
+//
+// THE REFRESH TIME COMES FROM c AND FROM NOWHERE ELSE. It used to arrive as a
+// second parameter beside c, which is how one fact came to be derived twice:
+// ring 1 stamped the raw option value into c.RefreshTime and armed its own
+// timer from §21.23's bounded one, and this function copied whichever it was
+// handed. Config6.RefreshTime is now the bounded value, and the parameter that
+// let the two disagree is gone.
+func toConfig(c proto.Config6, b clockBridge) Configuration {
 	out := Configuration{
 		DNS:    append([]netip.Addr(nil), c.DNS...),
 		Search: append([]string(nil), c.Search...),
 	}
-	if refresh > 0 && !refresh.IsInfinite() {
-		out.Refresh = b.at(b.mono.Add(refresh))
+	if c.RefreshTime > 0 && !c.RefreshTime.IsInfinite() {
+		out.Refresh = b.at(b.mono.Add(c.RefreshTime))
 	}
 	return out
 }

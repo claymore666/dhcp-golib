@@ -564,13 +564,24 @@ type Config6 struct {
 	DNS []netip.Addr
 	// Search is option 24's list, RFC 3646 section 4.
 	Search []string
-	// RefreshTime is option 32's information-refresh-time (RFC 9915 section
-	// 21.23). Zero means the server sent none, and section 21.23 says what
-	// that means: "If the Reply to an Information-request message does not
-	// contain this option, the client MUST behave as if the option with the
-	// value IRT_DEFAULT was provided." Substituting IRT_DEFAULT here would
-	// destroy the distinction between a server that chose 86400 and one that
-	// said nothing; the machine applies the default, this carries the fact.
+	// RefreshTime is when this client will ask again: option 32's
+	// information-refresh-time (RFC 9915 section 21.23) AFTER that section's
+	// two rules have been applied — "If the Reply to an Information-request
+	// message does not contain this option, the client MUST behave as if the
+	// option with the value IRT_DEFAULT was provided." and "A client MUST use
+	// the refresh time IRT_MINIMUM if it receives the option with a value
+	// less than IRT_MINIMUM."
+	//
+	// IT IS THE BOUNDED VALUE AND NOT THE RAW ONE, changed 2026-09-06 and the
+	// reason is worth keeping. It carried the raw value, so that a caller
+	// could tell a server that chose 86400 from one that said nothing. What
+	// that cost was the field's only USE: the machine armed its refresh from
+	// the bounded value and told the caller the raw one, so an absent option
+	// reported "never" against 86400s armed, and 60s reported 60s against
+	// 600s armed. One fact derived twice gives two answers, and the looser
+	// derivation is the one that reaches the caller. The distinction that was
+	// lost is not lost: refreshTime journals which rule it applied, by name
+	// and with the value that arrived.
 	RefreshTime Duration
 }
 
