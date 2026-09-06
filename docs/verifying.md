@@ -403,8 +403,10 @@ a verdict three times. MEASURED, runs 33992151078 and 33995090303 —
   oracle failed on copies that hung in that one test. Fixed in the same change
   as this section — the waiter now reports the matching frame on the way out —
   and the fix is what makes the report count a function of the frames instead
-  of the scheduler. This box never showed it: it takes contention, and the
-  first machine to have any was the runner.
+  of the scheduler. Run 34008425787 is the one that carries the fix: no hang
+  anywhere, fifteen of the sixteen rows green, and the oracle down to a single
+  scenario. This box never showed the defect at all: it takes contention, and
+  the first machine to have any was the runner.
 
 So a green runner run and a green session-box run are two measurements rather
 than one repeated, neither certifies the other, and where they disagree the
