@@ -101,8 +101,10 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //     one (RFC 2464 section 7), so there is nothing to resolve and no peer map
 //     — which also removes v4's relay bound rather than reproducing it.
 //
-//   - THE SOURCE ADDRESS IS THE KERNEL'S, READ AND NOT DERIVED. See
-//     InterfaceLinkLocal, which carries the argument and the measurement.
+//   - THE SOURCE ADDRESS IS THE KERNEL'S, READ AND NOT DERIVED, and read for
+//     THE INDEX THIS SOCKET IS ABOUT TO BIND TO rather than for the name a
+//     second time. See InterfaceLinkLocal, which carries the argument and the
+//     measurement, and the namespace it answers for.
 //
 //   - THIS HOST'S OWN FRAMES DO NOT COME BACK on this socket, and that is
 //     MEASURED rather than inherited from the v4 milestone's answer for
@@ -202,7 +204,7 @@ func NewPacketTransportV6(ifName string) (*PacketTransportV6, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runtime: interface %q: %w", ifName, err)
 	}
-	src, err := InterfaceLinkLocal(ifName)
+	src, err := interfaceLinkLocal(iface.Index, ifName)
 	if err != nil {
 		return nil, err
 	}

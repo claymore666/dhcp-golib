@@ -217,9 +217,22 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #   runtime/transport_packet6_linux_test.go (2)  AnUncompletedChecksumIs
 #     CountedOnlyForThisClient, TheV6TransportCountsEachRefusalApart
 #
+# M7c's THREAD ROUND: 587 -> 591, measured the same way (two testroster runs,
+# at 560ea3b and here; one test was RENAMED, which moves no count —
+# InterfaceLinkLocalReportsAFileItCannotRead became
+# InterfaceLinkLocalReportsAKernelItCannotAsk, because there is no file any
+# more). Four, per file, each the observer for a row the runner's red or this
+# round's own enumeration named:
+#
+#   runtime/dnsmasq6_linux_test.go          (1)  TheV6ClientReadsTheLinkLocal
+#     OfTheThreadItWasBuiltOn
+#   runtime/linklocal6_linux_test.go        (3)  ADumpThatDoesNotParseIsNotAn
+#     AbsentAddress, InterfaceLinkLocalReportsAnInterfaceThatIsNotThere,
+#     TheLinkLocalDumpAsksTheKernelForIPv6Addresses
+#
 # The "Test" prefix is left off each name above so the lines fit; every one of
 # them carries it in the tree.
-MIN_DECLARED_TESTS=587
+MIN_DECLARED_TESTS=591
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

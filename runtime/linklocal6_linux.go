@@ -3,14 +3,12 @@
 package runtime
 
 import (
-	"bufio"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
-	"os"
-	"strconv"
-	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,13 +16,24 @@ import (
 // address for this library to send from.
 var ErrNoLinkLocal = errors.New("runtime: interface has no assigned IPv6 link-local address")
 
-// ifInet6Path is Linux's list of configured IPv6 addresses with their per-
-// address flags. A variable so a test can point it at a fixture file and drive
-// every branch of the parser without a network namespace.
-var ifInet6Path = "/proc/net/if_inet6"
+// linkLocalDump asks the kernel for every IPv6 address it holds, as raw
+// netlink messages.
+//
+// A variable so a test can hand the parse a fabricated dump and drive every
+// arm of it without a network namespace, and so that the failure direction —
+// a kernel this process cannot ask — has a seam to fail at.
+var linkLocalDump = func() ([]byte, error) {
+	return syscall.NetlinkRIB(syscall.RTM_GETADDR, syscall.AF_INET6)
+}
 
-// Linux's per-address flags, from include/uapi/linux/if_addr.h. Only the three
+// Linux's per-address flags, from include/uapi/linux/if_addr.h. Only the two
 // this library acts on are named; the rest are read and ignored.
+//
+// BOUND: they are read out of the eight-bit ifa_flags field of the ifaddrmsg
+// header and not out of the thirty-two-bit IFA_FLAGS attribute beside it. Both
+// carry the same value, truncated; the two named here are 0x08 and 0x40 and
+// fit. A flag above 0xff would not, and none of them is one this library acts
+// on.
 const (
 	ifaDADFailed = 0x08
 	ifaTentative = 0x40
@@ -33,25 +42,30 @@ const (
 // linkLocalWait is how long InterfaceLinkLocal keeps looking before it
 // refuses, and linkLocalPoll is how often it looks.
 //
-// WHERE THE FOUR SECONDS COME FROM. The kernel does two things between the
-// moment a link comes up and the moment its link-local address is usable, and
-// RFC 4862 section 5.4.2 names both. First it waits: "If the Neighbor
-// Solicitation is going to be the first message sent from an interface after
-// interface (re)initialization, the node SHOULD delay joining the
-// solicited-node multicast address by a random delay between 0 and
+// TWO SECONDS ARE DERIVED AND MEASURED; THE OTHER TWO ARE A MARGIN. The
+// kernel does two things between the moment a link comes up and the moment its
+// link-local address is usable, and RFC 4862 section 5.4.2 names both. First it
+// waits: "If the Neighbor Solicitation is going to be the first message sent
+// from an interface after interface (re)initialization, the node SHOULD delay
+// joining the solicited-node multicast address by a random delay between 0 and
 // MAX_RTR_SOLICITATION_DELAY as specified in [RFC4861]" — one second, RFC 4861
 // section 10. Then it probes: "To check an address, a node sends
 // DupAddrDetectTransmits Neighbor Solicitations, each separated by RetransTimer
 // milliseconds" — one solicitation and one RETRANS_TIMER of listening at RFC
 // 4861 section 10's defaults, another second. Linux spells those two variables
 // dad_transmits and retrans_time, and the address is tentative for the whole of
-// it. Two seconds is therefore the kernel's own worst case at the defaults,
-// MEASURED here at 2.043s on a veth whose accept_dad was left on, and the bound
-// is that doubled. The doubling is the part the measurement demanded rather
-// than the protocol: on a two-core CI runner under load the address was not
-// merely tentative but ABSENT — no row in the file for the interface at all —
-// because addrconf had not run yet, and that latency belongs to a work queue,
-// not to a timer anything here can derive.
+// it. Two seconds is the kernel's own worst case at the defaults, MEASURED at
+// 1.973s and 2.043s on a veth whose accept_dad was left on.
+//
+// THE REMAINING TWO SECONDS ARE A MARGIN AND ARE DERIVED FROM NOTHING. They
+// cover a poll that is scheduled late: the loop below observes the end of the
+// kernel's window from a goroutine, and on a loaded two-core host a twenty
+// millisecond tick is not a twenty millisecond tick. It is stated as a margin
+// rather than dressed as a derivation. An earlier version of this comment said
+// the doubling was demanded by a measurement — a CI runner on which the address
+// was ABSENT rather than tentative for four seconds. That reading is WITHDRAWN
+// (2026-09-06): the address was not absent, the read was of the wrong network
+// namespace. See InterfaceLinkLocal. No measurement of a long absence exists.
 //
 // IT IS A CONSTANT AND NOT A READING OF THE TWO SYSCTLS, deliberately. The
 // seam design's section 5 keeps this library off /proc/sys: a library that
@@ -61,13 +75,20 @@ const (
 // is too short, and the refusal says how long it actually waited so that a
 // reader can tell that case from a link with no address at all.
 //
-// THE POLL IS A LOOP OVER /proc AND NOT A NETLINK SUBSCRIPTION. Netlink would
-// give the answer on the kernel's edge instead of on a clock, and it is the
-// better instrument; it is also a second socket, in a namespace this function
-// is careful to say it reads from the CALLING GOROUTINE, and it would have to
-// be opened before the very thing it is waiting for. Twenty milliseconds of
-// granularity costs at most 200 reads of a file the kernel formats on demand,
-// and it is the last thing this client does before it has a link at all.
+// WHAT THE POLL COSTS, as a function of the host and not as a count. Each tick
+// is one RTM_GETADDR dump of EVERY IPv6 address in the calling thread's
+// network namespace, because syscall.NetlinkRIB does not negotiate the strict
+// checking that would let the kernel honour a per-interface filter in the
+// request. So the worst case is two hundred whole-namespace address dumps, on
+// a link whose address never arrives, and it is proportional to the number of
+// IPv6 addresses the host holds rather than to the one being waited for.
+//
+// A NETLINK SUBSCRIPTION would give the answer on the kernel's edge instead of
+// on a clock and would cost one message rather than two hundred dumps. It is
+// the better instrument and it is not what this does, because it is a second
+// socket that would have to be opened, and its subscription established, before
+// the thing it is waiting for exists — and because the dump is the same
+// mechanism net.InterfaceByName already uses three lines earlier.
 const (
 	linkLocalWait = 4 * time.Second
 	linkLocalPoll = 20 * time.Millisecond
@@ -77,18 +98,47 @@ const (
 // assigned to ifName, refusing one that is tentative or has failed duplicate
 // address detection, and WAITING up to linkLocalWait for one to appear.
 //
-// WHY IT WAITS, MEASURED on a two-core CI runner: a client built the instant
-// after the link came up was refused with "0 tentative, 0 failed duplicate
-// address detection" while a server in the same namespace was already bound to
-// that link. Nothing was wrong with the link; the kernel had not got to it.
-// A single read answers a question about an interface that is still being
-// configured, and the answer it gives is indistinguishable from the answer for
-// an interface that will never have an address — which is why the refusal now
-// carries the elapsed wait, and why the wait exists at all.
+// IT IS A NETLINK DUMP AND NOT A READ OF /proc/net/if_inet6, and that is this
+// function's defect history rather than a preference.
 //
-// A READ ERROR IS NOT WAITED OUT. An unreadable /proc/net/if_inet6 is a mount
-// problem, not a link that has not settled, and retrying it for four seconds
-// turns a clear failure into a slow one.
+// MEASURED 2026-09-06. The kernel resolves /proc/net — and /proc/self/net,
+// which it is a symlink to — against the THREAD GROUP LEADER's network
+// namespace, not the calling thread's (fs/proc/proc_net.c, get_proc_task_net,
+// which takes pid_task on the tgid). From a locked goroutine on a non-leader
+// thread that had entered another namespace, /proc/net/if_inet6 and
+// /proc/self/net/if_inet6 listed no row for the interface that had just been
+// created there, while /proc/thread-self/net/if_inet6 and
+// /proc/<pid>/task/<tid>/net/if_inet6 listed it — three runs of three, both a
+// hundred milliseconds and two and a half seconds after the link came up.
+//
+// So the version of this function that read /proc/net answered for whichever
+// namespace the process leader happened to be in. On a host where no interface
+// of that name existed there it refused, with "0 tentative, 0 failed duplicate
+// address detection" — a truthful sentence about the wrong file, which is what
+// a CI runner reported intermittently and what an earlier round read as
+// addrconf latency. Where an interface of that name DID exist there, it
+// returned that interface's address, and the client would have sent from an
+// address on one link over sockets bound to another. That is the shape the
+// plugin's chassis meets on its first endpoint: it builds a client from a
+// goroutine locked to a thread that has entered the endpoint's namespace while
+// the process leader stays on the host.
+//
+// Every other namespace-bearing thing this package opens — the AF_PACKET
+// transports, the Neighbor Discovery socket, net.InterfaceByName — is a socket
+// or a netlink dump on the CALLING THREAD. This is now one of them.
+//
+// A DUMP THAT FAILS IS NOT WAITED OUT. A kernel that refuses the query is not a
+// link that has not settled, and retrying it for four seconds turns a clear
+// failure into a slow one. Neither is an interface that does not exist: it is
+// resolved once, before the wait, and its absence is its own error rather than
+// four seconds of "this interface has no address".
+//
+// WHY IT WAITS AT ALL. RFC 4862 section 5.4 makes an address tentative until
+// the kernel's own duplicate check finishes, and a link that has just come up
+// spends a second or two there; a single read answers a question about an
+// interface that is still being configured, and the answer it gives is
+// indistinguishable from the answer for an interface that will never have an
+// address. The refusal carries the elapsed wait for the same reason.
 //
 // WHY THE KERNEL'S AND NOT ONE DERIVED FROM THE MAC. Both are one line of
 // arithmetic and they agree on an ordinary Linux host, so the choice looks
@@ -121,20 +171,31 @@ const (
 // tentative address is not considered 'assigned to an interface' in the
 // traditional sense." Sending from one is sending from an address that is not
 // assigned, which is what section 5.4's whole procedure exists to prevent, and
-// the flags column of /proc/net/if_inet6 is where Linux says so — MEASURED:
-// a freshly-upped veth reads flag 0xc0 (permanent | tentative) and settles to
-// 0x80 about a second later. That second is why this function waits rather
-// than answering at once, and REFUSING a tentative address is what makes the
-// wait necessary: a reader that took the address the moment it appeared would
-// need no wait and would send from an address that is not assigned.
+// ifa_flags is where Linux says so — MEASURED: a freshly-upped veth reads flag
+// 0xc0 (permanent | tentative) and settles to 0x80 about a second later.
 //
-// BOUND: it reads /proc, so it reports the namespace of the CALLING GOROUTINE,
-// which is the same contract every socket constructor in this package carries
-// and the reason NewClient6 opens all of them together.
+// BOUND: the namespace it reports is the namespace of the thread this
+// goroutine is running on, and a goroutine that is not locked to its thread
+// does not have one. That is the contract every socket constructor in this
+// package carries, it is the reason NewClient6 opens all of them together, and
+// it cannot be closed from inside this function.
 func InterfaceLinkLocal(ifName string) (netip.Addr, error) {
+	iface, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("runtime: interface %q: %w", ifName, err)
+	}
+	return interfaceLinkLocal(iface.Index, ifName)
+}
+
+// interfaceLinkLocal is InterfaceLinkLocal with the interface already
+// resolved, for the one caller that has just resolved it: the index the
+// transport BINDS to and the index whose address is read are then one reading
+// and cannot drift apart, which is the same failure this file is about wearing
+// a smaller size.
+func interfaceLinkLocal(index int, ifName string) (netip.Addr, error) {
 	start := time.Now()
 	for {
-		addr, err := readLinkLocal(ifName)
+		addr, err := readLinkLocal(index, ifName)
 		if err == nil {
 			return addr, nil
 		}
@@ -143,50 +204,66 @@ func InterfaceLinkLocal(ifName string) (netip.Addr, error) {
 		}
 		if elapsed := time.Since(start); elapsed >= linkLocalWait {
 			// The elapsed wait is the ACTUAL one and not the constant: a
-			// caller reading "after waiting 3.002s" knows the bound was
-			// spent, and one reading a much larger number knows this
-			// goroutine was not running for most of it, which on the runner
-			// that found this defect is the more useful fact of the two.
+			// reader who sees a number much larger than linkLocalWait knows
+			// this goroutine was not running for most of it, which on a
+			// loaded host is the more useful of the two facts.
 			return netip.Addr{}, fmt.Errorf("%w after waiting %s", err, elapsed.Round(time.Millisecond))
 		}
 		time.Sleep(linkLocalPoll)
 	}
 }
 
-// readLinkLocal is one pass over the file: the parse, with no wait around it.
+// readLinkLocal is one dump and the parse of it, with no wait around it.
 //
-// It is separate so that the parser's arms — a tentative address, one that
-// failed the kernel's check, a global address, a malformed row — can be driven
-// from a fabricated file without paying linkLocalWait for each refusing row,
-// and so that the wait above has exactly one thing to repeat.
-func readLinkLocal(ifName string) (netip.Addr, error) {
-	f, err := os.Open(ifInet6Path)
+// It is separate so that the parse's arms — a tentative address, one that
+// failed the kernel's check, a global address, a malformed message — can be
+// driven from a fabricated dump without paying linkLocalWait for each refusing
+// case, and so that the wait above has exactly one thing to repeat.
+func readLinkLocal(index int, ifName string) (netip.Addr, error) {
+	b, err := linkLocalDump()
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("runtime: %s: %w", ifInet6Path, err)
+		return netip.Addr{}, fmt.Errorf("runtime: netlink RTM_GETADDR (AF_INET6): %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	msgs, err := syscall.ParseNetlinkMessage(b)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("runtime: netlink RTM_GETADDR (AF_INET6): %w", err)
+	}
 
 	var (
 		refusedTentative int
 		refusedDADFailed int
 	)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		// address(32 hex) index prefixlen scope flags name
-		fields := strings.Fields(sc.Text())
-		if len(fields) != 6 || fields[5] != ifName {
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Header.Type != syscall.RTM_NEWADDR || len(m.Data) < syscall.SizeofIfAddrmsg {
 			continue
 		}
-		raw, err := hex.DecodeString(fields[0])
-		if err != nil || len(raw) != 16 {
+		// struct ifaddrmsg: family, prefixlen, flags, scope, then the
+		// interface index in the host's byte order.
+		if int(binary.NativeEndian.Uint32(m.Data[4:8])) != index {
+			continue
+		}
+		flags := uint32(m.Data[2])
+		attrs, err := syscall.ParseNetlinkRouteAttr(m)
+		if err != nil {
+			// A message whose attribute area does not parse is SKIPPED and
+			// not fatal, for the reason the whole dump is: it is written by
+			// the kernel, and a client that refused to start because one
+			// message of it was unfamiliar would be refusing on the strength
+			// of a format it does not own.
+			continue
+		}
+		var raw []byte
+		for _, a := range attrs {
+			if a.Attr.Type == syscall.IFA_ADDRESS {
+				raw = a.Value
+			}
+		}
+		if len(raw) != 16 {
 			continue
 		}
 		addr := netip.AddrFrom16([16]byte(raw))
 		if !addr.IsLinkLocalUnicast() {
-			continue
-		}
-		flags, err := strconv.ParseUint(fields[4], 16, 32)
-		if err != nil {
 			continue
 		}
 		switch {
@@ -197,9 +274,6 @@ func readLinkLocal(ifName string) (netip.Addr, error) {
 		default:
 			return addr, nil
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return netip.Addr{}, fmt.Errorf("runtime: %s: %w", ifInet6Path, err)
 	}
 	// The counts are in the message rather than dropped, because "the
 	// interface has no link-local address" and "it has one and the kernel's

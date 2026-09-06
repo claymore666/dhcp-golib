@@ -320,20 +320,40 @@ func wireUpV6Link(t *testing.T, mode v6LinkMode) {
 	mustRun(t, "ip", "link", "set", test6ClientIf, "up")
 }
 
-// clientLinkLocal reports the link-local address the KERNEL currently lists for
-// the client interface — the 32-hex-digit form /proc/net/if_inet6 prints, and
-// that row's flags column.
+// threadIfInet6Path is the kernel's IPv6 address list for the network
+// namespace of the CALLING THREAD.
 //
-// It is the fixture's own reading and NOT readLinkLocal's. The proofs below
-// assert what the kernel held at a particular moment, and an observation taken
-// with the function under test would make the observer and the subject one
-// piece of code: a reader that never saw the address would report the address
-// as absent and agree with itself.
+// It is NOT /proc/net/if_inet6, and the difference is this milestone's defect.
+// /proc/net is a symlink to /proc/self/net, and the kernel resolves both
+// against the THREAD GROUP LEADER's network namespace rather than the calling
+// thread's (fs/proc/proc_net.c, get_proc_task_net, which takes pid_task on the
+// tgid). Any fixture here that unshares on a locked goroutine and then reads
+// /proc/net is reading the namespace it came from. MEASURED 2026-09-06 from a
+// locked non-leader thread that had unshared: /proc/net/if_inet6 and
+// /proc/self/net/if_inet6 listed 0 rows for the new interface and this path
+// listed 1, in 3 runs of 3.
+//
+// /proc/thread-self exists from Linux 3.17. The tree's own re-exec needs
+// unprivileged user namespaces, which are older than that, so nothing here can
+// run on a kernel where this path is missing.
+const threadIfInet6Path = "/proc/thread-self/net/if_inet6"
+
+// clientLinkLocal reports the link-local address the KERNEL currently lists for
+// the client interface, in the CALLING THREAD's namespace — the 32-hex-digit
+// form the kernel prints, and that row's flags column.
+//
+// It is the fixture's own reading and NOT readLinkLocal's, and since M7c's
+// thread round it is a different MECHANISM as well: this is the kernel's text
+// file and InterfaceLinkLocal asks netlink. The proofs below assert what the
+// kernel held at a particular moment, and an observation taken with the
+// function under test would make the observer and the subject one piece of
+// code: a reader that never saw the address would report the address as absent
+// and agree with itself.
 func clientLinkLocal(t *testing.T) (string, uint64, bool) {
 	t.Helper()
-	b, err := os.ReadFile("/proc/net/if_inet6")
+	b, err := os.ReadFile(threadIfInet6Path)
 	if err != nil {
-		t.Fatalf("reading /proc/net/if_inet6: %v", err)
+		t.Fatalf("reading %s: %v", threadIfInet6Path, err)
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
@@ -1763,7 +1783,11 @@ type nsBuild6 struct {
 	client *Client6
 	server *dnsmasqServer
 	watch  *raWatch
-	err    error
+	// tid is the thread the build actually ran on. It is carried because
+	// whether it is the thread group leader used to DECIDE the outcome of
+	// the proof below without appearing in it: see that test's comment.
+	tid int
+	err error
 }
 
 // TestTheV6ClientKeepsTheNamespaceItWasBuiltIn is NewClient6's contract, and it
@@ -1781,6 +1805,18 @@ type nsBuild6 struct {
 // THE CONTROL IS THE HALF THAT MATTERS. The goroutine that runs the client was
 // never in the namespace and cannot see the interface; if it could, the
 // acquisition below would prove nothing about where the sockets live.
+//
+// THIS PROOF USED TO PASS FOR A REASON IT DID NOT STATE, and the thread it
+// reports below is that reason. Until M7c's thread round the client's
+// link-local address came from /proc/net/if_inet6, which the kernel resolves
+// against the THREAD GROUP LEADER's network namespace and not the calling
+// thread's, so this test measured the sockets correctly and the address only
+// when the scheduler happened to put the locked goroutine on the leader
+// thread. On this box it did; on a two-core CI runner it did not, about half
+// the time, and the failure read as a slow kernel. The thread is now REPORTED
+// here — it is not asserted, because either value is now correct — and it is
+// ASSERTED in TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn, which
+// is that half of the claim driven on purpose.
 func TestTheV6ClientKeepsTheNamespaceItWasBuiltIn(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		v6NamespaceCaptureAgainstDnsmasq(t)
@@ -1809,6 +1845,7 @@ func v6NamespaceCaptureAgainstDnsmasq(t *testing.T) {
 		// returning while still locked makes the runtime terminate the
 		// thread, so no thread of ours is left in that namespace.
 		gosched.LockOSThread()
+		out.tid = syscall.Gettid()
 
 		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
 			out.err = fmt.Errorf("unshare(CLONE_NEWNET): %w", err)
@@ -1828,6 +1865,11 @@ func v6NamespaceCaptureAgainstDnsmasq(t *testing.T) {
 	}()
 
 	res := <-built
+	leader := "not the thread group leader"
+	if res.tid == os.Getpid() {
+		leader = "the thread group leader, which is what used to decide this proof"
+	}
+	t.Logf("the namespaced build ran on thread %d of process %d: %s", res.tid, os.Getpid(), leader)
 	if res.err != nil {
 		t.Fatal(res.err)
 	}
@@ -1882,20 +1924,175 @@ func newV6ClientErr(ifName string) (*Client6, net.HardwareAddr, error) {
 	return c, iface.HardwareAddr, err
 }
 
+// ------------------------------------- the thread the client is built on --
+
+// nonLeaderThreadAttempts bounds the hunt for a thread that is NOT this
+// process's thread group leader.
+//
+// It can be small, and it is not a retry-until-lucky loop: an attempt that
+// finds itself on the leader keeps that thread, locked and parked on a
+// channel, so the runtime cannot hand the same thread to the next attempt —
+// the Go runtime parks a locked goroutine's thread with it rather than
+// running other goroutines there. MEASURED 2026-09-06 with a probe in this
+// shape: attempt 0 was the leader and attempt 1 was not, in 3 runs of 3.
+const nonLeaderThreadAttempts = 8
+
+// runOnANonLeaderLockedThread runs body on a goroutine locked to a thread
+// whose gettid() is not this process's pid, and returns body's error.
+//
+// IT FAILS RATHER THAN SKIPPING when it cannot get such a thread: a proof
+// that quietly measures nothing when the scheduler does not cooperate is the
+// shape this whole subject exists to remove.
+//
+// body may call t.Fatalf. The delivery is deferred, so the runtime.Goexit
+// that t.Fatalf performs on this goroutine still hands a result back rather
+// than leaving the caller on the channel until the child's own timeout.
+func runOnANonLeaderLockedThread(body func(tid int) error) error {
+	done := make(chan error, 1)
+	release := make(chan struct{})
+	defer close(release)
+
+	var attempt func(n int)
+	attempt = func(n int) {
+		go func() {
+			gosched.LockOSThread()
+			tid := syscall.Gettid()
+			if tid != os.Getpid() {
+				var out error
+				defer func() { done <- out }()
+				out = body(tid)
+				return
+			}
+			if n+1 >= nonLeaderThreadAttempts {
+				done <- fmt.Errorf("all %d locked goroutines landed on the thread group leader (%d): this proof cannot be made on this scheduler, and it does not skip", nonLeaderThreadAttempts, tid)
+				return
+			}
+			attempt(n + 1)
+			<-release
+		}()
+	}
+	attempt(0)
+	return <-done
+}
+
+// TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn is the defect the
+// CI runner showed and the reason it is a PRODUCT defect rather than a slow
+// test.
+//
+// WHAT IS WRONG WITH READING /proc/net. The kernel resolves /proc/net — and
+// /proc/self/net, which it is a symlink to — against the THREAD GROUP
+// LEADER's network namespace, not the calling thread's
+// (fs/proc/proc_net.c, get_proc_task_net, which takes pid_task on the tgid).
+// Every other namespace-bearing thing this package opens is a socket or a
+// netlink dump on the CALLING thread. So a client built on a locked
+// goroutine that has entered another namespace — which is exactly what the
+// plugin's chassis does, and what TestTheV6ClientKeepsTheNamespaceItWasBuiltIn
+// does one unshare deeper — read its link-local address out of a different
+// namespace from the one its sockets are bound in.
+//
+// MEASURED 2026-09-06 on a probe in this shape: from a locked non-leader
+// thread that had unshared, /proc/net/if_inet6 and /proc/self/net/if_inet6
+// listed 0 rows for the new interface while /proc/thread-self/net/if_inet6
+// and /proc/<pid>/task/<tid>/net/if_inet6 listed 1, flags 0xc0 settling to
+// 0x80. Three runs of three, both at +100ms and at +2.4s.
+//
+// THE DECOY IS WHAT MAKES THIS PROOF STRONGER THAN A REFUSAL, and it is the
+// shape the chassis would have met first. The leader's namespace here holds
+// an interface with the SAME NAME and its own link-local address, so a read
+// that lands there does not fail to find an address — it finds the wrong one
+// and the client sends from it, soliciting on one link and claiming an
+// address off another. The refusal shape ("0 tentative, 0 failed duplicate
+// address detection") is the one the runner happened to show, because no
+// interface of that name existed outside.
+//
+// THE FIXTURE READS THE ADDRESS BY A DIFFERENT MECHANISM FROM THE SUBJECT:
+// clientLinkLocal reads the kernel's text file for the calling thread's
+// namespace, and InterfaceLinkLocal asks netlink. An observation taken with
+// the function under test would agree with it by construction.
+func TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6LinkLocalComesFromTheCallingThread(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6LinkLocalComesFromTheCallingThread(t *testing.T) {
+	wireUpV6Link(t, v6LinkReady)
+
+	var (
+		client *Client6
+		inner  string
+		tid    int
+	)
+	if err := runOnANonLeaderLockedThread(func(id int) error {
+		tid = id
+		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
+			return fmt.Errorf("unshare(CLONE_NEWNET): %w", err)
+		}
+		wireUpV6Link(t, v6LinkReady)
+		c, _, err := newV6ClientErr(test6ClientIf)
+		if err != nil {
+			return fmt.Errorf("NewClient6 on thread %d: %w", id, err)
+		}
+		client = c
+		addr, _, ok := clientLinkLocal(t)
+		if !ok {
+			return fmt.Errorf("the kernel lists no link-local for %s in this thread's own namespace, although the client was built with %s", test6ClientIf, c.Source())
+		}
+		inner = addr
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if client == nil {
+		t.Fatal("the build on the non-leader thread produced no client; see the failure above")
+	}
+
+	// THE THREAD IS THE PRECONDITION, asserted after the fact because it is
+	// the whole reason this proof differs from the one above it.
+	if tid == os.Getpid() {
+		t.Fatalf("the client was built on thread %d, which IS the thread group leader: /proc/net would have answered for the right namespace by coincidence and this proof would measure nothing", tid)
+	}
+
+	decoy, _, ok := clientLinkLocal(t)
+	if !ok {
+		t.Fatalf("the %s in the leader's namespace carries no link-local address; this proof needs one for a leader-namespace read to take by mistake", test6ClientIf)
+	}
+	if decoy == inner {
+		t.Fatalf("the two namespaces' %s carry the same link-local %s, so which one the client read cannot be told apart", test6ClientIf, decoy)
+	}
+
+	got := hex.EncodeToString(client.Source().AsSlice())
+	if got == decoy {
+		t.Fatalf("the client built on thread %d (leader %d) sends from %s, which is the link-local of the SAME-NAMED interface in the LEADER's namespace. Its sockets are bound in its own thread's namespace, so it would solicit on one link and send from an address off another",
+			tid, os.Getpid(), client.Source())
+	}
+	if got != inner {
+		t.Fatalf("the client sends from %s; the kernel holds %s for %s in the namespace the client was built in, and %s in the leader's", got, inner, test6ClientIf, decoy)
+	}
+	t.Logf("built on thread %d of process %d: it took %s from its own namespace and not the leader's %s", tid, os.Getpid(), client.Source(), decoy)
+}
+
 // ------------------------------------------ the kernel's own link-local --
 
 // TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress is the runner's
 // defect, driven.
 //
-// MEASURED on a two-core CI runner: this package's namespace proof failed with
-// "interface has no assigned IPv6 link-local address: v6cli0 (0 tentative, 0
-// failed duplicate address detection)" while dnsmasq in the same namespace was
-// already bound to that link, and the control row of the same suite passed in
-// the same run — so it was load and not configuration. InterfaceLinkLocal read
-// /proc/net/if_inet6 ONCE and nothing waited: a client built the instant the
-// link came up asked a question about an interface the kernel had not finished
-// configuring, and got the answer that belongs to an interface which will never
-// have an address.
+// MEASURED here, on a real link: InterfaceLinkLocal read the kernel's address
+// list ONCE and nothing waited, so a client built the instant the link came up
+// asked a question about an interface the kernel had not finished configuring
+// and got the answer that belongs to an interface which will never have an
+// address. RFC 4862 section 5.4's tentative window is one to two seconds wide
+// at Linux's defaults and it is real; this proof crosses it.
+//
+// WHAT THIS TEST IS NOT. It was written for a CI runner's refusal — "v6cli0
+// (0 tentative, 0 failed duplicate address detection)" on a two-core box while
+// dnsmasq in the same namespace was already bound — and that refusal is NOT
+// what this test drives. It was the OTHER namespace's address list being read,
+// and it is driven by TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn.
+// The wait below still earns its place, on its own measurement rather than on
+// that one.
 //
 // THE ADDRESS IS UNUSABLE WHEN THE CONSTRUCTOR STARTS, AND THAT IS ASSERTED
 // AND NOT ASSUMED. This is the one proof in this file that leaves the kernel's
@@ -1907,8 +2104,8 @@ func newV6ClientErr(ifName string) (*Client6, net.HardwareAddr, error) {
 // crossed the window, not that the window existed.
 //
 // Which of the two unusable states it starts in does not matter and both are
-// accepted: tentative here, absent on the runner. readLinkLocal refuses both
-// the same way and the wait repeats the same read.
+// accepted: tentative or not yet written. readLinkLocal refuses both the same
+// way and the wait repeats the same question.
 func TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		v6LinkLocalArrivesLate(t)
