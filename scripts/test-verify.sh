@@ -1520,7 +1520,9 @@ sc_scenario_rc_follows_the_verdict() {
 	# The plant is in the SUBJECT the scenario reads, not in the scenario: a
 	# ceiling of zero is a ceiling no suite can be measured against, which is
 	# one of the two mutations ceiling-band exists to kill.
-	edit "$d/verify.sh" 'SUITE_CEILING_SECONDS=60' 'SUITE_CEILING_SECONDS=0'
+	edit "$d/verify.sh" \
+		"SUITE_CEILING_SECONDS=$(verify_const SUITE_CEILING_SECONDS "$d/verify.sh")" \
+		'SUITE_CEILING_SECONDS=0'
 	rc=0
 	out="$(cd "$d" && ./scripts/test-verify.sh --scenario ceiling-band 2>&1)" || rc=$?
 	str_has "$out" '^RESULT ceiling-band FAIL' ||
