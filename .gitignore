@@ -1,6 +1,3 @@
-# local session scaffolding, never committed
-.claude/
-CLAUDE.md
 # build output
 /bin/
 *.test
