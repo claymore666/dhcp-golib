@@ -5,8 +5,9 @@ and tells you when it changes. It applies nothing to the link — adding the
 address and the routes is your job, which is what lets one process hold leases
 on many interfaces at once.
 
-DHCPv4 and DHCPv6, Linux, no dependencies outside the standard library, no
-`dhcpcd` and no root.
+DHCPv4 and DHCPv6, Linux, no dependencies outside the standard library. It
+shells out to no `dhcpcd` or `dhclient` — the protocol is in the process — and
+it needs no root.
 
 ## Usage
 
