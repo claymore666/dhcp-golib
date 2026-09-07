@@ -307,7 +307,17 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #
 #   internal/publication/workflows_test.go (1)  TheWorkflowScanRefusesASet
 #     ItCannotRead
-MIN_DECLARED_TESTS=617
+# ROUND 4 OF THE SAME SWEEP: 617 -> 618. Net one, and it is two moves: the
+# secret check became a forbidden WORD, so the tree row was renamed
+# (NoWorkflowReadsARepositorySecret -> TheWordSecretsAppearsNowhereUnderGithub,
+# and its domain widened from the workflows to everything under .github/), and
+# one test was ADDED for the word itself — the five spellings review round 3
+# measured escaping the two patterns that used to stand there, plus the two
+# substring controls that keep the rule a rule about a word:
+#
+#   internal/publication/workflows_test.go (1)  TheForbiddenWordIsRefusedIn
+#     EverySpellingGitHubHonours
+MIN_DECLARED_TESTS=618
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
