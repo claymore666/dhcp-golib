@@ -65,6 +65,17 @@ type Record struct {
 	// instance supplies its own.
 	Params *proto.Params
 
+	// Params6 is Params for a v6 record, and it is a SECOND FIELD rather than
+	// a wider first one for proto.Replay6's reason: the two replays take two
+	// different parameter types, and a record that carried the v4 shape for a
+	// v6 manager would be a record whose journal has no entry point. A v6
+	// record written without it is a saved v6 journal that means nothing.
+	//
+	// A record holds at most one of the two: the fold refuses a v4 Params on a
+	// v6 record and the reverse (RejectFamily), so the pair cannot both be set
+	// and a reader does not have to decide which one to believe.
+	Params6 *proto.Params6
+
 	// Lease is the lease as the caller sees it, on the WALL CLOCK. Ring 1
 	// computes every deadline on a monotonic Instant whose epoch is
 	// meaningless to the next process; these are the same deadlines converted
@@ -413,13 +424,14 @@ type RecordEvent struct {
 	// themselves and are untouched by it.
 	Manager string `json:"manager,omitempty"`
 
-	Scope    string        `json:"scope,omitempty"`
-	Family   Family        `json:"family,omitempty"`
-	CHAddr   []byte        `json:"chaddr,omitempty"`
-	Identity []byte        `json:"identity,omitempty"`
-	Params   *proto.Params `json:"params,omitempty"`
-	Deadline time.Time     `json:"deadline,omitzero"`
-	StepsRef string        `json:"steps_ref,omitempty"`
+	Scope    string         `json:"scope,omitempty"`
+	Family   Family         `json:"family,omitempty"`
+	CHAddr   []byte         `json:"chaddr,omitempty"`
+	Identity []byte         `json:"identity,omitempty"`
+	Params   *proto.Params  `json:"params,omitempty"`
+	Params6  *proto.Params6 `json:"params6,omitempty"`
+	Deadline time.Time      `json:"deadline,omitzero"`
+	StepsRef string         `json:"steps_ref,omitempty"`
 
 	// Kind, Lease, Reason and Note carry a manager event, for OpLease and
 	// OpLost.
@@ -797,6 +809,25 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		return reject(RejectFamily, "the record is in family "+rec.Family.String())
 	}
 
+	// THE PARAMETER SNAPSHOT IS PART OF THE FAMILY, and this is the refusal
+	// that makes it so. The record's whole purpose for these two fields is
+	// proto.Replay/proto.Replay6, which take different types; a v4 snapshot on
+	// a v6 record is a journal that cannot be replayed at all, and the reader
+	// finds out at the restart the record existed for. Refused where every
+	// other write-once fact is refused, and refused for BOTH fields at once so
+	// that neither direction is the tested one.
+	if fam := familyOf(ev, rec); fam != FamilyUnset {
+		if ev.Params != nil && fam == FamilyV6 {
+			return reject(RejectFamily, "a v4 parameter snapshot on a v6 record: proto.Replay6 takes proto.Params6")
+		}
+		if ev.Params6 != nil && fam == FamilyV4 {
+			return reject(RejectFamily, "a v6 parameter snapshot on a v4 record: proto.Replay takes proto.Params")
+		}
+	}
+	if ev.Params != nil && ev.Params6 != nil {
+		return reject(RejectFamily, "one event carries both parameter snapshots; a record runs one family")
+	}
+
 	next := rec
 	switch ev.Op {
 	case OpReserve:
@@ -912,6 +943,10 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 	if ev.Params != nil {
 		p := SnapshotParams(*ev.Params)
 		next.Params = &p
+	}
+	if ev.Params6 != nil {
+		p := SnapshotParams6(*ev.Params6)
+		next.Params6 = &p
 	}
 	if ev.StepsRef != "" {
 		next.StepsRef = ev.StepsRef
@@ -1129,6 +1164,29 @@ func SnapshotParams(p proto.Params) proto.Params {
 	// same defect in the shape Go makes easier to spot.
 	p.Resume = p.Resume.Clone()
 	return p
+}
+
+// SnapshotParams6 deep-copies a Params6, for SnapshotParams's reason: a record
+// that aliased the caller's slices would say a configuration was sent that the
+// caller went on to change afterwards.
+//
+// The slices are the DUID, the Option Request list and the Resume, and the
+// Resume is the one that carries slices of its own — Clone is what reaches
+// them.
+func SnapshotParams6(p proto.Params6) proto.Params6 {
+	p.DUID = append([]byte(nil), p.DUID...)
+	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
+	p.Resume = p.Resume.Clone()
+	return p
+}
+
+// familyOf is the family an event lands in: its own, or the record's when the
+// event does not name one.
+func familyOf(ev RecordEvent, rec Record) Family {
+	if ev.Family != FamilyUnset {
+		return ev.Family
+	}
+	return rec.Family
 }
 
 // CloneLease deep-copies a Lease for the same reason SnapshotParams exists.
