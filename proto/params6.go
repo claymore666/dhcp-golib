@@ -99,6 +99,21 @@ type Resume6 struct {
 	// here as it means on the wire, and Lease6.Deadlines applies §21.4's
 	// recommendation at the point of use.
 	T1, T2 Duration
+
+	// DNS and Search are RFC 3646's two lists as they were last received, and
+	// they are here because §18.2.3 puts them here.
+	//
+	// §18.2.3, on a Confirm that is never answered: "the client SHOULD
+	// continue to use any leases, using the last known lifetimes for those
+	// leases, and SHOULD continue to use any other previously obtained
+	// configuration parameters." The addresses and the lifetimes were already
+	// carried; the RFC 3646 lists ARE the other previously obtained
+	// configuration parameters, and without them a resumed client has no
+	// resolver at all — a Reply to a Confirm carries none either (§16.6: the
+	// server answers a Confirm with a Status Code and nothing else), so there
+	// is no later message that supplies them.
+	DNS    []netip.Addr
+	Search []string
 }
 
 // Clone deep-copies a Resume6, for the reason Resume.Clone exists: it is the
@@ -112,6 +127,8 @@ func (r *Resume6) Clone() *Resume6 {
 	out := *r
 	out.Addrs = append([]Addr6(nil), r.Addrs...)
 	out.ServerDUID = append([]byte(nil), r.ServerDUID...)
+	out.DNS = append([]netip.Addr(nil), r.DNS...)
+	out.Search = append([]string(nil), r.Search...)
 	return &out
 }
 

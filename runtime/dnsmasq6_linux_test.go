@@ -893,6 +893,18 @@ func assertMode(t *testing.T, s *dnsmasqServer, w *raWatch, mode v6Mode) *wire.R
 // newV6Client builds the client this file's proofs drive, on the fixture link.
 func newV6Client(t *testing.T) (*Client6, net.HardwareAddr) {
 	t.Helper()
+	return newV6ClientWith(t, nil)
+}
+
+// newV6ClientWith is newV6Client with one hook on the parameters, for the
+// tests whose subject IS a parameter.
+//
+// The tweak runs BEFORE NewClient6, which is the only place it can run: the
+// constructor clones the Params6 into the machine, so a field set on a client
+// that already exists is a field the machine never sees — a test written that
+// way would pass against a library that ignored the parameter entirely.
+func newV6ClientWith(t *testing.T, tweak func(*proto.Params6)) (*Client6, net.HardwareAddr) {
+	t.Helper()
 	iface, err := net.InterfaceByName(test6ClientIf)
 	if err != nil {
 		t.Fatalf("InterfaceByName(%s): %v", test6ClientIf, err)
@@ -912,6 +924,9 @@ func newV6Client(t *testing.T) (*Client6, net.HardwareAddr) {
 	// asserted a DNS server the client had never asked for. A server sends an
 	// Information-request client what it was asked for and nothing else.
 	p.ORO = proto.DefaultORO()
+	if tweak != nil {
+		tweak(&p)
+	}
 
 	c, err := NewClient6(ClientConfig6{Interface: test6ClientIf, Params6: p, EventBuffer: 8})
 	if err != nil {
@@ -1577,6 +1592,185 @@ func v6DuplicateAgainstDnsmasq(t *testing.T) {
 	}
 }
 
+// test6HintedAddr and test6SubstituteAddr are the two-address range the
+// declined-hint proof runs on, and the first of them is the one another node
+// on the link already holds.
+//
+// TWO ADDRESSES AND NOT ONE, because the proof is that the client ends up
+// somewhere else: with a single-address range a client that had learned
+// nothing from its Decline and a client that had learned everything would both
+// end up with no lease, and the log would look the same either way.
+const (
+	test6HintedAddr     = "fd00:99::1a0"
+	test6SubstituteAddr = "fd00:99::1a1"
+)
+
+// TestADeclinedHintIsNotAskedForAgain is the wire proof for the loop RFC 9915
+// §18.2.10.1 forbids and §18.2.1's hint makes easy to write.
+//
+// §18.2.1 makes the hint a MAY: "The client MAY include addresses in the IA as
+// a hint to the server about the addresses for which the client has a
+// preference." Nothing there says what to do with that preference after the
+// address turns out to be in use, and §18.2.10.1 says only that the client
+// "MUST restart the DHCP configuration process" — so a machine that restarts
+// with the same preference restarts into the same address.
+//
+// THIS IS MEASURED BEHAVIOUR AND NOT A READING. Plugin lane run 34058213252
+// recorded 16 acquisition rounds in 16 seconds against a real server: hint,
+// offer, duplicate, Decline, hint again. The middle of that loop is dnsmasq
+// 2.91 and it is not a bug in it — src/rfc3315.c's SOLICIT arm honours a
+// requested IAADDR through address6_valid/address6_available before it ever
+// reaches address6_allocate, and its DECLINE arm blacklists only CONFIGURED
+// addresses (ADDRLIST_DECLINED); for a range address it bumps addr_epoch,
+// which changes where the NEXT ALLOCATION starts and has no effect at all on
+// an address the client asks for by name.
+//
+// SO THE FIXTURE PUTS THOSE TWO PATHS ON DIFFERENT ADDRESSES. The squatted
+// address sits on the SERVER's end of the veth — the only place a second node
+// can hold it — which makes it dnsmasq's own local6, and dhcp6.c's
+// address6_allocate skips it:
+//
+//	/* eliminate addresses in use by the server. */
+//	for (d = context; d; d = d->current)
+//	  if (addr == addr6part(&d->local6))
+//	    break;
+//
+// address6_available has no such test. So the hinted address is reachable
+// ONLY by asking for it, and every offer of it in this log is one this client
+// asked for. That is what makes the decline count evidence about the client.
+//
+// THE COUNT IS READ ON THE WIRE, from dnsmasq's log, and the second decline is
+// a NAMED FAILURE rather than a timeout: with the defect the client never
+// acquires anything, so a test that only waited for the acquisition would hang
+// until the child's own deadline and report "slow" where the finding is "it
+// asked again".
+func TestADeclinedHintIsNotAskedForAgain(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6DeclinedHintAgainstDnsmasq(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6DeclinedHintAgainstDnsmasq(t *testing.T) {
+	wireUpV6(t)
+
+	// THE SQUATTER, INSTALLED BEFORE THE CLIENT EXISTS, for the reason
+	// v6DuplicateAgainstDnsmasq gives: accept_dad is already off on this link,
+	// so the kernel answers for the address at once instead of leaving it
+	// tentative and — RFC 4862 §5.4 — answering nothing.
+	mustRun(t, "ip", "-6", "addr", "add", test6HintedAddr+"/"+fmt.Sprint(test6PrefixLn), "dev", test6ServerIf)
+
+	twoAddrs := v6Managed
+	twoAddrs.args = []string{
+		"--dhcp-range=" + test6HintedAddr + "," + test6SubstituteAddr + ",64," + fmt.Sprint(test6LeaseSec),
+		"--enable-ra",
+	}
+	twoAddrs.ready = "DHCPv6, IP range " + test6HintedAddr
+	srv := startDnsmasq6(t, twoAddrs)
+	watch := newRAWatch(t, test6ClientIf)
+
+	// THE HINT IS THE SUBJECT. It is the caller's remembered preference: an
+	// address this container held before, or one an operator asked for.
+	c, _ := newV6ClientWith(t, func(p *proto.Params6) {
+		p.Hint = netip.MustParseAddr(test6HintedAddr)
+	})
+	stop := runV6Client(t, c)
+	defer stop()
+
+	assertMode(t, srv, watch, twoAddrs)
+
+	// ---------------------------------------------- the hinted pass --
+	//
+	// The server offered the address this client asked for by name, which is
+	// the precondition of everything below: without this line the decline
+	// count is a count of nothing.
+	srv.waitFor(t, "DHCPREPLY("+test6ServerIf+") "+test6HintedAddr)
+	if v := awaitDADVerdict(t, c); v.Duplicate != 1 || v.Free != 0 {
+		t.Fatalf("the runner's first verdict on %s was Free=%d Duplicate=%d, want a duplicate: the other end of this veth holds that address",
+			test6HintedAddr, v.Free, v.Duplicate)
+	}
+	srv.waitFor(t, "DHCPDECLINE("+test6ServerIf+")")
+
+	// ------------------------------------------- and the pass after it --
+	//
+	// Whichever comes first: the substitute address being leased, or a SECOND
+	// decline. The second decline is the defect, and naming it here is what
+	// keeps the defect a failure instead of a deadline.
+	declineLine := "DHCPDECLINE(" + test6ServerIf + ")"
+	leasedSubstitute := "DHCPREPLY(" + test6ServerIf + ") " + test6SubstituteAddr
+	for {
+		if n := srv.count(declineLine); n > 1 {
+			t.Fatalf("the client sent %d Declines: it asked for %s again after declining it, which is RFC 9915 §18.2.10.1's restart walking back into the same address.\nServer log:\n%s",
+				n, test6HintedAddr, strings.Join(srv.lines(), "\n"))
+		}
+		if containsLine(srv.lines(), leasedSubstitute) {
+			break
+		}
+		if _, ok := <-srv.arrived; !ok {
+			t.Fatalf("dnsmasq exited before leasing %s.\nServer log:\n%s", test6SubstituteAddr, strings.Join(srv.lines(), "\n"))
+		}
+	}
+
+	// The client's own view, read after the wire and never instead of it.
+	//
+	// NOT awaitV6, WHICH FAILS ON A Failed EVENT. This client reports one on
+	// purpose — §18.2.10.1's conflict, the reason it declined — so the wait
+	// here counts those instead of tripping on the first, and it still refuses
+	// a Failed that is anything else. A SECOND conflict would mean the second
+	// pass had found a duplicate too, which on this fixture can only be the
+	// declined address coming back.
+	conflicts := 0
+	var ev lease.Event
+	for e := range c.Events() {
+		t.Logf("client event: %s", e)
+		if e.Kind == lease.Failed {
+			if e.Reason != proto.ReasonConflict {
+				t.Fatalf("the client failed while waiting for acquired: %s", e)
+			}
+			conflicts++
+			if conflicts > 1 {
+				t.Fatalf("the client reported %d conflicts; on this fixture only %s is held, so the second pass asked for it again.\nServer log:\n%s",
+					conflicts, test6HintedAddr, strings.Join(srv.lines(), "\n"))
+			}
+			continue
+		}
+		if e.Kind == lease.Acquired {
+			ev = e
+			break
+		}
+	}
+	if ev.Kind != lease.Acquired {
+		t.Fatalf("the event channel closed before anything was acquired.\nServer log:\n%s", strings.Join(srv.lines(), "\n"))
+	}
+	if conflicts != 1 {
+		t.Errorf("the client reported %d conflicts, want the one it declined", conflicts)
+	}
+	got := ev.Lease.Addr.Addr().String()
+	if got == test6HintedAddr {
+		t.Fatalf("the client bound %s, the address it had just declined", got)
+	}
+	if got != test6SubstituteAddr {
+		t.Fatalf("the client bound %s; this range holds only %s and %s", got, test6HintedAddr, test6SubstituteAddr)
+	}
+
+	// AT MOST ONE DECLINE FOR THE HINTED PASS. Read last, over the whole log,
+	// so it is a statement about the run and not about the moment the loop
+	// above happened to stop.
+	if n := srv.count(declineLine); n != 1 {
+		t.Fatalf("the server logged %d Declines, want exactly 1.\nServer log:\n%s", n, strings.Join(srv.lines(), "\n"))
+	}
+	if st := c.Stats(); st.DeclinesSent != 1 {
+		t.Errorf("Stats.DeclinesSent = %d, want 1: %+v", st.DeclinesSent, st)
+	}
+	// One duplicate and one free: the second check RAN and came back clean,
+	// so the substitute address was not bound past a check that never
+	// happened.
+	if st := c.DADStats(); st.Duplicate != 1 || st.Free != 1 {
+		t.Errorf("DADStats = %+v, want one duplicate (%s) and one free (%s)", st, test6HintedAddr, test6SubstituteAddr)
+	}
+}
+
 // TestAV6ReleaseReachesRealDnsmasq is RFC 9915 section 18.2.7 against a server
 // that writes down what it received.
 //
@@ -2209,6 +2403,21 @@ func v6LinkLocalNeverArrives(t *testing.T) {
 
 // ------------------------------------------ two clients, one link --
 
+// countInbound6 is how many Steps in a v6 journal were caused by a message
+// arriving, which is the unit of the cost the ring-3 destination narrowing
+// removes: one decode, one Step, one slot in a bounded ring.
+//
+// Notes are skipped because a note is ring 2's own line and not a Step.
+func countInbound6(entries []proto.JournalEntry6) int {
+	n := 0
+	for _, e := range entries {
+		if !e.Note && e.Kind == proto.EvReceived {
+			n++
+		}
+	}
+	return n
+}
+
 // TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport is the shared-segment
 // row, and the fixture is the plugin's own macvlan case.
 //
@@ -2216,9 +2425,12 @@ func v6LinkLocalNeverArrives(t *testing.T) {
 // UDP ports and nothing else, so a server's unicast Advertise or Reply for
 // ANOTHER client on the link satisfies it completely: right ports, right
 // direction, a valid checksum over its own pseudo-header. Ring 1 discards such
-// a message on the Client Identifier (RFC 9915 section 16.3), so nothing was
-// ever mis-leased — the cost is a decode, a counter, a journal entry and a slot
+// a message too — a bound client on the "no exchange in flight" arm, a client
+// mid-exchange on RFC 9915 section 16.3's Client Identifier — so nothing was
+// ever mis-leased; the cost is a decode, a counter, a journal entry and a slot
 // in a bounded ring, per foreign exchange, on a link that may carry dozens.
+// Both halves are read below: TransportStats.Foreign for what the transport
+// kept out, and the journal for what got past it.
 //
 // THE SECOND CLIENT IS A MACVLAN OVER THE FIRST CLIENT'S INTERFACE, and that
 // is not an approximation of the shared segment; it is one. A macvlan has its
@@ -2258,6 +2470,17 @@ func v6TwoClientsOnOneLink(t *testing.T) {
 		t.Fatalf("the first client had already counted %d foreign repl(ies) on a link with nothing else on it: %+v", base.Foreign, base)
 	}
 
+	// THE COST THE NARROWING WAS MADE FOR, as a number read at ring 1 rather
+	// than as a claim in a comment. Every foreign exchange that reaches the
+	// machine costs a decode, a Step and a slot in a BOUNDED journal, so on a
+	// busy segment one container's traffic pushes another's own history out of
+	// its ring. The count of received-message Steps in this client's journal
+	// is what says whether any of them arrived, and it is taken here so the
+	// reading below is a DELTA over the window the second client is alive in.
+	// MEASURED by the M7c review with the narrowing removed: this journal grew
+	// from 10 entries to 12.
+	inboundBefore := countInbound6(first.Journal())
+
 	// The second client, on its own hardware address over the same wire.
 	mustRun(t, "ip", "link", "add", test6ClientIf2, "link", test6ClientIf, "type", "macvlan", "mode", "bridge")
 	p := "/proc/sys/net/ipv6/conf/" + test6ClientIf2 + "/accept_dad"
@@ -2296,6 +2519,17 @@ func v6TwoClientsOnOneLink(t *testing.T) {
 	}
 	if l, ok := first.Lease(); !ok || l.Addr.Addr() != addrFirst {
 		t.Errorf("the first client's lease is %v (held=%v) after another client's exchange, want %s", l.Addr, ok, addrFirst)
+	}
+
+	// AND NOTHING OF IT REACHED RING 1. Foreign counts what the transport
+	// discarded; this counts what got past it, which is the half the cost
+	// argument is about. Ring 1 would have discarded these too — a bound
+	// client on the "no exchange in flight" arm, a client mid-exchange on RFC
+	// 9915 section 16.3's Client Identifier — so a message that arrives here
+	// is not a mis-lease, it is a journal entry somebody else paid for.
+	if got := countInbound6(first.Journal()); got != inboundBefore {
+		t.Errorf("the first client's journal grew from %d received-message Step(s) to %d while another client exchanged on the same link; the narrowing that exists to keep them out of a bounded ring did not keep them out",
+			inboundBefore, got)
 	}
 
 	// The control: the macvlan sees only what is addressed to it.

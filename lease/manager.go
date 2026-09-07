@@ -509,6 +509,12 @@ func newManager6(cfg Config) (*Manager, error) {
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
 			T2:         remaining(b, cfg.Resume6.Rebind),
+			// §18.2.3's "any other previously obtained configuration
+			// parameters". A Reply to a Confirm carries no RFC 3646 option
+			// (§16.6), so these lists reach a resumed client from the
+			// caller's remembered lease or from nowhere.
+			DNS:    append([]netip.Addr(nil), cfg.Resume6.DNS...),
+			Search: append([]string(nil), cfg.Resume6.DomainSearch...),
 		}
 	}
 	m, err := proto.New6(params)

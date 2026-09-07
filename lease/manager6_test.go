@@ -577,3 +577,54 @@ func TestWithoutARunnerTheCallerStillOwesTheResult(t *testing.T) {
 		t.Fatalf("the journal note for a runner-less client reads %q; a reader cannot tell it from a client whose runner was asked", note)
 	}
 }
+
+// TestAResumedV6LeaseKeepsTheResolverItRemembered is RFC 9915 §18.2.3's
+// "any other previously obtained configuration parameters" through ring 2.
+//
+// A Reply to a Confirm carries a Status Code and no options (§16.6), so the
+// RFC 3646 lists reach a resumed client from the caller's remembered lease or
+// from nowhere at all. Before this they reached it from nowhere: the chassis
+// that wired DHCPv6 into the plugin had to re-read its own record to give a
+// restarted container a resolver.
+//
+// THE OBSERVER IS THE Acquired EVENT, which is what the caller acts on, and
+// not Config.Resume6, which is what the caller supplied.
+func TestAResumedV6LeaseKeepsTheResolverItRemembered(t *testing.T) {
+	clk := newFakeClock()
+	now := clk.Wall()
+	remembered := Lease{
+		Addr:         netip.MustParsePrefix(test6Addr + "/128"),
+		ServerDUID:   append([]byte(nil), test6ServerDUID...),
+		IAID:         test6IAID,
+		Preferred:    now.Add(120e9),
+		Valid:        now.Add(240e9),
+		Expire:       now.Add(240e9),
+		Renew:        now.Add(60e9),
+		Rebind:       now.Add(180e9),
+		DNS:          []netip.Addr{netip.MustParseAddr(test6DNS)},
+		DomainSearch: []string{test6Search},
+	}
+	confirming := func(req *wire.MessageV6, _ int) []*wire.MessageV6 {
+		if req.Type != wire.MsgConfirm {
+			return nil
+		}
+		return []*wire.MessageV6{{
+			Type: wire.MsgReply, XID: req.XID,
+			Options: wire.OptionsV6{
+				optV6(wire.OptV6ClientID, test6DUID),
+				optV6(wire.OptV6ServerID, test6ServerDUID),
+				optV6(wire.OptV6StatusCode, wire.EncodeStatus(wire.Status{Code: wire.StatusSuccess})),
+			},
+		}}
+	}
+	r := newRig6On(t, clk, testParams6(), confirming, withResume6(remembered))
+
+	ev := r.acquire6(t)
+	if len(ev.Lease.DNS) != 1 || ev.Lease.DNS[0].String() != test6DNS {
+		t.Fatalf("the resumed lease carries DNS %v, want the remembered %s: a Reply to a Confirm carries no RFC 3646 option, so this list has no other source",
+			ev.Lease.DNS, test6DNS)
+	}
+	if len(ev.Lease.DomainSearch) != 1 || ev.Lease.DomainSearch[0] != test6Search {
+		t.Fatalf("the resumed lease carries search %v, want the remembered %q", ev.Lease.DomainSearch, test6Search)
+	}
+}

@@ -98,6 +98,39 @@ type Machine6 struct {
 	// afterDecline says what to do when the Decline exchange ends.
 	afterDecline func(now Instant, rnd uint64, out *actions)
 
+	// declined is every address this machine has sent a Decline for, and it
+	// exists so that §18.2.10.1's recovery cannot ask for the address it has
+	// just given back.
+	//
+	// §18.2.1 makes the hint a MAY — "The client MAY include addresses in IA
+	// Address options (see Section 21.6) encapsulated within IA_NA option as
+	// hints to the server about the addresses for which the client has a
+	// preference" — and says nothing about a server refusing one. dnsmasq
+	// 2.91 honours it: src/rfc3315.c's SOLICIT arm runs address6_valid and
+	// address6_available over the requested IAADDR and calls add_address
+	// BEFORE address6_allocate ever runs, and its DECLINE arm blacklists only
+	// a CONFIGURED address ("disabling DHCP static address %s") — a range
+	// address gets `context_tmp->addr_epoch++`, which moves what allocate
+	// chooses and does not touch what a hint asks for. So a machine that
+	// re-hints what it declined is offered it again, declines again, and
+	// never converges. MEASURED in the plugin's chassis: sixteen rounds in
+	// sixteen seconds, run 34058213252.
+	//
+	// IT IS A SET AND NOT A CLEARED HINT, and the difference is the second
+	// case rather than tidiness: the server may offer something other than
+	// the hint, and a duplicate on THAT address says nothing about the
+	// address the caller asked to keep (#213). Clearing the hint on any
+	// Decline would drop a preference no node has ever answered for.
+	//
+	// BOUND: it never forgets, so it grows by one entry for every distinct
+	// address this machine has ever declined, and nothing here trims it. That
+	// is the intended direction. The opposite shape — a set that forgets, by
+	// age or by size — walks back into the loop this field exists to stop, on
+	// exactly the link where a node holds an address long enough to be
+	// forgotten. What bounds it in practice is the server's pool: a machine
+	// can only decline what it was offered.
+	declined []netip.Addr
+
 	resume *Resume6
 
 	// router is what router discovery has seen, and rsCount how many Router
@@ -1365,7 +1398,7 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 	}
 	switch {
 	case !had:
-		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease6: l, Requested: m.params.hintAddr()})
+		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease6: l, Requested: m.solicitHint()})
 	default:
 		out.stamp(m, Action{Kind: ActLeaseRenewed, Lease6: l})
 		if !prev.Equal(l) {
@@ -1445,6 +1478,10 @@ func (m *Machine6) continueFromResume(now Instant, rnd uint64, out *actions, how
 		T1:         r.T1,
 		T2:         r.T2,
 		Start:      now,
+		// §18.2.3's "any other previously obtained configuration parameters".
+		// See Resume6.DNS: nothing later in this exchange supplies them.
+		DNS:    append([]netip.Addr(nil), r.DNS...),
+		Search: append([]string(nil), r.Search...),
 	}
 	m.pending, m.havePending, m.pendingRenewal = l, true, false
 	m.msgType = 0
@@ -1524,6 +1561,11 @@ func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, t
 		then(now, rnd, out)
 		return
 	}
+	// RECORDED BEFORE THE TWO REFUSALS BELOW, not after the exchange. An
+	// address this machine cannot send a Decline for — the lease names no
+	// server — is still an address another node answered for, and hinting it
+	// again is the same loop with the Decline missing from the log.
+	m.rememberDeclined(addrs)
 	if len(l.ServerDUID) == 0 {
 		// §18.2.8's Server Identifier is a MUST and this client cannot invent
 		// one. This is a STATED BOUND rather than a silent refusal: a lease
@@ -1541,6 +1583,40 @@ func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, t
 	out.cancel(m, Timer6DAD)
 	m.startExchange(now, rnd, wire.MsgDecline6, out)
 	m.state = State6DAD
+}
+
+// rememberDeclined adds addrs to the set the next Solicit will not hint.
+func (m *Machine6) rememberDeclined(addrs []netip.Addr) {
+	for _, a := range addrs {
+		if !containsAddr(m.declined, a) {
+			m.declined = append(m.declined, a)
+		}
+	}
+}
+
+// solicitHint is §18.2.1's hint, or the zero Addr when the caller's preferred
+// address is one this machine has declined.
+//
+// THE WHOLE OF §18.2.10.1's RECOVERY IS "restart discovery", and a discovery
+// that asks for the address the Decline just gave back is not one. The RFC
+// does not say this — it does not have to, because it never says to re-hint
+// either; the hint is a MAY the caller supplied once and the machine is what
+// decides which messages carry it.
+func (m *Machine6) solicitHint() netip.Addr {
+	h := m.params.hintAddr()
+	if h.IsValid() && containsAddr(m.declined, h) {
+		return netip.Addr{}
+	}
+	return h
+}
+
+func containsAddr(hay []netip.Addr, a netip.Addr) bool {
+	for _, h := range hay {
+		if h == a {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Machine6) finishDecline(now Instant, rnd uint64, out *actions) {
@@ -1775,7 +1851,7 @@ func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 		// §18.2.1: "The client MAY include addresses in IA Address options
 		// (see Section 21.6) encapsulated within IA_NA option as hints to the
 		// server about the addresses for which the client has a preference."
-		if h := m.params.hintAddr(); h.IsValid() {
+		if h := m.solicitHint(); h.IsValid() {
 			addrs = []Addr6{{Addr: h}}
 		}
 		zeroLifetimes = true
