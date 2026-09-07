@@ -381,32 +381,56 @@ the cost of the arrangement rather than a gap in it: somebody who can write
 here pushes the branch to this repository, or dispatches the workflow, having
 read the diff first. A pull request never buys itself a run.
 
-**The observer is `internal/publication`**, in the unit suite. It fails if the
-workflow SET puts a runner whose label is not one of GitHub's hosted images
-within reach of a `pull_request` or `pull_request_target` trigger — in one
-file, or across two, because a workflow called with `uses:` runs its jobs on
-the calling repository's runners and so inherits its caller's triggers. It also
-fails if any workflow hands secrets over, whether by naming one (`secrets.NAME`)
-or by `secrets: inherit`, which names none.
+**The observer is `internal/publication`**, in the unit suite, and it reads the
+workflows over a STATED SUBSET of YAML rather than over YAML. Inside the subset
+it fails if the workflow SET puts a runner whose label is not one of GitHub's
+hosted images within reach of a `pull_request` or `pull_request_target`
+trigger — in one file, or across two, because a workflow called with `uses:`
+runs its jobs on the calling repository's runners and so inherits its caller's
+triggers. It also fails if any workflow hands secrets over, whether by naming
+one (`secrets.NAME`) or by `secrets: inherit`, which names none. Outside the
+subset it REFUSES the file, naming the line and the shape it would not read,
+and a refusal is red. So the claim this row supports is not the universal over
+every workflow that could be written; it is the one the refusal makes true by
+construction:
 
-It reads the triggers where GitHub reads them: the direct children of the `on:`
-block, at whatever column the first child sets, in block, sequence or flow
-form. An earlier version accepted a column no deeper than two, so an `on:`
-block indented four spaces parsed to no triggers at all and passed — a
-predicate that read a position as a property. Every file is also floored on its
-own: a workflow the scan read no trigger out of, or neither a runner nor a
-call, fails the suite instead of passing quietly. Summed over the set that
-floor is satisfied by any one file that parses, and the file that parses to
-nothing is the one it exists to catch.
+> Every workflow in this repository is written in the subset the scan reads,
+> and within that subset no job on a runner of ours is reachable from a fork's
+> pull request and no workflow hands a secret over.
+
+The subset, which is what a contributor's workflow has to be written in: no
+carriage return anywhere and no tab in any line's indentation; root keys at the
+left margin; `on:` a plain scalar, a flow collection closed on its own line, or
+a block whose children are indented deeper than the key; `jobs:` such a block,
+each job a key with no inline value; a job's `runs-on:` in those same value
+forms, its block form a sequence; a job-level `uses:` naming a path ending
+`.yml` or `.yaml`; and no `${{ }}` expression and no YAML anchor or alias in
+any value the scan enumerates. Everything else is refused by name: a flow
+collection spread over two lines, a `|` or `>` block scalar in one of those
+places, a tab-indented file, a CRLF file, an anchor, an alias, an expression, a
+`runs-on:` written as a `group:`/`labels:` mapping, and a sequence written at
+its key's own column. Each of those is ordinary YAML and GitHub would honour
+it; the refusal is the point. The direction that fails closed is "the reader
+could not read this", never "there is nothing here" — a file that parses to
+nothing agrees with every property asserted over it. Somebody who meets a
+refusal writes the workflow in the subset, or widens the subset and its cases
+together. This lane's own workflow is inside it, which the row demonstrates on
+every run rather than claiming here.
+
+Every workflow is floored as well, and per JOB: one the scan read no trigger
+out of, and a job that yields neither a runner label nor exactly one callee,
+fail the suite instead of passing quietly. Taken over the file, or summed over
+the set, either floor is satisfied by a sibling that parses while the job
+beside it goes unread.
 
 Two things it deliberately does not do: it does not refuse `self-hosted` as
 such — this lane is self-hosted by decision and such a gate would be red on the
 day it was written — and it does not know who owns a runner, only that a label
-is not one GitHub hosts. Its bounds are stated in the file: it reads the
-workflow as text, so a trigger or a runner label reached through an expression
-or a YAML anchor is outside what it can see. A `uses:` edge it cannot follow —
-a workflow in another repository, or a local path naming no file here — is a
-failure whenever the calling workflow carries a fork trigger, not an omission.
+is not one GitHub hosts. Its remaining bounds are stated in the file: the
+secret scan is textual, so a secret reached through a composite action is
+outside both spellings; and a `uses:` edge it cannot follow — a workflow in
+another repository, or a local path naming no file here — is a failure whenever
+the calling workflow carries a fork trigger, not an omission.
 
 Two consequences worth stating rather than discovering:
 
