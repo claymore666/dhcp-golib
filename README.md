@@ -149,6 +149,11 @@ What that buys you, and what you would otherwise write yourself:
   pair in an unprivileged namespace, asserted against the server's own log and
   lease file. No root, no password.
 
+It is written for and consumed by the
+[docker-net-dhcp](https://github.com/claymore666/docker-net-dhcp) network
+plugin, which is GPL-3.0 while this library is MIT — a combination the MIT
+licence permits.
+
 ## What it does not do
 
 Stated because a bound nobody writes down is read as a guarantee.
