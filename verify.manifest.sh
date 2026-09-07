@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 # shellcheck shell=bash
 #
 # verify.manifest.sh — what MUST be there. Declarations only; no logic that

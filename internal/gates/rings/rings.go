@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package rings is the single source of truth for the ring layout and for the
 // policies the T1 and T2 gates enforce. Both gates read it; neither restates
 // it. An enumeration re-typed per consumer is an unrun checklist.

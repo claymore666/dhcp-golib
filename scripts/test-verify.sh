@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 #
 # test-verify.sh — the oracle for verify.sh.
 #
@@ -373,7 +375,7 @@ sc_roster_gate_added() {
 	local d="$1"
 	copy_tree "$d"
 	mkdir -p "$d/internal/gates/t3"
-	printf 'package main\n\nfunc main() {}\n' >"$d/internal/gates/t3/main.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage main\n\nfunc main() {}\n' >"$d/internal/gates/t3/main.go"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a gate present in the tree but absent from REQUIRED_GATES passed"
 	[ "$(row gate-roster)" = FAIL ] || note "gate-roster missed an unlisted gate: $(row gate-roster)"
@@ -382,7 +384,7 @@ sc_roster_gate_added() {
 sc_t1_violation() {
 	local d="$1"
 	copy_tree "$d"
-	printf 'package proto\n\nimport "os"\n\nvar Stderr = os.Stderr\n' >"$d/proto/impure.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nimport "os"\n\nvar Stderr = os.Stderr\n' >"$d/proto/impure.go"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "ring 1 importing os passed"
 	[ "$(row t1)" = FAIL ] || note "t1 did not report an impure ring-1 import: $(row t1)"
@@ -393,6 +395,8 @@ sc_t2_violation() {
 	local d="$1"
 	copy_tree "$d"
 	cat >"$d/proto/wait_test.go" <<'GO'
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 package proto
 
 import (
@@ -413,7 +417,7 @@ GO
 sc_gofmt_violation() {
 	local d="$1"
 	copy_tree "$d"
-	printf 'package proto\n\n\n\nvar   Misformatted   =   1\n' >"$d/proto/ugly.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\n\n\nvar   Misformatted   =   1\n' >"$d/proto/ugly.go"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "an unformatted file passed"
 	[ "$(row gofmt)" = FAIL ] || note "gofmt did not report an unformatted file: $(row gofmt)"
@@ -431,7 +435,7 @@ sc_vet_violation() {
 	# unit-suite alone, which the rows below assert.
 	local d="$1"
 	copy_tree "$d"
-	printf 'package proto\n\nfunc vetBait() int {\n\treturn 0\n\treturn 1\n}\n' >"$d/proto/vetbait.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nfunc vetBait() int {\n\treturn 0\n\treturn 1\n}\n' >"$d/proto/vetbait.go"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "unreachable code passed the verifier"
 	[ "$(row vet)" = FAIL ] || note "vet did not report unreachable code: $(row vet)"
@@ -446,6 +450,8 @@ sc_race_detector() {
 	# Without -race on the `go test` line this test passes: two goroutines
 	# racing on an int is not a failure, it is a race.
 	cat >"$d/proto/race_test.go" <<'GO'
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 package proto
 
 import (
@@ -613,6 +619,8 @@ sc_hang_bounded() {
 		note "the scoped suite went red with the hang NOT planted: $(row unit-suite) — $(why unit-suite); the timeout is measuring the suite, not a hang"
 
 	cat >"$d/proto/hang_test.go" <<'GO'
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 package proto
 
 import "testing"
@@ -1013,7 +1021,7 @@ sc_oracle_stub_total() {
 	# copy's oracle has been replaced by a stub, so nothing recurses.
 	local d="$1"
 	copy_tree "$d"
-	printf '#!/bin/sh\nexit 0\n' >"$d/scripts/test-verify.sh"
+	printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\nexit 0\n' >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
 	run_verify_from_parent "$d"
 	[ "$RC" -ne 0 ] || note "the oracle was replaced by 'exit 0' and the arbiter still passed"
@@ -1053,7 +1061,7 @@ sc_oracle_names_fabricated() {
 	# manifest and are written nowhere in the file it replaced.
 	local d="$1"
 	copy_tree "$d"
-	printf '#!/bin/sh\necho "%s %s scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' \
+	printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\necho "%s %s scenarios, every planted defect was detected by the row that owns it"\nexit 0\n' \
 		"$MANIFEST_ORACLE_PASS_PREFIX" "${#MANIFEST_SCENARIOS[@]}" >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
 	run_verify_from_parent "$d"
@@ -1427,7 +1435,7 @@ sc_unlinted_script() {
 	# file nobody lists. This drives that direction.
 	local d="$1"
 	copy_tree "$d"
-	printf '#!/bin/sh\necho unlisted\n' >"$d/scripts/extra.sh"
+	printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\necho unlisted\n' >"$d/scripts/extra.sh"
 	chmod +x "$d/scripts/extra.sh"
 	run_verify "$d"
 	[ "$RC" -ne 0 ] || note "a shell script absent from the lint list passed"
@@ -1485,7 +1493,7 @@ sc_oracle_is_invoked() {
 
 	# The other direction: a failing oracle must fail the run. Without this,
 	# verify.sh could invoke the oracle and ignore its answer.
-	printf '#!/bin/sh\necho "  RESULT %s FAIL obs= planted"\necho "ORACLE FAIL: %s"\nexit 1\n' \
+	printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\necho "  RESULT %s FAIL obs= planted"\necho "ORACLE FAIL: %s"\nexit 1\n' \
 		"a-scenario-that-did-not-behave" "$marker" >"$stub"
 	chmod +x "$stub"
 	run_verify_outer "$d"
@@ -1656,7 +1664,7 @@ sc_oracle_skip_needs_a_real_pass() {
 	# edit like every other in this tree.
 	local d="$1"
 	copy_tree "$d"
-	printf '#!/bin/sh\nexit 0\n' >"$d/scripts/test-verify.sh"
+	printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\nexit 0\n' >"$d/scripts/test-verify.sh"
 	chmod +x "$d/scripts/test-verify.sh"
 	run_verify_outer "$d"
 	[ "$RC" -ne 0 ] || note "an oracle that exits 0 without a word passed the run"
@@ -2052,7 +2060,7 @@ sc_ceiling_band() {
 fabricating_stub() {
 	local file="$1" nap="$2" marker="$3" claim="${4:-${#MANIFEST_SCENARIOS[@]}}" flip="${5:-}" c n rc tok dg o srow block anchor scope
 	block="$(
-		printf '#!/bin/sh\n'
+		printf '#!/bin/sh\n# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\n'
 		[ "$nap" -gt 0 ] && printf 'sleep %s\n' "$nap"
 		for c in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
 			IFS='|' read -r n rc tok dg <<<"$c"
@@ -2245,7 +2253,7 @@ sc_min_declared_tests_margin() {
 	local d="$1" i
 	copy_tree "$d"
 	{
-		printf 'package proto\n\nimport "testing"\n\n'
+		printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nimport "testing"\n\n'
 		for i in $(seq 0 "$MAX_DECLARED_MARGIN"); do
 			printf 'func TestAnExtraDeclarationTheManifestDoesNotKnowAbout%d(t *testing.T) {}\n' "$i"
 		done

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 # Enumerate every bare number in the project's prose, and refuse the ones an
 # instrument owns.
 #

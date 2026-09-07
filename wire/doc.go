@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package wire is ring 0: the codec. Bytes to typed messages and back.
 //
 // Ring 0 is pure. It holds no clock, opens no socket and touches no ambient

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package gatetest builds throwaway module fixtures and runs a gate binary
 // against them, so each gate's red-then-green behaviour is a test that reruns
 // rather than a transcript somebody once pasted into a report.

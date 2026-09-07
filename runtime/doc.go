@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package runtime is ring 3: the effects. Sockets, the real clock, netlink,
 // network namespaces, persistence and metrics. The only ring allowed to make a
 // syscall. It shadows the standard library's runtime in prose but not in

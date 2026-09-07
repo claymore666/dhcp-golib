@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Command t2 is the T2 gate: no test in this library waits on wall-clock time.
 //
 // T2 is load-bearing rather than cosmetic, and §5.1 of the build plan is no

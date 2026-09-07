@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package scan is the shared source-scanning half of the gates. It parses Go
 // files with go/parser rather than matching text, because a gate that greps
 // for "time.Sleep" is defeated by an import alias, and one that greps for

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 package proto
 
 // Backoff is the retransmission schedule of RFC 2131 section 4.1.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package manifest pins verify.manifest.sh from a second language.
 //
 // The manifest states what must be there. This file states it again, in Go, in

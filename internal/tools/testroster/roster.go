@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Command testroster prints every test function DECLARED in the tree, one per
 // line, so that `verify.sh` can compare the declarations against what
 // `go test -list` actually reports.

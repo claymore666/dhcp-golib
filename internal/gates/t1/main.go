@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Command t1 is the T1 gate: ring 1 imports nothing that does I/O.
 //
 // T1 is a load-bearing guarantee, not hygiene. Ring 1 being pure is what makes

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package publication holds the checks a PUBLIC repository owes that no other
 // gate here covers: that a job on a machine of ours cannot be started by a
 // stranger, and that every file carries the licence it is offered under.

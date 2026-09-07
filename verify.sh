@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 #
 # verify.sh — the one command. Runs every gate and prints one verdict.
 #

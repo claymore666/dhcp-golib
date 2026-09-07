@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 // Package proto is ring 1: the state machine. It is pure.
 //
 // No I/O, no clock, no goroutines, no ambient anything. The whole surface is
