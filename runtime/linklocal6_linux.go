@@ -75,6 +75,18 @@ const (
 // is too short, and the refusal says how long it actually waited so that a
 // reader can tell that case from a link with no address at all.
 //
+// THE BOUNDARY, MEASURED. 2026-09-07, in a fresh user+network namespace with
+// dad_transmits and retrans_time raised above the kernel's defaults: the
+// link-local cleared its tentative flag at 6.616 s, and this function refused
+// at 4.01 s. So the escape is not hypothetical and it has a number — a host
+// tuned that way gets ErrNoLinkLocal from a link whose address was on its way.
+// The refusal names the elapsed wait, which is what tells that case apart from
+// a link that will never have an address; a caller that expects to run on such
+// a host has to retry rather than treat the refusal as final. Raising the
+// constant to cover an arbitrary tuning is not the fix — the tuning has no
+// upper bound — so if this ever moves it is a seam-design decision about who
+// waits, not a constant edit.
+//
 // WHAT THE POLL COSTS, as a function of the host and not as a count. Each tick
 // is one RTM_GETADDR dump of EVERY IPv6 address in the calling thread's
 // network namespace, because syscall.NetlinkRIB does not negotiate the strict
@@ -132,6 +144,26 @@ const (
 // failure into a slow one. Neither is an interface that does not exist: it is
 // resolved once, before the wait, and its absence is its own error rather than
 // four seconds of "this interface has no address".
+//
+// BOUND, IN BOTH DIRECTIONS, AND THEY ARE THE SAME ONE. Existence is checked
+// ONCE, at entry, so:
+//
+//   - a link that does not exist YET is refused immediately rather than waited
+//     for. A caller that creates a link and calls this at once — the plugin's
+//     chassis, on its first endpoint — must order the two itself; this function
+//     will not cover the gap. MEASURED 2026-09-06 across the change that made
+//     the dump thread-local: the version before it returned an address after
+//     324 ms on such a link, this one refuses at 0 s.
+//   - a link that goes away DURING the wait is not noticed. MEASURED
+//     2026-09-06: a link deleted one second into the bound still produced
+//     "(0 tentative, 0 failed duplicate address detection) after waiting 4.0s"
+//     at 4.013 s, because the loop below re-reads addresses and never re-reads
+//     the link.
+//
+// A per-poll existence check would close the second and cost a second dump on
+// every one of the two hundred ticks; it is stated instead, because the case is
+// a link being torn down under a client that is still starting, and the four
+// seconds are then paid by a caller that is already unwinding.
 //
 // WHY IT WAITS AT ALL. RFC 4862 section 5.4 makes an address tentative until
 // the kernel's own duplicate check finishes, and a link that has just come up

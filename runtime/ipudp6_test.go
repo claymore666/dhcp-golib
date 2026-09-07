@@ -320,14 +320,23 @@ func TestTheV6ChecksumIsBoundedByThePayloadLengthAndNotTheFrame(t *testing.T) {
 
 // ------------------------------------------------------------------ ports --
 
-// TestParseIPv6UDPChecksBothPorts drives the half ParseIPv4UDP does not have.
+// TestParseIPv6UDPChecksTheClientPort drives the port rule, and the third row
+// is the one this milestone WIDENED.
 //
-// The last row is the interesting one: it is this client's OWN Solicit, and it
-// is refused. Nothing depends on that refusal — such a frame never reaches
-// this socket, measured — but a parser that checked only the destination port
-// would accept another client's Solicit as a reply to this one, decode a
-// message of the wrong type, and count a decode failure with no explanation.
-func TestParseIPv6UDPChecksBothPorts(t *testing.T) {
+// RFC 9915 section 7.2: "Clients, servers, and relay agents MAY send DHCP
+// messages from any UDP source port they are allowed to use, but they MUST be
+// prepared to accept messages on the destination port to which the message was
+// sent." An earlier version demanded source port 547 and dropped a conforming
+// server's Reply silently — a Skipped counter and a client that never leased.
+//
+// THE OTHER THREE ROWS ARE THE PRESERVATION CONTROL, and they are why the
+// widening is not simply "check less": the ordinary exchange is still
+// accepted, a datagram to some other port is still refused, and this client's
+// OWN Solicit — 546 to 547 — is still refused, which is the case the source
+// check used to be credited with and which the destination check makes on its
+// own. Nothing depends on that last refusal either way: such a frame does not
+// reach this socket, measured.
+func TestParseIPv6UDPChecksTheClientPort(t *testing.T) {
 	set := func(sport, dport uint16) []byte {
 		f := bytes.Clone(capV6Advertise)
 		binary.BigEndian.PutUint16(f[40:42], sport)
@@ -341,7 +350,7 @@ func TestParseIPv6UDPChecksBothPorts(t *testing.T) {
 	}{
 		{name: "server to client", sport: ServerPort6, dport: ClientPort6},
 		{name: "server to some other port", sport: ServerPort6, dport: 1546, wantErr: ErrWrongPort},
-		{name: "some other port to the client", sport: 1547, dport: ClientPort6, wantErr: ErrWrongPort},
+		{name: "some other source port to the client is accepted (RFC 9915 §7.2)", sport: 1547, dport: ClientPort6},
 		{name: "this client's own message, client to server", sport: ClientPort6, dport: ServerPort6, wantErr: ErrWrongPort},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,6 +367,51 @@ func TestParseIPv6UDPChecksBothPorts(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestAReplyFromAnUnusualSourcePortIsDelivered is the widening's acceptance
+// half, and it is a WHOLE frame rather than a patched one.
+//
+// The table above rewrites two bytes of a captured frame, so its accepting
+// rows can only say "not refused for the ports" — the checksum no longer
+// covers what the header says. This builds the frame instead, so the payload
+// really comes back out and the checksum really verifies. RFC 9915 §7.2 makes
+// the source port a server's choice; a client that refuses one it does not
+// recognise refuses a conforming server.
+func TestAReplyFromAnUnusualSourcePortIsDelivered(t *testing.T) {
+	src := addr6(t, "fe80::3802:5eff:fee7:dfe0")
+	dst := addr6(t, "fe80::30e6:f9ff:fe2f:aa1e")
+	payload := []byte{0x07, 0xab, 0xcd, 0xef}
+
+	for _, sport := range []uint16{ServerPort6, 1547, 65535} {
+		frame, err := BuildIPv6UDP(src, dst, sport, ClientPort6, dhcpHopLimit, payload)
+		if err != nil {
+			t.Fatalf("BuildIPv6UDP from port %d: %v", sport, err)
+		}
+		d, err := ParseIPv6UDP(frame)
+		if err != nil {
+			t.Fatalf("a Reply from source port %d was refused: %v", sport, err)
+		}
+		if !bytes.Equal(d.Payload, payload) {
+			t.Errorf("source port %d: payload %x, want %x", sport, d.Payload, payload)
+		}
+		if d.Checksum != ChecksumVerified {
+			t.Errorf("source port %d: checksum state %s, want verified on a frame this package built", sport, d.Checksum)
+		}
+	}
+
+	// The other direction, unchanged: a datagram to the SERVER port is still
+	// refused however it was sent, which is what keeps another client's
+	// message — and this client's own — out of the reply path.
+	for _, sport := range []uint16{ClientPort6, 1547} {
+		frame, err := BuildIPv6UDP(src, dst, sport, ServerPort6, dhcpHopLimit, payload)
+		if err != nil {
+			t.Fatalf("BuildIPv6UDP to the server port from %d: %v", sport, err)
+		}
+		if _, err := ParseIPv6UDP(frame); !errors.Is(err, ErrWrongPort) {
+			t.Errorf("a datagram from %d to the server port gave %v, want ErrWrongPort", sport, err)
+		}
 	}
 }
 

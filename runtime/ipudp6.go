@@ -192,14 +192,26 @@ type DatagramV6 struct {
 }
 
 // ParseIPv6UDP extracts the UDP payload of a DHCPv6 reply from a raw IPv6
-// frame, refusing anything not addressed from the server port to the client
-// port.
+// frame, refusing anything not addressed TO the client port.
 //
-// BOTH PORTS ARE CHECKED, and the source port is the half v4 does not check.
-// It excludes another client's message to 547 on this link, and anything else
-// that happens to be talking to 546. It does NOT exist to exclude this
-// client's own transmissions: those never arrive here at all, which is
-// MEASURED and not assumed — see PacketTransportV6's bounds.
+// ONLY THE DESTINATION PORT IS CHECKED, and the source port is deliberately
+// not, because RFC 9915 section 7.2 says it may be anything: "Clients,
+// servers, and relay agents MAY send DHCP messages from any UDP source port
+// they are allowed to use, but they MUST be prepared to accept messages on
+// the destination port to which the message was sent." A parser that demanded
+// 547 dropped a conforming server's answer and reported it as a frame that
+// was not for us — silence with a counter, which is the worst shape a
+// refusal can take.
+//
+// THE DESTINATION PORT STILL DOES THE EXCLUDING THE SOURCE PORT WAS CREDITED
+// WITH. Another client's message on this link goes TO 547 and is refused here;
+// so is this client's own Solicit, for the same reason — and that refusal was
+// never load-bearing, because such a frame does not reach this socket at all,
+// which is MEASURED and not assumed (see PacketTransportV6's bounds). What is
+// NOT excluded any more is a datagram from an arbitrary port to 546, which is
+// exactly the message section 7.2 permits; ring 1 admits it on the transaction
+// id, the Server Identifier and the Client Identifier (section 16.3), which
+// are the checks that decide whether a message is this client's.
 //
 // THE ZERO CHECKSUM IS DISCARDED AND THE PSEUDO-HEADER SUM IS NOT, and the
 // difference between those two is the whole of what this function knows that
@@ -242,8 +254,7 @@ func ParseIPv6UDP(frame []byte) (DatagramV6, error) {
 	if len(body) < udpHeaderLen {
 		return DatagramV6{}, ErrShortFrame
 	}
-	if binary.BigEndian.Uint16(body[0:2]) != ServerPort6 ||
-		binary.BigEndian.Uint16(body[2:4]) != ClientPort6 {
+	if binary.BigEndian.Uint16(body[2:4]) != ClientPort6 {
 		return DatagramV6{}, ErrWrongPort
 	}
 	ulen := int(binary.BigEndian.Uint16(body[4:6]))

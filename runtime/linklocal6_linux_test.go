@@ -118,6 +118,31 @@ func TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking(t *testing.T
 			inMsg:   "0 tentative, 1 failed",
 		},
 		{
+			// THE VALUE THE KERNEL ACTUALLY EMITS, and the row that makes the
+			// precedence of the two arms above an observed fact rather than an
+			// assumption.
+			//
+			// MEASURED 2026-09-07 on this box under `unshare -Urn`: two veth
+			// ends given the same MAC, accept_dad left on, the collision
+			// driven and the address read back through the netlink dump — the
+			// flag byte is 0xc8, permanent | tentative | dadfailed, and NOT
+			// the 0x88 the row above fabricates. Linux sets IFA_F_DADFAILED
+			// and leaves IFA_F_TENTATIVE standing (net/ipv6/addrconf.c:
+			// addrconf_dad_stop marks the address dadfailed while it is still
+			// tentative), so 0x88 is a value the kernel does not produce and
+			// the row above cannot tell which arm ran.
+			//
+			// With this row, swapping the two arms is RED: a machine that
+			// tested tentative first would report the kernel's real duplicate
+			// as "1 tentative, 0 failed" — the distinction readLinkLocal's own
+			// comment says a caller must be able to make, because one is
+			// waited out and the other never resolves.
+			name:    "the kernel's real duplicate carries both flags and is reported as failed",
+			msgs:    func() [][]byte { return [][]byte{newAddr(ours, 0xc8, llA)} },
+			wantErr: true,
+			inMsg:   "0 tentative, 1 failed",
+		},
+		{
 			// THE ORDER THIS ANSWERS IN IS THE POINT. A tentative address
 			// first and a settled one after is exactly the state a link is in
 			// while it is coming up with two addresses, and returning the
