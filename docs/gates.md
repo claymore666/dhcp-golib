@@ -102,16 +102,12 @@ Two consequences of that, worth stating rather than discovering:
 
 `internal/gates/t2`.
 
-Until 2026-09-06 this said the library has no CI and, per the build plan, never
-would: the self-hosted runners belong to the plugin repository and cannot serve
-a second private repo without an organisation. The premise holds and the
-conclusion did not follow from it — a runner serves a private repository with
-no organisation whether GitHub hosts it or we do, and one now runs the arbiter
-on every push (`docs/verifying.md`, **In CI**, which also says which runner and
-that the arrangement is temporary). What has not changed is who runs this suite
-while the code is being written: a person, over and over, long before there is
-anything to push. A suite slow enough to avoid is a suite that is not run, and
-then nothing observes anything.
+Until 2026-09-06 this said the library has no CI and never would. That was
+wrong: the arbiter has run on every push since (`docs/verifying.md`, **In CI**,
+which says where and on what terms). It changes nothing about why this gate
+exists. Who runs this suite while the code is being written is a person, over
+and over, long before there is anything to push, and a suite slow enough to
+avoid is a suite that is not run — and then nothing observes anything.
 
 The older half of the reason: a test that waits gets "fixed" by waiting
 longer, and a longer timeout is how a real user-facing failure hid in the v1.x

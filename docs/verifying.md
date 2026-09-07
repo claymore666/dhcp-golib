@@ -152,11 +152,8 @@ scenario exists because of that.
 The oracle step is the one that cannot be closed from the inside: see below.
 
 The sentence that stood here until 2026-09-06 said there is no CI on this
-repository and there never would be, because the self-hosted runners belong to
-the plugin repository and cannot serve a second private repo without an
-organisation. The premise is still true; the conclusion never followed from it.
-A GitHub-HOSTED runner serves a private repository with no organisation and no
-self-hosted anything, and one now runs this script on every push — see **In
+repository and there never would be. It was wrong, and this script has run on
+every push since — see **In
 CI** below. `verify.sh` is still the only arbiter there is, and CI is a second
 place it runs rather than a second opinion. Which is why it is one command and
 not a paragraph describing what a developer should run —
@@ -354,9 +351,46 @@ self-hosted runner labelled
 takes about a seventh of that. MEASURED: `./verify.sh --oracle` wall to wall in
 a local copy at 8c87caf is 818s, and on the runner the branch's own green run
 34065275390 recorded 831s inside a job of 13m51s, checkout to verdict. The
-runner leaves that machine
-when a shared pool serves this repository, and in any case before this
-repository is public; `runs-on` is the only line that has to move.
+runner leaves that machine when a shared pool serves this repository;
+`runs-on` is the only line that has to move.
+
+**Why a job may run on a machine of ours at all, and what has to stay true.**
+A pull request from a fork proposes the FORK's tree. A job that runs on a
+self-hosted runner and can be started by one is a stranger's code executing on
+that machine, with that machine's filesystem, network and whatever the runner's
+account can reach. So the rule is not about who owns the runner and not about
+who can read this repository — it is a property of the WORKFLOW:
+
+> A job that runs on a self-hosted runner must never be reachable from a fork's
+> pull request.
+
+That property held while this repository was private and holds unchanged after
+it is public. Nothing about it was ever an argument from privacy, and a reader
+who finds one here should treat it as a defect in this page.
+
+This lane satisfies it structurally rather than by configuration. Its triggers
+are `push` and `workflow_dispatch`, and it has no `pull_request` or
+`pull_request_target`. A fork's push is a push in the fork, and starts nothing
+here — so **a fork's pull request runs nothing in this repository at all**: no
+job, no step, no checkout of the proposed tree onto the runner. The lane also
+reads no repository secret, so there is nothing for a job to carry off even if
+one could be reached.
+
+**Running a contributor's branch is therefore a deliberate act**, and that is
+the cost of the arrangement rather than a gap in it: somebody who can write
+here pushes the branch to this repository, or dispatches the workflow, having
+read the diff first. A pull request never buys itself a run.
+
+**The observer is `internal/publication`**, in the unit suite. It fails if any
+workflow under `.github/workflows/` has BOTH a `runs-on` naming a label that is
+not one of GitHub's hosted images AND a `pull_request` or `pull_request_target`
+trigger, or if any workflow reads `secrets.` at all. Two things it deliberately
+does not do: it does not refuse `self-hosted` as such — this lane is
+self-hosted by decision and such a gate would be red on the day it was written
+— and it does not know who owns a runner, only that a label is not one GitHub
+hosts. Its bounds are stated in the file: it reads the workflow as text, so a
+trigger or a runner label reached through an expression, an anchor or an
+included file is outside what it can see.
 
 Two consequences worth stating rather than discovering:
 

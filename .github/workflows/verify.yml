@@ -19,8 +19,17 @@ jobs:
     # `dhcp-golib`, on the same many-core machine every ceiling and floor in
     # verify.sh and verify.manifest.sh was derived on, where the same command
     # takes about a seventh of that. The runner leaves that machine when a
-    # shared pool serves this repository, and in any case before this
-    # repository is public; `runs-on` is then the only line that moves.
+    # shared pool serves this repository; `runs-on` is then the only line that
+    # moves.
+    #
+    # WHAT MUST STAY TRUE WHILE THIS LINE NAMES A MACHINE OF OURS: no
+    # `pull_request` or `pull_request_target` trigger above. A fork's pull
+    # request proposes the fork's tree, and a self-hosted job reachable from
+    # one runs a stranger's code on that machine. `push` and
+    # `workflow_dispatch` are not reachable that way — a fork's push is a push
+    # in the fork. internal/publication fails the suite if the two ever meet
+    # in one workflow; docs/verifying.md, "In CI", says what a maintainer does
+    # with a contributor's branch instead.
     #
     # ONE runner means ONE job at a time and the rest queued. That is a
     # scheduling property, not a bound: nothing here serialises anything, and

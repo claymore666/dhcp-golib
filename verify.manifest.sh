@@ -277,9 +277,18 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #   runtime/ipudp6_test.go               (1)  AReplyFromAnUnusualSourcePortIs
 #     Delivered
 #
+# THE D29 PUBLICATION SWEEP, the fork-safety observer: 609 -> 612, measured the
+# same way (two testroster runs, at d78c1eb and here). Three added, in one
+# file, each the observer for a claim a public repository makes to a reader who
+# cannot ask anybody about it:
+#
+#   internal/publication/workflows_test.go (3)  NoSelfHostedJobIsReachable
+#     FromAForkPullRequest, NoWorkflowReadsARepositorySecret,
+#     TheWorkflowScanRefusesTheShapesItExistsToRefuse
+#
 # The "Test" prefix is left off each name above so the lines fit; every one of
 # them carries it in the tree.
-MIN_DECLARED_TESTS=609
+MIN_DECLARED_TESTS=612
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
