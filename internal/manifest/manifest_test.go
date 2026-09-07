@@ -90,7 +90,16 @@ const (
 	// which is still above 75, and the run only went red because the deleted
 	// name happened to sit in docs/verifying.md's derived stale-anchor block.
 	// A count backstop holds only AT the threshold.
-	minScenarios     = 77
+	//
+	// 77 -> 78 at D36, and the same thing happened again, which is the best
+	// argument this pin has. Run 34070288698 added oracle-account-not-last-line
+	// and left this number at 77: the copy that deletes a scenario then held
+	// 77, this test passed, and the only red was
+	// TestStaleAnchorBoundNamesWhatTheOracleDerives over the deleted name — so
+	// the verify-oracle row reported a contract mismatch
+	// naming the wrong test and the FLOOR itself observed nothing. Raise it in
+	// the same change that grows the population, every time.
+	minScenarios     = 78
 	minShellScripts  = 4
 	minDeclaredTests = 382
 	// The self-check row's probes and the refusals record() owes them. Pinned
