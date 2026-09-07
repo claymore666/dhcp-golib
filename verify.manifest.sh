@@ -279,18 +279,22 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #   runtime/ipudp6_test.go               (1)  AReplyFromAnUnusualSourcePortIs
 #     Delivered
 #
-# THE D29 PUBLICATION SWEEP, the fork-safety observer: 609 -> 612, measured the
-# same way (two testroster runs, at d78c1eb and here). Three added, in one
-# file, each the observer for a claim a public repository makes to a reader who
-# cannot ask anybody about it:
+# THE D29 PUBLICATION SWEEP: 609 -> 615, measured the same way (two testroster
+# runs, at d78c1eb and here). Six added, per file, each the observer for a
+# claim this repository makes to a reader who cannot ask anybody about it:
 #
 #   internal/publication/workflows_test.go (3)  NoSelfHostedJobIsReachable
 #     FromAForkPullRequest, NoWorkflowReadsARepositorySecret,
 #     TheWorkflowScanRefusesTheShapesItExistsToRefuse
+#   internal/publication/headers_test.go   (2)  EveryGoAndShellFileCarriesThe
+#     LicenceHeader, TheLicenceHeaderPointsAtALicenceThatGrantsIt
+#   runtime/example_test.go                (1)  ExampleClient6
 #
 # The "Test" prefix is left off each name above so the lines fit; every one of
-# them carries it in the tree.
-MIN_DECLARED_TESTS=612
+# them carries it in the tree — except ExampleClient6, which carries the
+# Example prefix instead and which testroster counts for the same reason
+# `go test -list` reports it.
+MIN_DECLARED_TESTS=615
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
