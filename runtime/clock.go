@@ -8,7 +8,7 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 )
 
-// Clock is the two-clock implementation of the design document's section 8.2.
+// Clock is the two-clock implementation of lease.Clock.
 //
 // Mono is CLOCK_BOOTTIME, not CLOCK_MONOTONIC, and that is why this type
 // exists rather than a wrapper around time.Now: CLOCK_MONOTONIC does not

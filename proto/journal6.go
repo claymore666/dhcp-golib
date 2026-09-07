@@ -101,8 +101,8 @@ type ReplayResult6 struct {
 //
 // Replay's counterpart, with Replay's guarantee and Replay's reason for
 // existing: replaying a captured exchange offline with no network and no root
-// is the support workflow the design document (§4.3) says dhcpcd structurally
-// cannot give us.
+// is the support workflow a client that owns its own sockets and clock cannot
+// give you at all.
 func Replay6(p Params6, entries []JournalEntry6) (ReplayResult6, error) {
 	m, err := New6(p)
 	if err != nil {

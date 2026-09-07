@@ -2,9 +2,9 @@
 
 // Command t2 is the T2 gate: no test in this library waits on wall-clock time.
 //
-// T2 is load-bearing rather than cosmetic, and §5.1 of the build plan is no
-// longer why: that section said this library would never have CI, and since
-// 2026-09-06 a hosted runner runs the arbiter on every push. What holds is the
+// T2 is load-bearing rather than cosmetic, and the original reason is no
+// longer why: this library was planned with no CI at all, and since D32 the
+// arbiter runs on every push. What holds is the
 // half that was never about CI — while the code is being written the only
 // thing that runs the suite is a person running it, constantly, and a suite you
 // avoid running because it takes a minute is a suite that is not run, and then

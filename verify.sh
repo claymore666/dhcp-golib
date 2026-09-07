@@ -19,9 +19,11 @@
 #         to repeat a measurement whose subject has not changed, and it names
 #         the hash and the files that measurement covered.
 #
-# DECISION 2026-08-29: no CI here (build plan §5.1) — the runners belong to the
-# plugin repository — so this file is the only arbiter and has to be one line a
-# person can type.
+# DECISION 2026-08-29: no CI here — so this file is the only arbiter and has to
+# be one line a person can type. SUPERSEDED 2026-09-06 (D32): the lane in
+# .github/workflows/verify.yml runs this same file on every push. The
+# consequence outlived the premise — one command, one verdict line, no
+# CI-only step — which is why the lane could be one job that types it.
 #
 # DECISION 2026-08-29: --inner is a flag, not an environment variable. Its one
 # caller is scripts/test-verify.sh, the oracle for this file, which would

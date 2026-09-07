@@ -150,8 +150,8 @@ type Config struct {
 //
 // It is the serialisation point: one event at a time, with the whole action
 // list drained before the next Step. Nothing else in the library takes that
-// responsibility, and the design document names the alternative as a source
-// of heisenbugs (section 2.4 item 2).
+// responsibility, and the alternative -- letting a packet interleave with a
+// drain -- is a source of heisenbugs.
 type Manager struct {
 	cfg     Config
 	machine *proto.Machine
@@ -851,7 +851,7 @@ func (mg *Manager) onInbound(ctx context.Context, in Inbound) {
 // an EvActionFailed appended to the queue, and it is fed only after the
 // CURRENT action list has been drained in full. Feeding it immediately would
 // re-enter Step in the middle of executing the previous Step's actions, which
-// is the reentrancy the design document forbids.
+// is the reentrancy this ring exists to forbid.
 func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 	queue := []proto.Event{ev}
 	for len(queue) > 0 {

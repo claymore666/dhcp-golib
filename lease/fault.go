@@ -11,10 +11,10 @@ import (
 )
 
 // R2, written BEFORE the happy path on purpose: every action can fail, and the
-// failure re-enters the machine as an event. The requirements document calls
-// it "the requirement most likely to be quietly dropped, because a
-// fire-and-forget action list is easier to write and looks identical while
-// everything works", and it is unretrofittable — once the machine assumes its
+// failure re-enters the machine as an event. It is the requirement most
+// likely to be quietly dropped, because a fire-and-forget action list is
+// easier to write and looks identical while everything works, and it is
+// unretrofittable — once the machine assumes its
 // sends succeeded, every transition has to be revisited. Building the fault
 // transport first leaves no moment at which the happy path exists and the
 // failure path does not.
@@ -35,8 +35,8 @@ type Fault struct {
 	FailSends []int
 	// DropInbound names the inbound ordinals that are swallowed before the
 	// manager sees them. This is packet loss, which ring 1 by construction
-	// cannot see (design document section 2.3) and which the retransmission
-	// logic exists for.
+	// cannot see -- it is handed events, never a socket -- and which the
+	// retransmission logic exists for.
 	DropInbound []int
 	// DuplicateInbound names the inbound ordinals delivered twice. A
 	// duplicated ACK must not produce two leases.

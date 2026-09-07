@@ -12,7 +12,8 @@ import (
 // JournalEntry is one Step, recorded.
 //
 // It carries what Step consumed — now, rnd and the event — and nothing else,
-// which is exactly what a replay needs (design document section 2.2).
+// which is exactly what a replay needs: ring 1 consults nothing else, so
+// nothing else has to be recorded to reproduce it.
 //
 // Raw carries the bytes an EvReceived was decoded FROM, not the decoded
 // message, and that is what makes Replay worth running: replaying from a
@@ -179,8 +180,9 @@ type ReplayResult struct {
 //
 // The public entry point requirement T4 asks for, not a test-only hook:
 // replaying a captured exchange offline with no network and no root is the
-// support workflow the design document (section 4.3) says dhcpcd structurally
-// cannot give us.
+// support workflow a client that owns its own sockets and clock cannot give
+// you at all: to reproduce a customer's failure with dhcpcd you need the
+// customer's network.
 //
 // Exact rather than approximate because ring 1 is pure: now and rnd came in as
 // parameters and are recorded, so the replayed machine sees the same inputs in

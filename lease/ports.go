@@ -11,7 +11,7 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// Clock is the two clocks the design document's section 8.2 requires, and they
+// Clock is the two clocks this library requires, and they
 // are not interchangeable: Mono is the interval clock every ring-1 deadline is
 // computed on (RFC 2131 section 3.3), Wall is the absolute clock a lease that
 // must survive a restart is persisted on. Which monotonic clock Mono reads

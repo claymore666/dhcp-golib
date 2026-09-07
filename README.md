@@ -16,6 +16,12 @@ its repository that filters what it copies against a list it keeps privately;
 it does not import this module today. The plugin is GPL-3.0; this library is
 MIT (see `LICENSE`).
 
+Comments throughout the tree call such a consumer **the chassis**: whatever
+process drives the client, installs the addresses it announces, and decides
+what to do when a lease changes or is lost. This library never plays that
+role itself, which is why so many of its bounds are stated as what the chassis
+must do.
+
 ## What this is
 
 Not a DHCP packet library — that slot is occupied (`insomniacslk/dhcp`).
@@ -167,8 +173,9 @@ state machine is `Step(now, rnd, event) -> (state, []action)` with no I/O, no
 clock and no goroutines inside it. Time **and entropy** are parameters —
 both protocols require randomised backoff, so `rnd` has to come in from
 outside or the core stops being deterministic. That is what makes
-the tests instant and the replay debugger possible, and it is not
-negotiable without re-reading the design doc's §2.1.
+the tests instant and the replay debugger possible. It is the one property
+the whole design rests on, and nothing may be added to the pure core that
+breaks it.
 
 ## Layout
 

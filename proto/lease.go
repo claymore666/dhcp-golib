@@ -64,9 +64,9 @@ type Lease struct {
 	T1        Duration
 	T2        Duration
 
-	// Options is every option from the ACK, unparsed. See the requirements
-	// document, section 9 choice 1: a forgotten option is recoverable rather
-	// than gone.
+	// Options is every option from the ACK, unparsed. Kept whole on purpose:
+	// an option this library forgot to model is then recoverable by the
+	// caller rather than gone.
 	Options wire.Options
 }
 
