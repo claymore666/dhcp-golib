@@ -404,8 +404,9 @@ left margin; `on:` a plain scalar, a flow collection closed on its own line, or
 a block whose children are indented deeper than the key; `jobs:` such a block,
 each job a key with no inline value; a job's `runs-on:` in those same value
 forms, its block form a sequence; a job-level `uses:` naming a path ending
-`.yml` or `.yaml`; and no `${{ }}` expression and no YAML anchor or alias in
-any value the scan enumerates. Everything else is refused by name: a flow
+`.yml` or `.yaml`; no `${{ }}` expression anywhere in an `on:` or `runs-on:`
+block, nor in either as a value; and no YAML anchor or alias in a value the
+scan enumerates. Everything else is refused by name: a flow
 collection spread over two lines, a `|` or `>` block scalar in one of those
 places, a tab-indented file, a CRLF file, an anchor, an alias, an expression, a
 `runs-on:` written as a `group:`/`labels:` mapping, and a sequence written at
@@ -417,11 +418,13 @@ refusal writes the workflow in the subset, or widens the subset and its cases
 together. This lane's own workflow is inside it, which the row demonstrates on
 every run rather than claiming here.
 
-Every workflow is floored as well, and per JOB: one the scan read no trigger
-out of, and a job that yields neither a runner label nor exactly one callee,
-fail the suite instead of passing quietly. Taken over the file, or summed over
-the set, either floor is satisfied by a sibling that parses while the job
-beside it goes unread.
+Every workflow is floored as well, and the runner half is per JOB: a workflow
+the scan read no trigger out of, and a job that yields neither a runner label
+nor exactly one callee, fail the suite instead of passing quietly. Neither
+floor may be taken any wider than that. Summed over the set, the trigger floor
+is satisfied by any one file that parses; taken over the file, the runner floor
+is satisfied by any one job that does — and a job whose runner went unread,
+beside a job carrying a `uses:`, is exactly what stayed invisible.
 
 Two things it deliberately does not do: it does not refuse `self-hosted` as
 such — this lane is self-hosted by decision and such a gate would be red on the
