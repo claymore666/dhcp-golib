@@ -69,9 +69,10 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //
 //   - A REPLY FOR ANOTHER CLIENT ON THE LINK IS DISCARDED HERE, at ring 3, on
 //     the IPv6 DESTINATION, and counted as Stats.Foreign. ParseIPv6UDP narrows
-//     on the two ports and nothing else, so on a shared segment — which is the
-//     plugin's bridge and macvlan case, and every container host — every other
-//     client's Advertise and Reply satisfies it. RFC 9915 section 18.3.10 says
+//     on the CLIENT PORT and nothing else — RFC 9915 §7.2 leaves a server's
+//     source port free — so on a shared segment, which is the plugin's bridge
+//     and macvlan case and every container host, every other client's
+//     Advertise and Reply satisfies it. RFC 9915 section 18.3.10 says
 //     where a server sends one: "the server unicasts the Advertise or Reply
 //     message directly to the client using the address in the source address
 //     field from the IP datagram in which the original message was received",
@@ -80,9 +81,20 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //     16's "Clients SHOULD NOT accept multicast messages" without a second
 //     rule, because a multicast destination is not this address either.
 //
-//     RING 1 WOULD HAVE DISCARDED THEM TOO, on the Client Identifier (section
-//     16.3: "the contents of the Client Identifier option do not match the
-//     client's DUID"), so this is not a correctness fix — it is a cost one,
+//     RING 1 WOULD HAVE DISCARDED THEM TOO, AND WHICH RULE FIRES DEPENDS ON
+//     WHAT THE CLIENT IS DOING. A client mid-exchange discards on section
+//     16.3's Client Identifier ("the contents of the Client Identifier option
+//     do not match the client's DUID"); a BOUND client never reaches that
+//     comparison, because a message that matches no outstanding transaction is
+//     discarded first — Machine6 journals "message received while bound with
+//     no exchange in flight: ignored", and a bound client is the state a
+//     container spends nearly all its life in. An earlier version of this
+//     paragraph named only section 16.3, which is the rule that fires in the
+//     rarer of the two cases (MEASURED by the M7c carried-rows review, which
+//     removed the narrowing and read the journal). Both arms are driven at
+//     ring 1: proto's TestAMessageWithNoExchangeInFlightIsDiscarded and
+//     TestTheAdmissionGateNamesEveryDiscard/another_client's_DUID. Either way
+//     this is not a correctness fix — it is a cost one,
 //     and the cost was real: every foreign exchange took a decode, a counter,
 //     a bounded journal entry and a slot in the ring, so on a busy bridge one
 //     container's DHCPv6 traffic pushed another container's own history out of
@@ -123,6 +135,7 @@ var ErrNotAllServers = errors.New("runtime: DHCPv6 send needs All_DHCP_Relay_Age
 //   - NO FRAGMENT REASSEMBLY (see ipv6Upper).
 type PacketTransportV6 struct {
 	f       *os.File
+	ifName  string
 	ifIndex int
 	src     netip.Addr
 	hw      net.HardwareAddr
@@ -222,7 +235,8 @@ func NewPacketTransportV6(ifName string) (*PacketTransportV6, error) {
 	}
 
 	t := &PacketTransportV6{
-		f:       os.NewFile(uintptr(fd), "af_packet_ipv6:"+ifName),
+		f:       os.NewFile(uintptr(fd), socketLabelIPv6),
+		ifName:  ifName,
 		ifIndex: iface.Index,
 		src:     src,
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
@@ -304,7 +318,7 @@ func (t *PacketTransportV6) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.closed.Store(true)
-		err = t.f.Close()
+		err = closeSocket(t.f, t.ifName)
 		t.wg.Wait()
 		close(t.inbound)
 	})

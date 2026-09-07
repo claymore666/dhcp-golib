@@ -81,6 +81,7 @@ var (
 //   - No fragment reassembly (see ParseIPv4UDP).
 type PacketTransport struct {
 	f       *os.File
+	ifName  string
 	ifIndex int
 	src     netip.Addr
 
@@ -146,6 +147,46 @@ type TransportStats struct {
 	Dropped uint64
 }
 
+// The names the four AF_PACKET sockets in this package wear on their os.File.
+//
+// EVERY ONE IS A LITERAL, AND NOTHING BUILDS ONE, which is the whole content
+// of these four constants. os.NewFile's second parameter is a LABEL — the
+// descriptor is already open, nothing is resolved and nothing is opened — but
+// it is the parameter os.File then reports as PathError.Path, and a static
+// analyser reading the signature has no way to know that this one call does
+// not open the string it is handed. CodeQL's go/path-injection reports the
+// interface name reaching it as a path built from caller input, at
+// nd_linux.go and transport_packet6_linux.go; the two v4 sockets had the
+// identical shape and were not reported, which is the same defect with no
+// alert on it.
+//
+// So the caller's string does not reach the call at all. What is lost is the
+// interface in the message os.File writes for itself ("close af_packet_ipv6:
+// bad file descriptor"), and it is given back where this package can put it
+// truthfully: Close wraps its own error with the interface name.
+//
+// The observer is TestNoCallerStringReachesOsNewFile, which parses every
+// os.NewFile call in this package's non-test files and demands a literal.
+const (
+	socketLabelIPv4 = "af_packet"
+	socketLabelARP  = "af_packet_arp"
+	socketLabelND   = "af_packet_nd"
+	socketLabelIPv6 = "af_packet_ipv6"
+)
+
+// closeSocket closes one of those files and says which link it was on.
+//
+// It exists because the label above no longer does. os.File builds its own
+// message from the label — "close af_packet_ipv6: file already closed" — and
+// with the interface out of the label, a process holding four of these sockets
+// on two links would report a failure that names neither.
+func closeSocket(f *os.File, ifName string) error {
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("runtime: close(%s): %w", ifName, err)
+	}
+	return nil
+}
+
 // NewPacketTransport opens an AF_PACKET socket bound to ifName.
 //
 // NON-BLOCKING, handed to os.NewFile so the Go runtime poller owns it: a
@@ -179,7 +220,8 @@ func NewPacketTransport(ifName string) (*PacketTransport, error) {
 	}
 
 	t := &PacketTransport{
-		f:       os.NewFile(uintptr(fd), "af_packet:"+ifName),
+		f:       os.NewFile(uintptr(fd), socketLabelIPv4),
+		ifName:  ifName,
 		ifIndex: iface.Index,
 		src:     netip.AddrFrom4([4]byte{0, 0, 0, 0}),
 		inbound: make(chan lease.Inbound, inboundBuffer),
@@ -304,7 +346,7 @@ func (t *PacketTransport) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.closed.Store(true)
-		err = t.f.Close()
+		err = closeSocket(t.f, t.ifName)
 		t.wg.Wait()
 		close(t.inbound)
 	})

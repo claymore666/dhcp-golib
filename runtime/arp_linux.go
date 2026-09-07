@@ -72,6 +72,7 @@ var ErrARPClosed = errors.New("runtime: ARP socket closed")
 //     Announcement are both "broadcast on the local link".
 type ARPSocket struct {
 	f       *os.File
+	ifName  string
 	ifIndex int
 	hw      net.HardwareAddr
 
@@ -146,7 +147,8 @@ func NewARPSocket(ifName string) (*ARPSocket, error) {
 	}
 
 	s := &ARPSocket{
-		f:       os.NewFile(uintptr(fd), "af_packet_arp:"+ifName),
+		f:       os.NewFile(uintptr(fd), socketLabelARP),
+		ifName:  ifName,
 		ifIndex: iface.Index,
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
 		inbound: make(chan lease.ARPInbound, arpInboundBuffer),
@@ -202,7 +204,7 @@ func (s *ARPSocket) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
-		err = s.f.Close()
+		err = closeSocket(s.f, s.ifName)
 		s.wg.Wait()
 		close(s.inbound)
 	})

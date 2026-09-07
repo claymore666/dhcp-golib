@@ -154,6 +154,7 @@ type NDStats struct {
 //     wire.ErrICMPv6Validity's doc comment draws that line from the other side.
 type NDSocket struct {
 	f       *os.File
+	ifName  string
 	ifIndex int
 	hw      net.HardwareAddr
 
@@ -206,7 +207,8 @@ func NewNDSocket(ifName string) (*NDSocket, error) {
 	}
 
 	s := &NDSocket{
-		f:       os.NewFile(uintptr(fd), "af_packet_ipv6:"+ifName),
+		f:       os.NewFile(uintptr(fd), socketLabelND),
+		ifName:  ifName,
 		ifIndex: iface.Index,
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
 		inbound: make(chan lease.NDInbound, ndInboundBuffer),
@@ -295,7 +297,7 @@ func (s *NDSocket) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
-		err = s.f.Close()
+		err = closeSocket(s.f, s.ifName)
 		s.wg.Wait()
 		close(s.inbound)
 		close(s.frames)
