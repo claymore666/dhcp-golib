@@ -152,7 +152,7 @@ the library was built in, not releases.
 | M4 | The durable lease record: a journal that survives a restart and repairs a torn tail. |
 | M5 | Restart with a remembered address: INIT-REBOOT and the requested-address report. |
 | M6 | Address conflict detection per RFC 5227, in three modes: wait, async, off. |
-| M7 | DHCPv6: the codec, the state machine, the durable record and the runtime. On `main`; not yet wired into the plugin. |
+| M7 | DHCPv6: the codec, the state machine, the durable record and the runtime. On `main` here; the plugin-side wiring is M8's. |
 | M8 | Integration into the docker-net-dhcp plugin. Done in the plugin's repository, not here. |
 
 "Done" means the milestone's tests are in the tree and the verifier passes on
@@ -197,9 +197,9 @@ real socket, renewed at T1 and rebound at T2, given back or refused. Each of
 the things below is a test rather than a claim, and the DHCPv6 half has its own
 list after the IPv4 one.
 
-- **A lease from a real server.** `runtime` re-executes itself into a user and
-  network namespace, wires a veth pair, runs dnsmasq on one end and this
-  library on the other, and asserts the exchange against **dnsmasq's own log** —
+- **A lease from a real server.** `runtime`'s test re-executes itself into a
+  user and network namespace, wires a veth pair, runs dnsmasq on one end and
+  this library on the other, and asserts the exchange against **dnsmasq's own log** —
   DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK, and for the renewal a second
   DHCPREQUEST and DHCPACK with the DHCPDISCOVER count unmoved, and a DHCPNAK
   driven by restarting the server with a pool that no longer holds the leased
@@ -283,8 +283,10 @@ Stated because a bound nobody writes down is read as a guarantee:
   this process's lifetime. Silence from a server is also what a message that
   never left the host produces, and the two are not worth telling apart by
   guessing.
-- **No INFORM.** A caller that already has an address and wants only the
-  parameters is not served; the message type is in `wire` and nothing sends it.
+- **No DHCPINFORM.** An IPv4 caller that already has an address and wants only
+  the parameters is not served: `wire` carries the message type and nothing
+  sends it. DHCPv6's Information-request is a different case and IS sent — it
+  is how a stateless link is served, and it is in the v6 list above.
 - **No address management of any kind.** This is a client, not an IPAM: it
   asks a server for a lease and reports what it got. Choosing which address to
   ask for, or allocating one without a server, is the caller's.
