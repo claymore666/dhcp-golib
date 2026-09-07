@@ -410,8 +410,13 @@ SELF_DRIVE_SURVIVES_N=5
 DOC_NUMBER_CEILING=66
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
-# 77 scenarios MANIFEST_SCENARIOS now declares: 623s, from the verify-oracle
-# row's own figure on a PASS. The population moved by two and the netns row
+# 77 scenarios MANIFEST_SCENARIOS declared then: 623s, from the verify-oracle
+# row's own figure on a PASS. D36 (2026-09-06) added a 78th,
+# oracle-account-not-last-line, which sleeps the floor plus one like the rest
+# of the fabricating-stub family, so the true figure is now higher again and
+# 623 is further under it. It is NOT raised, for the reason the paragraph
+# below already gives: this is a low-water mark, understating it is the safe
+# direction, and raising it feeds back into every sleeping stub. The population moved by two and the netns row
 # every full-scope scenario runs moved 53s -> 78s, which is where the rest of
 # the increase over the 440s above comes from.
 #
@@ -495,6 +500,7 @@ MANIFEST_SCENARIOS=(
 	oracle-skip-on-unchanged-arbiter
 	oracle-skip-refused-when-scripts-change
 	oracle-skip-needs-a-real-pass
+	oracle-account-not-last-line
 	netns-row-empty-domain
 	netns-row-control
 	netns-row-partition-broken
@@ -507,7 +513,7 @@ MANIFEST_SCENARIOS=(
 	v6-fixture-mode-drift
 	v6-ra-absent
 )
-MANIFEST_SCENARIOS_N=77
+MANIFEST_SCENARIOS_N=78
 
 # The scenarios that run the subject at the LIGHT scope: --inner --light, which
 # is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
@@ -577,12 +583,13 @@ MANIFEST_LIGHT_SCENARIOS=(
 	oracle-skip-on-unchanged-arbiter
 	oracle-skip-refused-when-scripts-change
 	oracle-skip-needs-a-real-pass
+	oracle-account-not-last-line
 	readme-usage-drifts-in-the-readme
 	readme-usage-drifts-in-the-example
 	oracle-scope-fabricated
 	self-check-skip-arm-deleted
 )
-MANIFEST_LIGHT_SCENARIOS_N=40
+MANIFEST_LIGHT_SCENARIOS_N=41
 
 # What each scenario must OBSERVE. One entry per scenario, same order.
 #
@@ -716,6 +723,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"oracle-skip-on-unchanged-arbiter|zero|verify-oracle:SKIPPED|which already produced ORACLE PASS"
 	"oracle-skip-refused-when-scripts-change|zero|verify-oracle:PASS|oracle ran after scripts changed"
 	"oracle-skip-needs-a-real-pass|nonzero|verify-oracle:FAIL|its answer is not the account of a run"
+	"oracle-account-not-last-line|zero|verify-oracle:PASS|the account is not the last line this oracle printed"
 	"netns-row-empty-domain|nonzero|netns-suite:FAIL|the netns population is UNMEASURED"
 	"netns-row-control|zero|netns-suite:PASS|namespaced test s each reported its own verdict"
 	"netns-row-partition-broken|nonzero|netns-suite:FAIL|reported no verdict for"
@@ -728,7 +736,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"v6-ra-absent|nonzero|netns-suite:FAIL|TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne"
 	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=77
+MANIFEST_SCENARIO_CONTRACTS_N=78
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members

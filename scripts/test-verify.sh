@@ -1671,6 +1671,46 @@ sc_oracle_skip_needs_a_real_pass() {
 	[ "$RC" -ne 0 ] || note "the run holding a hand-written stamp passed"
 }
 
+sc_oracle_account_not_last_line() {
+	# CARRIED REVIEW ROW R1, 2026-09-06, and the shape had no observer at all.
+	# verify.sh built this row's detail from `tail -1` of the oracle's output
+	# while the CI job's last step greps that detail for the account's own
+	# spelling. Any line the oracle prints AFTER its account therefore turned a
+	# GENUINE GREEN run into a red job, diagnosed as a skipped oracle — a state
+	# that had not occurred. Two ends, no tie between them, and no case here
+	# drove a passing oracle whose last line is not its account.
+	#
+	# The plant is that one line. Everything else is the fabricating stub the
+	# oracle already uses for a run the row ACCEPTS, sleeping past the floor.
+	local d="$1" account
+	copy_tree "$d"
+	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" \
+		"the account is not the last line this oracle printed"
+	# The anchor is the account line the stub just wrote, which is unique in
+	# the file because the marker is. The trailer goes between it and the
+	# stub's exit, where a real oracle would put a summary or a warning.
+	account="echo \"$MANIFEST_ORACLE_PASS_PREFIX ${#MANIFEST_SCENARIOS[@]} scenarios, the account is not the last line this oracle printed\""
+	edit "$d/scripts/test-verify.sh" "$account" "$account
+echo \"one more line, printed after the account and before the exit\""
+	run_verify_outer "$d"
+	[ "$RC" -eq 0 ] ||
+		note "a run whose oracle printed one line after a perfect account did not pass: exit $RC"
+	[ "$(row verify-oracle)" = PASS ] ||
+		note "an accepted oracle with a trailing line did not pass its row: $(row verify-oracle) — $(why verify-oracle)"
+	# THE ROW UNDER TEST. The detail must be the ACCOUNT, not the last thing
+	# printed: the job greps it for the account's spelling, and that spelling
+	# is verify.manifest.sh's to state.
+	case "$(why verify-oracle)" in
+	"$MANIFEST_ORACLE_PASS_PREFIX"*) ;;
+	*) note "the row's detail is the line AFTER the account, not the account: $(why verify-oracle)" ;;
+	esac
+	# And the trailer must not have become the detail by any other route.
+	case "$(why verify-oracle)" in
+	*"printed after the account"*)
+		note "the oracle's trailing line reached the row detail: $(why verify-oracle)" ;;
+	esac
+}
+
 # ------------------------------------------- the netns row (item 3, Q8) ----
 
 sc_netns_row_empty_domain() {
