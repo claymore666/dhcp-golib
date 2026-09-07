@@ -13,8 +13,8 @@ namespaced dnsmasq tests under a ceiling and a timeout of their own, a check
 that the flags each of those runs with carry a hang timeout that exceeds its
 ceiling and that each invocation expands its own flag array, a check that every
 test function DECLARED in a `_test.go` file actually ran, a citation check, a
-byte-for-byte comparison of the README's Usage block against `ExampleClient`,
-and its own oracle.
+byte-for-byte comparison of every fenced block in the README's Usage section
+against the Example function it names, and its own oracle.
 
 **No row can report PASS on an exit status alone.** A row records PASS only by
 also stating how many things it examined, and a count that is absent or zero is
