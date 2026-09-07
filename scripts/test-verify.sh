@@ -520,6 +520,8 @@ verify_const() {
 ceiling_tree() {
 	copy_tree "$1"
 	cat >"$1/proto/slow_test.go" <<'GO'
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
 package proto
 
 import (
@@ -847,10 +849,25 @@ sc_suite_args_detached() {
 # //go:build line get it extended rather than a second line, which would be a
 # gofmt failure and would attribute the run to the wrong row.
 disable_tests() {
-	local d="$1" glob="$2" f n=0
+	# WHERE the constraint goes is load-bearing, and D33 moved it. Every file
+	# in this tree opens with the licence header, so prepending the constraint
+	# to line 1 now puts it ABOVE that header — which gofmt rejects and which
+	# leaves the header on line 3, where the header row correctly refuses it.
+	# The constraint goes where runtime/arp_other.go puts it: under the header
+	# and its blank line, before the package clause. A file that already
+	# carries a constraint has ` && ignore` appended to it, wherever it sits.
+	local d="$1" glob="$2" f n=0 at
 	while IFS= read -r f; do
-		if head -1 "$f" | grep -q '^//go:build'; then
-			sed -i '1s|$| \&\& ignore|' "$f"
+		at="$(grep -n '^//go:build' "$f" | head -1 | cut -d: -f1)"
+		if [ -n "$at" ]; then
+			sed -i "${at}s|$| \&\& ignore|" "$f"
+		elif head -1 "$f" | grep -q '^// Copyright'; then
+			# The blank line matters as much as the constraint: without it the
+			# licence header becomes the doc comment of the constraint, which is
+			# what the header row refuses.
+			sed -i '1a\
+\
+//go:build ignore' "$f"
 		else
 			printf '//go:build ignore\n\n' | cat - "$f" >"$f.t" && mv "$f.t" "$f"
 		fi

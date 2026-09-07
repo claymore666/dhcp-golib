@@ -1325,20 +1325,26 @@ if [ "$INNER" -eq 0 ]; then
 	mkdir -p "$sd_dir/tree"
 	tar -cf - -C "$ROOT" --exclude=./.git . | tar -xf - -C "$sd_dir/tree"
 
+	# Each plant carries the D33 licence header, because unit-suite is in
+	# SELF_DRIVE_SURVIVES and internal/publication fails it on a source file
+	# without one. A plant that reddens a row it is not testing measures the
+	# plant, not the arbiter. The gofmt plant is still unformatted with the
+	# header on it — the header is a comment and the malformed function is not.
+	#
 	# One plant per row in SELF_DRIVE_REDDENS, each chosen so it cannot cascade
 	# into the rows in SELF_DRIVE_SURVIVES: an unformatted but compiling file,
 	# an unused variable appended to a script that is already linted, a comment
 	# citing a test that does not exist, and a number an instrument owns.
-	printf 'package wire\n\nfunc  selfDriveIsNotFormatted( ) {}\n' >"$sd_dir/tree/wire/selfdrive_plant.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage wire\n\nfunc  selfDriveIsNotFormatted( ) {}\n' >"$sd_dir/tree/wire/selfdrive_plant.go"
 	printf '\nself_drive_unused_variable=1\n' >>"$sd_dir/tree/scripts/sweep-doc-numbers.sh"
 	printf '\n// See TestSelfDriveCitedButNeverWritten.\n' >>"$sd_dir/tree/wire/selfdrive_plant.go"
 	printf '\nCoverage today is 22 of the 102 allowlisted identifiers.\n' >>"$sd_dir/tree/README.md"
-	printf 'package proto\n\nfunc selfDriveUnreachable() int {\n\treturn 0\n\treturn 1\n}\n' >"$sd_dir/tree/proto/selfdrive_vet.go"
-	printf 'package proto\n\nimport _ "net"\n' >"$sd_dir/tree/proto/selfdrive_import.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nfunc selfDriveUnreachable() int {\n\treturn 0\n\treturn 1\n}\n' >"$sd_dir/tree/proto/selfdrive_vet.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nimport _ "net"\n' >"$sd_dir/tree/proto/selfdrive_import.go"
 	# A _test.go that names the clock without DECLARING a test: T2 must see it,
 	# and the declared-test count must not move, or this plant would redden the
 	# unit-suite row it is not testing.
-	printf 'package proto\n\nimport "time"\n\nvar selfDriveClockBait = time.Sleep\n' >"$sd_dir/tree/proto/selfdrive_clock_test.go"
+	printf '// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.\n\npackage proto\n\nimport "time"\n\nvar selfDriveClockBait = time.Sleep\n' >"$sd_dir/tree/proto/selfdrive_clock_test.go"
 
 	sd_out="$(cd "$sd_dir/tree" && ./verify.sh --inner 2>&1 || true)"
 	sd_row() { printf '%s\n' "$sd_out" | awk -v n="$1" '$1 == n { print $2; f = 1 } END { if (!f) print "ABSENT" }'; }
