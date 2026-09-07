@@ -294,7 +294,13 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # them carries it in the tree — except ExampleClient6, which carries the
 # Example prefix instead and which testroster counts for the same reason
 # `go test -list` reports it.
-MIN_DECLARED_TESTS=615
+# ROUND 2 OF THE SAME SWEEP: 615 -> 616. One added, the observer for the
+# escape the round-1 scan could not see — two workflows, each innocent alone,
+# composed by a `uses:` edge so a fork's pull request reaches a runner of ours:
+#
+#   internal/publication/workflows_test.go (1)  AForkTriggerReachesThe
+#     WorkflowsItCalls
+MIN_DECLARED_TESTS=616
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

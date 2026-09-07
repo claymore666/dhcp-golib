@@ -381,16 +381,32 @@ the cost of the arrangement rather than a gap in it: somebody who can write
 here pushes the branch to this repository, or dispatches the workflow, having
 read the diff first. A pull request never buys itself a run.
 
-**The observer is `internal/publication`**, in the unit suite. It fails if any
-workflow under `.github/workflows/` has BOTH a `runs-on` naming a label that is
-not one of GitHub's hosted images AND a `pull_request` or `pull_request_target`
-trigger, or if any workflow reads `secrets.` at all. Two things it deliberately
-does not do: it does not refuse `self-hosted` as such — this lane is
-self-hosted by decision and such a gate would be red on the day it was written
-— and it does not know who owns a runner, only that a label is not one GitHub
-hosts. Its bounds are stated in the file: it reads the workflow as text, so a
-trigger or a runner label reached through an expression, an anchor or an
-included file is outside what it can see.
+**The observer is `internal/publication`**, in the unit suite. It fails if the
+workflow SET puts a runner whose label is not one of GitHub's hosted images
+within reach of a `pull_request` or `pull_request_target` trigger — in one
+file, or across two, because a workflow called with `uses:` runs its jobs on
+the calling repository's runners and so inherits its caller's triggers. It also
+fails if any workflow hands secrets over, whether by naming one (`secrets.NAME`)
+or by `secrets: inherit`, which names none.
+
+It reads the triggers where GitHub reads them: the direct children of the `on:`
+block, at whatever column the first child sets, in block, sequence or flow
+form. An earlier version accepted a column no deeper than two, so an `on:`
+block indented four spaces parsed to no triggers at all and passed — a
+predicate that read a position as a property. Every file is also floored on its
+own: a workflow the scan read no trigger out of, or neither a runner nor a
+call, fails the suite instead of passing quietly. Summed over the set that
+floor is satisfied by any one file that parses, and the file that parses to
+nothing is the one it exists to catch.
+
+Two things it deliberately does not do: it does not refuse `self-hosted` as
+such — this lane is self-hosted by decision and such a gate would be red on the
+day it was written — and it does not know who owns a runner, only that a label
+is not one GitHub hosts. Its bounds are stated in the file: it reads the
+workflow as text, so a trigger or a runner label reached through an expression
+or a YAML anchor is outside what it can see. A `uses:` edge it cannot follow —
+a workflow in another repository, or a local path naming no file here — is a
+failure whenever the calling workflow carries a fork trigger, not an omission.
 
 Two consequences worth stating rather than discovering:
 
