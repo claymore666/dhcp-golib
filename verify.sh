@@ -1198,8 +1198,9 @@ fi
 # They are OUTER-only, like the oracle and the self-drive: an inner run is one
 # of sixty-odd copies of this tree, and sixty-odd sets of namespaces and
 # dnsmasq processes is not a cost the oracle can carry. What that leaves open
-# is stated in the handover: this row is driven by outer scenarios only — which
-# ones is written down in MANIFEST_SCENARIO_CONTRACTS and not counted here —
+# is stated rather than argued away: this row is driven by outer scenarios
+# only — which ones is written down in MANIFEST_SCENARIO_CONTRACTS and not
+# counted here —
 # and a netns test failing for a PRODUCT reason is driven by the real run.
 #
 # The row's own domain check is set equality against the roster, not a count:

@@ -31,11 +31,17 @@ package wire
 //
 // The client was a throwaway program that called this package's own encoders,
 // sent from a plain UDP socket bound to fe80::e849:4eff:fee5:31ed%v6cli port
-// 546, and printed what came back. dnsmasq answered it: its log carries
-// DHCPSOLICIT, DHCPADVERTISE, DHCPREQUEST and DHCPREPLY for this exchange, and
-// the handover quotes those lines verbatim. That is the round-trip proof for
-// the encoder — a server nobody here wrote parsed our bytes and replied to
-// them — and the bytes below are the decoder's fixture.
+// 546, and printed what came back. dnsmasq answered it, and these are the
+// four transaction lines of its own log, verbatim:
+//
+//	dnsmasq-dhcp: 1715004 DHCPSOLICIT(v6srv) 00:03:00:01:ea:49:4e:e5:31:ed
+//	dnsmasq-dhcp: 1715004 DHCPADVERTISE(v6srv) fd00:99::183 00:03:00:01:ea:49:4e:e5:31:ed
+//	dnsmasq-dhcp: 5070447 DHCPREQUEST(v6srv) 00:03:00:01:ea:49:4e:e5:31:ed
+//	dnsmasq-dhcp: 5070447 DHCPREPLY(v6srv) fd00:99::183 00:03:00:01:ea:49:4e:e5:31:ed
+//
+// That is the round-trip proof for the encoder — a server nobody here wrote
+// parsed our bytes and replied to them — and the bytes below are the
+// decoder's fixture.
 //
 // WHAT THIS CANNOT SEE, stated rather than left to be discovered. Nothing
 // re-runs the capture: it is a table of literals, so a change in dnsmasq's

@@ -53,8 +53,8 @@ func TestAllEventKindsIsEveryDeclaredKind(t *testing.T) {
 	}
 }
 
-// TestAV6RecordIsRefusedWithoutTheDUIDAndIAID is the brief's "written once,
-// refused empty", and RFC 9915 section 11's reason: the DUID "SHOULD NOT change
+// TestAV6RecordIsRefusedWithoutTheDUIDAndIAID holds the record to "written
+// once, refused empty", and RFC 9915 section 11's reason: the DUID "SHOULD NOT change
 // over time if at all possible".
 //
 // THE v4 ROW IS THE PRESERVATION CONTROL. A v4 record identifies its client by

@@ -258,7 +258,8 @@ type acd struct {
 
 	// addr is the address being probed or defended: section 2.4's "(one of)
 	// the host's own IP address(es) configured on that interface", narrowed
-	// to the one this client owns. See the bound in the handover.
+	// to the one this client owns. The BOUND on isOurs says what that
+	// narrowing costs.
 	addr netip.Addr
 
 	// hw is the LINK's hardware address (Params.LinkHWAddr): section 2.1.1's

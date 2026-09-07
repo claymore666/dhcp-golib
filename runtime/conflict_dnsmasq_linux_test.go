@@ -593,8 +593,8 @@ func addrInLog(line, prefix string) (string, bool) {
 	return fields[0], true
 }
 
-// quote renders the log lines this milestone reports verbatim, so the excerpt
-// in the handover is the test's own output and not a transcription.
+// quote renders the log lines this milestone reports verbatim, so an excerpt
+// quoted anywhere else is the test's own output and not a transcription.
 func (f *conflictFixture) quote(t *testing.T, what string) {
 	t.Helper()
 	// The transaction lines only. dnsmasq's --log-dhcp prose ("available DHCP
@@ -889,8 +889,9 @@ func TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic(t *testing.T) {
 //	U(0,1) + U(1,2) + U(1,2) + 2   =  4.0 s at best, 5.5 s on average, 7.0 s
 //	                                  at worst.
 //
-// The brief that commissioned this milestone said "≈3 s (worst ≈5 s)". That
-// is low, and the difference is not an implementation choice: it is the two
+// This delay was estimated at "≈3 s (worst ≈5 s)" before it was derived from
+// the RFC. That estimate is low, and the difference is not an implementation
+// choice: it is the two
 // inter-probe gaps, which the RFC makes PROBE_MIN..PROBE_MAX and not zero.
 // The MEASURED number below is what a container will actually wait, and it is
 // the reason D23's async mode exists.

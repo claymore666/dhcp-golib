@@ -15,7 +15,7 @@ import (
 // different packages and Go has no way to share a fixture between two test
 // binaries without making it part of the library's exported surface. The
 // duplication is bounded (four literals) and it is the direction that keeps
-// the library free of test data; the handover records it.
+// the library free of test data.
 //
 // WHY THEY ARE HERE AT ALL: design §A.4's Trap 2 in its pure-machine form. A
 // test that drove Machine6 with messages this library's own encoder built

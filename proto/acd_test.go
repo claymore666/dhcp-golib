@@ -658,8 +658,8 @@ func adversarialARP() []arpCase {
 	}
 }
 
-// TestEveryPhaseAndPacketClass is the table the brief asks for: every (ACD
-// phase, ARP packet class) pair, in every mode that has phases.
+// TestEveryPhaseAndPacketClass is the exhaustive table: every (ACD phase, ARP
+// packet class) pair, in every mode that has phases.
 //
 // THE EXPECTED VERDICTS ARE WRITTEN PER PHASE and not per packet, because that
 // is the thing that changes: section 2.1.1's rules apply during the probe
@@ -864,8 +864,10 @@ func TestOurOwnProbesDoNotTripTheProbeWindow(t *testing.T) {
 
 // ------------------------------------------------------- the consequence --
 
-// TestAConflictInTheProbeWindowDeclinesAndReportsNoLoss is defeat row M6-7 and
-// the brief's "say what IS emitted so the chassis can count it".
+// TestAConflictInTheProbeWindowDeclinesAndReportsNoLoss says what a conflict
+// inside the probe window EMITS, so a caller can count it rather than infer
+// it: a DHCPDECLINE naming the probed address, an ActFailed{ReasonConflict},
+// a restart timer, and NO ActLeaseLost — nothing was ever announced to lose.
 func TestAConflictInTheProbeWindowDeclinesAndReportsNoLoss(t *testing.T) {
 	m, acts := acdMachine(t, ConflictWait)
 	delay, _ := armedACD(acts)

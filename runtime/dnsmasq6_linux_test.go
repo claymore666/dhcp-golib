@@ -147,8 +147,10 @@ type v6Mode struct {
 	// advertises says whether this mode emits Router Advertisements at all.
 	advertises bool
 	// managed and other are RFC 4861 section 4.2's M and O flags as this mode
-	// sets them. MEASURED on this box against dnsmasq 2.91; the measurements
-	// and the tcpdump lines they came from are in the handover.
+	// sets them, measured against dnsmasq 2.91. They are not a transcription of
+	// a capture taken once: assertMode reads both flags off a real Router
+	// Advertisement on the link on every run, and fails the mode whose wire
+	// disagrees with the two values declared here.
 	managed, other bool
 	// autonomous is section 4.6.2's A flag on the Prefix Information option.
 	// It is what separates a link where SLAAC is offered from one where the

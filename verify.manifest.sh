@@ -60,8 +60,8 @@ MANIFEST_ROWS_N=16
 # The rows an INNER run does not have. --inner exists so the oracle's copies do
 # not re-enter the oracle; netns-suite joined the list on 2026-09-05 because
 # sixty-odd copies of this tree each raising real namespaces and a real dnsmasq
-# is not a cost the oracle can carry. What that leaves undriven is stated in
-# the handover, not argued away: this row is driven by OUTER scenarios only,
+# is not a cost the oracle can carry. What that leaves undriven is stated
+# rather than argued away: this row is driven by OUTER scenarios only,
 # and which ones is read off MANIFEST_SCENARIO_CONTRACTS rather than counted
 # in a sentence here.
 MANIFEST_OUTER_ROWS=(
@@ -255,7 +255,7 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # RFC 9915 §7.2 leaves a server's source port free and the parse no longer
 # checks it; the name is corrected in the M7a list above rather than left
 # naming a function that is gone. Eighteen added, per file, each the observer
-# for one of the four defects the round was briefed on or for a carried row:
+# for one of the four library defects that round fixed or for a carried row:
 #
 #   proto/machine6_declinehint_test.go   (7)  TheSolicitAfterADeclineDoesNot
 #     AskForTheDeclinedAddress, ASecondDeclineDoesNotBringTheHintBack,

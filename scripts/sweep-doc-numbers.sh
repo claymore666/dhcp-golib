@@ -8,7 +8,7 @@
 # re-reading. Round 10 found two defects in the METHOD rather than the result,
 # and this file answers both.
 #
-#   1. The sweep was a command in a handover document. Nothing re-ran it, so
+#   1. The sweep was a command written down in a report. Nothing re-ran it, so
 #      round 9 wrote a fresh derived number into docs/gates.md on the same day
 #      it removed thirteen. "Closed by removal" is a claim about the future and
 #      needs something that goes red.

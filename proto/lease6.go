@@ -186,7 +186,7 @@ func (l Lease6) PreferredUntil() (Instant, bool) {
 // with.
 //
 // THE 0.5/0.8 FIGURES ARE A RECOMMENDATION TO THE SERVER, NOT A CLIENT
-// DEFAULT, and the difference is stated because a brief citation is a claim.
+// DEFAULT, and the difference is stated because a citation is a claim.
 // §21.4: "The server selects the T1 and T2 values to allow the client to
 // extend the lifetimes of any addresses in the IA_NA before the lifetimes
 // expire, even if the server is unavailable for some short period of time.
