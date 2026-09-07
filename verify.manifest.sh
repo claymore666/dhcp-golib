@@ -300,7 +300,14 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #
 #   internal/publication/workflows_test.go (1)  AForkTriggerReachesThe
 #     WorkflowsItCalls
-MIN_DECLARED_TESTS=616
+# ROUND 3 OF THE SAME SWEEP: 616 -> 617. One added, and it is the SET-level
+# half of the round-2 escapes: two workflows read together, where a shape the
+# reader could not enumerate used to be read as an absence and a sibling file
+# held the floor up:
+#
+#   internal/publication/workflows_test.go (1)  TheWorkflowScanRefusesASet
+#     ItCannotRead
+MIN_DECLARED_TESTS=617
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

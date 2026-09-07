@@ -11,6 +11,7 @@
 package publication
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -58,14 +59,40 @@ var secretsInherit = regexp.MustCompile(`(?m)^[ \t]*secrets:[ \t]*inherit[ \t]*$
 var workflowRef = regexp.MustCompile(`^\s*uses:\s*['"]?([^'"\s@]+\.ya?ml)(@[^'"\s]+)?['"]?\s*$`)
 
 // workflow is what this file can see of one workflow file.
+//
+// refusals is the field that changed the shape of this check. A file the
+// reader could not read is not a file with nothing in it, and until round 3
+// those two were the same value.
 type workflow struct {
 	name     string
 	triggers []string
 	runners  []string
 	secrets  []string
 	calls    []string
+	jobs     []job
+	// refusals names every place this file left the subset the reader
+	// understands, with the line. A refusal is RED. It is never an absence.
+	refusals []string
 	// via names, per inherited trigger, the workflow the trigger came from.
 	via map[string]string
+}
+
+// job is one entry under `jobs:`, and the unit the non-vacuity floor is taken
+// over. Taken per FILE the floor was satisfied by one job that parsed while a
+// sibling's runner went unread, which is the escape round 2 shipped.
+type job struct {
+	name    string
+	line    int
+	runners []string
+	calls   []string
+}
+
+// refuse records that this file left the subset, naming the line, what was
+// read there and what was refused. BOTH halves, because a diagnostic that says
+// only that something is missing sends the reader to the wrong question: round
+// 2 reported "no runs-on label" for a file that plainly had one.
+func (w *workflow) refuse(line int, read, why string) {
+	w.refusals = append(w.refusals, fmt.Sprintf("%s:%d: read %q; refused: %s", w.name, line, read, why))
 }
 
 // forkReachableSelfHosted reports whether this workflow puts a runner that is
@@ -144,22 +171,73 @@ var (
 	runsOnKey  = regexp.MustCompile(`^\s*runs-on:(.*)$`)
 	mappingKey = regexp.MustCompile(`^\s*['"]?([A-Za-z_][A-Za-z0-9_-]*)['"]?:`)
 	seqItem    = regexp.MustCompile(`^\s*-\s*(.+)$`)
+	jobsKey    = regexp.MustCompile(`^(?:jobs|"jobs"|'jobs'):(.*)$`)
 )
 
-// scanWorkflow reads one workflow as TEXT.
+// scanWorkflow reads one workflow as TEXT, over a STATED SUBSET of YAML, and
+// REFUSES everything outside it.
 //
-// BOUNDS, stated here rather than discovered: it reads the file as lines, so a
-// trigger or a runner label that arrives through an expression, a YAML anchor,
-// or a value this repository does not write today is outside what it can see.
-// It is a refusal of the shape that can be written down, not a proof that no
-// other shape exists. Anything it cannot parse is left OUT of the runner and
-// trigger sets, so the failure direction of a parse it does not understand is
-// silence — which is why the callers below floor both sets PER FILE rather
-// than trusting them, and why a `uses:` edge it cannot follow is a failure
-// rather than an omission.
+// Two review rounds found the same defect class here: a shape this reader did
+// not understand parsed to nothing, and a file that parses to nothing agrees
+// with every property asserted over it. Enumerating the shapes that had been
+// found is what produced the second instance. So the domain is closed instead:
+// anything the reader cannot enumerate is refused by name and line, never read
+// as absence. A stranger's workflow written in a form this reader does not
+// support fails the gate and says which form; it is then written in the
+// subset. That is what makes the universal in docs/verifying.md true by
+// construction rather than by luck, and it is why the lane's own verify.yml
+// being inside the subset is proved on every run rather than asserted here.
+//
+// THE SUBSET:
+//
+//  1. the file carries no carriage return, and no line's indentation carries a
+//     tab;
+//  2. the root is a block mapping whose keys sit at column 0;
+//  3. `on:` is a plain scalar, or a flow sequence or flow mapping CLOSED on
+//     its own line, or a block whose children are indented DEEPER than the key
+//     and are each a `key:` or a `- entry`;
+//  4. `jobs:` is such a block, each child a job key with no inline value and a
+//     body indented deeper than it;
+//  5. a job's `runs-on:` takes the value forms of clause 3, its block form
+//     being a sequence; a job-level `uses:` names a path ending `.yml` or
+//     `.yaml`;
+//  6. no `${{` expression in an `on:` or `runs-on:` region, and no YAML anchor
+//     or alias in a value this reader enumerates.
+//
+// Each clause EXCLUDES ordinary YAML, and every excluded shape is a refusal
+// rather than a silence: a flow collection spread over two lines, a `|` or `>`
+// block scalar in one of those positions, a tab-indented file, a CRLF file, an
+// anchor, an alias, an expression, `runs-on:` written as a mapping
+// (`group:`/`labels:`), and a sequence written at its key's own column — which
+// is the round-2 escape, ordinary YAML that GitHub honours and this reader
+// read as zero runners.
+//
+// WHAT IS STILL NOT READ, stated rather than discovered. The secret scan is a
+// pair of regexes over the whole text and is not structural, so a secret
+// reached through a composite action is outside it. hostedRunner reads a
+// LABEL, not an owner. A top-level key other than `on:` and `jobs:` is skipped
+// with its whole block, so an anchor DEFINED there is not itself refused — the
+// alias that carries it into a value the reader enumerates is. And a refused
+// file is not a scanned file: the refusal is all this reader says about it.
 func scanWorkflow(name, text string) workflow {
 	w := workflow{name: name}
+
+	// Clause 1, spelled ONCE for the file rather than once per pattern. A
+	// `\r` is neither space nor tab, so it defeats every `$`-anchored regex
+	// here. `secrets: inherit` is the pattern that noticed in round 2; the
+	// next pattern added would not have.
+	if i := strings.IndexByte(text, '\r'); i >= 0 {
+		w.refuse(1+strings.Count(text[:i], "\n"), "a carriage return", "this reader anchors on the line end, so a CRLF file is refused whole rather than read half right")
+		return w
+	}
+
 	lines := strings.Split(text, "\n")
+	for i, ln := range lines {
+		if strings.ContainsRune(ln[:len(ln)-len(strings.TrimLeft(ln, " \t"))], '\t') {
+			w.refuse(i+1, strings.TrimSpace(ln), "a tab in the indentation; every column here is counted in spaces, and a tab makes each of them a guess")
+			return w
+		}
+	}
 
 	// Comments are stripped before the secret scan, so a `secrets.` written in
 	// prose is not reported as a read; a comment cannot expand an expression.
@@ -175,79 +253,287 @@ func scanWorkflow(name, text string) workflow {
 		w.secrets = append(w.secrets, "secrets: inherit")
 	}
 
+	// Clause 2. Only column 0 is a root key, and a top-level key that is
+	// neither `on:` nor `jobs:` takes its whole block with it.
 	for i := 0; i < len(lines); i++ {
 		line := stripComment(lines[i])
-
+		if strings.TrimSpace(line) == "" || indent(line) != 0 {
+			continue
+		}
 		if m := onKey.FindStringSubmatch(line); m != nil {
-			if rest := strings.TrimSpace(m[1]); rest != "" {
-				w.triggers = append(w.triggers, scalarNames(rest)...)
-				continue
-			}
-			// The block form. GitHub reads the DIRECT CHILDREN of `on:`,
-			// whatever column they start in; YAML fixes that column at the
-			// first child and every sibling shares it. So the child column is
-			// MEASURED off the first child line. A `<=` against a constant
-			// reads a POSITION as a property: a four-space `on:` block then
-			// parses to no triggers at all, and a file that parses to nothing
-			// is refused by nothing.
-			child := -1
-			for j := i + 1; j < len(lines); j++ {
-				sub := stripComment(lines[j])
-				if strings.TrimSpace(sub) == "" {
-					continue
-				}
-				in := indent(sub)
-				if child < 0 {
-					if in == 0 {
-						break
-					}
-					child = in
-				}
-				if in < child {
-					break
-				}
-				if in > child {
-					continue
-				}
-				if k := seqItem.FindStringSubmatch(sub); k != nil {
-					w.triggers = append(w.triggers, scalarNames(k[1])...)
-					continue
-				}
-				if k := mappingKey.FindStringSubmatch(sub); k != nil {
-					w.triggers = append(w.triggers, k[1])
-				}
-			}
+			w.readOn(lines, i, m[1])
 			continue
 		}
-
-		if m := workflowRef.FindStringSubmatch(line); m != nil {
-			w.calls = append(w.calls, m[1])
+		if m := jobsKey.FindStringSubmatch(line); m != nil {
+			w.readJobs(lines, i, m[1])
 			continue
-		}
-
-		if m := runsOnKey.FindStringSubmatch(line); m != nil {
-			if rest := strings.TrimSpace(m[1]); rest != "" {
-				w.runners = append(w.runners, scalarNames(rest)...)
-				continue
-			}
-			base := indent(line)
-			for j := i + 1; j < len(lines); j++ {
-				sub := stripComment(lines[j])
-				if strings.TrimSpace(sub) == "" {
-					continue
-				}
-				if indent(sub) <= base {
-					break
-				}
-				if k := seqItem.FindStringSubmatch(sub); k != nil {
-					w.runners = append(w.runners, scalarNames(k[1])...)
-					continue
-				}
-				break
-			}
 		}
 	}
 	return w
+}
+
+// enumerateValue is the whole value grammar of clause 3, and it is a WHITELIST:
+// a plain scalar, or a flow collection closed on its own line. Everything else
+// returns a reason. The default arm of a whitelist is a refusal, so a YAML form
+// nobody here thought of fails closed instead of parsing to something
+// plausible — which is the property the two escapes turned on.
+//
+// One function for both `on:` and `runs-on:`, so the two cannot drift into
+// different subsets while one paragraph describes both — and ONE arm per
+// refusal class, so removing a class is one edit here rather than a class
+// still refused, by accident, through a second arm that meant something else.
+func enumerateValue(v string) ([]string, string) {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "":
+		return nil, "an empty value"
+	case strings.Contains(v, "${{"):
+		return nil, "an expression; this reader does not evaluate one and will not guess what it expands to"
+	case strings.ContainsAny(v, "&*"):
+		return nil, "a YAML anchor or alias; this reader does not expand one"
+	case strings.HasPrefix(v, "|"), strings.HasPrefix(v, ">"):
+		return nil, "a block scalar; this reader reads a value written on its own line"
+	case strings.HasPrefix(v, "["):
+		if !strings.HasSuffix(v, "]") {
+			return nil, "a flow sequence that does not close on its line; this reader does not join lines"
+		}
+	case strings.HasPrefix(v, "{"):
+		if !strings.HasSuffix(v, "}") {
+			return nil, "a flow mapping that does not close on its line; this reader does not join lines"
+		}
+	case strings.ContainsAny(v, "[]{}"):
+		return nil, "a value that is neither a plain scalar nor a flow collection"
+	}
+	names := scalarNames(v)
+	if len(names) == 0 {
+		return nil, "a value no name could be read out of"
+	}
+	return names, ""
+}
+
+// blockRegion gives the column the direct children of the key at lines[key]
+// sit in, and the index the block ends at, or the reason the block is outside
+// the subset.
+//
+// A block's children are indented DEEPER than its key. A sequence written at
+// the key's own column is ordinary YAML — `runs-on:` with `- self-hosted`
+// below it in the same column is two labels to GitHub, verified against a real
+// parser in the round-2 record — and this reader does not enumerate it, so it
+// is REFUSED. Round 2 read it as zero runners, and one unrelated `uses:` job
+// then satisfied the file's floor.
+func blockRegion(lines []string, key, keyIndent int) (child, end int, read, why string) {
+	first := -1
+	for j := key + 1; j < len(lines); j++ {
+		if strings.TrimSpace(stripComment(lines[j])) != "" {
+			first = j
+			break
+		}
+	}
+	if first < 0 {
+		return 0, 0, "", "a key with no value and no block under it"
+	}
+	child = indent(stripComment(lines[first]))
+	if child <= keyIndent {
+		return 0, 0, strings.TrimSpace(lines[first]), fmt.Sprintf("a block whose first line sits at column %d, not deeper than its key at column %d; this reader enumerates a block only where its children are indented deeper than the key", child, keyIndent)
+	}
+	end = len(lines)
+	for j := first; j < len(lines); j++ {
+		sub := stripComment(lines[j])
+		if strings.TrimSpace(sub) == "" {
+			continue
+		}
+		if indent(sub) <= keyIndent {
+			end = j
+			break
+		}
+	}
+	return child, end, "", ""
+}
+
+// readOn gives this workflow its triggers, or refuses the `on:` it was given.
+func (w *workflow) readOn(lines []string, i int, rest string) {
+	if v := strings.TrimSpace(rest); v != "" {
+		names, why := enumerateValue(v)
+		if why != "" {
+			w.refuse(i+1, v, "an `on:` value outside the subset: "+why)
+			return
+		}
+		w.triggers = append(w.triggers, names...)
+		return
+	}
+	child, end, read, why := blockRegion(lines, i, 0)
+	if why != "" {
+		w.refuse(i+1, read, "an `on:` block outside the subset: "+why)
+		return
+	}
+	// The children of `on:` are read at whatever column the first child sets,
+	// which is where GitHub reads them; a constant compared against that
+	// column reads a POSITION as a property, and an `on:` block indented four
+	// spaces then parsed to no triggers at all.
+	for j := i + 1; j < end; j++ {
+		sub := stripComment(lines[j])
+		if strings.TrimSpace(sub) == "" {
+			continue
+		}
+		if strings.Contains(sub, "${{") {
+			w.refuse(j+1, strings.TrimSpace(sub), "an expression inside the `on:` block; this reader does not evaluate one and will not guess which triggers it expands to")
+			return
+		}
+		in := indent(sub)
+		if in > child {
+			continue
+		}
+		if in < child {
+			w.refuse(j+1, strings.TrimSpace(sub), fmt.Sprintf("a line at column %d inside an `on:` block whose children sit at column %d", in, child))
+			return
+		}
+		if k := seqItem.FindStringSubmatch(sub); k != nil {
+			names, why := enumerateValue(k[1])
+			if why != "" {
+				w.refuse(j+1, strings.TrimSpace(sub), "an `on:` sequence entry outside the subset: "+why)
+				return
+			}
+			w.triggers = append(w.triggers, names...)
+			continue
+		}
+		if k := mappingKey.FindStringSubmatch(sub); k != nil {
+			w.triggers = append(w.triggers, k[1])
+			continue
+		}
+		w.refuse(j+1, strings.TrimSpace(sub), "a line in an `on:` block that is neither a mapping key nor a sequence entry")
+		return
+	}
+}
+
+// readJobs enumerates the jobs, which is what makes the floor a PER-JOB one.
+func (w *workflow) readJobs(lines []string, i int, rest string) {
+	if v := strings.TrimSpace(rest); v != "" {
+		w.refuse(i+1, v, "a `jobs:` carrying a value on its own line; this reader enumerates jobs as a block")
+		return
+	}
+	child, end, read, why := blockRegion(lines, i, 0)
+	if why != "" {
+		w.refuse(i+1, read, "a `jobs:` block outside the subset: "+why)
+		return
+	}
+	for j := i + 1; j < end; j++ {
+		sub := stripComment(lines[j])
+		if strings.TrimSpace(sub) == "" || indent(sub) > child {
+			continue
+		}
+		if indent(sub) < child {
+			w.refuse(j+1, strings.TrimSpace(sub), fmt.Sprintf("a line at column %d inside a `jobs:` block whose jobs sit at column %d", indent(sub), child))
+			return
+		}
+		k := mappingKey.FindStringSubmatch(sub)
+		if k == nil {
+			w.refuse(j+1, strings.TrimSpace(sub), "a line under `jobs:` that is not a job key")
+			return
+		}
+		if v := strings.TrimSpace(sub[strings.Index(sub, ":")+1:]); v != "" {
+			w.refuse(j+1, strings.TrimSpace(sub), "a job whose key carries a value on its own line; this reader reads a job as a block, so an aliased or inlined one is refused rather than read as a job with nothing in it")
+			return
+		}
+		if !w.readJob(lines, j, child, k[1]) {
+			return
+		}
+	}
+}
+
+// readJob reads one job's DIRECT CHILDREN: its `runs-on:` and, at job level
+// and only at job level, its `uses:`. A `uses:` deeper than that names an
+// ACTION and must produce no edge, which used to rest on the `.ya?ml` suffix
+// alone; the column now says it too.
+func (w *workflow) readJob(lines []string, key, keyIndent int, name string) bool {
+	child, end, read, why := blockRegion(lines, key, keyIndent)
+	if why != "" {
+		w.refuse(key+1, read, "a job outside the subset: "+why)
+		return false
+	}
+	jb := job{name: name, line: key + 1}
+	for j := key + 1; j < end; j++ {
+		sub := stripComment(lines[j])
+		if strings.TrimSpace(sub) == "" {
+			continue
+		}
+		in := indent(sub)
+		if in > child {
+			continue
+		}
+		if in < child {
+			w.refuse(j+1, strings.TrimSpace(sub), fmt.Sprintf("a line at column %d inside a job whose keys sit at column %d", in, child))
+			return false
+		}
+		if m := runsOnKey.FindStringSubmatch(sub); m != nil {
+			labels, ok := w.readRunsOn(lines, j, child, m[1])
+			if !ok {
+				return false
+			}
+			jb.runners = append(jb.runners, labels...)
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(sub), "uses:") {
+			if m := workflowRef.FindStringSubmatch(sub); m != nil {
+				jb.calls = append(jb.calls, m[1])
+				continue
+			}
+			w.refuse(j+1, strings.TrimSpace(sub), "a job-level `uses:` this reader cannot resolve to a workflow file; a called workflow's jobs take their runners from this repository, so an unresolved one is refused rather than ignored")
+			return false
+		}
+	}
+	w.jobs = append(w.jobs, jb)
+	w.runners = append(w.runners, jb.runners...)
+	w.calls = append(w.calls, jb.calls...)
+	return true
+}
+
+// readRunsOn reads one job's runner labels, or refuses the value it was given.
+func (w *workflow) readRunsOn(lines []string, i, keyIndent int, rest string) ([]string, bool) {
+	if v := strings.TrimSpace(rest); v != "" {
+		names, why := enumerateValue(v)
+		if why != "" {
+			w.refuse(i+1, v, "a `runs-on:` value outside the subset: "+why)
+			return nil, false
+		}
+		return names, true
+	}
+	child, end, read, why := blockRegion(lines, i, keyIndent)
+	if why != "" {
+		w.refuse(i+1, read, "a `runs-on:` block outside the subset: "+why)
+		return nil, false
+	}
+	var out []string
+	for j := i + 1; j < end; j++ {
+		sub := stripComment(lines[j])
+		if strings.TrimSpace(sub) == "" {
+			continue
+		}
+		if strings.Contains(sub, "${{") {
+			w.refuse(j+1, strings.TrimSpace(sub), "an expression inside a `runs-on:` block; this reader does not evaluate one and will not guess which machine it names")
+			return nil, false
+		}
+		in := indent(sub)
+		if in != child {
+			w.refuse(j+1, strings.TrimSpace(sub), fmt.Sprintf("a line at column %d inside a `runs-on:` block whose entries sit at column %d", in, child))
+			return nil, false
+		}
+		k := seqItem.FindStringSubmatch(sub)
+		if k == nil {
+			w.refuse(j+1, strings.TrimSpace(sub), "a `runs-on:` block entry that is not a sequence entry; the mapping form, `group:` and `labels:`, is outside this reader")
+			return nil, false
+		}
+		names, why := enumerateValue(k[1])
+		if why != "" {
+			w.refuse(j+1, strings.TrimSpace(sub), "a `runs-on:` sequence entry outside the subset: "+why)
+			return nil, false
+		}
+		out = append(out, names...)
+	}
+	if len(out) == 0 {
+		w.refuse(i+1, "runs-on:", "a `runs-on:` block this reader read no label out of")
+		return nil, false
+	}
+	return out, true
 }
 
 // localWorkflowRef reports whether a `uses:` target names a workflow file in
@@ -334,25 +620,47 @@ func contains(hay []string, needle string) bool {
 	return false
 }
 
+// refusalsOf names every place the SET left the subset the reader understands.
+// It is taken BEFORE any floor and before any property, because a refusal is
+// not a fact about the workflow — it is the reader saying it did not read it.
+func refusalsOf(ws []workflow) []string {
+	var out []string
+	for _, w := range ws {
+		out = append(out, w.refusals...)
+	}
+	return out
+}
+
 // floorViolations names every workflow the scan read nothing usable out of.
 //
-// IT IS PER FILE, and that is the whole point of it. Summed over the set --
-// total triggers, total runners -- the floor is satisfied by any one workflow
-// that parses, so the file that parses to NOTHING is invisible while a sibling
-// has triggers. A file that parses to nothing is precisely what a misread
-// `on:` block produces, and it would then pass every check here by having
-// nothing to combine.
+// IT IS PER JOB, and conjunctive: every job yields at least one runner label
+// or exactly one callee, and every workflow yields at least one trigger. Per
+// FILE the second half was a disjunction over the union — no runner ANYWHERE
+// and no call ANYWHERE — so one job with a `uses:` satisfied it for a sibling
+// job whose runner the reader never read. That is the shape round 2 shipped,
+// and it is why the floor is now taken over the jobs rather than over the file.
 //
-// A workflow whose only job is a `uses:` call carries no `runs-on`, so a call
-// satisfies the second half.
+// A file with a REFUSAL is not floored. It was not read, and answering "no
+// trigger" about a file the reader refused sends the reader to the wrong
+// question; the refusal is the finding, and it names the line.
 func floorViolations(ws []workflow) []string {
 	var bad []string
 	for _, w := range ws {
-		switch {
-		case len(w.triggers) == 0:
+		if len(w.refusals) != 0 {
+			continue
+		}
+		if len(w.triggers) == 0 {
 			bad = append(bad, w.name+": no trigger; every workflow has an `on:` block, so reading none is a scan that did not read this file")
-		case len(w.runners) == 0 && len(w.calls) == 0:
-			bad = append(bad, w.name+": no runs-on label and no reusable-workflow call; a workflow runs its jobs somewhere")
+		}
+		if len(w.jobs) == 0 {
+			bad = append(bad, w.name+": no job; a workflow with no job runs nothing, so reading none is a scan that did not read this file")
+			continue
+		}
+		for _, j := range w.jobs {
+			if len(j.runners) != 0 || len(j.calls) == 1 {
+				continue
+			}
+			bad = append(bad, fmt.Sprintf("%s:%d: job %s yields no runs-on label and no single reusable-workflow call; every job runs somewhere, and a job that yields neither was not read", w.name, j.line, j.name))
 		}
 	}
 	return bad
@@ -389,15 +697,19 @@ func forkReachabilityFindings(ws []workflow, open []unresolvedCall) []string {
 	return out
 }
 
-// treeWorkflows reads every workflow in the repository, with the non-vacuity
-// floors the scan needs to mean anything: a directory that has gone empty, a
-// glob that stopped matching and a parse that produced no triggers all look
-// like a clean run otherwise.
+// treeWorkflows reads every workflow in the repository, in the order the
+// verdict is taken: what the reader REFUSED, then the non-vacuity floors, then
+// the properties. A directory that has gone empty, a glob that stopped
+// matching and a parse that produced no triggers all look like a clean run
+// otherwise.
 //
-// THE FLOORS ARE PER FILE. Summed over the set they are satisfied by any one
-// workflow that parses, so the file that parses to nothing — which is exactly
-// what a misread `on:` block produces — is invisible while a sibling has
-// triggers.
+// The refusals come first because they answer a different question. A floor
+// says a file the reader read holds nothing; a refusal says the reader did not
+// read it, and names the line and the shape. Reporting the second as the first
+// is what sent round 2's reader to the wrong file.
+//
+// THE FLOORS ARE PER JOB and per file, never summed over the set: summed, they
+// are satisfied by any one workflow that parses.
 func treeWorkflows(t *testing.T) ([]workflow, []unresolvedCall) {
 	t.Helper()
 	entries, err := os.ReadDir(workflowDir)
@@ -418,6 +730,9 @@ func treeWorkflows(t *testing.T) ([]workflow, []unresolvedCall) {
 	}
 	if len(out) == 0 {
 		t.Fatalf("%s holds no workflow; this check would pass over an empty domain", workflowDir)
+	}
+	if bad := refusalsOf(out); len(bad) != 0 {
+		t.Fatalf("the scan refused %d line(s) of %d workflow(s) as outside the subset it reads; the fix is a workflow written in that subset, and docs/verifying.md states it:\n  %s", len(bad), len(out), strings.Join(bad, "\n  "))
 	}
 	if bad := floorViolations(out); len(bad) != 0 {
 		t.Fatalf("the scan read nothing usable out of %d of %d workflow(s):\n  %s", len(bad), len(out), strings.Join(bad, "\n  "))
@@ -620,30 +935,191 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: ./verify.sh
 `
+	// THE ROUND-2 ESCAPE, verbatim: a `runs-on:` whose block sequence sits at
+	// the key's own column. Ordinary YAML that GitHub honours — a real parser
+	// reads two labels out of it — and outside this reader's subset, so it is
+	// refused rather than read as zero runners.
+	const sameIndentRunsOn = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    runs-on:
+    - self-hosted
+    - dhcp-golib
+    steps:
+      - run: ./verify.sh
+`
+	// The same shape one level up: a sequence under `on:` at column 0.
+	const sameIndentOn = `
+name: verify
+on:
+- push
+- pull_request
+jobs:
+  verify:
+    runs-on: [self-hosted, dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	// The declared escape of round 2's finding 3, which used to be a BOUND: an
+	// anchor elsewhere and an alias where the triggers belong. It parsed to
+	// the junk token `*t`, which satisfied a floor that counts.
+	const aliasedTriggers = `
+name: verify
+x-triggers: &t
+  pull_request:
+on: *t
+jobs:
+  verify:
+    runs-on: [self-hosted, dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	const anchoredOn = `
+name: verify
+on: &t
+  pull_request:
+jobs:
+  verify:
+    runs-on: [self-hosted, dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	// An expression among the triggers, which is the shape where reading one
+	// costs a verdict rather than a diagnostic: `push` is not a fork trigger
+	// and the expression could expand to one that is.
+	const expressionOn = `
+name: verify
+on: [push, "${{ env.EXTRA_TRIGGERS }}"]
+jobs:
+  verify:
+    runs-on: [self-hosted, dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	// Round 2's finding 4(b): this used to be READ, as a label spelled
+	// `${{ matrix.os`, and reported under that name.
+	const expressionRunsOn = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - run: ./verify.sh
+`
+	const openFlowRunsOn = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    runs-on: [self-hosted,
+              dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	const mappingRunsOn = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    runs-on:
+      group: ours
+      labels: [dhcp-golib]
+    steps:
+      - run: ./verify.sh
+`
+	const blockScalarRunsOn = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    runs-on: |
+      self-hosted
+    steps:
+      - run: ./verify.sh
+`
+	const inlinedJob = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify: *jobbody
+`
+	const jobLevelAction = `
+name: verify
+on:
+  pull_request:
+jobs:
+  verify:
+    uses: someone/somewhere@v1
+`
 	cases := []struct {
-		name       string
-		text       string
-		wantFork   bool
-		wantSecret bool
-		wantCalls  int
+		name        string
+		text        string
+		wantRefusal string
+		wantFork    bool
+		wantSecret  bool
+		wantCalls   int
 	}{
-		{"self-hosted with a pull_request trigger", selfHostedPR, true, false, 0},
-		{"a bare label with pull_request_target", barelabelPRTarget, true, false, 0},
-		{"inline trigger list", inlineTriggers, true, false, 0},
-		{"a four-space on: block", fourSpaceBlock, true, false, 0},
-		{"a six-space sequence on: block", sixSpaceSequence, true, false, 0},
-		{"a flow mapping on: block", flowMapping, true, false, 0},
-		{"a hosted image is reachable and that is fine", hostedPR, false, false, 0},
-		{"self-hosted with no fork trigger", selfHostedPush, false, false, 0},
-		{"a key under a trigger is not a trigger", filteredPush, false, false, 0},
-		{"a secret read", readsASecret, false, true, 0},
-		{"secrets: inherit is a handover of every secret", inheritsSecrets, false, true, 1},
-		{"a secret named in a comment is not a read", secretInAComment, false, false, 0},
-		{"a step uses: names an action, not a workflow", usesAnAction, false, false, 0},
+		{"self-hosted with a pull_request trigger", selfHostedPR, "", true, false, 0},
+		{"a bare label with pull_request_target", barelabelPRTarget, "", true, false, 0},
+		{"inline trigger list", inlineTriggers, "", true, false, 0},
+		{"a four-space on: block", fourSpaceBlock, "", true, false, 0},
+		{"a six-space sequence on: block", sixSpaceSequence, "", true, false, 0},
+		{"a flow mapping on: block", flowMapping, "", true, false, 0},
+		{"a hosted image is reachable and that is fine", hostedPR, "", false, false, 0},
+		{"self-hosted with no fork trigger", selfHostedPush, "", false, false, 0},
+		{"a key under a trigger is not a trigger", filteredPush, "", false, false, 0},
+		{"a secret read", readsASecret, "", false, true, 0},
+		{"secrets: inherit is a handover of every secret", inheritsSecrets, "", false, true, 1},
+		{"a secret named in a comment is not a read", secretInAComment, "", false, false, 0},
+		{"a step uses: names an action, not a workflow", usesAnAction, "", false, false, 0},
+
+		// One row per clause of the subset. Each expects a REFUSAL naming
+		// the shape, never an absence: what these fixtures have in common is
+		// that every one of them used to parse to nothing, or to a token
+		// nobody wrote, and pass.
+		{"a runs-on sequence at its key's own column", sameIndentRunsOn, "a `runs-on:` block outside the subset", false, false, 0},
+		{"an on: sequence at column 0", sameIndentOn, "an `on:` block outside the subset", false, false, 0},
+		{"an alias where the triggers belong", aliasedTriggers, "an `on:` value outside the subset: a YAML anchor or alias", false, false, 0},
+		{"an anchor on the on: value", anchoredOn, "an `on:` value outside the subset: a YAML anchor or alias", false, false, 0},
+		{"an expression as the on: value", expressionOn, "an `on:` value outside the subset: an expression", false, false, 0},
+		{"an expression as the runs-on value", expressionRunsOn, "a `runs-on:` value outside the subset: an expression", false, false, 0},
+		{"a flow sequence that does not close on its line", openFlowRunsOn, "a flow sequence that does not close on its line", false, false, 0},
+		{"the runs-on mapping form", mappingRunsOn, "not a sequence entry", false, false, 0},
+		{"a block scalar as the runs-on value", blockScalarRunsOn, "a block scalar", false, false, 0},
+		{"a job key carrying a value", inlinedJob, "a job whose key carries a value", false, false, 0},
+		{"a job-level uses: that is not a workflow file", jobLevelAction, "cannot resolve to a workflow file", false, false, 0},
+		{"a CRLF file is refused whole", strings.ReplaceAll(selfHostedPush, "\n", "\r\n"), "a carriage return", false, false, 0},
+		{"a tab in the indentation", strings.Replace(selfHostedPush, "    runs-on:", "\truns-on:", 1), "a tab in the indentation", false, false, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := scanWorkflow(c.name, c.text)
+			got := strings.Join(w.refusals, "\n  ")
+			if c.wantRefusal != "" {
+				// The assertion is on the TEXT, not on redness. A case that
+				// only asked for red would be satisfied by the floor, and
+				// the floor catching a shape the reader misread is exactly
+				// the arrangement round 2 shipped.
+				if !strings.Contains(got, c.wantRefusal) {
+					t.Fatalf("the scan refused:\n  %s\nwant a refusal naming %q; a shape outside the subset that is read as an absence is the defect this test exists for", got, c.wantRefusal)
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("the scan refused a fixture that is inside the subset:\n  %s", got)
+			}
 			if len(w.triggers) == 0 || (len(w.runners) == 0 && len(w.calls) == 0) {
 				t.Fatalf("the scan read %d trigger(s), %d runner(s) and %d call(s) out of this fixture; it is agreeing by seeing nothing", len(w.triggers), len(w.runners), len(w.calls))
 			}
@@ -684,8 +1160,193 @@ jobs:
 			t.Fatalf("this fixture does not reproduce the shape: the SUMMED floor already refuses it (%d trigger(s), %d runner(s))", triggers, runners)
 		}
 		bad := floorViolations(set)
-		if len(bad) != 1 || !strings.HasPrefix(bad[0], "opaque.yml:") {
-			t.Errorf("floorViolations = %v, want exactly one naming opaque.yml", bad)
+		if len(bad) == 0 {
+			t.Fatalf("floorViolations named nothing; the file the scan read nothing out of is the one it exists to name")
+		}
+		for _, b := range bad {
+			if !strings.HasPrefix(b, "opaque.yml:") {
+				t.Errorf("floorViolations named %q; only opaque.yml was unread, and a floor that names the file beside it is a floor nobody can act on", b)
+			}
+		}
+	})
+
+	// The preservation control the whole subset rests on: this repository's
+	// own lane is INSIDE it, unchanged. The tree tests below prove the same
+	// thing on every run, since treeWorkflows fatals on any refusal; this
+	// says it as its own verdict so that a failure names the reason.
+	t.Run("the lane's own workflows are inside the subset", func(t *testing.T) {
+		entries, err := os.ReadDir(workflowDir)
+		if err != nil {
+			t.Fatalf("reading %s: %v", workflowDir, err)
+		}
+		read := 0
+		for _, e := range entries {
+			n := e.Name()
+			if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(workflowDir, n))
+			if err != nil {
+				t.Fatalf("reading %s: %v", n, err)
+			}
+			w := scanWorkflow(n, string(b))
+			if len(w.refusals) != 0 {
+				t.Errorf("the scan refused this repository's own %s:\n  %s", n, strings.Join(w.refusals, "\n  "))
+			}
+			read++
+		}
+		if read == 0 {
+			t.Fatalf("%s holds no workflow; this control would pass over an empty domain", workflowDir)
+		}
+	})
+}
+
+// setVerdict gives every reason a SET is red, in the order treeWorkflows takes
+// them: what the reader REFUSED, then the floors, then the two properties. The
+// same functions, so a case here and the tree cannot disagree about what red
+// means.
+func setVerdict(ws []workflow) []string {
+	out := refusalsOf(ws)
+	out = append(out, floorViolations(ws)...)
+	resolved, open := resolveWorkflowCalls(ws)
+	out = append(out, forkReachabilityFindings(resolved, open)...)
+	for _, w := range resolved {
+		if len(w.secrets) != 0 {
+			out = append(out, w.name+": reads "+strings.Join(w.secrets, ", "))
+		}
+	}
+	return out
+}
+
+// TestTheWorkflowScanRefusesASetItCannotRead drives review round 2's two
+// escapes VERBATIM, over the set the tree test takes its verdict over. Both
+// were green: one shape the reader did not understand was read as zero
+// runners, and one was read as no secret at all, and in both cases a second
+// file in the set held the floor up.
+//
+// A single file cannot show either. What made them escapes is the
+// composition — an unrelated `uses:` job satisfying a floor taken over the
+// file, and a caller handing its secrets to a callee.
+func TestTheWorkflowScanRefusesASetItCannotRead(t *testing.T) {
+	// Escape one, from the round-2 record: `pull_request:`, a `lint` job whose
+	// only key is a `uses:` edge, and a `verify` job whose `runs-on:` sequence
+	// sits at its key's column. A real parser reads `[self-hosted,
+	// dhcp-golib]` there; the reader read nothing, the `uses:` job satisfied
+	// the file's floor, and the set was green.
+	const escapingCaller = `
+name: verify
+on:
+  pull_request:
+jobs:
+  lint:
+    uses: ./.github/workflows/lane.yml
+  verify:
+    runs-on:
+    - self-hosted
+    - dhcp-golib
+    steps:
+      - run: ./verify.sh
+`
+	const hostedCallee = `
+name: lane
+on:
+  workflow_call:
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+`
+	t.Run("a same-indent runs-on with a uses: job beside it", func(t *testing.T) {
+		set := []workflow{
+			scanWorkflow("verify.yml", escapingCaller),
+			scanWorkflow("lane.yml", hostedCallee),
+		}
+		red := strings.Join(setVerdict(set), "\n  ")
+		if !strings.Contains(red, "verify.yml:9") || !strings.Contains(red, "a `runs-on:` block outside the subset") {
+			t.Fatalf("the set's verdict is:\n  %s\nwant a refusal at verify.yml:9 naming the `runs-on:` block it could not enumerate", red)
+		}
+		// The isolation, and it is the point of the case: the floor is NOT
+		// what makes this red. It was not what made it red in round 2 either
+		// — the `uses:` job satisfied it, and the set passed.
+		if bad := floorViolations(set); len(bad) != 0 {
+			t.Errorf("the floor also fired: %v; this case must turn on the refusal, or a mutant that removes the refusal dies on the floor and the property goes untested", bad)
+		}
+	})
+
+	// Escape two, from the round-2 record: the same two-file set, LF against
+	// CRLF, with the line ending as the only variable moved. Under LF the
+	// handover is seen and the set is red; under CRLF `$` never matched, the
+	// scan reported no secret, and everything else in the file still parsed.
+	const inheritingCaller = `
+name: caller
+on:
+  push:
+jobs:
+  call:
+    uses: ./.github/workflows/lane.yml
+    secrets: inherit
+`
+	t.Run("secrets: inherit under LF is seen", func(t *testing.T) {
+		set := []workflow{
+			scanWorkflow("caller.yml", inheritingCaller),
+			scanWorkflow("lane.yml", hostedCallee),
+		}
+		red := strings.Join(setVerdict(set), "\n  ")
+		if !strings.Contains(red, "secrets: inherit") {
+			t.Fatalf("the set's verdict is:\n  %s\nwant the handover of every secret; this is the control the CRLF case is measured against", red)
+		}
+		if r := refusalsOf(set); len(r) != 0 {
+			t.Errorf("the scan refused a set inside the subset: %v", r)
+		}
+	})
+
+	t.Run("secrets: inherit under CRLF is refused, not missed", func(t *testing.T) {
+		set := []workflow{
+			scanWorkflow("caller.yml", strings.ReplaceAll(inheritingCaller, "\n", "\r\n")),
+			scanWorkflow("lane.yml", hostedCallee),
+		}
+		red := strings.Join(setVerdict(set), "\n  ")
+		if !strings.Contains(red, "caller.yml:1") || !strings.Contains(red, "a carriage return") {
+			t.Fatalf("the set's verdict is:\n  %s\nwant a refusal naming the carriage return; a CRLF file read as holding no secret is the defect", red)
+		}
+	})
+
+	// The floor's own escape, one level down from where round 2 left it: a job
+	// the reader READ correctly and that yields nothing, beside a `uses:` job.
+	// Taken per file the disjunction is false — the file has a call — and the
+	// job that runs somewhere unknown is invisible.
+	t.Run("a job that yields neither a runner nor a callee is named beside one that does", func(t *testing.T) {
+		const twoJobs = `
+name: verify
+on:
+  pull_request:
+jobs:
+  lint:
+    uses: ./.github/workflows/lane.yml
+  verify:
+    steps:
+      - run: ./verify.sh
+`
+		set := []workflow{
+			scanWorkflow("verify.yml", twoJobs),
+			scanWorkflow("lane.yml", hostedCallee),
+		}
+		if r := refusalsOf(set); len(r) != 0 {
+			t.Fatalf("this fixture does not reproduce the shape: the reader refused it rather than reading it: %v", r)
+		}
+		if len(set[0].calls) == 0 || len(set[0].triggers) == 0 {
+			t.Fatalf("this fixture does not reproduce the shape: a per-FILE floor would already refuse it (%d call(s), %d trigger(s))", len(set[0].calls), len(set[0].triggers))
+		}
+		bad := floorViolations(set)
+		found := false
+		for _, b := range bad {
+			if strings.Contains(b, "job verify yields no runs-on label") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("the floor named %v; want the job that yields neither, named on its own line — a floor taken over the file is satisfied by the lint job's call", bad)
 		}
 	})
 }
