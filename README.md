@@ -1,13 +1,25 @@
 # dhcp-golib — a managed-lease DHCP client for Go
 
-**Private. Not published.** See the publication rule in the plugin's
-`vision.md` §5.2 — this repo goes public the day the plugin depends on it,
-and not before. That is a binary trigger, not a judgement call.
+A DHCP client you run as a library: it takes a lease on an interface, keeps it,
+and tells you when it changes. It applies nothing to the link — configuring the
+interface is the caller's job, which is what lets one process hold leases on
+many links at once.
+
+**The API is not stable.** It moves without a deprecation cycle, and there is
+no tagged release yet, so a consumer takes a commit.
+
+Written for, and consumed by, the
+[docker-net-dhcp](https://github.com/claymore666/docker-net-dhcp) network
+plugin, which leases container addresses from the LAN's own DHCP server. That
+plugin carries a copy of this tree under `pkg/dhcp/`, refreshed by a script in
+its repository that filters what it copies against a list it keeps privately;
+it does not import this module today. The plugin is GPL-3.0; this library is
+MIT (see `LICENSE`).
 
 ## What this is
 
 Not a DHCP packet library — that slot is occupied (`insomniacslk/dhcp`).
-This is the layer nobody has published: **lifecycle**.
+This is the layer above it: **lifecycle**.
 
 > Give me a managed lease on this interface, and tell me when it changes.
 
@@ -15,12 +27,10 @@ Transactions, timers, the state machine, persistence, change notification.
 
 ## Usage
 
-The caller supplies an interface name and a parameter set. What it gets back
-is a running client and a stream of lease events, each carrying the address,
-the gateway, the routes, the DNS servers and the absolute deadlines already
-resolved out of the options — nothing is applied to the link, because
-configuring the interface is the caller's job and that is what lets one
-process hold leases on many links at once.
+The caller supplies an interface name and a parameter set. What it gets back is
+a running client and a stream of lease events, each carrying the address, the
+gateway, the routes, the DNS servers and the absolute deadlines already
+resolved out of the options.
 
 ```go
 func ExampleClient() {
@@ -59,9 +69,68 @@ func ExampleClient() {
 }
 ```
 
-This is `ExampleClient` in `runtime/example_test.go`, byte for byte, so it is
-compiled by the suite rather than transcribed into this file. Set
-`DHCP_GOLIB_EXAMPLE_IFACE` to a link with a DHCP server on it to run it.
+DHCPv6 is a second client rather than a mode of the first, because the two do
+not share a socket, a journal or a state enumeration. A dual-stack endpoint
+runs both.
+
+```go
+func ExampleClient6() {
+	iface := os.Getenv("DHCP_GOLIB_EXAMPLE_IFACE")
+	if iface == "" {
+		return
+	}
+
+	link, err := net.InterfaceByName(iface)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+	duid, err := wire.DUIDLL(wire.ARPHTypeEthernet, link.HardwareAddr)
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	params := proto.DefaultParams6()
+	params.DUID = duid
+	params.IAID = 1
+	params.ORO = proto.DefaultORO()
+
+	client, err := runtime.NewClient6(runtime.ClientConfig6{
+		Interface: iface,
+		Params6:   params,
+	})
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if err := client.Run(ctx); err != nil {
+			log.Print(err)
+		}
+	}()
+
+	for ev := range client.Events() {
+		if ev.Kind != lease.Acquired {
+			continue
+		}
+		log.Printf("%s preferred until %s, valid until %s", ev.Lease.Addr, ev.Lease.Preferred, ev.Lease.Valid)
+		break
+	}
+
+	client.Release()
+	// Output:
+}
+```
+
+These are `ExampleClient` and `ExampleClient6` in `runtime/example_test.go`,
+byte for byte, so they are compiled by the suite rather than transcribed into
+this file — and `verify.sh`'s `readme-usage` row pairs each block with the
+function it names and fails if either side moves. Set
+`DHCP_GOLIB_EXAMPLE_IFACE` to a link with a DHCP server on it to run them.
 
 ## Milestones
 
@@ -77,7 +146,7 @@ the library was built in, not releases.
 | M4 | The durable lease record: a journal that survives a restart and repairs a torn tail. |
 | M5 | Restart with a remembered address: INIT-REBOOT and the requested-address report. |
 | M6 | Address conflict detection per RFC 5227, in three modes: wait, async, off. |
-| M7 | IPv6. Not started. |
+| M7 | DHCPv6: the codec, the state machine, the durable record and the runtime. On `main`; not yet wired into the plugin. |
 | M8 | Integration into the docker-net-dhcp plugin. Done in the plugin's repository, not here. |
 
 "Done" means the milestone's tests are in the tree and the verifier passes on
@@ -85,12 +154,13 @@ them.
 
 ## Design
 
-The architecture document and the protocol conformance checklist are held
-privately alongside the plugin project, not in this tree, and are deliberately
-not named by path: this repository publishes on the trigger above, and a path
-into private scaffolding would publish with it. This README states the part a
-reader needs before opening any file; `docs/gates.md` states what the two gates
-enforce and what they cannot see.
+The architecture document and the protocol conformance checklist are working
+notes kept outside this tree, so what a reader needs is here and in `docs/`:
+this section states the one thing to know before opening any file,
+`docs/verifying.md` says what every arbiter row measures, and `docs/gates.md`
+says what the two ring gates enforce and — more usefully — what they cannot
+see. Every normative claim in the code cites an RFC section, so the code is
+readable against the standard rather than against the notes.
 
 The one thing to know before reading any code: **ring 1 is pure.** The
 state machine is `Step(now, rnd, event) -> (state, []action)` with no I/O, no
@@ -113,11 +183,12 @@ All four were empty at M0 on purpose: the gates below were built and proven
 against an empty package, because a gate added after the code it guards gets
 weakened to fit the code. M1 filled all four.
 
-## What works today — through M6
+## What works today — through M7
 
-One IPv4 lease, taken and KEPT: INIT to BOUND over a real socket, renewed at T1
-and rebound at T2, given back with a DHCPRELEASE or refused with a DHCPDECLINE.
-Each of the things below is a test rather than a claim:
+One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
+real socket, renewed at T1 and rebound at T2, given back or refused. Each of
+the things below is a test rather than a claim, and the DHCPv6 half has its own
+list after the IPv4 one.
 
 - **A lease from a real server.** `runtime` re-executes itself into a user and
   network namespace, wires a veth pair, runs dnsmasq on one end and this
@@ -166,6 +237,34 @@ Each of the things below is a test rather than a claim:
 - **The whole acquisition path in milliseconds.** `proto` tables the path with
   no root, no namespace and no network at all.
 
+### DHCPv6, against the same real dnsmasq
+
+- **A lease on a managed link.** Solicit, Advertise, Request, Reply against
+  dnsmasq in the netns fixture, with the address checked by RFC 4862 §5.4
+  duplicate address detection on the wire before it is announced, and released
+  with a Release the server logs (`TestAV6ClientAcquiresFromRealDnsmasq`,
+  `TestAV6ReleaseReachesRealDnsmasq`).
+- **The four other shapes a real link can have, told apart.** A stateless link
+  where only the configuration comes from DHCPv6, a SLAAC-only link that says
+  there is no DHCPv6 at all, a link with a server and no router, and — the one
+  that matters — a managed link whose server is present and answers nothing,
+  which is not the same thing as a link without one. Each mode is asserted on
+  two channels, dnsmasq's log and the Router Advertisement on the link.
+- **A duplicate address is declined and not asked for again.** A neighbour
+  answers for the offered address; the client Declines it, and the next Solicit
+  does not carry it as a hint
+  (`TestADuplicateAddressOnTheLinkIsDeclined`, `TestADeclinedHintIsNotAskedForAgain`).
+- **A restart that confirms instead of soliciting.** A client started with a
+  binding from a previous run sends RFC 9915 §18.2.3's Confirm as its first
+  message (`TestAResumedV6LeaseConfirmsAgainstRealDnsmasq`).
+- **The namespace and the thread.** The v6 client's three sockets and its
+  link-local address are taken in one call, in the namespace of the thread it
+  was built on, and it leases from a server only that namespace can see.
+- Renewal, rebinding, expiry, Advertise selection by preference, the Status
+  Code paths and the Information-request are ring 1's, driven there in
+  milliseconds against `proto`'s tables and against captured frames replayed
+  through the decoder.
+
 ### What it does NOT do
 
 Stated because a bound nobody writes down is read as a guarantee:
@@ -179,7 +278,16 @@ Stated because a bound nobody writes down is read as a guarantee:
   guessing.
 - **No INFORM.** A caller that already has an address and wants only the
   parameters is not served; the message type is in `wire` and nothing sends it.
-- **IPv4 only.** No DHCPv6, no Router Advertisement, no SLAAC.
+- **No address management of any kind.** This is a client, not an IPAM: it
+  asks a server for a lease and reports what it got. Choosing which address to
+  ask for, or allocating one without a server, is the caller's.
+- **Nothing is applied to the link.** No address is added, no route installed,
+  no resolver written. The library reports; the caller configures.
+- **No prefix delegation** (RFC 9915 §21.21's IA_PD), and no DHCPv6 relay
+  support.
+- **No Router Advertisement processing beyond observation.** The v6 client
+  solicits a router and reports what it heard; it performs no SLAAC and
+  configures no prefix.
 - **No ARP resolution for the DHCP unicast.** The transport unicasts only to a peer whose hardware address it
   learned from a frame that peer sent; a unicast it cannot address is REFUSED
   rather than broadcast anyway. RENEWING is what that refusal falls on, and it
@@ -203,3 +311,21 @@ what they were the last time it passed here, and `./verify.sh --oracle` runs it
 regardless — which is what to run before a merge. What each row measures, and
 what a skip is not re-checking, is in `docs/verifying.md`; what the two ring
 gates cannot see is in `docs/gates.md`.
+
+## Licence
+
+MIT — see `LICENSE`. Every `.go` and `.sh` file in the tree carries a one-line
+copyright notice so that a file copied out of here carries its licence with it,
+and the unit suite fails if one does not. The docker-net-dhcp plugin that
+consumes this library is GPL-3.0; the MIT licence permits that combination.
+
+## Contributing
+
+`./verify.sh` is the gate, and it is the same command in CI as on a desk. One
+thing is worth knowing before opening a pull request: **a pull request from a
+fork runs no job here.** The lane is triggered by `push` and by manual
+dispatch, and it runs on a self-hosted runner — a fork's pull request that
+could start it would be running the fork's tree on somebody's machine. To have
+a contribution arbitrated, a maintainer pushes the branch to this repository or
+dispatches the workflow. `docs/verifying.md`, **In CI**, states the property
+and what observes it.

@@ -855,11 +855,18 @@ else
 fi
 
 # ------------------------------------------------------------ readme-usage --
-# README.md's Usage section prints a Go function and says, in the sentence
-# under it, that it is `ExampleClient` in runtime/example_test.go "byte for
-# byte, so it is compiled by the suite rather than transcribed into this file".
-# Nothing checked that. A claim of identity between two files is exactly the
-# claim a diff makes, and it was being made by prose.
+# README.md's Usage section prints Go functions and says, in the sentence under
+# them, that they are the Example functions in runtime/example_test.go "byte
+# for byte, so they are compiled by the suite rather than transcribed into this
+# file". Nothing checked that. A claim of identity between two files is exactly
+# the claim a diff makes, and it was being made by prose.
+#
+# PAIRED BY NAME, NOT BY POSITION. Each fenced block under ## Usage declares a
+# function on its first line, and that name is what selects the Example it is
+# compared against; the two sets must be EQUAL. Keying on order would make
+# adding a second block a silent re-pairing of the first, and keying on "the
+# block" alone is what let ExampleClient6 be added with nothing on the README
+# side to notice.
 #
 # The comparison is VERBATIM — `diff` over the two extracted blocks, no
 # normalising of whitespace, no reflow — because the sentence in the README
@@ -871,35 +878,63 @@ fi
 # files diff clean, which is how this row would go vacuous.
 readme_f="$ROOT/README.md"
 example_f="$ROOT/runtime/example_test.go"
-ru_readme="$BIN/readme-usage.md"
-ru_example="$BIN/readme-usage.go"
-: >"$ru_readme"
-: >"$ru_example"
+ru_dir="$BIN/readme-usage"
+rm -rf "$ru_dir"
+mkdir -p "$ru_dir/readme" "$ru_dir/example"
+ru_readme_names=""
+ru_example_names=""
 if [ -r "$readme_f" ]; then
-	awk '
-		/^## Usage[[:space:]]*$/ { sec = 1; next }
-		sec && /^## / { sec = 0 }
-		sec && /^```go[[:space:]]*$/ { blk = 1; next }
-		blk && /^```[[:space:]]*$/ { blk = 0; next }
-		blk { print }
-	' "$readme_f" >"$ru_readme"
+	ru_readme_names="$(awk -v dir="$ru_dir/readme" '
+		/^## Usage[[:space:]]*$/            { sec = 1; next }
+		sec && /^## /                       { sec = 0 }
+		sec && /^```go[[:space:]]*$/        { blk = 1; name = ""; next }
+		blk && /^```[[:space:]]*$/          { blk = 0; next }
+		blk {
+			if (name == "") {
+				if ($0 ~ /^func [A-Za-z0-9_]+\(\) \{$/) {
+					name = $0
+					sub(/^func /, "", name)
+					sub(/\(\) \{$/, "", name)
+				} else {
+					name = "__unnamed__" (++u)
+				}
+				print name
+			}
+			print $0 > (dir "/" name)
+		}
+	' "$readme_f")"
 fi
 if [ -r "$example_f" ]; then
-	sed -n '/^func ExampleClient() {$/,/^}$/p' "$example_f" >"$ru_example"
+	ru_example_names="$(sed -n 's/^func \(Example[A-Za-z0-9_]*\)() {$/\1/p' "$example_f")"
+	for ru_n in $ru_example_names; do
+		sed -n "/^func ${ru_n}() {\$/,/^}\$/p" "$example_f" >"$ru_dir/example/$ru_n"
+	done
 fi
-ru_readme_n="$(grep -c '' <"$ru_readme" || true)"
-ru_example_n="$(grep -c '' <"$ru_example" || true)"
+ru_example_set="$(printf '%s\n' $ru_example_names | sort | tr '\n' ' ' | sed 's/ $//')"
+ru_missing="$(comm -23 <(printf '%s\n' $ru_example_names | sort) <(printf '%s\n' $ru_readme_names | sort) | tr '\n' ' ' | sed 's/ $//')"
+ru_extra="$(comm -13 <(printf '%s\n' $ru_example_names | sort) <(printf '%s\n' $ru_readme_names | sort) | tr '\n' ' ' | sed 's/ $//')"
+ru_lines=0
+ru_diff=""
+for ru_n in $ru_example_names; do
+	[ -s "$ru_dir/readme/$ru_n" ] || continue
+	if ! ru_one="$(diff -u "$ru_dir/example/$ru_n" "$ru_dir/readme/$ru_n" 2>&1)"; then
+		ru_diff="$ru_diff$ru_one"
+	fi
+	ru_lines=$((ru_lines + $(grep -c '' <"$ru_dir/example/$ru_n")))
+done
 if [ ! -r "$readme_f" ] || [ ! -r "$example_f" ]; then
 	record "readme-usage" FAIL "README.md or runtime/example_test.go is unreadable, so the two sides of the byte-for-byte claim cannot be compared"
-elif [ "$ru_readme_n" -eq 0 ]; then
-	record "readme-usage" FAIL "the README has no fenced go block under ## Usage; the claim that it holds ExampleClient byte for byte has nothing on its own side"
-elif [ "$ru_example_n" -eq 0 ]; then
-	record "readme-usage" FAIL "runtime/example_test.go declares no ExampleClient the README could be quoting; the README's Usage block is now transcription"
-elif ! ru_diff="$(diff -u "$ru_example" "$ru_readme" 2>&1)"; then
-	record "readme-usage" FAIL "the README Usage block and ExampleClient differ; the README says byte for byte and they are not"
+elif [ -z "$ru_example_set" ]; then
+	record "readme-usage" FAIL "runtime/example_test.go declares no Example function the README could be quoting; the README's Usage blocks are now transcription"
+elif [ -n "$ru_missing" ]; then
+	record "readme-usage" FAIL "the README has no fenced go block under ## Usage for $ru_missing; the claim that it holds the examples byte for byte has nothing on its own side for them"
+elif [ -n "$ru_extra" ]; then
+	record "readme-usage" FAIL "the README's Usage section carries a block for $ru_extra, which runtime/example_test.go does not declare; that block is transcription and nothing compiles it"
+elif [ -n "$ru_diff" ]; then
+	record "readme-usage" FAIL "the README Usage blocks and the examples differ; the README says byte for byte and they are not"
 	printf '\n--- readme-usage: --- is runtime/example_test.go, +++ is README.md ---\n%s\n' "$ru_diff" >&2
 else
-	record "readme-usage" PASS "the README Usage block and ExampleClient agree over $ru_example_n line(s), byte for byte" "$ru_example_n"
+	record "readme-usage" PASS "the README Usage blocks and $ru_example_set agree over $ru_lines line(s), byte for byte" "$ru_lines"
 fi
 
 # -------------------------------------------------------------- gate roster --
