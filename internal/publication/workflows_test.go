@@ -2,7 +2,8 @@
 
 // Package publication holds the checks a PUBLIC repository owes that no other
 // gate here covers: that a job on a machine of ours cannot be started by a
-// stranger, and that every file carries the licence it is offered under.
+// stranger, that the word `secrets` appears nowhere under .github/, and that
+// every file carries the licence it is offered under.
 //
 // It is a test-only package for the reason internal/manifest is one — it
 // asserts about the repository rather than about the library — and it runs
@@ -284,9 +285,11 @@ func scanWorkflow(name, text string) workflow {
 	w := workflow{name: name}
 
 	// Clause 1, spelled ONCE for the file rather than once per pattern. A
-	// `\r` is neither space nor tab, so it defeats every `$`-anchored regex
-	// here. `secrets: inherit` is the pattern that noticed in round 2; the
-	// next pattern added would not have.
+	// `\r` rides at the end of every line, which is where some of the
+	// patterns here anchor and where others trim it away; a reader that
+	// counts columns and matches line ends has no business deciding, pattern
+	// by pattern, which of its own survive it. So the file is refused whole
+	// at the first one, and one refusal covers every pattern added later.
 	if i := strings.IndexByte(text, '\r'); i >= 0 {
 		w.refuse(1+strings.Count(text[:i], "\n"), "a carriage return", "this reader anchors on the line end, so a CRLF file is refused whole rather than read half right")
 		return w
@@ -300,19 +303,20 @@ func scanWorkflow(name, text string) workflow {
 		}
 	}
 
-	// Clause 2, and the word. A file carrying the forbidden word is refused
-	// whole: it is not a file this repository permits to exist, so nothing
-	// is read out of it and no property is asserted over it.
+	// Clause 1's third half, and the whole of the other rule. A file carrying
+	// the forbidden word is refused whole: nothing is read out of it, so no
+	// property is asserted over a file this repository does not permit to
+	// carry that word.
 	if r := forbiddenWordRefusals(name, text); len(r) != 0 {
 		w.refusals = append(w.refusals, r...)
 		return w
 	}
 
-	// Only column 0 is a root key, and a top-level key that is neither `on:`
-	// nor `jobs:` takes its whole block with it. Every OTHER line at the left
-	// margin is refused rather than skipped: skipping it is how `on :`, with
-	// the space YAML permits before the colon, reached the floor as "no
-	// trigger" instead of naming its own line.
+	// Clause 2. Only column 0 is a root key, and a top-level key that is
+	// neither `on:` nor `jobs:` takes its whole block with it. Every OTHER
+	// line at the left margin is refused rather than skipped: skipping it is
+	// how `on :`, with the space YAML permits before the colon, reached the
+	// floor as "no trigger" instead of naming its own line.
 	first := -1
 	root := false
 	for i := 0; i < len(lines); i++ {
