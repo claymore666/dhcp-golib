@@ -373,50 +373,105 @@ are `push` and `workflow_dispatch`, and it has no `pull_request` or
 `pull_request_target`. A fork's push is a push in the fork, and starts nothing
 here — so **a fork's pull request runs nothing in this repository at all**: no
 job, no step, no checkout of the proposed tree onto the runner. The lane also
-reads no repository secret, so there is nothing for a job to carry off even if
-one could be reached.
+holds no secret, so there is nothing for a job to carry off even if one could
+be reached.
 
 **Running a contributor's branch is therefore a deliberate act**, and that is
 the cost of the arrangement rather than a gap in it: somebody who can write
 here pushes the branch to this repository, or dispatches the workflow, having
 read the diff first. A pull request never buys itself a run.
 
-**The observer is `internal/publication`**, in the unit suite, and it reads the
-workflows over a STATED SUBSET of YAML rather than over YAML. Inside the subset
-it fails if the workflow SET puts a runner whose label is not one of GitHub's
-hosted images within reach of a `pull_request` or `pull_request_target`
-trigger — in one file, or across two, because a workflow called with `uses:`
-runs its jobs on the calling repository's runners and so inherits its caller's
-triggers. It also fails if any workflow hands secrets over, whether by naming
-one (`secrets.NAME`) or by `secrets: inherit`, which names none. Outside the
-subset it REFUSES the file, naming the line and the shape it would not read,
-and a refusal is red. So the claim this row supports is not the universal over
-every workflow that could be written; it is the one the refusal makes true by
-construction:
+**The observer is `internal/publication`**, in the unit suite, and it carries
+two rules. They are stated here once each, and both are true of the code as it
+is written rather than of a scan that has to be right about a workflow first.
+
+> **One.** The word `secrets` does not appear anywhere under `.github/`.
+
+Nothing there recognises a secret. The word itself is refused — any case, as a
+whole word, in a workflow or in any other file the directory holds, in a
+comment as readily as in an expression — and every occurrence is red, naming
+the file and the line.
+
+The rule is the word and not a *read* of one, and that is the whole design. A
+check that recognised a read would have to enumerate how one is written, and
+GitHub honours several ways: the context reached by a dot, by an index in
+either kind of quotes, by an index computed at run time, and the `secrets:` key
+of a call to a reusable workflow, quoted or bare. A spelling such a check did
+not know would be reported as no secret at all, which is the one answer this
+page may never carry. Refusing the word needs no enumeration and no parser:
+this lane holds no secret and needs none, so there is no innocent occurrence to
+tell from a guilty one.
+
+The boundary is a word boundary, and that is the whole of it: `secretsmanager`
+and `my_secrets_dir` are other words and are not refused. A workflow file
+reaches a repository secret in exactly two ways — the `secrets` context and the
+`secrets:` key of a call to a reusable workflow — and both are the bare word.
+Refusing an identifier that merely contains those letters would make this a
+rule about letters. The escape, stated beside the claim: the automatic token
+also arrives as `github.token`, which carries no such word; that one is bounded
+by `permissions:`, which this lane sets to `contents: read`.
+
+The domain is the directory rather than the repository, and that is not an
+exemption for the rest of the tree — it is the shape of the rule. A rule has to
+be writable in the check that carries it and on the page that publishes it, and
+neither `internal/publication` nor this page is under `.github/`. Inside the
+directory it is everything: the workflows, the linter configuration beside
+them, and whatever is added there later. **The day a workflow here genuinely
+needs a secret, the rule is widened deliberately — this paragraph, the check
+and its cases moving together, with the argument for why that lane may hold
+one — and never by teaching the check to tell a harmless occurrence from a
+harmful one.**
+
+> **Two.** No job on a runner of ours is reachable from a fork's pull request.
+
+The scan reads the workflows over a STATED SUBSET of YAML rather than over
+YAML. Inside the subset it fails if the workflow SET puts a runner whose label
+is not one of GitHub's hosted images within reach of a `pull_request` or
+`pull_request_target` trigger — in one file, or across two, because a workflow
+called with `uses:` runs its jobs on the calling repository's runners and so
+inherits its caller's triggers. Outside the subset it REFUSES the file, naming
+the line and the shape it would not read, and a refusal is red. So the claim
+this row supports is not the universal over every workflow that could be
+written; it is the one the refusal makes true by construction:
 
 > Every workflow in this repository is written in the subset the scan reads,
 > and within that subset no job on a runner of ours is reachable from a fork's
-> pull request and no workflow hands a secret over.
+> pull request.
 
 The subset, which is what a contributor's workflow has to be written in: no
-carriage return anywhere and no tab in any line's indentation; root keys at the
-left margin; `on:` a plain scalar, a flow collection closed on its own line, or
+carriage return anywhere, no tab in any line's indentation, and not the
+forbidden word; root keys at the left margin, and every line at the left margin
+one of them; `on:` a plain scalar, a flow collection closed on its own line, or
 a block whose children are indented deeper than the key; `jobs:` such a block,
-each job a key with no inline value; a job's `runs-on:` in those same value
-forms, its block form a sequence; a job-level `uses:` naming a path ending
-`.yml` or `.yaml`; no `${{ }}` expression anywhere in an `on:` or `runs-on:`
-block, nor in either as a value; and no YAML anchor or alias in a value the
-scan enumerates. Everything else is refused by name: a flow
-collection spread over two lines, a `|` or `>` block scalar in one of those
-places, a tab-indented file, a CRLF file, an anchor, an alias, an expression, a
-`runs-on:` written as a `group:`/`labels:` mapping, and a sequence written at
-its key's own column. Each of those is ordinary YAML and GitHub would honour
-it; the refusal is the point. The direction that fails closed is "the reader
-could not read this", never "there is nothing here" — a file that parses to
-nothing agrees with every property asserted over it. Somebody who meets a
-refusal writes the workflow in the subset, or widens the subset and its cases
-together. This lane's own workflow is inside it, which the row demonstrates on
-every run rather than claiming here.
+each job a key with no inline value; every line at a job's key column a `key:`;
+a job's `runs-on:` in those same value forms, its block form a sequence; a
+job-level `uses:` naming a path ending `.yml` or `.yaml`; no `${{ }}`
+expression anywhere in an `on:` or `runs-on:` block, nor in either as a value;
+and no YAML anchor or alias in a value the scan enumerates. Everything else is
+refused by name: a flow collection spread over two lines, a `|` or `>` block
+scalar in one of those places, a tab-indented file, a CRLF file, an anchor, an
+alias, an expression, a `runs-on:` written as a `group:`/`labels:` mapping, a
+sequence written at its key's own column, a `---` document marker, a root
+mapping written indented, and a key with a space before its colon, which YAML
+permits — `on :` and `runs-on :`. Each of those is ordinary YAML and GitHub
+would honour it; the refusal is the point. The direction that fails closed is
+"the reader could not read this", never "there is nothing here" — a file that
+parses to nothing agrees with every property asserted over it. Somebody who
+meets a refusal writes the workflow in the subset, or widens the subset and its
+cases together. This lane's own workflow is inside it, which the row
+demonstrates on every run rather than claiming here.
+
+**The tab refusal is wider than the property, and that is a cost this page owes
+you rather than a defect.** A tab in the leading whitespace of ANY line of a
+workflow file is refused, including inside a `run: |` script — a Makefile
+recipe indented with a tab, say, which is valid YAML and which GitHub would run
+happily. It is refused because every column in this reader is counted in spaces
+and a tab makes each of them a guess, and it is deliberately not narrowed to
+"outside a block scalar": deciding where a block scalar ends is the same
+position-keyed reading whose mistakes this whole subset exists to refuse. What
+to write instead: indent with spaces, and where something genuinely needs a
+tab — a recipe, a fixture — put it in a file of its own and have the script
+call it. No tracked workflow here carries a tab.
 
 Every workflow is floored as well, and the runner half is per JOB: a workflow
 the scan read no trigger out of, and a job that yields neither a runner label
@@ -429,11 +484,10 @@ beside a job carrying a `uses:`, is exactly what stayed invisible.
 Two things it deliberately does not do: it does not refuse `self-hosted` as
 such — this lane is self-hosted by decision and such a gate would be red on the
 day it was written — and it does not know who owns a runner, only that a label
-is not one GitHub hosts. Its remaining bounds are stated in the file: the
-secret scan is textual, so a secret reached through a composite action is
-outside both spellings; and a `uses:` edge it cannot follow — a workflow in
-another repository, or a local path naming no file here — is a failure whenever
-the calling workflow carries a fork trigger, not an omission.
+is not one GitHub hosts. Its remaining bound is stated in the file: a `uses:`
+edge it cannot follow — a workflow in another repository, or a local path
+naming no file here — is a failure whenever the calling workflow carries a fork
+trigger, not an omission.
 
 Two consequences worth stating rather than discovering:
 
