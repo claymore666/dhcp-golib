@@ -205,7 +205,7 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #     BuildIPv6UDPWritesTheHeaderTheChecksumCovers,
 #     BuildRefusesAnAddressItCannotSend, IPv6UpperRefusesWhatItCannotWalk,
 #     ParseIPv6ICMPReadsARealRouterAdvertisement,
-#     ParseIPv6ICMPRefusesWhatIsNotICMPv6, ParseIPv6UDPChecksBothPorts,
+#     ParseIPv6ICMPRefusesWhatIsNotICMPv6, ParseIPv6UDPChecksTheClientPort,
 #     ParseIPv6UDPDiscardsAZeroChecksum, ParseIPv6UDPRefusesACorruptChecksum,
 #     TheKernelsPartialChecksumIsOurPseudoHeaderSum,
 #     TheV6ChecksumIsBoundedByThePayloadLengthAndNotTheFrame
@@ -249,9 +249,37 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #     AbsentAddress, InterfaceLinkLocalReportsAnInterfaceThatIsNotThere,
 #     TheLinkLocalDumpAsksTheKernelForIPv6Addresses
 #
+# M7e's LIBRARY FIXES: 591 -> 609, measured the same way (two testroster runs,
+# at 8a90619 and here). One test was RENAMED, which moves no count —
+# ParseIPv6UDPChecksBothPorts became ParseIPv6UDPChecksTheClientPort, because
+# RFC 9915 §7.2 leaves a server's source port free and the parse no longer
+# checks it; the name is corrected in the M7a list above rather than left
+# naming a function that is gone. Eighteen added, per file, each the observer
+# for one of the four defects the round was briefed on or for a carried row:
+#
+#   proto/machine6_declinehint_test.go   (7)  TheSolicitAfterADeclineDoesNot
+#     AskForTheDeclinedAddress, ASecondDeclineDoesNotBringTheHintBack,
+#     ADeclineOfADIFFERENTAddressLeavesTheHintAlone, TheHintIsDroppedEvenAfter
+#     AnEarlierDeclineOfAnotherAddress, AnAcquisitionAfterADeclineDoesNotClaim
+#     ToHaveAskedForTheAddress, AMachineThatHasDeclinedNothingStillHints,
+#     AnAddressDeclinedWithNoServerToTellIsStillNotHintedAgain
+#   proto/machine6_resumeconfig_test.go  (4)  AConfirmedResumeKeepsThe
+#     ConfigurationItWasGiven, AnUnansweredConfirmKeepsTheConfigurationToo,
+#     Resume6CloneReachesTheConfigurationLists,
+#     AMachineDoesNotFollowTheCallersRememberedLists
+#   lease/manager6_test.go               (1)  AResumedV6LeaseKeepsThe
+#     ResolverItRemembered
+#   lease/record6_params_test.go         (3)  AV6RecordCarriesTheParameters
+#     ItsReplayNeeds, TheV6ParamsSnapshotIsNotAliased,
+#     ARecordRefusesTheOtherFamilysParameterSnapshot
+#   runtime/newfile_label_test.go        (1)  NoCallerStringReachesOsNewFile
+#   runtime/dnsmasq6_linux_test.go       (1)  ADeclinedHintIsNotAskedForAgain
+#   runtime/ipudp6_test.go               (1)  AReplyFromAnUnusualSourcePortIs
+#     Delivered
+#
 # The "Test" prefix is left off each name above so the lines fit; every one of
 # them carries it in the tree.
-MIN_DECLARED_TESTS=591
+MIN_DECLARED_TESTS=609
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

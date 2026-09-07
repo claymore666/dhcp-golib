@@ -209,68 +209,81 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # It is measured in now, and the whole list is RE-MEASURED rather than patched,
 # because a list where one row comes from a different run is not a sum.
 #
-# MEASURED 2026-09-06 on the session box at 8c87caf, exactly as this file runs
-# the row (-race -count=1 -v -timeout 180s, -run over the roster), taking the
-# OUTER (re-exec parent) figure per test. This is now also the machine CI runs
+# RE-MEASURED AGAIN AT M7e, for the same reason: the roster is 33 with
+# TestADeclinedHintIsNotAskedForAgain, the wire proof for the declined-hint
+# loop. The whole list is one run again rather than the previous one with a
+# line inserted.
+#
+# MEASURED 2026-09-07 on the session box at the M7e head, exactly as this file
+# runs the row (-race -count=1 -v -timeout 180s, -run over the roster), taking
+# the OUTER (re-exec parent) figure per test. This is also the machine CI runs
 # on (D36), so this table and the CI row measure the same hardware:
 #
-#   TestAClientOnALinkWithNoRouterStillAcquires                 3.74
-#   TestADuplicateAddressOnTheLinkIsDeclined                    1.86
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne     2.52
+#   TestAClientOnALinkWithNoRouterStillAcquires                 3.24
+#   TestADeclinedHintIsNotAskedForAgain                         3.59
+#   TestADuplicateAddressOnTheLinkIsDeclined                    1.35
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne     3.06
 #   TestARefusedResumeRestartsAgainstRealDnsmasq                1.35
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq               1.32
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq               4.56
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq               1.29
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq               3.48
 #   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                       1.24
-#   TestASquatterAfterBoundTakesSection24sPath                  2.50
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline     2.46
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline      2.36
-#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.24
-#   TestAV6ClientAcquiresFromRealDnsmasq                        2.61
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport      4.86
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased       2.06
-#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress     5.03
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress   3.08
-#   TestAV6ReleaseReachesRealDnsmasq                            4.84
-#   TestAcquiresFromRealDnsmasq                                 1.18
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq              1.30
-#   TestAnOffClientPutsNoARPOnTheWire                           4.20
-#   TestDeclineAndReleaseReachRealDnsmasq                       2.18
+#   TestASquatterAfterBoundTakesSection24sPath                  2.47
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline     2.56
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline      2.38
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.22
+#   TestAV6ClientAcquiresFromRealDnsmasq                        2.29
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport      4.23
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased       2.07
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress     5.04
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress   3.10
+#   TestAV6ReleaseReachesRealDnsmasq                            4.58
+#   TestAcquiresFromRealDnsmasq                                 1.16
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq              1.26
+#   TestAnOffClientPutsNoARPOnTheWire                           4.16
+#   TestDeclineAndReleaseReachRealDnsmasq                       2.16
 #   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease     4.26
-#   TestPacketTransportDropsWhenTheConsumerStalls               3.64
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress        1.32
+#   TestPacketTransportDropsWhenTheConsumerStalls               3.60
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress        1.30
 #   TestPacketTransportOnARealLink                              1.26
-#   TestRenewalAndNakReachRealDnsmasq                           7.21
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn                  1.18
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic         8.64
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr               1.65
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile             1.48
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                2.65
-#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn     1.14
+#   TestRenewalAndNakReachRealDnsmasq                           7.18
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn                  1.15
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic         9.05
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr               1.60
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile             1.45
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                2.96
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn     1.16
 #
-# The per-test figures sum to 91.92s against a 93s wall clock; the difference
-# is the build, the race instrumentation and the re-exec, and it is why the
-# ceiling is set off the WALL figure. The wall has NOT moved: 94s when 140 was
-# derived at M7c, 93s here over a roster one test larger. The 3.78s the
-# thirty-one previously enumerated tests differ by (88.14 -> 91.92 minus the
-# new row's 1.14s, so 2.64s over 31 tests) is draw-to-draw variation in tests
-# that WAIT on real DHCP, ARP and DAD intervals; one test carries 0.91s of it
-# (TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic, 7.73 -> 8.64, which
-# waits out RFC 5227's randomised initial delay and moved 0.94s the other way
-# the round before).
+# The per-test figures sum to 93.25s against a 94.54s wall clock; the
+# difference is the build, the race instrumentation and the re-exec, and it is
+# why the ceiling is set off the WALL figure. The wall has NOT moved past what
+# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s here over a roster one
+# test larger again. The new test costs 3.59s of it; the remaining 1.4s against
+# the previous run's 91.92s is draw-to-draw variation in tests that WAIT on real
+# DHCP, ARP and DAD intervals.
+#
+# THE VARIANCE IS NOT UNIFORM ACROSS THE LIST, and one row carries most of it.
+# MEASURED 2026-09-07 while building this table: a first pass put
+# TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased at 13.29s against the
+# 2.07s above, and driven alone it drew 2.5, 3.3 and 17.0 seconds in three
+# runs; at the base commit, on an idle box, four runs drew 2.99-3.46s. So the
+# outlier is that test waiting on a real Router Advertisement interval under
+# load, not a regression in this branch — and it is the reason the headroom is
+# a ratio over the wall rather than a margin over the sum.
 #
 # WHAT THIS ENUMERATION STILL DOES NOT HAVE: a gate. Nothing compares the
 # names here against internal/tools/testroster -netns, which is how it came to
 # be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
 # WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum. The re-measurement above does not
-# move it: 93s at 8c87caf over a roster one test larger is inside the 94s the
-# number was derived on, so nothing here is re-derived, only re-checked.
+# derived half and the ceiling is the sum. Neither re-measurement moves it:
+# 93s at 8c87caf over a roster one test larger, and 94.54s at M7e over a roster
+# one larger again, are both at the 94s the number was derived on — so nothing
+# here is re-derived, only re-checked, twice.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
 # the largest round-on-round increase this row has just shown. This round's
-# increase was 16s (78s at e173966, 94s here), so the floor is 32s and 46s
-# clears it.
+# increase was 16s (78s at e173966, 94s when 140 was set; 94.54s at M7e is
+# inside the same figure), so the floor is 32s and 46s clears it.
 #
 # An earlier version of this paragraph said the number was set so that the
 # headroom's RATIO to the measured row does not shrink round on round. That
