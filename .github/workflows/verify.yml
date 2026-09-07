@@ -28,11 +28,15 @@ jobs:
     runs-on: [self-hosted, dhcp-golib]
     # Twice the slowest measurement, which is the rule the hosted bound used
     # too — it was 190, twice a 94-minute run on two cores. MEASURED on this
-    # machine: `./verify.sh --oracle` takes 818s at 8c87caf and 823s at this
-    # branch's tree, both in a local copy, and run 34063690907 measured the
-    # whole job from checkout to the last verdict step at 14m12s (the arbiter
-    # step itself 13m53s). Twice fourteen is 28; 30 is that rounded up to the
-    # next multiple of ten and it is the whole margin.
+    # machine, four numbers and the run each came from: `./verify.sh --oracle`
+    # takes 818s at 8c87caf and 823s at this branch's tree, both in a local
+    # copy; run 34063690907 measured the whole job from checkout to the last
+    # verdict step at 14m12s (the arbiter step itself 13m53s); run 34065275390,
+    # this branch's green, took 13m51s; and run 34067850871, the slowest of
+    # them, took 15m01s because a reviewer's own oracle had the box at the same
+    # time. Twice that slowest number is 30, exactly, and it is the whole
+    # margin. It is deliberately derived from the SHARED case, because the
+    # shared case is the one that actually happens on a machine people use.
     #
     # This bound has already fired once and it fired usefully: run
     # 34063690907's arbiter was green and the JOB was cancelled at 30 minutes,

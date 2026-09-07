@@ -351,10 +351,10 @@ between eighty-seven and ninety-one billed minutes (runs 34036002593,
 self-hosted runner labelled
 `dhcp-golib`, on the same machine every ceiling, floor and timeout in
 `verify.sh` and `verify.manifest.sh` was derived on, where the same command
-takes about thirteen minutes. MEASURED at 8c87caf, `./verify.sh --oracle` wall
-to wall in a local copy and then on the runner in run 34063690907:
-818s and 833s, with the whole job from checkout to verdict a little
-over fourteen minutes. The runner leaves that machine
+takes about a seventh of that. MEASURED: `./verify.sh --oracle` wall to wall in
+a local copy at 8c87caf is 818s, and on the runner the branch's own green run
+34065275390 recorded 831s inside a job of 13m51s, checkout to verdict. The
+runner leaves that machine
 when a shared pool serves this repository, and in any case before this
 repository is public; `runs-on` is the only line that has to move.
 
@@ -366,9 +366,12 @@ Two consequences worth stating rather than discovering:
 - **The lane shares the machine with the people who read it.** A reviewer
   running `./verify.sh --oracle` on that box is competing with the job for the
   same cores, and both are timed against wall-clock ceilings. Measured, not
-  assumed — the figures are in `.claude` and the ruling is simple: one runner,
-  one lane job, and a local full arbiter is not run against a lane job that
-  matters. No ceiling was moved to accommodate it.
+  assumed: run 34067850871 ran the whole lane inside a reviewer's local
+  `--oracle` at the oracle's default job count, and both printed `VERDICT:
+  PASS`. The lane's `netns-suite` went from 90s to 106s against its 140s
+  ceiling and its `unit-suite` from 20s to 24s against 102s. Nothing broke and
+  no ceiling was moved to accommodate it; if contention ever does redden a row,
+  the answer is a scheduling rule, not a looser ceiling.
 
 **The job's verdict IS the arbiter's verdict.** Green means `verify.sh` printed
 `VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything else is

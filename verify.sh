@@ -139,6 +139,12 @@ row_omitted() { # NAME
 # cores are nobody's to predict. What the looseness costs is stated above and
 # is unchanged. Re-deriving it is owed to whichever round makes the lane's
 # machine permanent.
+#
+# The HIGHEST value this row has produced on this machine, which is the number
+# a reader wants when judging whether 102 is loose: 24s, run 34067850871, the
+# lane sharing the box with a reviewer's own `./verify.sh --oracle`. Alone it
+# is 20s (run 34065275390). Contention costs this row four seconds; the
+# ceiling is four times the loaded figure.
 SUITE_CEILING_SECONDS=102
 
 # The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
@@ -306,6 +312,17 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # is dominated by waits, not by cycles. What is NOT held any more is the case
 # where the lane's machine is not this one; when the runner moves off this box
 # the two-measurement shape returns and this paragraph is owed a re-derivation.
+#
+# One machine does not mean one load, and that is now MEASURED rather than
+# argued. Run 34067850871 ran the whole lane while a reviewer's own
+# `./verify.sh --oracle` had the same box (one-minute load average 15 to 20 on
+# 32 cores, against 0.3 idle): this row went 90s -> 106s, an 18 percent cost,
+# and passed. So "dominated by waits" is a statement about the row's SHAPE,
+# not a claim that load cannot move it — load moved it by sixteen seconds. The
+# margin that leaves is 34s: the lane would have to be a further third slower
+# than it was under one co-tenant before this row reddens. That margin is the
+# reason no ceiling moved this round, and it is a number to re-check, not a
+# guarantee, if the box ever carries two co-tenants at once.
 NETNS_CEILING_SECONDS=140
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
