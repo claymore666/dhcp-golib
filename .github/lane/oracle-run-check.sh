@@ -26,6 +26,11 @@
 #      conclusion is `success`. A stamp pointed at a red run fails here — and
 #      the JOB is read rather than the run, because a run's own conclusion is
 #      null while it is still going and can be success over a skipped oracle.
+#      MEASURED rather than argued, and by accident: run 34206597940's skip
+#      rests on run 34204814646, whose own conclusion is `failure` and whose
+#      `the oracle verdict` job is `success`. The matrix passed over all 79
+#      scenarios; a later step of a different job went red. Reading the run
+#      there would have refused an honest skip.
 #   3. the run belongs to THIS repository and to this workflow file. A stamp
 #      naming a run in some other repository fails here.
 #
