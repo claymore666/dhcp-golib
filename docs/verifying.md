@@ -351,6 +351,35 @@ GitHub is as fast as the hosted runner, prefer GitHub" — and for everything
 except the oracle it is. `the arbiter` is the job `dev` is protected on, so it
 is the job that has to meet the rule, and the oracle is the one row that cannot.
 
+**Measured, not asserted.** Three runs of `the arbiter` at the head of the
+branch that moved the lane here, each the whole arbiter with the oracle row
+honestly skipped, on `ubuntu-24.04` with `nproc` 4 and 16 GB — the job prints
+the core count rather than this page assuming it:
+
+| run | job start to verdict | `verify.sh` itself | `unit-suite` | `netns-suite` |
+| --- | --- | --- | --- | --- |
+| 34204814646 | 4m03s | 198s | 42s | 86s |
+| 34206597940 | 4m06s | 201s | 42s | 88s |
+| 34207096133 | 4m20s | 200s | 41s | 87s |
+
+So the rule is met with about forty seconds to spare, and the spare is where a
+reader should look first when it stops being met: roughly half of each job is
+`verify.sh` and the other half is the checkout, the toolchain and the three
+packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of
+ten shards whose longest ran 11m34s (run 34204814646) — which is why it is not
+in this table and not on the way into `dev`.
+
+**The ceilings were re-derived on this image, by the method each states**, and
+that is a thing to do on the machine that runs them rather than a formality:
+`SUITE_CEILING_SECONDS` moved 102 to 84 (twice the slowest of the three figures
+above, the rule unchanged; the old value came from a two-core hosted runner and
+was 2.4 times what this image draws), and `NETNS_CEILING_SECONDS` stayed at 140
+(the measured wall plus headroom that covers two more rounds of this row's
+largest increase; 140 minus 88 leaves 52s against a floor of 32s). The
+`ceiling-band` scenario's own band moved with them, 5..120 to 13..102, and its
+edges are now derived from this row's figures instead of being inherited from a
+ceiling two values ago.
+
 **When the oracle runs**, stated here and enforced in the workflow rather than
 the other way round:
 
@@ -679,8 +708,9 @@ image again:
   ran past the ceiling and nothing else was wrong with them (runs 33992151078,
   34008425787). The matrix answers it by running one copy per shard and putting
   the parallelism across jobs, and the ceilings themselves are re-derived on the
-  image that runs them; `verify.manifest.sh` states each derivation beside its
-  number.
+  image that runs them; `verify.sh` states each derivation beside its number
+  and `verify.manifest.sh` pins the value, so moving one is an edit in two
+  files.
 - **Scheduling, and this is the one that found a real defect.** Two cores made
   `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlock: the waiter it
   drives returned through its match arm without reporting the frame that ended

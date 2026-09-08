@@ -494,7 +494,7 @@ SELF_DRIVE_SURVIVES_N=5
 # population that FELL is a one-line edit here rather than a silent widening,
 # and a population that ROSE is the same one-line edit. RE-MEASURED after this
 # round's rewrite of "In CI": 64.
-DOC_NUMBER_CEILING=64
+DOC_NUMBER_CEILING=69
 
 # How far UNDER the ceiling the population may sit before the row refuses.
 #
@@ -784,7 +784,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:102,netns-ceiling-seconds:140|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:140|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

@@ -177,23 +177,44 @@ fi
 # it was paid deliberately — the alternative shapes (an environment override,
 # a machine-relative derivation) were measured or ruled out first.
 #
-# 2026-09-06, D36: there is now ONE machine. CI runs on the box this
-# paragraph calls "the session box", so the number no longer serves two, and
-# the 102 above is a hosted-runner measurement kept in force over a machine
-# that never produced it. It is NOT re-derived down here, and that is a
-# choice: a ceiling derived from a 51s two-core run is loose on this box but
-# it is loose in the safe direction, the runner arrangement is temporary, and
-# lowering it would have to be undone the day the lane moves to a pool whose
-# cores are nobody's to predict. What the looseness costs is stated above and
-# is unchanged. Re-deriving it is owed to whichever round makes the lane's
-# machine permanent.
+# 2026-09-06, D36: there is now ONE machine. CI ran on the box that paragraph
+# calls "the session box", so the number no longer served two, and the 102
+# above was a hosted-runner measurement kept in force over a machine that
+# never produced it. It was NOT re-derived there, deliberately: the runner
+# arrangement was temporary, and lowering a ceiling for a machine that is
+# about to change is work that has to be undone. Re-deriving it was owed to
+# whichever round made the lane's machine permanent.
 #
-# The HIGHEST value this row has produced on this machine, which is the number
-# a reader wants when judging whether 102 is loose: 24s, run 34067850871, the
-# lane sharing the box with a reviewer's own `./verify.sh --oracle`. Alone it
-# is 20s (run 34065275390). Contention costs this row four seconds; the
-# ceiling is four times the loaded figure.
-SUITE_CEILING_SECONDS=102
+# 2026-09-08, D41, 102 -> 84, and this is that round. The lane runs on
+# GitHub-hosted `ubuntu-24.04` and nothing else; the self-hosted runner is
+# idle. The RULE IS UNCHANGED — twice the slowest measurement of the unmutated
+# suite in the shape CI runs it — and it is applied to three runs at the head
+# of this branch on the image that now runs the lane, `nproc` 4 (printed by the
+# job, not assumed): 42s run 34204814646, 42s run 34206597940, 41s run
+# 34207096133. Twice 42 is 84. The old 102 came from 51s on a TWO-core hosted
+# runner and is 2.4 times the figure this machine draws, which is looser than
+# the rule asks; nothing about the suite changed, the machine did.
+#
+# WHAT 84 STILL HAS TO COVER, and it is the reason this is not simply 2x: a
+# scenario runs a COPY of this suite, and a copy is not the shape the rule
+# measures. The one figure that pairs the two is from the two-core image: 63s
+# in a copy against 51s in the arbiter, a ratio of 1.24. Applied to 42s that
+# is 52s, and 84 leaves 32s over it. A COPY'S FIGURE IS NOT OBSERVABLE FROM
+# OUTSIDE, which is the bound rather than the argument: scripts/test-verify.sh
+# squashes digits out of every observation it records, so the only evidence
+# that a copy stayed under this number is that no scenario reddened on it. The
+# matrix run of the push that introduced this value is that evidence, over all
+# 79 scenarios; a copy that breached 84 would have reddened its scenario's
+# unit-suite row and taken its shard with it.
+#
+# The HIGHEST value this row has produced on the machine that used to run the
+# lane, kept because it is what a reader wants when judging a ceiling against
+# a faster box: 24s, run 34067850871, that lane sharing the box with a
+# reviewer's own `./verify.sh --oracle`; alone it was 20s (run 34065275390).
+# Contention cost this row four seconds there. On the hosted image the same
+# question is answered by the facts step, which prints the load average before
+# and after every arbiter run.
+SUITE_CEILING_SECONDS=84
 
 # The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
 # cannot bound a hang: it is computed after `go test` returns (scenario
@@ -373,6 +394,23 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # is dominated by waits, not by cycles. What is NOT held any more is the case
 # where the lane's machine is not this one; when the runner moves off this box
 # the two-measurement shape returns and this paragraph is owed a re-derivation.
+#
+# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 is
+# RE-CHECKED rather than re-derived. The lane runs on GitHub-hosted
+# `ubuntu-24.04`, `nproc` 4. Three runs at the head: 86s run 34204814646, 88s
+# run 34206597940, 87s run 34207096133. The rule is the one stated above — the
+# ceiling is the measured wall plus headroom, and the headroom must cover two
+# more rounds of the largest round-on-round increase this row has shown, a 32s
+# floor. 140 minus the slowest of the three is 52s of headroom, which clears
+# it, so nothing moves.
+#
+# And the two-measurement shape did return, with the reassurance it used to
+# carry: 88s on a four-core hosted image against 94.54s on a thirty-two-core
+# box for the same roster. The machine with a quarter of the cores is FASTER
+# here, which is the same result the two-core runner gave against this box in
+# 2026-09, and it is what "dominated by waits" means when it is measured
+# rather than asserted. Two machines can disagree again, so they can warn
+# again.
 #
 # One machine does not mean one load, and that is now MEASURED rather than
 # argued. Run 34067850871 ran the whole lane while a reviewer's own

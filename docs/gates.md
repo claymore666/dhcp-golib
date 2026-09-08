@@ -124,7 +124,7 @@ plugin for months.
   restricted too: a deadline on a context is a wall-clock wait under another
   name, because whatever blocks on `ctx.Done()` is blocking until a timer
   fires.
-- **A wall-clock ceiling on the suite**, in `verify.sh`, currently 60s. This is
+- **A wall-clock ceiling on the suite**, in `verify.sh`, currently 84s. This is
   a genuinely different instrument: the gate reads source, the ceiling reads
   the clock, so a wait the gate cannot see still costs time here.
 

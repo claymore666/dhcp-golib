@@ -2083,8 +2083,30 @@ sc_ceiling_band() {
 		note "verify.sh declares no numeric NETNS_CEILING_SECONDS; the netns row's wall-clock ceiling is gone"
 		return
 	}
-	[ "$v" -ge 5 ] && [ "$v" -le 120 ] ||
-		note "SUITE_CEILING_SECONDS=$v is outside 5..120; a ceiling no suite can reach is not a ceiling"
+	# 13..102, and the band is DERIVED, 2026-09-08 (D41). It used to be 5..120
+	# with no derivation written anywhere, set when the ceiling it bounds was
+	# 60 and left where it was when that ceiling became 102. Both edges now
+	# come from the same two rules the netns band below already states, applied
+	# to this row's own figures on the machines the lane runs on — which since
+	# D41 is GitHub-hosted `ubuntu-24.04` and nothing else:
+	#
+	#   UPPER 102 = twice the LARGEST healthy figure this row has drawn on a
+	#   lane machine (51s, two-core hosted, run 34008425787). Twice the slowest
+	#   measurement is the ceiling's own derivation rule, so the upper edge is
+	#   the largest ceiling any lane machine has ever justified. A slower image
+	#   than any seen yet needs a deliberate edit in two files, which is the
+	#   whole point of pinning the value in the manifest as well.
+	#
+	#   LOWER 13 = under a third of the SMALLEST healthy figure on a lane
+	#   machine (41s, run 34207096133). A ceiling under the figure the healthy
+	#   row draws reddens every green run and gets the row discharged; the
+	#   netns band's lower edge is derived the same way and for the same
+	#   reason.
+	#
+	# Both edges TIGHTEN: 5 -> 13 and 120 -> 102. The value they bound today is
+	# 84.
+	[ "$v" -ge 13 ] && [ "$v" -le 102 ] ||
+		note "SUITE_CEILING_SECONDS=$v is outside 13..102; a ceiling under the healthy row's own figure reddens every run, and one above twice the slowest figure any lane machine has drawn is not a drift detector"
 	# The netns band's edges are NOT the suite's, and neither is guessed. 175 is
 	# the last value below NETNS_TIMEOUT_SECONDS=180: a netns ceiling at or
 	# above the hang timeout can never fire, because the parent kills the run
