@@ -254,7 +254,7 @@ Neither was driven by a re-run of this sweep:
 | `shellcheck`| 2 |
 | `gate-roster` | 3 |
 | the `t1`/`t2` gate loop | 6 |
-| `unit-suite` | REFUSED when a scenario dies without reporting |
+| `unit-suite` | REFUSED; a scenario died without reporting |
 | `verify-oracle` | 4, but see the bound below |
 
 `vet` is why this sweep is in the document and not in a transcript. It was the
@@ -770,7 +770,7 @@ down, `min-declared-tests-margin` drives up with `MAX_DECLARED_MARGIN + 1` tests
 derived from the manifest, and `ceiling-control`, which plants exactly one, is
 the preservation control that stops the band collapsing back to an equality.
 
-**The margin is DERIVED.** One measurement would not have held. Round 12's
+**The margin is DERIVED.** It was not measured once. Round 12's
 review pointed out that a literal sitting at today's maximum under a cap of four
 could be quadrupled one line at a time, each edit looking exactly like the
 maintenance this design claims to remove.
@@ -1035,11 +1035,11 @@ The two kinds fail in opposite directions and neither subsumes the other. The
 generated ones cover ADDITIONS to a table; the hand-written ones cover
 REMOVALS.
 
-**The bound on the hand-written half is open today.** It is no future risk. Most
-allowlisted identifiers are named in no `_test.go` file at all, so most of the
-allowlist could be narrowed with nothing going red. Identifier narrowings against
-today's tables were measured by review both surviving and dying. PACKAGE
-narrowings are covered, all of them dying.
+**The bound on the hand-written half is open today.** It is not a risk that
+arrives later. Most allowlisted identifiers are named in no `_test.go` file at
+all, so most of the allowlist could be narrowed with nothing going red.
+Identifier narrowings against today's tables were measured by review both
+surviving and dying. PACKAGE narrowings are covered, all of them dying.
 
 **The figures are left out here on purpose, and the reason is a defect this
 document committed three times.** A ratio, four per-package ratios and a count
@@ -1061,8 +1061,8 @@ Run it:
 go test ./internal/gates/... -run TestNarrowingCoverageIsMeasured -v
 ```
 
-When it cannot find the test files it refuses, and it never reports zero
-coverage, so it is a measurement a run makes and no sentence in a document.
+When it cannot find the test files it refuses, so it is a measurement a run
+makes and no sentence in a document.
 
 This paragraph also used to read "a package admitted **later** and never written
 into those fixtures", which described a present-tense escape as a future one. It

@@ -672,7 +672,8 @@ label is not one of GitHub's hosted images within reach of a `pull_request` or
 called with `uses:` runs its jobs on the calling repository's runners and so
 inherits its caller's triggers. Outside the subset it REFUSES the file, naming
 the line and the shape it would not read, and a refusal is red. So the claim this
-row supports is the one the refusal makes true by construction:
+row supports is no universal over every workflow that could be written. It is the
+one the refusal makes true by construction:
 
 > Every workflow in this repository is written in the subset the scan reads,
 > and within that subset no job on a runner of ours is reachable from a fork's

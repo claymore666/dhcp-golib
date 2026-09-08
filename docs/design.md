@@ -71,8 +71,7 @@ them.
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
-entry below is a test, and each one names it. The DHCPv6 half has its own list
-after the IPv4 one.
+entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
 
 - **A lease from a real server.** [`runtime`](../runtime)'s test re-executes itself into a
   user and network namespace, wires a veth pair, runs dnsmasq on one end and

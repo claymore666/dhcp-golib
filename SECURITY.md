@@ -51,8 +51,8 @@ interface. Findings there are the ones this project most wants to hear about:
 
 A **hostile DHCP server** is only partly in scope. A client necessarily trusts
 the server for addressing, so a server that hands out an address or a route you
-did not want is a network-design problem. Handling its bytes unsafely is a
-defect here.
+did not want is a network-design problem and not a defect here. Handling its
+bytes unsafely is a defect here.
 
 ## Supported versions
 
@@ -65,7 +65,7 @@ rows measures and what it cannot see. Beside it, on GitHub-hosted machines:
 CodeQL over the Go source and over the workflows, `govulncheck` for advisories
 reachable from code this module calls, and `actionlint` over the workflows.
 The workflows themselves are held to five published properties, each stated
-once in `docs/verifying.md` and checked by the unit suite: The word `secrets`
+once in [`docs/verifying.md`](docs/verifying.md) and checked by the unit suite: The word `secrets`
 does not appear anywhere under `.github/`. Every file under `.github/` is text,
 in UTF-8. No job on a runner of ours is reachable from a fork's pull request.
 No workflow grants a permission these checks do not need. No workflow here is
