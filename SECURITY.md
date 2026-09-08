@@ -64,7 +64,14 @@ The latest tagged release. There is no backport policy.
 rows measures and what it cannot see. Beside it, on GitHub-hosted machines:
 CodeQL over the Go source and over the workflows, `govulncheck` for advisories
 reachable from code this module calls, and `actionlint` over the workflows.
-The workflows themselves are held to two published properties — no job on a
-machine of ours is reachable from a fork's pull request, and the word
-`secrets` appears nowhere under `.github/` — which the unit suite checks and
-`docs/verifying.md` states.
+The workflows themselves are held to five published properties, each stated
+once in `docs/verifying.md` and checked by the unit suite: The word `secrets`
+does not appear anywhere under `.github/`. Every file under `.github/` is text,
+in UTF-8. No job on a runner of ours is reachable from a fork's pull request.
+No workflow grants a permission these checks do not need. No workflow here is
+triggered by `pull_request_target`.
+
+Those sentences are quoted from that page rather than restated here, and a test
+refuses a disagreement between the two — the count, and each sentence word for
+word. A security page that undercounts what runs is worse than one that says
+nothing, because a reporter reads it to decide what is already covered.

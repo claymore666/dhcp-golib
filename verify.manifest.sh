@@ -351,7 +351,21 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     ThisReaderCanRead, TheTextRefusalSpeaksInBothDirections,
 #     NoWorkflowGrantsAPermissionTheseChecksDoNotNeed,
 #     ThePermissionRefusalSpeaksInBothDirections
-MIN_DECLARED_TESTS=628
+#
+# D37 ROUND 2: 628 -> 632, measured the same way. Two of the four close review
+# round 1's finding 2 — the fork triggers are two events and one of them hands
+# out this repository's own token — and two close its finding 3, holding the
+# security page to the page it cites:
+#
+#   internal/publication/workflows_test.go (4)  NoWorkflowIsTriggeredBy
+#     PullRequestTarget, ThePullRequestTargetRefusalSpeaksInBothDirections,
+#     TheSecurityPageStatesTheRulesTheVerifyingPageStates,
+#     TheRuleAgreementSpeaksInBothDirections
+#
+# The round's BLOCKING finding added no test: the permitted set became a set of
+# pairs rather than a set of names, and the value half is driven by six cases
+# inside ThePermissionRefusalSpeaksInBothDirections, which already existed.
+MIN_DECLARED_TESTS=632
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

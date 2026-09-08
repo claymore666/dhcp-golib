@@ -874,6 +874,241 @@ func TestNoSelfHostedJobIsReachableFromAForkPullRequest(t *testing.T) {
 	}
 }
 
+// pullRequestTargetFindings refuses `pull_request_target` outright, on any
+// runner, in any workflow here.
+//
+// THE TWO FORK TRIGGERS ARE NOT ONE THING, which is review round 1 of D37's
+// finding 2 and the reason this is its own rule rather than a member of
+// forkTriggers. Rule Three is about the MACHINE and treats them together
+// correctly: a self-hosted job is refused under either. But a HOSTED job is
+// refused under neither, and the difference between them is the TOKEN:
+//
+//	pull_request         the fork's tree, on GitHub's image, with a read-only
+//	                     token and no access to this repository's secrets.
+//	                     Harmless, and the three scans want it.
+//	pull_request_target  the BASE branch's workflow definition, on GitHub's
+//	                     image, with THIS repository's own token and whatever
+//	                     `permissions:` grants it. The fork's head is one
+//	                     `ref:` away in a checkout, and then a stranger's code
+//	                     is running beside a writable token.
+//
+// Round 1 published a sentence — "the property that has to stay true is about
+// the MACHINE a job runs on, not about the trigger" — which is true of rule
+// Three and reads as sanctioning `pull_request_target` on a hosted runner.
+// MEASURED by the reviewer at e44a4a0: planted hosted + `pull_request_target`,
+// `ok`; composed with `contents: write` and a checkout of the pull request's
+// head, also `ok`. Two rules were needed and one was written.
+//
+// The decision this rule states: nothing here uses `pull_request_target`, on
+// any runner, for any reason. Every check in this repository reads a tree and
+// writes a verdict about it; not one of them needs a token that can act on
+// this repository on a stranger's behalf. That makes the refusal absolute
+// rather than a judgement about how a particular workflow uses it — the
+// judgement is what the reviewer could not make from the page, and an absolute
+// needs no reader to be right about a checkout step.
+func pullRequestTargetFindings(ws []workflow) []string {
+	var out []string
+	for _, w := range ws {
+		for _, tr := range w.triggers {
+			if tr != "pull_request_target" {
+				continue
+			}
+			from := ""
+			if v := w.via[tr]; v != "" {
+				from = ", a trigger it inherits from " + v
+			}
+			out = append(out, w.name+": is triggered by pull_request_target"+from+"; that event runs this repository's own token, with whatever `permissions:` grants, beside a tree a stranger proposed — the runner does not matter and no job here needs it. Use `pull_request`, which gets a read-only token, or `push`, which a fork cannot reach")
+		}
+	}
+	return out
+}
+
+// TestNoWorkflowIsTriggeredByPullRequestTarget is the fifth rule. Like the
+// permission row it is vacuous over the tree by design — no workflow here has
+// ever carried the trigger — so its verdict is driven in
+// TestThePullRequestTargetRefusalSpeaksInBothDirections, and this row is that
+// machinery applied to the tree.
+func TestNoWorkflowIsTriggeredByPullRequestTarget(t *testing.T) {
+	ws, _ := treeWorkflows(t)
+	for _, f := range pullRequestTargetFindings(ws) {
+		t.Error(f)
+	}
+}
+
+// TestThePullRequestTargetRefusalSpeaksInBothDirections drives it, and the
+// first two cases are the reviewer's plants: the trigger on a HOSTED runner,
+// which every other rule in this file accepts.
+func TestThePullRequestTargetRefusalSpeaksInBothDirections(t *testing.T) {
+	const hostedTarget = "name: t\non:\n  pull_request_target:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n"
+	for _, c := range []struct {
+		name   string
+		text   string
+		refuse bool
+	}{
+		{"a hosted job on pull_request_target", hostedTarget, true},
+		{"the same with a checkout of the pull request head", "name: t\non:\n  pull_request_target:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v5\n", true},
+		{"a self-hosted job on pull_request_target, which rule Three also refuses", "name: t\non:\n  pull_request_target:\njobs:\n  j:\n    runs-on: [self-hosted, linux]\n    steps:\n      - run: echo\n", true},
+		{"the trigger in an inline list", "name: t\non: [push, pull_request_target]\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n", true},
+		{"pull_request alone is the permitted one", "name: t\non:\n  pull_request:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n", false},
+		{"push alone", "name: t\non:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n", false},
+		{"a key named pull_request_target under a trigger is not a trigger", "name: t\non:\n  push:\n    pull_request_target: x\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := pullRequestTargetFindings([]workflow{scanWorkflow("case.yml", c.text)})
+			if (len(got) > 0) != c.refuse {
+				t.Fatalf("refused = %t, want %t (%v)", len(got) > 0, c.refuse, got)
+			}
+			if c.refuse && !strings.Contains(got[0], "read-only token") {
+				t.Errorf("the refusal is %q; want it to name the remedy, which is what a maintainer acts on", got[0])
+			}
+		})
+	}
+
+	// THE ROW ITSELF, over a directory this test builds, because the tree gives
+	// it nothing to find: a row applied only to a clean tree is a row nobody
+	// has seen speak, and this one would be green over an empty directory too.
+	ws := []workflow{scanWorkflow("clean.yml", "name: t\non:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo\n")}
+	if got := pullRequestTargetFindings(ws); len(got) != 0 {
+		t.Errorf("a clean set produced %v; the rule must be silent over what it permits", got)
+	}
+	if got := pullRequestTargetFindings(append(ws, scanWorkflow("planted.yml", hostedTarget))); len(got) != 1 {
+		t.Errorf("a set of two, one of them planted, produced %d finding(s); want exactly the planted one", len(got))
+	}
+}
+
+// verifyingPage and securityPage are the two published pages this package
+// holds to each other. Neither is under .github/, so no other rule in this
+// file reads them.
+const (
+	verifyingPage = "../../docs/verifying.md"
+	securityPage  = "../../SECURITY.md"
+)
+
+var (
+	ruleHeading   = regexp.MustCompile(`(?m)^> \*\*([A-Z][a-z]+)\.\*\* (.+)$`)
+	carriesRules  = regexp.MustCompile(`it carries\s+([a-z]+)\s+rules`)
+	heldToRules   = regexp.MustCompile(`held to ([a-z]+) published properties`)
+	numberWords   = map[string]int{"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+	ordinalNumber = map[string]int{"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5, "Six": 6, "Seven": 7, "Eight": 8, "Nine": 9, "Ten": 10}
+	// whitespaceRun collapses a wrapped sentence to one line before the
+	// quotation is looked for. Both pages are wrapped prose, and a rule
+	// sentence that fits on one line here and wraps there is the same
+	// sentence; a check that said otherwise would be a check about columns.
+	whitespaceRun = regexp.MustCompile(`\s+`)
+)
+
+// ruleAgreementFindings holds SECURITY.md to docs/verifying.md.
+//
+// WHY THIS EXISTS. Review round 1 of D37's finding 3: SECURITY.md told a
+// reporter the workflows are "held to two published properties" and named the
+// word and fork rules, in the same commit that made docs/verifying.md say four.
+// It is defeat P7 — a new section refuting an older claim in the same tree —
+// on a file P7's own list did not carry, and nothing went red. A security page
+// that undercounts what runs is worse than one that says nothing: a reporter
+// reads it to decide what is already covered.
+//
+// WHAT IT CHECKS, and it is deliberately three legs rather than a count:
+//
+//  1. The ordinals in docs/verifying.md are One, Two, … with no gap and no
+//     repeat. A rule appended without renumbering is red here.
+//  2. The page's own sentence "it carries <word> rules" spells that count.
+//  3. SECURITY.md's "held to <word> published properties" spells the same
+//     count AND quotes every rule's headline sentence verbatim. Quoting is
+//     what makes this more than a number: a rule reworded, renamed or added
+//     reddens even when the count did not move, which a count alone cannot
+//     see.
+//
+// WHAT IT DOES NOT CHECK, stated beside the claim: that either sentence is
+// TRUE of the code. The rules are five prose headings and five tests, and
+// nothing derives one population from the other — that is the residue, and it
+// is written in the round's record rather than left here as a silence.
+func ruleAgreementFindings(verifying, security string) []string {
+	var out []string
+	heads := ruleHeading.FindAllStringSubmatch(verifying, -1)
+	if len(heads) == 0 {
+		return []string{verifyingPage + ": no rule heading of the form `> **One.** …` was found; the reader that holds the security page to this one reads nothing, and a check over nothing agrees with every claim"}
+	}
+	for i, h := range heads {
+		n, ok := ordinalNumber[h[1]]
+		if !ok {
+			out = append(out, fmt.Sprintf("%s: rule heading %q is not an ordinal this reader enumerates", verifyingPage, h[1]))
+			continue
+		}
+		if n != i+1 {
+			out = append(out, fmt.Sprintf("%s: rule %q is the %d rule on the page; the ordinals must run One, Two, … with no gap, or a rule appended without renumbering is invisible", verifyingPage, h[1], i+1))
+		}
+	}
+	want := len(heads)
+	if m := carriesRules.FindStringSubmatch(verifying); m == nil {
+		out = append(out, fmt.Sprintf("%s: the sentence naming how many rules the observer carries was not found; it is the sentence SECURITY.md is held to", verifyingPage))
+	} else if got := numberWords[m[1]]; got != want {
+		out = append(out, fmt.Sprintf("%s: says it carries %q rules and states %d; write the count the page states", verifyingPage, m[1], want))
+	}
+	if m := heldToRules.FindStringSubmatch(security); m == nil {
+		out = append(out, fmt.Sprintf("%s: the sentence \"held to <count> published properties\" was not found; a reporter is told what covers the workflows there and it must be read from %s", securityPage, verifyingPage))
+	} else if got := numberWords[m[1]]; got != want {
+		out = append(out, fmt.Sprintf("%s: tells a reporter the workflows are held to %q published properties; %s states %d", securityPage, m[1], verifyingPage, want))
+	}
+	flatSecurity := whitespaceRun.ReplaceAllString(security, " ")
+	for _, h := range heads {
+		if !strings.Contains(flatSecurity, whitespaceRun.ReplaceAllString(strings.TrimSpace(h[2]), " ")) {
+			out = append(out, fmt.Sprintf("%s: does not carry rule %s's sentence from %s, %q; the security page quotes each rule verbatim so that rewording one is red here rather than noticed later", securityPage, h[1], verifyingPage, strings.TrimSpace(h[2])))
+		}
+	}
+	return out
+}
+
+// TestTheSecurityPageStatesTheRulesTheVerifyingPageStates is the row.
+func TestTheSecurityPageStatesTheRulesTheVerifyingPageStates(t *testing.T) {
+	v, err := os.ReadFile(verifyingPage)
+	if err != nil {
+		t.Fatalf("reading %s: %v", verifyingPage, err)
+	}
+	sec, err := os.ReadFile(securityPage)
+	if err != nil {
+		t.Fatalf("reading %s: %v", securityPage, err)
+	}
+	for _, f := range ruleAgreementFindings(string(v), string(sec)) {
+		t.Error(f)
+	}
+}
+
+// TestTheRuleAgreementSpeaksInBothDirections drives it. The tree satisfies the
+// row above, so every verdict it can reach is planted here.
+func TestTheRuleAgreementSpeaksInBothDirections(t *testing.T) {
+	const goodV = "**The observer is `internal/publication`**, and it carries two rules.\n\n> **One.** Alpha holds.\n\ntext\n\n> **Two.** Beta holds.\n"
+	const goodS = "The workflows themselves are held to two published properties — Alpha holds. and Beta holds. — which the unit suite checks.\n"
+	for _, c := range []struct {
+		name   string
+		v, sec string
+		says   string
+	}{
+		{"the two pages agree", goodV, goodS, ""},
+		// The preservation control for collapsing whitespace: the quotation
+		// is a sentence, not a column layout, and a widening needs one.
+		{"a quoted sentence wrapped across lines is the same sentence", goodV, strings.Replace(goodS, "Alpha holds.", "Alpha\nholds.", 1), ""},
+		{"but a word dropped from it is not", goodV, strings.Replace(goodS, "Alpha holds.", "Alpha\n.", 1), "does not carry rule One's sentence"},
+		{"the security page undercounts, which is finding 3 itself", goodV, strings.Replace(goodS, "held to two", "held to one", 1), "published properties"},
+		{"the security page overcounts", goodV, strings.Replace(goodS, "held to two", "held to three", 1), "published properties"},
+		{"the verifying page's own count is stale", strings.Replace(goodV, "carries two rules", "carries three rules", 1), goodS, "says it carries"},
+		{"a rule is appended and neither count moves", goodV + "\n> **Three.** Gamma holds.\n", goodS, "states 3"},
+		{"a rule is reworded on one page only", strings.Replace(goodV, "Beta holds.", "Beta no longer holds.", 1), goodS, "does not carry rule Two's sentence"},
+		{"the ordinals skip one", strings.Replace(goodV, "**Two.**", "**Three.**", 1), goodS, "no gap"},
+		{"the security page says nothing about the rules at all", goodV, "Report a vulnerability through the advisory form.\n", "was not found"},
+		{"the verifying page has no rule headings, so the reader reads nothing", "it carries two rules, and here they are not\n", goodS, "check over nothing"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := ruleAgreementFindings(c.v, c.sec)
+			if (len(got) > 0) != (c.says != "") {
+				t.Fatalf("findings = %v, want refusal = %t", got, c.says != "")
+			}
+			if c.says != "" && !strings.Contains(strings.Join(got, "\n"), c.says) {
+				t.Errorf("the findings are %v; want one to say %q", got, c.says)
+			}
+		})
+	}
+}
+
 // TestTheWordSecretsAppearsNowhereUnderGithub is the second half of the same
 // argument, and it is the whole of the second rule. The lane needs no secret —
 // its whole output is a verdict — and a lane that holds none has nothing for a
@@ -2433,26 +2668,45 @@ func TestTheTextRefusalSpeaksInBothDirections(t *testing.T) {
 	}
 }
 
-// permittedScopes is a CLOSED SET, and that is the whole design of the rule
-// below. It is not "id-token is forbidden": an enumeration of the grants that
-// are dangerous cannot be finished, and the one this repository was told about
-// (D29 sweep review r4, row 2) would have been the only member. It is the
-// complement — the grants these checks need — and everything else is refused by
-// name, so a scope nobody here has heard of is refused on the day it is
-// written rather than on the day somebody thinks to add it.
+// permittedGrants is a CLOSED SET OF PAIRS, and that is the whole design of
+// the rule below. It is not "id-token is forbidden": an enumeration of the
+// grants that are dangerous cannot be finished, and the one this repository was
+// told about (D29 sweep review r4, row 2) would have been the only member. It
+// is the complement — the grants these checks need, each at the value it needs
+// them at — and everything else is refused by name and value, so a scope nobody
+// here has heard of, and a scope this repository knows at a value it does not
+// need, are both refused on the day they are written rather than on the day
+// somebody thinks to add them.
 //
-// The three, and why each is here:
+// IT IS A SET OF PAIRS AND NOT A SET OF NAMES, and review round 1 of D37 is
+// why. This map was `map[string]bool` over the three names, `scopeRefusal`
+// tested membership alone, and the page beside it published the set as
+// scope-with-value — "`contents` (the checkout, read) … `security-events`
+// (write … the only grant here that writes anything at all)". So
+// `permissions: contents: write` on a hosted job passed the whole package:
+// a token that can push to this repository, reached with no `secrets` word
+// anywhere and no `id-token`, which is precisely the class row 2 was carried
+// for. MEASURED by the reviewer at e44a4a0 — planted, `ok`, no refusal. The
+// published rule and the code now say the same thing, and the value half is
+// driven in the case list.
 //
-//	contents         the checkout. Read. Nothing here writes to the repository.
-//	actions          the oracle skip, and nothing else: the lane asks the API
-//	                 whether a green job published this arbiter's hash. Read.
-//	security-events  the SARIF upload from CodeQL, which is the one grant in
-//	                 this set that writes anything at all, and what it writes
-//	                 is a report about the tree it was given.
-var permittedScopes = map[string]bool{
-	"contents":        true,
-	"actions":         true,
-	"security-events": true,
+// The three, and why each is at the value it is:
+//
+//	contents: read         the checkout. Nothing here writes to the repository,
+//	                       and `contents: write` is the grant that would.
+//	actions: read          the oracle skip, and nothing else: the lane asks the
+//	                       API whether a green job published this arbiter's hash.
+//	security-events: write the SARIF upload from CodeQL, the one grant in this
+//	                       set that writes anything at all, and what it writes
+//	                       is a report about the tree it was given.
+//
+// A scope set to `none` is permitted whatever its name and is handled before
+// this map is consulted: a workflow spelling out that it wants no token is
+// saying the right thing.
+var permittedGrants = map[string]string{
+	"contents":        "read",
+	"actions":         "read",
+	"security-events": "write",
 }
 
 // permissionValues are the three values GitHub honours for a scope. A value
@@ -2479,8 +2733,12 @@ func scopeRefusal(name string, line int, scope, value string) string {
 	if scope == "id-token" {
 		return fmt.Sprintf("%s:%d: `id-token: %s` — this mints an OIDC token for the job, which is a credential reached without the word this directory forbids: nothing in `.github/` would spell `secrets` and a job could still authenticate to something outside it. No check here needs one. Widening this is a deliberate, reviewed change to this rule and its cases, with the argument for what that job authenticates to", name, line, value)
 	}
-	if !permittedScopes[scope] {
-		return fmt.Sprintf("%s:%d: `%s: %s` — a grant outside the set the checks in this repository need (`contents`, `actions`, `security-events`). A workflow that needs another one is a deliberate widening of `permittedScopes` and of the sentence in docs/verifying.md, never a grant that arrived with a step", name, line, scope, value)
+	want, known := permittedGrants[scope]
+	if !known {
+		return fmt.Sprintf("%s:%d: `%s: %s` — a grant outside the set the checks in this repository need (`contents: read`, `actions: read`, `security-events: write`). A workflow that needs another one is a deliberate widening of `permittedGrants` and of the sentence in docs/verifying.md, never a grant that arrived with a step", name, line, scope, value)
+	}
+	if value != want {
+		return fmt.Sprintf("%s:%d: `%s: %s` — `%s` is needed here at `%s` and at nothing else, and this is not that value. The permitted set is PAIRS and not names, so a scope this repository knows at a value it does not need is refused exactly as a scope nobody here needs is; `contents: write` is the one that hands out a token which can push to this repository, with no `secrets` word and no `id-token` anywhere. `%s: none` is always permitted. Widening this is a deliberate change to `permittedGrants` and to the sentence in docs/verifying.md", name, line, scope, value, scope, want, scope)
 	}
 	return ""
 }
@@ -2652,6 +2910,17 @@ func TestThePermissionRefusalSpeaksInBothDirections(t *testing.T) {
 		{"asked for and declined", "permissions:\n  id-token: none\n", false, ""},
 		{"a scope outside the set these checks need", "permissions:\n  contents: read\n  packages: write\n", true, "outside the set"},
 		{"the set these checks need", "permissions:\n  contents: read\n  actions: read\n  security-events: write\n", false, ""},
+
+		// THE VALUE HALF, which review round 1 of D37 found unread. Every one
+		// of these is a scope the set permits, at a value it does not, and the
+		// first is the finding itself: a token that can push to this
+		// repository, with no `secrets` word and no `id-token` anywhere.
+		{"a permitted scope at write is a push token", "permissions:\n  contents: write\n", true, "`contents` is needed here at `read`"},
+		{"the reviewer's plant, both scopes at write", "permissions:\n  contents: write\n  actions: write\n", true, "`actions` is needed here at `read`"},
+		{"the same at job level", "jobs:\n  j:\n    permissions:\n      contents: write\n", true, "`contents` is needed here at `read`"},
+		{"the same as a flow mapping", "permissions: {contents: read, actions: write}\n", true, "`actions` is needed here at `read`"},
+		{"a permitted scope narrower than the check needs is still not the pair", "permissions:\n  security-events: read\n", true, "`security-events` is needed here at `write`"},
+		{"every permitted scope declined outright", "permissions:\n  contents: none\n  actions: none\n  security-events: none\n", false, ""},
 		{"granting nothing", "permissions: {}\n", false, ""},
 		{"read-all is a grant nobody wrote down", "permissions: read-all\n", true, "outside the subset"},
 		{"write-all likewise", "permissions: write-all\n", true, "outside the subset"},
@@ -2682,18 +2951,20 @@ func TestThePermissionRefusalSpeaksInBothDirections(t *testing.T) {
 
 	// THE SET ITSELF, because the arms above are two guards over one decision
 	// and the mutation campaign showed it: writing `id-token` into
-	// permittedScopes changes no verdict while the arm that names it stands, so
+	// permittedGrants changes no verdict while the arm that names it stands, so
 	// the widening that matters most is the one the cases could not see. The
 	// membership is the rule; it is read here rather than left to whichever
-	// arm happens to fire first.
-	want := []string{"actions", "contents", "security-events"}
+	// arm happens to fire first. It is read as PAIRS, because a set of names
+	// read back as names is what round 1 of D37 shipped: the assertion agreed
+	// with a map that permitted `contents` at any value at all.
+	want := []string{"actions: read", "contents: read", "security-events: write"}
 	var got []string
-	for k := range permittedScopes {
-		got = append(got, k)
+	for k, v := range permittedGrants {
+		got = append(got, k+": "+v)
 	}
 	sort.Strings(got)
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Errorf("the permitted scopes are %v, want %v; a scope added to this set is a grant this repository's checks may make, and it is a decision to argue in docs/verifying.md rather than a map entry", got, want)
+	if strings.Join(got, ", ") != strings.Join(want, ", ") {
+		t.Errorf("the permitted grants are %v, want %v; a pair added to this set is a grant this repository's checks may make, and it is a decision to argue in docs/verifying.md rather than a map entry", got, want)
 	}
 
 	// The other floor's predicate, driven both ways. The row above demands a

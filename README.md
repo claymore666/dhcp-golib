@@ -205,11 +205,14 @@ thing is worth knowing first: **a pull request from a fork does not run the
 arbiter.** The lane is triggered by `push` and by manual dispatch, and it is
 the only workflow here that produces a verdict on a tree. The scans beside it —
 CodeQL, `govulncheck`, `actionlint` — do run on a fork's pull request, on
-GitHub's own machines, holding no secret and writing nothing back; the property
-that has to stay true is about the MACHINE a job runs on, not about the
-trigger. To have a contribution arbitrated, a maintainer pushes the branch to
-this repository or dispatches the workflow. `docs/verifying.md`, **In CI**,
-states that property and names the test that enforces it.
+GitHub's own machines, holding no secret and writing nothing back. Two
+properties make that safe rather than one: no job on a machine of ours is
+reachable from a fork's pull request, and no workflow here is triggered by
+`pull_request_target` — the event that would hand this repository's own token
+to a run beside a proposed tree. To have a contribution arbitrated, a
+maintainer pushes the branch to this repository or dispatches the workflow.
+`docs/verifying.md`, **In CI**, states both properties and names the tests that
+enforce them.
 
 ## More
 

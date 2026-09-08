@@ -528,14 +528,17 @@ none of them is a required check:
 | `govulncheck.yml` | advisories reachable from code this module actually calls | every push, every pull request, and weekly |
 | `actionlint.yml` | the workflows, and shellcheck over every `run:` block in them | every push and every pull request |
 
-**They carry `pull_request` and the lane may not, and that is one rule rather
-than two.** The rule is the one below: a job on a machine of OURS is never
-reachable from a fork's pull request. These jobs run on GitHub's own images,
-hold no secret, are granted `contents: read` — plus, for the CodeQL upload
-alone, `security-events: write` — and produce a report about the tree they
-were handed. There is nothing for a stranger's tree to take and no machine of
-ours for it to run on. The arbiter is a different matter and keeps its
-`push`-only trigger, for the reason the section below gives.
+**They carry `pull_request` and the lane may not.** Two rules below decide
+that, not one. Rule Three is about the MACHINE: a job on a runner of OURS is
+never reachable from a fork's pull request, and these jobs run on GitHub's own
+images. Rule Five is about the TOKEN: `pull_request` gets a read-only one,
+which is why these jobs may carry it, while `pull_request_target` gets this
+repository's own and is refused outright, on any runner. The scans hold no
+secret, are granted `contents: read` — plus, for the CodeQL upload alone,
+`security-events: write` — and produce a report about the tree they were
+handed. There is nothing for a stranger's tree to take, no machine of ours for
+it to run on, and no token for it to reach. The arbiter is a different matter
+and keeps its `push`-only trigger, for the reason the section below gives.
 
 **The weekly schedule is the point of the vulnerability scan**, not a
 formality: an advisory publishes on its own schedule, and a scan that runs only
@@ -602,10 +605,11 @@ the workflow, having read the diff first. A pull request never buys itself a
 verdict.
 
 **The observer is `internal/publication`**, in the unit suite, and it carries
-four rules. They are stated here once each. The first three are true of the
+five rules. They are stated here once each. The first two are true of the
 bytes as they are written, and need no scan that has to be right about a
-workflow first; the fourth reads a stated subset of YAML, as the fork rule
-does, and refuses what it cannot read.
+workflow first; the other three read a stated subset of YAML and refuse what
+they cannot read, so what each of them supports is not a universal over every
+workflow that could be written but the claim its own refusal makes true.
 
 > **One.** The word `secrets` does not appear anywhere under `.github/`.
 
@@ -759,16 +763,22 @@ and a job could still authenticate to something. Until D37 nothing here read a
 
 The rule is the COMPLEMENT rather than a list of dangerous grants, for the
 reason rule One is a word rather than a read: an enumeration of what is
-dangerous cannot be finished. The permitted set is `contents` (the checkout,
-read), `actions` (read, and the whole oracle skip rests on it) and
-`security-events` (write, the CodeQL upload, and the only grant here that
-writes anything at all). Every other scope is refused by name and line —
+dangerous cannot be finished. **The permitted set is PAIRS and not names** —
+`contents: read` (the checkout), `actions: read` (the whole oracle skip rests
+on it) and `security-events: write` (the CodeQL upload, and the only grant here
+that writes anything at all). Every other scope is refused by name and line —
 `id-token` with its own sentence, because it is the one this rule was written
-for — and so is a value that is not `read`, `write` or `none`, and so is a
-`permissions:` written in a form this reader does not enumerate: `read-all`,
-`write-all`, an expression, a block spread over lines it does not join. A scope
-set to `none` grants nothing and is permitted whatever its name, because a
-workflow saying it wants no token is saying the right thing.
+for — and so is one of those three scopes at any other value, because
+`contents: write` is a token that can push to this repository and it is reached
+with no `secrets` word anywhere and no `id-token`. That the set is pairs is
+this page's oldest claim about it and was for one round not what the code did:
+the reader tested the NAME and let the value through, which review round 1 of
+D37 measured with a plant. A value that is not `read`, `write` or `none` is
+refused too, and so is a `permissions:` written in a form this reader does not
+enumerate: `read-all`, `write-all`, an expression, a block spread over lines it
+does not join. A scope set to `none` grants nothing and is permitted whatever
+its name, because a workflow saying it wants no token is saying the right
+thing.
 
 Two things it does that are worth knowing. It demands that every workflow
 declare a top-level `permissions:` key, because a workflow that declares none
@@ -777,6 +787,43 @@ tree, which no rule written in the tree can be about. And it strips comments
 first, unlike rule One: a permission is a grant or it is prose, and a page that
 may not name `id-token: write` in a comment is a page that cannot explain why
 it refuses it.
+
+> **Five.** No workflow here is triggered by `pull_request_target`.
+
+The two events a fork's pull request can start are not one thing, and rules
+Three and Five are the two halves of that. Rule Three is about the MACHINE and
+treats them together, correctly: a job on a runner of ours is refused under
+either. This rule is about the TOKEN, and there the two are opposites.
+
+`pull_request` runs the fork's tree on GitHub's image with a read-only token
+and no reach into this repository. That is why the three scans may carry it,
+and it is the whole of why a hosted job on a fork trigger is not the thing rule
+Three refuses.
+
+`pull_request_target` runs the BASE branch's workflow definition — this
+repository's own file, not the fork's — with this repository's own token and
+whatever `permissions:` grants it. The proposed tree is then one `ref:` away in
+a checkout step, and a stranger's code is running beside a writable token. It
+is a real event with real uses, and this repository has none of them: every
+check here reads a tree and writes a verdict about it, and not one needs to act
+on this repository on somebody else's behalf.
+
+So the refusal is absolute rather than a judgement about how a given workflow
+uses the trigger. That is deliberate. A rule that permitted the trigger and
+refused a dangerous checkout beside it would need a reader that is right about
+what a step does, which is the enumeration rule One exists not to attempt.
+Refusing the trigger needs no such reader. The escape, stated beside the claim:
+a workflow that genuinely needed the event would widen this rule and this
+paragraph together, with the argument for what it acts on.
+
+**The page and the security page are held to each other.** The count above and
+each rule's sentence are quoted in `SECURITY.md`, and a test reads both files
+and refuses a disagreement — the count, the ordinals running One to Five with
+no gap, and every sentence verbatim. It was written because this page said four
+rules while `SECURITY.md` told a reporter the workflows are held to two, in the
+same commit, with nothing red. What it does NOT check is that either page is
+true of the code: the rules are prose headings on one side and tests on the
+other, and no instrument derives one population from the other.
 
 **What a hosted machine closes, and what it does not.** Every job starts on a
 fresh image, so the things a standing runner carried between jobs are gone:
