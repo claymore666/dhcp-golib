@@ -1,0 +1,43 @@
+# Weekly, grouped, into `dev`.
+#
+# INTO `dev` AND NOT `main`: since D38 `main` is the released state and moves
+# only by a release PR, so a bump opened against it would be a change that
+# never ran the lane it is supposed to be checked by. `target-branch` is what
+# decides that, and it is the one line here worth reading twice.
+#
+# GROUPED, one pull request per ecosystem per week, because the cost of a bump
+# is the review and not the diff: five pull requests that each rerun the whole
+# lane are five reviews of the same question.
+version: 2
+updates:
+  # The live population: every action in .github/workflows/ is pinned by
+  # commit SHA with its tag in a comment, which is the safe way to depend on
+  # somebody else's code and also the way that goes stale in silence. This
+  # entry is what un-silences it.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # EMPTY TODAY, AND THAT IS THE POINT. This module requires nothing outside
+  # the standard library — `go.mod` has no `require` block — so this entry
+  # produces no pull request at all until the day one is added, which is
+  # exactly the day nobody will remember to write it. An ecosystem that
+  # currently has nothing to update is indistinguishable from a missing entry
+  # by every observation except this file.
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      go-deps:
+        patterns:
+          - "*"

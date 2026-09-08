@@ -1,5 +1,7 @@
 # dhcp-golib — a managed-lease DHCP client for Go
 
+[![verify](https://github.com/claymore666/dhcp-golib/actions/workflows/verify.yml/badge.svg?branch=dev)](https://github.com/claymore666/dhcp-golib/actions/workflows/verify.yml?query=branch%3Adev)
+
 A DHCP client you embed. It takes a lease on an interface, keeps it renewed,
 and tells you when it changes. It applies nothing to the link — adding the
 address and the routes is your job, which is what lets one process hold leases
@@ -199,16 +201,22 @@ unit suite fails if one does not.
 ## Contributing
 
 `./verify.sh` is the gate, and it is the same command in CI as on a desk. One
-thing is worth knowing first: **a pull request from a fork runs no job here.**
-The lane is triggered by `push` and by manual dispatch, and it runs on a
-self-hosted runner — a fork's pull request that could start it would be running
-the fork's tree on somebody's machine. To have a contribution arbitrated, a
+thing is worth knowing first: **a pull request from a fork does not run the
+arbiter.** The lane is triggered by `push` and by manual dispatch, and it is
+the only workflow here that produces a verdict on a tree. The scans beside it —
+CodeQL, `govulncheck`, `actionlint` — do run on a fork's pull request, on
+GitHub's own machines, holding no secret and writing nothing back. Two
+properties make that safe rather than one: no job on a machine of ours is
+reachable from a fork's pull request, and no workflow here is triggered by
+`pull_request_target` — the event that would hand this repository's own token
+to a run beside a proposed tree. To have a contribution arbitrated, a
 maintainer pushes the branch to this repository or dispatches the workflow.
-`docs/verifying.md`, **In CI**, states the property that has to stay true and
-names the test that enforces it.
+`docs/verifying.md`, **In CI**, states both properties and names the tests that
+enforce them.
 
 ## More
 
 - `docs/design.md` — the four rings, what the tests prove today, the milestones
 - `docs/verifying.md` — what every arbiter row measures
 - `docs/gates.md` — the two ring gates, and their blind spots
+- `SECURITY.md` — how to report a vulnerability, and what the attack surface is
