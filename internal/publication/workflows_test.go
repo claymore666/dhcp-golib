@@ -12,14 +12,17 @@
 package publication
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // workflowDir is the workflow set, relative to this package.
@@ -844,13 +847,18 @@ func treeWorkflows(t *testing.T) ([]workflow, []unresolvedCall) {
 // so a gate that refused the label would have been red the day it was written
 // and would have been deleted rather than obeyed.
 //
-// SINCE D41 (2026-09-08) THIS ROW IS VACUOUS OVER THIS TREE, and saying so is
-// the point of this paragraph. Every job in .github/workflows runs on
-// `ubuntu-24.04`; the standing runner stays registered and idle, and no
-// workflow names its label. So forkReachabilityFindings returns nothing here
-// for a reason that is a fact about today's tree rather than a property of the
-// check — which is the state a reader has to be told about, because a check
-// nobody can make speak is indistinguishable from a check that cannot.
+// THIS ROW IS VACUOUS OVER THIS TREE, and saying so is the point of this
+// paragraph — but since D37 (2026-09-08) it is vacuous on ONE SIDE ONLY, which
+// is a different and much better state than the one this comment described
+// yesterday. The public-repo scans — CodeQL, govulncheck, actionlint — carry
+// `pull_request`, so the fork trigger this rule is about is now LIVE in the
+// set; every job in .github/workflows still runs on `ubuntu-24.04`, the
+// standing runner stays registered and idle, and no workflow names its label.
+// So a finding is one self-hosted label away rather than a label and a trigger
+// away, and the hosted scans are exactly why that trigger may be here at all:
+// the rule is about the MACHINE a stranger's tree would run on, never about
+// the trigger, and a job on GitHub's own image holding no secret is not the
+// thing it refuses.
 //
 // WHAT KEEPS IT FROM BEING A CHECK WITH ONE POSSIBLE VERDICT is that its
 // verdict is driven elsewhere and not here:
@@ -882,8 +890,30 @@ func TestNoSelfHostedJobIsReachableFromAForkPullRequest(t *testing.T) {
 // that publishes it. internal/publication and docs/verifying.md are not under
 // .github/, and that is not an exemption — it is the shape of the rule.
 func TestTheWordSecretsAppearsNowhereUnderGithub(t *testing.T) {
+	for _, f := range githubFiles(t) {
+		for _, r := range forbiddenWordRefusals(f.name, string(f.data)) {
+			t.Error(r)
+		}
+	}
+}
+
+// githubFile is one file under .github/, named the way a refusal names it.
+type githubFile struct {
+	name string
+	data []byte
+}
+
+// githubFiles reads every file under .github/, in a stable order, and carries
+// the FLOOR both rules over that directory rest on.
+//
+// ONE walk for both, because two walks are two domains: a second one written
+// beside this could visit a subset and its rule would then be a rule about
+// whichever files it happened to reach, with nothing saying so. The floor is
+// here for the same reason — it is a property of the walk, not of either rule.
+func githubFiles(t *testing.T) []githubFile {
+	t.Helper()
+	var out []githubFile
 	seen := map[string]bool{}
-	var refusals []string
 	err := filepath.WalkDir(githubDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -899,8 +929,9 @@ func TestTheWordSecretsAppearsNowhereUnderGithub(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		seen[filepath.ToSlash(rel)] = true
-		refusals = append(refusals, forbiddenWordRefusals(filepath.ToSlash(rel), string(b))...)
+		name := filepath.ToSlash(rel)
+		seen[name] = true
+		out = append(out, githubFile{name, b})
 		return nil
 	})
 	if err != nil {
@@ -909,7 +940,7 @@ func TestTheWordSecretsAppearsNowhereUnderGithub(t *testing.T) {
 
 	// The floor, and it is DERIVED rather than a number typed here: every
 	// workflow the other rows read has to be one of the files this walk
-	// read. A walk that visits nothing agrees with this rule exactly as
+	// read. A walk that visits nothing agrees with a rule over it exactly as
 	// loudly as a tree that carries the word nowhere.
 	entries, err := os.ReadDir(workflowDir)
 	if err != nil {
@@ -921,16 +952,14 @@ func TestTheWordSecretsAppearsNowhereUnderGithub(t *testing.T) {
 			continue
 		}
 		if !seen[path.Join("workflows", n)] {
-			t.Errorf("the walk of %s did not read workflows/%s, which the workflow rows do read; a walk that misses a file cannot say the word is absent from it", githubDir, n)
+			t.Errorf("the walk of %s did not read workflows/%s, which the workflow rows do read; a walk that misses a file cannot say anything is absent from it", githubDir, n)
 		}
 	}
-	if len(seen) == 0 {
-		t.Fatalf("%s holds no file; this rule would pass over an empty domain", githubDir)
+	if len(out) == 0 {
+		t.Fatalf("%s holds no file; a rule over this directory would pass over an empty domain", githubDir)
 	}
-
-	for _, r := range refusals {
-		t.Error(r)
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
 }
 
 // TestTheForbiddenWordIsRefusedInEverySpellingGitHubHonours drives the five
@@ -1076,6 +1105,25 @@ jobs:
           TOOL: secretsmanager
           CACHE: /tmp/my_secrets_dir
 `
+	// THE HYPHEN, and it is the boundary read the other way — D29 sweep review
+	// r4, row 3. `-` is not a word character, so `secrets-scan` carries the
+	// word at a word boundary and is REFUSED, while `secretsmanager` and
+	// `my_secrets_dir` are not. The two examples the rule publishes are both
+	// permitted ones, and a stranger reading only those would expect a
+	// hyphenated identifier to be permitted too. It is not, and the page says
+	// so beside them.
+	const wordHyphenated = `
+name: verify
+on:
+  push:
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+        env:
+          JOB: secrets-scan
+`
 	// Not a workflow at all: the linter configuration beside them. The
 	// domain is the directory, so this file is read by the same sentence.
 	const linterConfig = `
@@ -1109,6 +1157,7 @@ self-hosted-runner:
 		{"the word in a comment", "verify.yml", wordInAComment, 7},
 		{"the word in a file that is not a workflow", "actionlint.yaml", linterConfig, 5},
 		{"secretsmanager and my_secrets_dir are other words", "verify.yml", wordAsASubstring, 0},
+		{"a hyphen is a word boundary, so secrets-scan IS the word", "verify.yml", wordHyphenated, 11},
 		{"the linter configuration as it stands", "actionlint.yaml", linterConfigClean, 0},
 	}
 	for _, c := range cases {
@@ -2139,16 +2188,53 @@ func TestAPipelineInAWorkflowDoesNotThrowAwayItsVERDICT(t *testing.T) {
 	}
 }
 
+// pipefailOn matches a `set` that turns pipefail ON. The sign is the property:
+// `set -o pipefail`, `set -euo pipefail` and `set -eo pipefail` all turn it on,
+// and `set +o pipefail` turns it off and is therefore not a guard.
+var pipefailOn = regexp.MustCompile(`\bset\s+-[a-zA-Z]*o\s+pipefail\b`)
+
+// pipestatusRead matches a read of the array bash fills with a pipeline's
+// exit statuses. It is looked for ANYWHERE in the script, and that is not
+// laziness: PIPESTATUS is read on the line AFTER the pipeline it is about,
+// which is the shape the arbiter step uses.
+var pipestatusRead = regexp.MustCompile(`\bPIPESTATUS\b`)
+
 // unguardedPipelines is the rule, written once so the cases below drive the
 // same code the workflows are held to.
+//
+// IT READS CODE, NOT TEXT, AND POSITION MATTERS — 2026-09-08, round-2 review
+// finding 2, MEASURED. The first version of this rule asked whether the word
+// `pipefail` appeared anywhere in the block, comments included. Deleting the
+// guard and writing `# pipefail is not needed here` in its place left the
+// check GREEN over a step that was byte for byte the shape which concluded
+// SUCCESS over five red shards on run 34214582437. A rule keyed on a spelling
+// is satisfied by writing the spelling.
+//
+// So: comments are stripped before anything is read, and `set -o pipefail`
+// counts only where it can be in force — on a line at or before the pipeline.
+// PIPESTATUS counts anywhere, because it is read after the pipeline by
+// construction.
+//
+// BOUND, unchanged and stated rather than discovered: this reads the script,
+// it does not execute it. A `set +o pipefail` written between the guard and
+// the pipeline, or a guard inside a branch that does not run, still passes.
+// What it refuses is the silent omission and the comment that looks like a
+// guard, which are the two shapes that have actually happened here.
 func unguardedPipelines(name string, rb runBlock) []string {
 	var out []string
-	if strings.Contains(rb.body, "pipefail") || strings.Contains(rb.body, "PIPESTATUS") {
-		return nil
+	lines := strings.Split(rb.body, "\n")
+	for _, ln := range lines {
+		if pipestatusRead.MatchString(stripComment(ln)) {
+			return nil
+		}
 	}
-	for i, ln := range strings.Split(rb.body, "\n") {
+	guarded := false
+	for i, ln := range lines {
 		code := stripComment(ln)
-		if !pipelineLine.MatchString(code) {
+		if pipefailOn.MatchString(code) {
+			guarded = true
+		}
+		if guarded || !pipelineLine.MatchString(code) {
 			continue
 		}
 		out = append(out, fmt.Sprintf("%s: the run: block at line %d pipes at line %d, %q, and neither sets `set -o pipefail` nor reads PIPESTATUS; the step's exit status is the LAST command's, so a refusal on the left of the pipe is thrown away — measured on run 34214582437, where a red oracle matrix concluded success", name, rb.line, rb.line+1+i, strings.TrimSpace(ln)))
@@ -2170,6 +2256,15 @@ func TestThePipelineRefusalSpeaksInBothDirections(t *testing.T) {
 		{"an or, not a pipe", "run: |\n  a.sh || true\n", false},
 		{"a pipe in a comment only", "run: |\n  # a.sh | tee out.txt\n  a.sh\n", false},
 		{"an inline run with a pipe", "run: a.sh | tee out.txt\n", true},
+		// The four below are round-2 finding 2: the shapes a rule keyed on
+		// the spelling could not tell from a guard. The first is the one
+		// review MEASURED against the real aggregation step.
+		{"the word pipefail in a comment is not a guard", "run: |\n  # pipefail is not needed here\n  a.sh | tee out.txt\n", true},
+		{"the word PIPESTATUS in a comment is not a guard", "run: |\n  # nobody reads PIPESTATUS here\n  a.sh | tee out.txt\n", true},
+		{"a guard written after the pipeline is not in force at it", "run: |\n  a.sh | tee out.txt\n  set -o pipefail\n", true},
+		{"set +o pipefail turns it off and is not a guard", "run: |\n  set +o pipefail\n  a.sh | tee out.txt\n", true},
+		{"pipefail with the other flags, before the pipeline", "run: |\n  set -euo pipefail\n  a.sh | tee out.txt\n", false},
+		{"the guard and the pipeline on one line", "run: |\n  set -o pipefail; a.sh | tee out.txt\n", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2182,5 +2277,338 @@ func TestThePipelineRefusalSpeaksInBothDirections(t *testing.T) {
 				t.Errorf("refused = %t, want %t (%v) over %q", len(got) > 0, c.refuse, got, rbs[0].body)
 			}
 		})
+	}
+}
+
+// notTextRefusals names a file under .github/ that this directory's rules
+// cannot read, and it is the ANSWER TO AN ESCAPE THE SWEEP REVIEW MEASURED
+// (2026-09-07, D29 sweep review r4, row 1): the forbidden word is matched over
+// the file's bytes read as UTF-8, so a file in another encoding carries the
+// word past the rule with nothing red. `secrets` in UTF-16 is not the byte
+// sequence `secrets` and no pattern over the decoded text will ever say
+// otherwise — the case below encodes it and shows the word rule silent.
+//
+// So the encoding is closed rather than the pattern widened. A file under
+// .github/ is text in UTF-8, and the two ways it can fail to be are both
+// refused by name and byte offset:
+//
+//   - a byte sequence that is not valid UTF-8 — a UTF-16 file with a byte-order
+//     mark, anything compressed, anything compiled;
+//   - a NUL byte, which is what makes a BOM-LESS UTF-16 file the hard case: its
+//     ASCII half is all code points under 0x80 and utf8.Valid says yes, while
+//     every second byte is a NUL that no text file here has any use for.
+//
+// BOUND, stated rather than discovered: this says the file is text, not that
+// the reader UNDERSTANDS it. A UTF-8 file using a homoglyph, or a workflow
+// carrying the word in an encoded form of its own (base64, an escape sequence),
+// is text and is not refused here — the word rule reads what is written. What
+// is closed is the whole class where the bytes on disk are not the characters
+// a reader sees, which is the class row 1 named.
+func notTextRefusals(name string, b []byte) []string {
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		return []string{fmt.Sprintf("%s: byte %d is a NUL; every file under .github/ is text in UTF-8, and a file that is not — a UTF-16 workflow, anything compiled or compressed — carries the forbidden word past a rule that reads bytes as UTF-8. Write it as UTF-8, or widen this rule and the word rule together", name, i)}
+	}
+	if !utf8.Valid(b) {
+		i := 0
+		for i < len(b) {
+			r, n := utf8.DecodeRune(b[i:])
+			if r == utf8.RuneError && n <= 1 {
+				break
+			}
+			i += n
+		}
+		return []string{fmt.Sprintf("%s: byte %d begins a sequence that is not valid UTF-8; every file under .github/ is text in UTF-8, and a file that is not carries the forbidden word past a rule that reads bytes as UTF-8. Write it as UTF-8, or widen this rule and the word rule together", name, i)}
+	}
+	return nil
+}
+
+// TestEveryFileUnderGithubIsTextThisReaderCanRead is the other half of the
+// word rule: the word rule says what may not be written under .github/, and
+// this says what the file it is written in has to be for that sentence to
+// mean anything.
+func TestEveryFileUnderGithubIsTextThisReaderCanRead(t *testing.T) {
+	for _, f := range githubFiles(t) {
+		for _, r := range notTextRefusals(f.name, f.data) {
+			t.Error(r)
+		}
+	}
+}
+
+// TestTheTextRefusalSpeaksInBothDirections drives it, and the first case is
+// the escape itself: the forbidden word, encoded the way a file that is not
+// UTF-8 encodes it, read by the word rule — which finds nothing — and then by
+// this one, which refuses the file.
+func TestTheTextRefusalSpeaksInBothDirections(t *testing.T) {
+	// UTF-16LE, no byte-order mark: the hard case, because every byte of the
+	// ASCII half is a valid UTF-8 code point and only the NULs give it away.
+	utf16le := func(s string) []byte {
+		out := make([]byte, 0, 2*len(s))
+		for _, r := range s {
+			out = append(out, byte(r), byte(r>>8))
+		}
+		return out
+	}
+	const carriesTheWord = "env:\n  TOKEN: ${{ secrets.PUBLISH_TOKEN }}\n"
+
+	t.Run("the word in UTF-16 is invisible to the word rule and refused here", func(t *testing.T) {
+		b := utf16le(carriesTheWord)
+		if got := forbiddenWordRefusals("workflows/planted.yml", string(b)); len(got) != 0 {
+			t.Fatalf("the word rule refused the UTF-16 file after all:\n  %s\nthis case exists because it does not, and the refusal below would then be answering nothing", strings.Join(got, "\n  "))
+		}
+		got := notTextRefusals("workflows/planted.yml", b)
+		if len(got) != 1 {
+			t.Fatalf("the text rule raised %d refusal(s) over a UTF-16 file carrying the forbidden word, want exactly one:\n  %s", len(got), strings.Join(got, "\n  "))
+		}
+		if !strings.Contains(got[0], "NUL") {
+			t.Errorf("the refusal is %q; want it to name the NUL, which is what a maintainer looks for", got[0])
+		}
+	})
+
+	cases := []struct {
+		name   string
+		data   []byte
+		refuse bool
+	}{
+		{"the workflow set as it stands is ASCII", []byte("name: verify\non:\n  push:\n"), false},
+		{"UTF-8 outside ASCII is text", []byte("# RFC 2131 §2.2 — the caller's § sign\n"), false},
+		{"an empty file is text", []byte(""), false},
+		{"UTF-16LE with a byte-order mark", append([]byte{0xff, 0xfe}, utf16le("name: verify\n")...), true},
+		{"UTF-16BE with a byte-order mark", []byte{0xfe, 0xff, 0x00, 'n', 0x00, 'a'}, true},
+		{"a lone continuation byte", []byte("name: verify\n\x80\n"), true},
+		{"a truncated multi-byte sequence", []byte("name: \xc3"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := notTextRefusals("workflows/case.yml", c.data)
+			if (len(got) > 0) != c.refuse {
+				t.Errorf("refused = %t, want %t (%v)", len(got) > 0, c.refuse, got)
+			}
+			if len(got) > 0 && !strings.HasPrefix(got[0], "workflows/case.yml: byte ") {
+				t.Errorf("the refusal is %q; want it to name the file and the byte, which is what a maintainer acts on", got[0])
+			}
+		})
+	}
+}
+
+// permittedScopes is a CLOSED SET, and that is the whole design of the rule
+// below. It is not "id-token is forbidden": an enumeration of the grants that
+// are dangerous cannot be finished, and the one this repository was told about
+// (D29 sweep review r4, row 2) would have been the only member. It is the
+// complement — the grants these checks need — and everything else is refused by
+// name, so a scope nobody here has heard of is refused on the day it is
+// written rather than on the day somebody thinks to add it.
+//
+// The three, and why each is here:
+//
+//	contents         the checkout. Read. Nothing here writes to the repository.
+//	actions          the oracle skip, and nothing else: the lane asks the API
+//	                 whether a green job published this arbiter's hash. Read.
+//	security-events  the SARIF upload from CodeQL, which is the one grant in
+//	                 this set that writes anything at all, and what it writes
+//	                 is a report about the tree it was given.
+var permittedScopes = map[string]bool{
+	"contents":        true,
+	"actions":         true,
+	"security-events": true,
+}
+
+// permissionValues are the three values GitHub honours for a scope. A value
+// outside them is refused rather than read: `write` misspelled is a grant this
+// reader would otherwise report as absent.
+var permissionValues = map[string]bool{"read": true, "write": true, "none": true}
+
+var (
+	permissionsKey  = regexp.MustCompile(`^(\s*)permissions:\s*(.*)$`)
+	permissionPair  = regexp.MustCompile(`^\s*['"]?([A-Za-z][A-Za-z0-9_-]*)['"]?:\s*['"]?([A-Za-z-]+)['"]?\s*$`)
+	rootPermissions = regexp.MustCompile(`(?m)^permissions:`)
+)
+
+// scopeRefusal judges ONE `scope: value` pair. `none` grants nothing and is
+// therefore permitted for any scope, including the one below — a workflow
+// spelling out that it wants no token is saying the right thing.
+func scopeRefusal(name string, line int, scope, value string) string {
+	if !permissionValues[value] {
+		return fmt.Sprintf("%s:%d: `%s: %s` — a permission value this reader does not enumerate; GitHub honours `read`, `write` and `none`, and a value outside them is refused rather than read as a grant that is not there", name, line, scope, value)
+	}
+	if value == "none" {
+		return ""
+	}
+	if scope == "id-token" {
+		return fmt.Sprintf("%s:%d: `id-token: %s` — this mints an OIDC token for the job, which is a credential reached without the word this directory forbids: nothing in `.github/` would spell `secrets` and a job could still authenticate to something outside it. No check here needs one. Widening this is a deliberate, reviewed change to this rule and its cases, with the argument for what that job authenticates to", name, line, value)
+	}
+	if !permittedScopes[scope] {
+		return fmt.Sprintf("%s:%d: `%s: %s` — a grant outside the set the checks in this repository need (`contents`, `actions`, `security-events`). A workflow that needs another one is a deliberate widening of `permittedScopes` and of the sentence in docs/verifying.md, never a grant that arrived with a step", name, line, scope, value)
+	}
+	return ""
+}
+
+// permissionRefusals reads every `permissions:` block in one workflow, over a
+// STATED SUBSET, and refuses what it cannot read as readily as what it can.
+// It returns the refusals and the number of scope/value pairs it read, because
+// a scan that read no pair agrees with every rule about grants.
+//
+// THE SUBSET: `permissions:` carrying no value, followed by a block whose
+// children are indented deeper and are each `scope: value` on one line; or a
+// flow mapping closed on the key's own line; or the empty flow mapping `{}`,
+// which grants nothing. Everything else is refused by name and line —
+// `read-all`, `write-all`, a block scalar, a flow mapping spread over two
+// lines, an expression, a nested key.
+//
+// BOUNDS, because this is a textual scan like every other in this file:
+//   - it reads the key wherever a line begins with it, so a `permissions:` at
+//     the start of a line INSIDE a `run:` script would be read as a block and
+//     probably refused. That direction names a line and a reason and is the
+//     safe one; nothing in this repository writes that.
+//   - a comment carries no grant, so comments are stripped before anything is
+//     read here. That is the difference between this rule and the word rule
+//     next door, and it is deliberate: the word rule refuses the word BECAUSE
+//     it needs no reading of what the word does, while a permission is a grant
+//     or it is prose, and a page that may not name `id-token: write` in a
+//     comment is a page that cannot explain why it refuses it.
+func permissionRefusals(name, text string) ([]string, int) {
+	var out []string
+	pairs := 0
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		ln := stripComment(lines[i])
+		m := permissionsKey.FindStringSubmatch(ln)
+		if m == nil {
+			continue
+		}
+		keyIndent := len(m[1])
+		if v := strings.TrimSpace(m[2]); v != "" {
+			if !strings.HasPrefix(v, "{") || !strings.HasSuffix(v, "}") {
+				out = append(out, fmt.Sprintf("%s:%d: a `permissions:` value outside the subset: %q. This reader enumerates a block of `scope: value` lines, or a flow mapping closed on this line; `read-all` and `write-all` are refused because a grant nobody wrote down is exactly what this rule is about", name, i+1, v))
+				continue
+			}
+			inner := strings.TrimSpace(v[1 : len(v)-1])
+			if inner == "" {
+				continue
+			}
+			for _, part := range strings.Split(inner, ",") {
+				pm := permissionPair.FindStringSubmatch(part)
+				if pm == nil {
+					out = append(out, fmt.Sprintf("%s:%d: an entry in a `permissions:` flow mapping this reader cannot read as `scope: value`: %q", name, i+1, strings.TrimSpace(part)))
+					continue
+				}
+				pairs++
+				if r := scopeRefusal(name, i+1, pm[1], pm[2]); r != "" {
+					out = append(out, r)
+				}
+			}
+			continue
+		}
+		child, end, read, why := blockRegion(lines, i, keyIndent)
+		if why != "" {
+			out = append(out, fmt.Sprintf("%s:%d: a `permissions:` block outside the subset: %s (%q)", name, i+1, why, read))
+			continue
+		}
+		for j := i + 1; j < end; j++ {
+			sub := stripComment(lines[j])
+			if strings.TrimSpace(sub) == "" {
+				continue
+			}
+			if indent(sub) != child {
+				out = append(out, fmt.Sprintf("%s:%d: a line at column %d inside a `permissions:` block whose entries sit at column %d; a permission is one `scope: value` line and this reader does not descend into anything else", name, j+1, indent(sub), child))
+				continue
+			}
+			pm := permissionPair.FindStringSubmatch(sub)
+			if pm == nil {
+				out = append(out, fmt.Sprintf("%s:%d: a line in a `permissions:` block this reader cannot read as `scope: value`: %q", name, j+1, strings.TrimSpace(sub)))
+				continue
+			}
+			pairs++
+			if r := scopeRefusal(name, j+1, pm[1], pm[2]); r != "" {
+				out = append(out, r)
+			}
+		}
+	}
+	return out, pairs
+}
+
+// TestNoWorkflowGrantsAPermissionTheseChecksDoNotNeed closes the second
+// wordless route to a credential. The word rule next door refuses `secrets`
+// anywhere under .github/; `permissions: id-token: write` needs none of it —
+// GitHub mints an OIDC token for the job and a service outside this repository
+// trades it for one of its own. Nothing here read a `permissions:` key at all
+// until now (D29 sweep review r4, row 2).
+//
+// The floor is DERIVED and it has two halves, because either alone is
+// satisfied by a set that says nothing: every workflow must declare a
+// top-level `permissions:` key — a workflow that declares none takes the
+// repository's default, which is not a thing this rule can be written about —
+// and the scan must have read at least one scope across the set.
+func TestNoWorkflowGrantsAPermissionTheseChecksDoNotNeed(t *testing.T) {
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", workflowDir, err)
+	}
+	read, pairs := 0, 0
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(workflowDir, n))
+		if err != nil {
+			t.Fatalf("reading %s: %v", n, err)
+		}
+		read++
+		if !rootPermissions.MatchString(string(b)) {
+			t.Errorf("%s declares no top-level `permissions:` key; a workflow that declares none is granted whatever this repository's default is, and a rule about grants cannot be written about a default that lives outside the tree", n)
+		}
+		refusals, p := permissionRefusals(n, string(b))
+		pairs += p
+		for _, r := range refusals {
+			t.Error(r)
+		}
+	}
+	if read == 0 || pairs == 0 {
+		t.Fatalf("read %d workflow(s) and %d permission(s); a scan over an empty domain agrees with everything", read, pairs)
+	}
+}
+
+// TestThePermissionRefusalSpeaksInBothDirections — the row above is vacuous
+// over the tree by design, so the rule is driven here.
+func TestThePermissionRefusalSpeaksInBothDirections(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		refuse bool
+		says   string
+	}{
+		{"the shape this rule exists for", "permissions:\n  contents: read\n  id-token: write\n", true, "OIDC"},
+		{"the same grant as a flow mapping", "permissions: {contents: read, id-token: write}\n", true, "OIDC"},
+		{"the same grant at job level, indented", "jobs:\n  j:\n    permissions:\n      id-token: write\n", true, "OIDC"},
+		{"the same grant in quotes", "permissions:\n  \"id-token\": \"write\"\n", true, "OIDC"},
+		{"asked for and declined", "permissions:\n  id-token: none\n", false, ""},
+		{"a scope outside the set these checks need", "permissions:\n  contents: read\n  packages: write\n", true, "outside the set"},
+		{"the set these checks need", "permissions:\n  contents: read\n  actions: read\n  security-events: write\n", false, ""},
+		{"granting nothing", "permissions: {}\n", false, ""},
+		{"read-all is a grant nobody wrote down", "permissions: read-all\n", true, "outside the subset"},
+		{"write-all likewise", "permissions: write-all\n", true, "outside the subset"},
+		{"a value that is not one GitHub honours", "permissions:\n  contents: rw\n", true, "does not enumerate"},
+		{"a nested key is not a permission", "permissions:\n  contents:\n    - read\n", true, "cannot read as `scope: value`"},
+		{"an expression instead of a scope", "permissions: ${{ inputs.perms }}\n", true, "outside the subset"},
+		{"the word in a comment grants nothing", "permissions:\n  contents: read\n  # id-token: write is refused here, and saying so is not a grant\n", false, ""},
+		{"a permissions block that is not there at all", "on:\n  push:\n", false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, _ := permissionRefusals("case.yml", c.text)
+			if (len(got) > 0) != c.refuse {
+				t.Fatalf("refused = %t, want %t (%v) over %q", len(got) > 0, c.refuse, got, c.text)
+			}
+			if c.says != "" && !strings.Contains(strings.Join(got, "\n"), c.says) {
+				t.Errorf("the refusal is %q; want it to say %q, which is what tells a maintainer which rule was met", got, c.says)
+			}
+		})
+	}
+
+	// The pair count is the floor's operand, so it is read here too: a reader
+	// that returned zero pairs for a legitimate block would make the row above
+	// fatal for the right reason and silent for the wrong one.
+	if _, pairs := permissionRefusals("case.yml", "permissions:\n  contents: read\n  actions: read\n"); pairs != 2 {
+		t.Errorf("the reader counted %d permission(s) over a block of two; the floor above rests on this count", pairs)
 	}
 }

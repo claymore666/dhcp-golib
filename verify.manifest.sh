@@ -341,7 +341,17 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     SweepCounts, TheStatedCeilingBandIsTheOneTheOracleChecks
 #   internal/publication/workflows_test.go (2)  APipelineInAWorkflowDoesNot
 #     ThrowAwayItsVERDICT, ThePipelineRefusalSpeaksInBothDirections
-MIN_DECLARED_TESTS=624
+#
+# D37, THE PUBLIC-REPO SET: 624 -> 628, measured the same way (two testroster
+# runs, at a761434 and here). Four added, and they are the two rows carried out
+# of the D29 sweep review — the two routes past the forbidden word that nothing
+# was reading — each with the case set that drives it in both directions:
+#
+#   internal/publication/workflows_test.go (4)  EveryFileUnderGithubIsText
+#     ThisReaderCanRead, TheTextRefusalSpeaksInBothDirections,
+#     NoWorkflowGrantsAPermissionTheseChecksDoNotNeed,
+#     ThePermissionRefusalSpeaksInBothDirections
+MIN_DECLARED_TESTS=628
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -527,13 +537,26 @@ SELF_DRIVE_SURVIVES_N=5
 # run and the two timestamps review measured it on. One line, one bare number
 # that is a run id and two that are clock times.
 #
-# ONE NUMBER, ONE DERIVATION. The marker on the next line is the ONLY place
-# this paragraph states it, and internal/manifest's
-# TestTheStatedPopulationIsWhatTheSweepCounts reads three things — that
-# marker, the constant under it, and the count
-# scripts/sweep-doc-numbers.sh --check actually makes over the docs — and
-# refuses any two of the three disagreeing. Re-measuring is therefore a
-# one-line edit to the marker, and forgetting the marker is red.
+# WHAT MOVED IT IN THE D37 PUBLIC-REPO ROUND: nothing, MEASURED 2026-09-08 with
+# scripts/sweep-doc-numbers.sh over the head of that round. It added the three
+# hosted scans to "In CI", two rules to the publication section and a
+# Contributing paragraph to the README, and not one of those lines carries a
+# bare number — which is the state the sweep asks for rather than a
+# coincidence, and it is written down here because "the number did not move" is
+# a measurement like any other.
+#
+# ONE NUMBER, TWO READINGS HERE AND THE THIRD IN THE ROW. The marker on the
+# next line is the ONLY place this paragraph states the measurement.
+# internal/manifest's TestTheStatedPopulationIsWhatTheSweepCounts compares that
+# marker to the constant under it and asserts DOC_NUMBER_MARGIN is zero; it
+# does NOT run the sweep, deliberately — a second doc-numbers row made out of a
+# unit test reddens on exactly the trees the self-drive row plants a bare
+# number into, which is what took five oracle shards down on run 34214582437.
+# The third leg is the doc-numbers ROW itself, which the arbiter runs on every
+# run and which at margin zero is an equality between this ceiling and the
+# population the sweep counts. Marker = constant = population follows, with
+# each leg made once. Re-measuring is a one-line edit to the marker, and
+# forgetting the marker is red.
 # DOC-NUMBER POPULATION MEASURED 2026-09-08: 70
 DOC_NUMBER_CEILING=70
 

@@ -518,6 +518,44 @@ copy of the suite running, and a shard running four copies at once would be
 measuring contention against a ceiling nothing derived under contention. The
 parallelism lives across jobs, where it cannot perturb a wall clock.
 
+**Three scans run beside the lane**, added when the repository went public
+(D37). Each runs on a GitHub-hosted image, in parallel with the arbiter, and
+none of them is a required check:
+
+| workflow | what it reads | when |
+| --- | --- | --- |
+| `codeql.yml` | the Go source, and the workflow files as the `actions` language | push and pull request on `dev` and `main`, and weekly |
+| `govulncheck.yml` | advisories reachable from code this module actually calls | every push, every pull request, and weekly |
+| `actionlint.yml` | the workflows, and shellcheck over every `run:` block in them | every push and every pull request |
+
+**They carry `pull_request` and the lane may not, and that is one rule rather
+than two.** The rule is the one below: a job on a machine of OURS is never
+reachable from a fork's pull request. These jobs run on GitHub's own images,
+hold no secret, are granted `contents: read` — plus, for the CodeQL upload
+alone, `security-events: write` — and produce a report about the tree they
+were handed. There is nothing for a stranger's tree to take and no machine of
+ours for it to run on. The arbiter is a different matter and keeps its
+`push`-only trigger, for the reason the section below gives.
+
+**The weekly schedule is the point of the vulnerability scan**, not a
+formality: an advisory publishes on its own schedule, and a scan that runs only
+on pushes learns nothing about a module nobody has pushed to this month. It is
+also the one thing here that may go red without a commit having changed
+anything, which is the correct direction — the tree did not move, the world
+did.
+
+**What is driven, and what is not.** `actionlint` is driven in its own job
+against a workflow planted outside the repository, carrying a trigger that is
+not an event GitHub honours: a linter with nothing to say fails that job rather
+than passing it. `govulncheck` is not driven that way and cannot easily be —
+this module has no dependency to make vulnerable — so what stands behind it is
+a measurement rather than a gate, taken by hand when the workflow was written:
+the same command over the same tree reported a reachable standard-library
+advisory under an older toolchain and nothing under the newest one. The version
+it scans is the one `setup-go` resolves from the `go` line in `go.mod`, so a
+red there says the newest toolchain a consumer can build this library with has
+a reachable advisory.
+
 **Why a job might run on a machine of ours, and what has to stay true if one
 ever does.** Since D41 no job here names a self-hosted label: the standing
 runner stays registered and idle, for the day something needs a machine of
@@ -543,19 +581,31 @@ who finds one here should treat it as a defect in this page.
 This lane satisfies it structurally rather than by configuration. Its triggers
 are `push` and `workflow_dispatch`, and it has no `pull_request` or
 `pull_request_target`. A fork's push is a push in the fork, and starts nothing
-here — so **a fork's pull request runs nothing in this repository at all**: no
-job, no step, no checkout of the proposed tree onto the runner. The lane also
+here — so **a fork's pull request never starts the arbiter**: no job of it, no
+step, no checkout of the proposed tree onto a machine of ours. The lane also
 holds no secret, so there is nothing for a job to carry off even if one could
 be reached.
 
-**Running a contributor's branch is therefore a deliberate act**, and that is
-the cost of the arrangement rather than a gap in it: somebody who can write
-here pushes the branch to this repository, or dispatches the workflow, having
-read the diff first. A pull request never buys itself a run.
+**It does start the three hosted scans, and that is deliberate** (D37). Until
+they arrived, no workflow here carried a fork trigger at all and the sentence
+above could be written about the repository rather than about the lane; it no
+longer can, and the distinction is the property itself. A fork's pull request
+runs CodeQL, `govulncheck` and `actionlint` — on GitHub's own images, with a
+read-only token, holding no secret, writing nothing but a report about the
+proposed tree. What it still cannot do is put that tree on a machine of ours,
+which is the thing the rule below is about.
+
+**Running a contributor's branch through the ARBITER is therefore a deliberate
+act**, and that is the cost of the arrangement rather than a gap in it:
+somebody who can write here pushes the branch to this repository, or dispatches
+the workflow, having read the diff first. A pull request never buys itself a
+verdict.
 
 **The observer is `internal/publication`**, in the unit suite, and it carries
-two rules. They are stated here once each, and both are true of the code as it
-is written rather than of a scan that has to be right about a workflow first.
+four rules. They are stated here once each. The first three are true of the
+bytes as they are written, and need no scan that has to be right about a
+workflow first; the fourth reads a stated subset of YAML, as the fork rule
+does, and refuses what it cannot read.
 
 > **One.** The word `secrets` does not appear anywhere under `.github/`.
 
@@ -575,7 +625,13 @@ this lane holds no secret and needs none, so there is no innocent occurrence to
 tell from a guilty one.
 
 The boundary is a word boundary, and that is the whole of it: `secretsmanager`
-and `my_secrets_dir` are other words and are not refused. A workflow file
+and `my_secrets_dir` are other words and are not refused. **A hyphen is not a
+word character, so `secrets-scan` IS the word and is refused** — the two
+examples above are both permitted ones and would leave a reader expecting the
+hyphenated form to be permitted too, which is why this sentence is here.
+Anything that reads as `secrets` with a non-identifier character on each side
+is the word: a job named `secrets-scan`, a file called `secrets.txt`, a step
+that only mentions it. A workflow file
 reaches a repository secret in exactly two ways — the `secrets` context and the
 `secrets:` key of a call to a reusable workflow — and both are the bare word.
 Refusing an identifier that merely contains those letters would make this a
@@ -599,7 +655,24 @@ and its cases moving together, with the argument for why that lane may hold
 one — and never by teaching the check to tell a harmless occurrence from a
 harmful one.**
 
-> **Two.** No job on a runner of ours is reachable from a fork's pull request.
+> **Two.** Every file under `.github/` is text, in UTF-8.
+
+This is the encoding half of rule One and it exists because the rule above is a
+pattern over bytes read as UTF-8. `secrets` written in UTF-16 is not that byte
+sequence, so the word rule reads such a file and finds nothing — measured, and
+driven in the test as a case that shows the word rule silent and this one red.
+No widening of the pattern can answer that; the encoding is closed instead.
+
+Two shapes are refused, by file name and byte offset: a byte sequence that is
+not valid UTF-8, and a NUL byte. The second is what makes a UTF-16 file without
+a byte-order mark the hard case — its ASCII half is code points below `0x80`
+and passes a validity check, while every second byte is a NUL that no text file
+here has a use for. The bound, beside the claim: this says the file is text,
+not that a reader understands what it says. A UTF-8 file using a homoglyph, or
+a word encoded inside a string, is text and is not refused; what is closed is
+the class where the bytes on disk are not the characters a reader sees.
+
+> **Three.** No job on a runner of ours is reachable from a fork's pull request.
 
 The scan reads the workflows over a STATED SUBSET of YAML rather than over
 YAML. Inside the subset it fails if the workflow SET puts a runner whose label
@@ -671,7 +744,39 @@ row applies the scan to the tree, and the tree gives it nothing to find. Its
 verdict is driven elsewhere: the scan's own cases put fork-reachable
 self-hosted pairs through the same functions, direct and inherited across a
 `uses:` edge, and demand the finding — as they do for every shape in the subset
-above, in both directions. The row is the application; the cases are the check.
+above, in both directions. The row is the application; the cases are the check. Since D37 that row is vacuous on one side only: the hosted scans carry
+`pull_request`, so the fork trigger is live in the set and a finding is one
+self-hosted label away rather than a label and a trigger away.
+
+> **Four.** No workflow grants a permission these checks do not need.
+
+A workflow reaches a repository secret through the word rule One refuses. It
+reaches a CREDENTIAL without that word through `permissions: id-token: write`,
+which mints an OIDC token for the job that a service outside this repository
+will trade for one of its own. Nothing under `.github/` would spell `secrets`
+and a job could still authenticate to something. Until D37 nothing here read a
+`permissions:` key at all.
+
+The rule is the COMPLEMENT rather than a list of dangerous grants, for the
+reason rule One is a word rather than a read: an enumeration of what is
+dangerous cannot be finished. The permitted set is `contents` (the checkout,
+read), `actions` (read, and the whole oracle skip rests on it) and
+`security-events` (write, the CodeQL upload, and the only grant here that
+writes anything at all). Every other scope is refused by name and line —
+`id-token` with its own sentence, because it is the one this rule was written
+for — and so is a value that is not `read`, `write` or `none`, and so is a
+`permissions:` written in a form this reader does not enumerate: `read-all`,
+`write-all`, an expression, a block spread over lines it does not join. A scope
+set to `none` grants nothing and is permitted whatever its name, because a
+workflow saying it wants no token is saying the right thing.
+
+Two things it does that are worth knowing. It demands that every workflow
+declare a top-level `permissions:` key, because a workflow that declares none
+takes whatever this repository's default is — a grant that lives outside the
+tree, which no rule written in the tree can be about. And it strips comments
+first, unlike rule One: a permission is a grant or it is prose, and a page that
+may not name `id-token: write` in a comment is a page that cannot explain why
+it refuses it.
 
 **What a hosted machine closes, and what it does not.** Every job starts on a
 fresh image, so the things a standing runner carried between jobs are gone:
