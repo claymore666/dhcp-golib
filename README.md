@@ -63,7 +63,7 @@ exactly those rows. They are this library's share of the IPv6 work on the
 this matrix, and its other rows land in the plugin.
 
 What works today, claim by claim with the test that drives each one, is
-`docs/design.md`.
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-m7).
 
 ## Usage
 
@@ -176,7 +176,7 @@ func ExampleClient6() {
 ```
 
 Both blocks are `ExampleClient` and `ExampleClient6` in
-`runtime/example_test.go`, byte for byte. The arbiter's `readme-usage` row
+[`runtime/example_test.go`](runtime/example_test.go), byte for byte. The arbiter's `readme-usage` row
 diffs them and fails if either side moves, so this section cannot go stale.
 Set `DHCP_GOLIB_EXAMPLE_IFACE` to a link with a DHCP server on it to run them.
 
@@ -239,21 +239,21 @@ The bounds below are written down so that nobody has to infer them.
 
 ## Testing
 
-`./verify.sh` is the only arbiter this repository has. One command, one verdict
+[`./verify.sh`](verify.sh) is the only arbiter this repository has. One command, one verdict
 line. No row may report PASS without also saying how many things it examined.
-It needs no root and touches no host state. `docs/verifying.md` covers the
-measurement behind each row. `docs/gates.md` covers the two ring gates and
+It needs no root and touches no host state. [`docs/verifying.md`](docs/verifying.md) covers the
+measurement behind each row. [`docs/gates.md`](docs/gates.md) covers the two ring gates and
 their blind spots.
 
 ## Licence
 
-MIT. See `LICENSE`. Every `.go` and `.sh` file carries a one-line copyright
+MIT. See [`LICENSE`](LICENSE). Every `.go` and `.sh` file carries a one-line copyright
 notice, so a file copied out of here carries its licence with it. The unit
 suite fails if one does not.
 
 ## Contributing
 
-`./verify.sh` is the gate, and it is the same command in CI as on a desk. One
+[`./verify.sh`](verify.sh) is the gate, and it is the same command in CI as on a desk. One
 thing is worth knowing first: a pull request from a fork does not run the
 arbiter. The lane is triggered by `push` and by manual dispatch, and it is the
 only workflow here that produces a verdict on a tree. The scans beside it,
@@ -263,13 +263,13 @@ properties make that safe. No job on a machine of ours is reachable from a
 fork's pull request. No workflow here is triggered by `pull_request_target`,
 the event that would hand this repository's own token to a run beside a
 proposed tree. To have a contribution arbitrated, a maintainer pushes the
-branch to this repository or dispatches the workflow. `docs/verifying.md`,
-section **In CI**, states both properties and names the tests that enforce
-them.
+branch to this repository or dispatches the workflow.
+[Section **In CI** of `docs/verifying.md`](docs/verifying.md#in-ci) states both
+properties and names the tests that enforce them.
 
 ## More
 
-- `docs/design.md`: the four rings, the milestones, the proof behind each claim
-- `docs/verifying.md`: the measurement behind every arbiter row
-- `docs/gates.md`: the two ring gates, and their blind spots
-- `SECURITY.md`: how to report a vulnerability, and the attack surface
+- [`docs/design.md`](docs/design.md): the four rings, the milestones, the proof behind each claim
+- [`docs/verifying.md`](docs/verifying.md): the measurement behind every arbiter row
+- [`docs/gates.md`](docs/gates.md): the two ring gates, and their blind spots
+- [`SECURITY.md`](SECURITY.md): how to report a vulnerability, and the attack surface

@@ -29,7 +29,7 @@ The residual is worth naming beside the claim. Nothing inside the script can
 force that count to be DERIVED. A written one satisfies it. What closes that is
 external: a scenario that empties a row's domain and requires the row to go red.
 This paragraph used to say there was one such scenario per row. There was one,
-for one row of eleven. `docs/gates.md` now lists which rows have one, which do
+for one row of eleven. [`docs/gates.md`](gates.md) now lists which rows have one, which do
 not, and why the ones that do not cannot.
 
 The citation check is stated here as a BOUND. The sentence that used to stand in
@@ -39,13 +39,13 @@ line that is not a URL scheme separator, or anywhere on a line of a `.md` file;
 and it requires each one to appear in a top-level `func`, `var`, `const` or
 `type` declaration. It does **not** see block comments, `.sh` files, or a token
 in a `.go` line's ordinary text. There are live examples of all three in this
-tree, `scripts/test-verify.sh` chief among them. The seven enumerated escapes,
+tree, [`scripts/test-verify.sh`](../scripts/test-verify.sh) chief among them. The seven enumerated escapes,
 including the one direction in which it produces a false positive, are in
-`docs/gates.md`. They are part of the check. Read them as part of it and not as
+[`docs/gates.md`](gates.md). They are part of the check. Read them as part of it and not as
 a caveat about it.
 
 "Every check" used to be bounded by this sentence: *a check runs only if
-`verify.sh` calls it, and nothing inside `verify.sh` notices a call that is no
+[`verify.sh`](../verify.sh) calls it, and nothing inside [`verify.sh`](../verify.sh) notices a call that is no
 longer there.* That bound was accurate, and it rested on the oracle's scenarios
 noticing. On 2026-08-30 a review measured that the oracle can be replaced by a
 two-line script that exits 0. An acknowledged bound was load-bearing on a guard
@@ -56,7 +56,7 @@ oracle stubbed AND a step call deleted, the arbiter printed
 That fix was defeated too. The sentence that used to stand here is the reason it
 is worth reading the next one carefully. It said: the row roster is cross-checked
 against the rows recorded, and the oracle's expected scenario count is derived by
-`verify.sh` from the oracle's own source, so a stub, total or partial, is a
+[`verify.sh`](../verify.sh) from the oracle's own source, so a stub, total or partial, is a
 mismatch. Both halves were true and both were defeated in one round, the same
 way, because **every expectation was derived from the thing it was checking.**
 MEASURED 2026-08-30 by review: delete the `shellcheck` gate, its step, its roster
@@ -71,11 +71,11 @@ a non-vacuity floor. Every floor was at zero. Zero is the one size a population
 cannot reach by deletion, so shrinking one by a single member was invisible in
 all of them.
 
-What stands now is `verify.manifest.sh`: a file that contains the expectation
+What stands now is [`verify.manifest.sh`](../verify.manifest.sh): a file that contains the expectation
 and nothing else. The row names, the gate names, the scenario names, a literal
 count beside each list, and a band around the declared-test population. Both
-`verify.sh` and the oracle read it, so neither derives its expectation from
-itself or from the other, and `internal/manifest` pins the same names and
+[`verify.sh`](../verify.sh) and the oracle read it, so neither derives its expectation from
+itself or from the other, and [`internal/manifest`](../internal/manifest) pins the same names and
 numbers from Go, in another directory, running inside the suite.
 
 That, in turn, was defeated on a different axis, which is why it gets its own
@@ -88,7 +88,7 @@ answered *is it there*. None answered *does it do anything*.
 So the manifest now states, per scenario, what that scenario must be OBSERVED
 to have done: the process result class, and a row verdict it read out of the
 subject's own table. The oracle reports what each scenario observed;
-`verify.sh` compares the report against the manifest. The comparison lives in
+[`verify.sh`](../verify.sh) compares the report against the manifest. The comparison lives in
 none of the three places somebody would edit to make a scenario stop working.
 An emptied body is then a scenario that observed nothing, named in the
 diagnosis. A scenario that dies mid-plant reports its own death for the same
@@ -106,23 +106,23 @@ produces a different note.
 **BOUND.** The diagnosis is matched as a substring, so two plants the arbiter
 describes in the same words are still indistinguishable. And every check on the
 oracle's report is defeatable by a fabricator that reproduces the report. That
-is why `verify.sh` also plants seven defects for ITSELF before calling the
+is why [`verify.sh`](../verify.sh) also plants seven defects for ITSELF before calling the
 oracle, and requires each to redden its own row while the unplanted rows stay
 green. That is a lower bound on the arbiter's liveness and it is not proof of
-it. What it buys is that blinding the arbiter now takes an edit to `verify.sh`
+it. What it buys is that blinding the arbiter now takes an edit to [`verify.sh`](../verify.sh)
 too.
 
 The claim is bounded. A completeness claim here is the sentence this project has
 been wrong about four times. What holds is narrower: **the row roster and the
 scenario list cannot be shrunk by an edit confined to a single file**, because
-`internal/manifest` pins them a second time, in Go, and the edit then has to be
+[`internal/manifest`](../internal/manifest) pins them a second time, in Go, and the edit then has to be
 made twice, in two languages. **The escape.** The self-drive's own detection set
-is held by a length literal in `verify.manifest.sh` and by nothing else, so
+is held by a length literal in [`verify.manifest.sh`](../verify.manifest.sh) and by nothing else, so
 deleting entries there shrinks it and the run still passes. MEASURED; the
 plugin's deferred-work record carries the reproduction.
 
 The step deletions below were driven. MEASURED 2026-08-29, deleting one step at
-a time from a copy and running `scripts/test-verify.sh` against it: eight of the
+a time from a copy and running [`scripts/test-verify.sh`](../scripts/test-verify.sh) against it: eight of the
 nine steps then present redden at least one oracle scenario. `gofmt` 4, the gate
 roster 3, the two gates 6, the unit suite refuses the run outright, `shellcheck`
 2, `build` and `vet` 1 each. Those counts were taken against the 19-scenario
@@ -151,20 +151,20 @@ The oracle step is the one that cannot be closed from the inside: see below.
 
 The sentence that stood here until 2026-09-06 said there is no CI on this
 repository and there never would be. It was wrong. This script has run on every
-push since; see **In CI** below. `verify.sh` is still the only arbiter there is,
+push since; see **In CI** below. [`verify.sh`](../verify.sh) is still the only arbiter there is,
 and CI is a second place it runs. It is not a second opinion. That is why it is
-one command and why it has an oracle of its own, `scripts/test-verify.sh`, which
+one command and why it has an oracle of its own, [`scripts/test-verify.sh`](../scripts/test-verify.sh), which
 plants a defect in a copy of the tree and requires the row that owns that defect
-to be the row that fails. `verify.sh` runs it as a step.
+to be the row that fails. [`verify.sh`](../verify.sh) runs it as a step.
 
 That loop closes only while it is wired, and it cannot close itself: a
-`verify.sh` that drops its oracle step never runs the scenario that checks the
+[`verify.sh`](../verify.sh) that drops its oracle step never runs the scenario that checks the
 step is there. MEASURED 2026-08-29: deleting the step is caught only
 incidentally, by `shellcheck` objecting that `--inner`'s variable became unused.
 Composing past that one objection gives a clean PASS verdict with the arbiter's
-own arbiter silently gone. Running `scripts/test-verify.sh` directly is the
+own arbiter silently gone. Running [`scripts/test-verify.sh`](../scripts/test-verify.sh) directly is the
 check for that, and it is a human act. Nothing wires it. The rest of what
-neither can see is in `docs/gates.md`.
+neither can see is in [`docs/gates.md`](gates.md).
 
 ### The rows added on 2026-09-05, and the two verdicts that came with them
 
@@ -213,8 +213,9 @@ by the real run and by no scenario. The three are
 so the run exits zero over a subset of its population and the set comparison is
 the only thing that can see it).
 
-**`readme-usage`.** README.md's Usage section prints a Go function and the
-sentence under it says it is `ExampleClient` in `runtime/example_test.go`
+**`readme-usage`.** [The Usage section of `README.md`](../README.md#usage)
+prints a Go function and the
+sentence under it says it is `ExampleClient` in [`runtime/example_test.go`](../runtime/example_test.go)
 *byte for byte*. Nothing checked that; a claim of identity between two files was
 being made by prose. The row extracts both and `diff`s them verbatim, with no
 normalising, because the sentence says byte for byte and a row comparing a
@@ -224,9 +225,9 @@ both directions: `readme-usage-drifts-in-the-readme` takes the block out of the
 README, `readme-usage-drifts-in-the-example` moves one byte of the function.
 
 **`SKIPPED`, the third verdict, and the only one that means "not measured".**
-The oracle is most of the run's wall clock. Its subject is `verify.sh` itself,
-the manifest, `scripts/` and, since D41, the lane's own decision scripts under
-`.github/lane/`. When those files are byte for byte what they were the last time
+The oracle is most of the run's wall clock. Its subject is [`verify.sh`](../verify.sh) itself,
+the manifest, [`scripts/`](../scripts) and, since D41, the lane's own decision scripts under
+[`.github/lane/`](../.github/lane). When those files are byte for byte what they were the last time
 the oracle passed here, `verify-oracle` records SKIPPED, naming the hash and the
 file set it covers, and the verdict line still says PASS only because every row
 that was not skipped passed. `./verify.sh --oracle` runs it regardless, and that
@@ -246,7 +247,7 @@ What drives that arm, stated exactly, because the first version of this sentence
 overstated it: the `self-check` row puts a skip by a row that may not skip, and
 an honest one by the row that may, through `record()` on every run. The row also
 counts its probes and the refusals they earned against `SELF_CHECK_PROBES_N` and
-`SELF_CHECK_REFUSALS_N` in `verify.manifest.sh`. The count is what survives the
+`SELF_CHECK_REFUSALS_N` in [`verify.manifest.sh`](../verify.manifest.sh). The count is what survives the
 composed edit. MEASURED by review: disabling the arm AND deleting the probe that
 drives it in one edit left every row green and the whole oracle green, because
 the only trace was a refusal count derived from the case list that had just been
@@ -256,15 +257,15 @@ count speaks).
 
 **Two bounds on the skip, both real.** The stamp is a LOCAL CACHE. It is not
 evidence: it is gitignored and per-clone, and a stamp written BY HAND carrying
-the hash `verify.sh` computes grants a skip, because any hand can compute what
-`verify.sh` computes. So the merge rule is an `--oracle` run at the head being
+the hash [`verify.sh`](../verify.sh) computes grants a skip, because any hand can compute what
+[`verify.sh`](../verify.sh) computes. So the merge rule is an `--oracle` run at the head being
 merged, and since 2026-09-06 that run is CI's, on a machine that has no stamp to
 inherit. "The stamp says it passed" is not the rule. See **In CI**.
 
 The second bound is that the hash covers the ARBITER, so a scenario that depends
 on the PRODUCT's shape can go stale without a covered byte moving. Those
 scenarios are not typed out here. A typed list was, and it omitted eleven of
-them. This one is DERIVED from `scripts/test-verify.sh` and quoted:
+them. This one is DERIVED from [`scripts/test-verify.sh`](../scripts/test-verify.sh) and quoted:
 
 ```stale-anchor-scenarios
 ceiling-control
@@ -314,14 +315,14 @@ today. Read this as the list a skipped run is not re-checking. It is not a claim
 that nothing else can go stale.
 
 **`--light`, the scope, and why a scenario cannot hide behind it.** The oracle
-plants one defect in a copy of the tree and runs the copy's `verify.sh` end to
+plants one defect in a copy of the tree and runs the copy's [`verify.sh`](../verify.sh) end to
 end, once per scenario. A scenario that plants a shell or a document defect was
 paying for the whole unit suite in its own copy in order to watch a lint row go
 red. Those scenarios now run `--inner --light`, which omits the two expensive
 rows and nothing else, and a run at that scope NAMES the rows it did not run on
 its own verdict line. Which scenarios are light is declared in the manifest
 beside the contract, applied by the oracle's dispatcher and by no scenario body,
-and recorded as an observation that `verify.sh` compares against the declaration.
+and recorded as an observation that [`verify.sh`](../verify.sh) compares against the declaration.
 A scenario cannot pass by scoping away the row it exists to drive. Its contract
 demands a verdict from that row, an omitted row records nothing, and a row that
 recorded nothing reads ABSENT. The manifest refuses the combination outright, in
@@ -329,7 +330,7 @@ the shell and again in Go, so it cannot be written down.
 
 ### In CI
 
-`.github/workflows/verify.yml`. Every push of every branch, and a manual
+[`.github/workflows/verify.yml`](../.github/workflows/verify.yml). Every push of every branch, and a manual
 `workflow_dispatch`, produces one run. Since D41 that run is two lanes with one
 arbiter between them, and every job of both runs on a GitHub-hosted
 `ubuntu-24.04` image:
@@ -339,7 +340,7 @@ arbiter between them, and every job of both runs on a GitHub-hosted
 | `the oracle's domain` | `./verify.sh --oracle-hash` | always |
 | `oracle shard I` | `./scripts/test-verify.sh --shard I/N` | see below |
 | `the oracle verdict` | the shards, aggregated into one verdict | with the shards |
-| `the arbiter` | `./verify.sh` | always |
+| `the arbiter` | [`./verify.sh`](../verify.sh) | always |
 
 **The rule the shape comes from.** Maintainer, D41: every check on the way into
 `dev` finishes well under five minutes; `main` and a release may take longer;
@@ -353,7 +354,7 @@ moved the lane here, each the whole arbiter with the oracle row honestly skipped
 on `ubuntu-24.04` with `nproc` 4 and 16 GB. The job prints the core count, so
 this page does not assume it:
 
-| run | job start to verdict | `verify.sh` itself | `unit-suite` | `netns-suite` |
+| run | job start to verdict | [`verify.sh`](../verify.sh) itself | `unit-suite` | `netns-suite` |
 | --- | --- | --- | --- | --- |
 | 34204814646 | 4m03s | 198s | 42s | 86s |
 | 34206597940 | 4m06s | 201s | 42s | 88s |
@@ -361,7 +362,7 @@ this page does not assume it:
 
 So the rule is met with about forty seconds to spare, and the spare is where a
 reader should look first when it stops being met: roughly half of each job is
-`verify.sh` and the other half is the checkout, the toolchain and the three
+[`verify.sh`](../verify.sh) and the other half is the checkout, the toolchain and the three
 packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of ten
 shards whose longest ran 11m34s (run 34204814646). That is why it is not in this
 table.
@@ -380,8 +381,8 @@ minutes later, of which the arbiter's own work was four.
 **And it must.** The alternative is a required check that concludes green while
 the matrix that proves this arbiter is still running, which is a merge button lit
 by a run that has not finished checking. The pushes that wait are exactly the
-pushes that changed the checking machinery: a change to `verify.sh`, to the
-manifest, to `scripts/` or to `.github/lane/`. The other pushes that wait are
+pushes that changed the checking machinery: a change to [`verify.sh`](../verify.sh), to the
+manifest, to [`scripts/`](../scripts) or to [`.github/lane/`](../.github/lane). The other pushes that wait are
 going to the release branch, and D41 says in as many words that `main` and
 release may take longer. A push that touches ring code only never waits. If that
 ever stops being true, if ordinary branch work starts paying sixteen minutes, the
@@ -405,13 +406,13 @@ figures. They are no longer inherited from a ceiling two values ago.
 - any push whose tree reaches an arbiter that no green run has published.
 
 **There is no path filter, and that is the design.** "The oracle's own domain
-changed" is one fact, and `verify.sh` already derives it: the file set its skip
-stamp hashes, which is `verify.sh` itself, `verify.manifest.sh` and everything
-under `scripts/` and `.github/lane/`. `./verify.sh --oracle-hash` prints that
+changed" is one fact, and [`verify.sh`](../verify.sh) already derives it: the file set its skip
+stamp hashes, which is [`verify.sh`](../verify.sh) itself, [`verify.manifest.sh`](../verify.manifest.sh) and everything
+under [`scripts/`](../scripts) and [`.github/lane/`](../.github/lane). `./verify.sh --oracle-hash` prints that
 set, its size and its hash and measures nothing. The lane asks it, and keeps no
 list.
 
-**Why `.github/lane/` is in that set, since it was not at first.** Every refusal
+**Why [`.github/lane/`](../.github/lane) is in that set, since it was not at first.** Every refusal
 deciding whether a run may skip the oracle lives in those scripts: the hash
 comparison, the row roster, the single verdict line, the shard account. Review
 MEASURED what that cost while they sat outside the domain. The hash comparison
@@ -426,7 +427,7 @@ status. With a refusal deleted, `verdict.sh` still exits non-zero in a copy,
 because the API read below it has no token, so a scenario reading the exit status
 alone would have watched the reviewer's mutant pass. A `paths:` filter in the
 workflow would be the same fact derived a second time, and the looser derivation
-would decide which pushes are checked. So `internal/publication` refuses a
+would decide which pushes are checked. So [`internal/publication`](../internal/publication) refuses a
 `paths:` or `paths-ignore:` key anywhere in a workflow here, and demands that the
 lane still asks the question.
 
@@ -451,10 +452,10 @@ fresh, so the sentence has to cross machines. There were three ways to do it:
   green `the oracle verdict` job published that hash. A run id is a thing the
   API answers about. A file is not.
 
-The third is what the lane does. `.github/lane/oracle-skip.sh` asks
+The third is what the lane does. [`.github/lane/oracle-skip.sh`](../.github/lane/oracle-skip.sh) asks
 `verify.sh --oracle-hash` for the hash, lists the unexpired artifacts named
 `oracle-pass-<hash>`, and puts each owning run through three conditions in
-`.github/lane/oracle-run-check.sh`: the artifact exists unexpired and that run
+[`.github/lane/oracle-run-check.sh`](../.github/lane/oracle-run-check.sh): the artifact exists unexpired and that run
 owns it; the run is a run of this repository's `verify.yml`; and it holds a job
 named `the oracle verdict` whose conclusion is `success`. The JOB is what is
 read, because a run's own conclusion is null while it is in flight and can be
@@ -463,19 +464,19 @@ the write sits below that check and below nothing else. The publication sits
 below the aggregation in the same way: `the oracle verdict` uploads the name only
 on its own success, so a red run leaves no name to look up.
 
-The lane then runs `./verify.sh`, the arbiter, whole, with the one row the
+The lane then runs [`./verify.sh`](../verify.sh), the arbiter, whole, with the one row the
 manifest declares skippable honestly SKIPPED. The vacuity step asks the API
 *again*, over the hash the arbiter itself printed. Three fooling shapes die
 there: a justification naming a run that passed at a different hash (the
 arbiter's own row names the hash it skipped at, and the two are compared); a
 justification naming a run whose aggregation job was red or cancelled; and a
 justification naming a run that does not exist, or exists in another repository
-or another workflow. With no stamp at all, `./verify.sh` runs the whole oracle
+or another workflow. With no stamp at all, [`./verify.sh`](../verify.sh) runs the whole oracle
 itself and the job hits its timeout. That is loud, and it is the correct
 direction. A lane that cannot earn its skip does not get one.
 
 **The escapes, beside the claim.** Anybody who can push a branch here can also
-edit `.github/`, and `.github/` is not in the set the hash covers. A workflow
+edit [`.github/`](../.github), and [`.github/`](../.github) is not in the set the hash covers. A workflow
 edited to publish the name is therefore a deliberate forgery this does not close,
 exactly as the local stamp's own comment says of a stamp written by hand. What is
 closed is the accident and the cheap attempt: a red run, a run at another hash, a
@@ -489,9 +490,9 @@ thirty days.
 size and the membership is a round-robin over the same list, so a scenario added
 to the manifest lands in a shard with nothing in the workflow edited, and a shard
 that would be empty is a refusal. It is never a job that quietly runs nothing.
-Each shard holds its own scenarios to the contracts `verify.manifest.sh` declares
-for them, through `scripts/oracle-contracts.sh`. That is the same comparison
-`verify.sh` makes, restricted to that shard, and it is there because a shard that
+Each shard holds its own scenarios to the contracts [`verify.manifest.sh`](../verify.manifest.sh) declares
+for them, through [`scripts/oracle-contracts.sh`](../scripts/oracle-contracts.sh). That is the same comparison
+[`verify.sh`](../verify.sh) makes, restricted to that shard, and it is there because a shard that
 only collected `RESULT` lines would be a count of names.
 `the oracle verdict` then refuses: a matrix result that is not `success`, a
 shard that left no account, a shard that named no members, a non-zero shard
@@ -502,7 +503,7 @@ time floor, and a total that is not the roster's size.
 
 **One copy of the suite at a time inside a shard.** `ORACLE_JOBS` is pinned to
 one in the matrix, and that is the point of sharding. Every ceiling in
-`verify.manifest.sh` is a wall clock derived with one copy of the suite running,
+[`verify.manifest.sh`](../verify.manifest.sh) is a wall clock derived with one copy of the suite running,
 and a shard running four copies at once would be measuring contention against a
 ceiling nothing derived under contention. The parallelism lives across jobs,
 where it cannot perturb a wall clock.
@@ -543,7 +544,7 @@ module has no dependency to make vulnerable. What stands behind it is a
 measurement, taken by hand when the workflow was written: the same command over
 the same tree reported a reachable standard-library advisory under an older
 toolchain and nothing under the newest one. The version it scans is the one
-`setup-go` resolves from the `go` line in `go.mod`, so a red there says the
+`setup-go` resolves from the `go` line in [`go.mod`](../go.mod), so a red there says the
 newest toolchain a consumer can build this library with has a reachable
 advisory.
 
@@ -591,7 +592,7 @@ act**, and that is the cost of the arrangement. Somebody who can write here
 pushes the branch to this repository, or dispatches the workflow, having read the
 diff first. A pull request never buys itself a verdict.
 
-**The observer is `internal/publication`**, in the unit suite, and it carries
+**The observer is [`internal/publication`](../internal/publication)**, in the unit suite, and it carries
 five rules. They are stated here once each. The first two are true of the bytes
 as they are written, and need no scan that has to be right about a workflow
 first. The other three read a stated subset of YAML and refuse what they cannot
@@ -637,7 +638,7 @@ lookup fails, and a lookup that fails refuses the skip.
 The domain is the directory and not the repository. That is the shape of the
 rule, and it is no exemption for the rest of the tree. A rule has to be writable
 in the check that carries it and on the page that publishes it, and neither
-`internal/publication` nor this page is under `.github/`. Inside the directory it
+[`internal/publication`](../internal/publication) nor this page is under [`.github/`](../.github). Inside the directory it
 is everything: the workflows, the linter configuration beside them, and whatever
 is added there later. The day a workflow here genuinely needs a secret, the rule
 is widened deliberately: this paragraph, the check and its cases moving together,
@@ -741,7 +742,7 @@ fork trigger is live in the set and a finding is one self-hosted label away.
 A workflow reaches a repository secret through the word rule One refuses. It
 reaches a CREDENTIAL without that word through `permissions: id-token: write`,
 which mints an OIDC token for the job that a service outside this repository will
-trade for one of its own. Nothing under `.github/` would spell `secrets` and a
+trade for one of its own. Nothing under [`.github/`](../.github) would spell `secrets` and a
 job could still authenticate to something. Until D37 nothing here read a
 `permissions:` key at all.
 
@@ -799,10 +800,10 @@ genuinely needed the event would widen this rule and this paragraph together,
 with the argument for what it acts on.
 
 **The page and the security page are held to each other.** The count above and
-each rule's sentence are quoted in `SECURITY.md`, and a test reads both files and
+each rule's sentence are quoted in [`SECURITY.md`](../SECURITY.md), and a test reads both files and
 refuses a disagreement: the count, the ordinals running One to Five with no gap,
 and every sentence verbatim. It was written because this page said four rules
-while `SECURITY.md` told a reporter the workflows are held to two, in the same
+while [`SECURITY.md`](../SECURITY.md) told a reporter the workflows are held to two, in the same
 commit, with nothing red. What it does NOT check is that either page is true of
 the code. The rules are prose headings on one side and tests on the other, and no
 instrument derives one population from the other.
@@ -825,8 +826,8 @@ times. Twice, because a figure taken once cannot say whether the load arrived
 during the measurement. That is what a ceiling row's first red is read against.
 With no load figure, the first red of that class reads as drift in the suite.
 
-**The job's verdict IS the arbiter's verdict.** Green means `verify.sh` printed
-`VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything else is
+**The job's verdict IS the arbiter's verdict.** Green means [`verify.sh`](../verify.sh) printed
+`VERDICT: PASS` over every row [`verify.manifest.sh`](../verify.manifest.sh) declares. Anything else is
 red, including a run that never reached the arbiter at all: a failed checkout, or
 the job's own timeout. There is no branch filter and no path filter, because an
 absent run is not a green run and nothing about a commit should be able to decide
@@ -839,7 +840,7 @@ nothing at all. That is what the last step is for, and since D41 it has one more
 thing to tell apart: a skip that rests on a run from a skip that rests on a file
 somebody wrote.
 
-So `.github/lane/verdict.sh` refuses an empty output; requires a `PASS` row for
+So [`.github/lane/verdict.sh`](../.github/lane/verdict.sh) refuses an empty output; requires a `PASS` row for
 **every** name in `MANIFEST_ROWS`, sourced from the manifest while the job runs,
 allowing SKIPPED only for a row `MANIFEST_SKIPPABLE_ROWS` declares skippable, and
 refusing any declared row that recorded a FAIL; requires the `verify-oracle` row
@@ -849,7 +850,7 @@ have a justification whose hash is the one the arbiter printed; requires one
 verdict line naming the manifest's row count; and only then asks the API a second
 time about the run that skip rests on. That step is no second manifest. It types
 no name and no number of its own, and an edit that shrinks the roster and the
-counts together still has to get past `manifest_check` and `internal/manifest`,
+counts together still has to get past `manifest_check` and [`internal/manifest`](../internal/manifest),
 where CI adds no layer.
 
 **The anchor is the margin**, and it is why every pattern in that step is
@@ -872,7 +873,7 @@ the one to read.
 
 **The bound, and it is back.** Two executions of one script are not one
 execution. The machine the lane runs on is not the box a developer runs
-`./verify.sh` on, and its differences have changed a verdict four times. MEASURED
+[`./verify.sh`](../verify.sh) on, and its differences have changed a verdict four times. MEASURED
 on the hosted images of 2026-08 and 2026-09, each cause named with the runs that
 show it. The list is kept because every one of these is a hosted image again:
 
@@ -880,7 +881,7 @@ show it. The list is kept because every one of these is a hosted image again:
   AppArmor. Left at its default the namespaced child STARTED, so the namespace
   was created, and then every netlink call inside it was refused: `ip link add`
   answered `Operation not permitted` and the `netns-suite` row went red (run
-  33992151078). `.github/lane/prepare.sh` clears it with one sysctl on every
+  33992151078). [`.github/lane/prepare.sh`](../.github/lane/prepare.sh) clears it with one sysctl on every
   hosted job, and records the fact where the knob does not exist. Its absence is
   recorded and never assumed.
 - **Cores, against a ceiling derived elsewhere.** The pure suite's ceiling was
@@ -889,8 +890,8 @@ show it. The list is kept because every one of these is a hosted image again:
   past the ceiling and nothing else was wrong with them (runs 33992151078,
   34008425787). The matrix answers it by running one copy per shard and putting
   the parallelism across jobs, and the ceilings themselves are re-derived on the
-  image that runs them. `verify.sh` states each derivation beside its number and
-  `verify.manifest.sh` pins the value, so moving one is an edit in two files.
+  image that runs them. [`verify.sh`](../verify.sh) states each derivation beside its number and
+  [`verify.manifest.sh`](../verify.manifest.sh) pins the value, so moving one is an edit in two files.
 - **Scheduling, and this is the one that found a real defect.** Two cores made
   `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlock. The waiter it
   drives returned through its match arm without reporting the frame that ended
@@ -912,7 +913,7 @@ show it. The list is kept because every one of these is a hosted image again:
 **What that bound is now.** Two machines again, which is the useful state: a
 developer's box and a hosted image are different hardware, and a ceiling that one
 meets and the other does not is a thing somebody has to look at. The first two
-causes above are handled by the lane and not by luck. `.github/lane/prepare.sh`
+causes above are handled by the lane and not by luck. [`.github/lane/prepare.sh`](../.github/lane/prepare.sh)
 clears the namespace restriction where the knob exists and installs the three
 tools the arbiter shells out to, and the shards run one copy of the suite at a
 time. The last two were real defects in the library that only a machine with
@@ -930,7 +931,7 @@ again.
 Both are load-bearing guarantees, and both are checked against a planted
 violation. Neither is trusted. The allowlists the gates read are checked too, and
 separately: a correct gate enforcing a widened table is the failure a gate test
-cannot see. What each one **cannot** see is written down in `docs/gates.md`. Read
+cannot see. What each one **cannot** see is written down in [`docs/gates.md`](gates.md). Read
 that before relying on either.
 
 ### One thing that surprised us, recorded because it will surprise the next reader
@@ -940,7 +941,7 @@ computed**. Linux writes the folded pseudo-header sum into the field and leaves
 completing it to hardware, so an AF_PACKET reader on the far side of a veth pair
 sees `CHECKSUM_PARTIAL` bytes. MEASURED 2026-08-29 against dnsmasq 2.91: the
 captured OFFER held `0x24f6` in a field whose completed value is `0xe58c`. Both
-are fixtures in `runtime/ipudp_test.go`, asserted against the captured bytes.
+are fixtures in [`runtime/ipudp_test.go`](../runtime/ipudp_test.go), asserted against the captured bytes.
 `0x24f6` is the pseudo-header sum for that source, destination and length, and
 for nothing else. Flip a payload octet and the completed checksum moves while the
 field does not, which is a test, and is exactly why the field says nothing about

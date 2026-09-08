@@ -1,8 +1,8 @@
 # Design and scope
 
 The long form behind the README: how the library is put together, what its
-tests prove today, and the words its comments use. `docs/verifying.md` covers
-the arbiter. `docs/gates.md` covers the two ring gates.
+tests prove today, and the words its comments use. [`docs/verifying.md`](verifying.md) covers
+the arbiter. [`docs/gates.md`](gates.md) covers the two ring gates.
 
 ## The consumer, and the word for it
 
@@ -74,7 +74,7 @@ real socket, renewed at T1 and rebound at T2, given back or refused. Every
 entry below is a test, and each one names it. The DHCPv6 half has its own list
 after the IPv4 one.
 
-- **A lease from a real server.** `runtime`'s test re-executes itself into a
+- **A lease from a real server.** [`runtime`](../runtime)'s test re-executes itself into a
   user and network namespace, wires a veth pair, runs dnsmasq on one end and
   this library on the other, and asserts the exchange against **dnsmasq's own
   log**: DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK, and for the renewal a
@@ -118,7 +118,7 @@ after the IPv4 one.
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
-- **The whole acquisition path in milliseconds.** `proto` tables the path with
+- **The whole acquisition path in milliseconds.** [`proto`](../proto) tables the path with
   no root, no namespace and no network at all.
 
 ### DHCPv6, against the same real dnsmasq
@@ -157,6 +157,6 @@ after the IPv4 one.
   was built on, and it leases from a server only that namespace can see.
 - Renewal, rebinding, expiry, Advertise selection by preference, the Status
   Code paths and the Information-request are ring 1's, driven there in
-  milliseconds against `proto`'s tables and against captured frames replayed
+  milliseconds against [`proto`](../proto)'s tables and against captured frames replayed
   through the decoder.
 

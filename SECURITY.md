@@ -36,7 +36,7 @@ What it does not do is most of the answer to "how bad could this be":
 
 The attack surface is the wire. A DHCP reply is written by whoever answers
 first on the link, and the library decodes it before anything has authenticated
-anybody: `wire/` parses the message and its options, `proto/` decides what to
+anybody: [`wire/`](wire) parses the message and its options, [`proto/`](proto) decides what to
 do about it, and both are reachable by any host that can put a frame on the
 interface. Findings there are the ones this project most wants to hear about:
 
@@ -60,7 +60,7 @@ The latest tagged release. There is no backport policy.
 
 ## The checks that run on every change
 
-`./verify.sh` is the arbiter, and `docs/verifying.md` says what each of its
+[`./verify.sh`](verify.sh) is the arbiter, and [`docs/verifying.md`](docs/verifying.md) says what each of its
 rows measures and what it cannot see. Beside it, on GitHub-hosted machines:
 CodeQL over the Go source and over the workflows, `govulncheck` for advisories
 reachable from code this module calls, and `actionlint` over the workflows.

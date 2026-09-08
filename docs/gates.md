@@ -18,15 +18,15 @@ measured records FAIL. It may not record SKIPPED.
 
 ## T1: ring 1 imports nothing that does I/O
 
-`internal/gates/t1`. Policy lives in `internal/gates/rings`.
+[`internal/gates/t1`](../internal/gates/t1). Policy lives in [`internal/gates/rings`](../internal/gates/rings).
 
-Ring 1 (`proto/`) is the state machine and it is pure: `Step(now, rnd, ev)` takes
+Ring 1 ([`proto/`](../proto)) is the state machine and it is pure: `Step(now, rnd, ev)` takes
 time and entropy as parameters and reads neither. That is what makes the suite
 instant and offline replay bit-exact. The day ring 1 can read a clock or open a
 socket, both properties are gone and no test will say so. That is why this is a
 gate and why a comment would not do.
 
-Ring 0 (`wire/`) is held to the same policy, because ring 1 imports it and an
+Ring 0 ([`wire/`](../wire)) is held to the same policy, because ring 1 imports it and an
 impure ring 0 makes ring 1 impure transitively.
 
 ### Four rules
@@ -83,27 +83,27 @@ Two consequences of that, stated here so nobody has to discover them:
    names checked against a policy decision made by a person. If a future Go
    release gives `strconv` a background goroutine, T1 will not notice.
 7. **The ring layout itself.** Rule D checks that the four roots exist and are
-   populated. It cannot check that `proto/` still contains the state machine.
+   populated. It cannot check that [`proto/`](../proto) still contains the state machine.
 8. **Files under `testdata/`, `vendor/` and `.git/`.** Both gates share
    `scan.GoFiles`, which skips them. For `testdata/` the reason is the same one
    T2 gives: the go tool does not compile it, so nothing there is part of any
    binary, and it is where the gates' own deliberate violations live. This was
    documented for T2 and left undocumented for T1 until 2026-08-29, although the
    two gates have always walked the tree with the same function.
-9. **Its live domain at M0 is inert.** MEASURED 2026-08-29: `proto/doc.go` and
-   `wire/doc.go` are doc comments with no imports, so on the real tree rules B
+9. **Its live domain at M0 is inert.** MEASURED 2026-08-29: [`proto/doc.go`](../proto/doc.go) and
+   [`wire/doc.go`](../wire/doc.go) are doc comments with no imports, so on the real tree rules B
    and C judge zero import lines and rule A a closure of two packages, the two
    rings themselves. Rule D is what stops that from being reported as a vacuous
-   pass. The rules are exercised in `internal/gates/t1`'s own cases, against
+   pass. The rules are exercised in [`internal/gates/t1`](../internal/gates/t1)'s own cases, against
    planted violations. T2 states the equivalent bound as item 4 below, and T1
    did not state it at all until this line was written.
 
 ## T2: no test waits on wall-clock time
 
-`internal/gates/t2`.
+[`internal/gates/t2`](../internal/gates/t2).
 
 Until 2026-09-06 this said the library has no CI and never would. That was
-wrong: the arbiter has run on every push since (`docs/verifying.md`, **In CI**,
+wrong: the arbiter has run on every push since ([`docs/verifying.md`](verifying.md), **In CI**,
 which says where and on what terms). It changes nothing about why this gate
 exists. Who runs this suite while the code is being written is a person, over and
 over, long before there is anything to push. A suite slow enough to avoid is a
@@ -124,7 +124,7 @@ months.
   restricted too: a deadline on a context is a wall-clock wait under another
   name, because whatever blocks on `ctx.Done()` is blocking until a timer
   fires.
-- **A wall-clock ceiling on the suite**, in `verify.sh`, currently 84s. This is
+- **A wall-clock ceiling on the suite**, in [`verify.sh`](../verify.sh), currently 84s. This is
   a genuinely different instrument. The gate reads source and the ceiling reads
   the clock, so a wait the gate cannot see still costs time here.
 
@@ -143,7 +143,7 @@ and do not wait on it, and T2's subject is waiting.
    `time.Millisecond`, both allowed, and both *correctly* allowed: reading the
    clock is not waiting on it, right up until the read is a loop condition.
    Distinguishing the two takes control-flow analysis, and an identifier check
-   cannot do it. MEASURED 2026-08-29: `scripts/test-verify.sh` plants exactly
+   cannot do it. MEASURED 2026-08-29: [`scripts/test-verify.sh`](../scripts/test-verify.sh) plants exactly
    this loop and T2 passes it. The scenario asserts that it does, because the
    loop is there to drive the wall-clock ceiling and the ceiling is only being
    measured if T2 stayed out of the way.
@@ -162,7 +162,7 @@ and do not wait on it, and T2's subject is waiting.
    tests. It does not, and never did. What bounds a hang is
    `SUITE_TIMEOUT_SECONDS` on the `go test` line, added 2026-08-29 and driven
    by the `hang-bounded` oracle scenario. Two bounds on the bound itself:
-   running `go test` by hand outside `verify.sh` gets Go's default of ten
+   running `go test` by hand outside [`verify.sh`](../verify.sh) gets Go's default of ten
    minutes per test binary, settable from the environment; and the absence check
    for this one shows up as the ORACLE hanging, and never as a red row. MEASURED
    2026-08-29, the scenario returns in seconds with the flag and had to be
@@ -174,10 +174,10 @@ and do not wait on it, and T2's subject is waiting.
 5. **Its domain was the gates' own self-tests at M0, and is the library's
    tests from M1 on.** That bullet used to end "it will not be guarding any
    protocol test until M1"; M1 landed on 2026-08-29 and it now checks every
-   test file in `wire`, `proto`, `lease` and `runtime`. Two of those tests
+   test file in [`wire`](../wire), [`proto`](../proto), [`lease`](../lease) and [`runtime`](../runtime). Two of those tests
    BLOCK, one on a real dnsmasq's log line and one spinning on a counter with
    `runtime.Gosched`, and T2 sees neither, by bullets (1) and (4). What bounds
-   them is the `go test -timeout` in `verify.sh`, per (3a). The suite ceiling
+   them is the `go test -timeout` in [`verify.sh`](../verify.sh), per (3a). The suite ceiling
    does NOT bound them: this bullet said the ceiling, and the ceiling is
    unreachable for exactly the tests it was claiming to cover.
 6. **Files under `testdata/`.** Not walked, because the go tool does not
@@ -206,7 +206,7 @@ One command, every check, one verdict. Details that are not incidental:
   silenced by deleting a check.
 - **The verdict is printed by an EXIT trap.** The last line does not print it.
   MEASURED 2026-08-28 by review: one unprotected assignment took `set -e` with
-  it, so deleting `go.mod` made the verifier exit 1 having printed no verdict at
+  it, so deleting [`go.mod`](../go.mod) made the verifier exit 1 having printed no verdict at
   all, silent in the one case where the tree was most broken. That assignment is
   also fixed, but the promise "one command, one verdict" is a property of the
   file, so it is now held at a place every exit path passes.
@@ -220,15 +220,15 @@ One command, every check, one verdict. Details that are not incidental:
 
 ### verify.sh has an oracle
 
-`scripts/test-verify.sh`. It copies the tree, plants ONE defect in the copy,
+[`scripts/test-verify.sh`](../scripts/test-verify.sh). It copies the tree, plants ONE defect in the copy,
 runs the copy's `./verify.sh --inner`, and asserts both that the run failed and
 that **the row which failed is the row that owns the defect**. Attributing the
 failure to the row is the same lesson as the fixture-path finding below: a run
 that fails for the wrong reason looks exactly like one that fails for the right
-one. `verify.sh` runs it as a step, so the verifier is checked by the command
+one. [`verify.sh`](../verify.sh) runs it as a step, so the verifier is checked by the command
 that runs the verifier.
 
-The scenario roster is `MANIFEST_SCENARIOS` in `verify.manifest.sh`, cross-
+The scenario roster is `MANIFEST_SCENARIOS` in [`verify.manifest.sh`](../verify.manifest.sh), cross-
 checked in both directions against the `sc_*` functions in the oracle. Read it
 there. A prose copy of a list the script already enforces is an unrun checklist,
 and this paragraph was one: it enumerated the scenarios as they stood before
@@ -240,13 +240,13 @@ and silent. That is the round-9 finding and the manifest section below is the
 answer.
 
 **Every step's DELETION was driven.** MEASURED 2026-08-29 by removing one step
-at a time from a copy of `verify.sh` and running the oracle against that copy.
+at a time from a copy of [`verify.sh`](../verify.sh) and running the oracle against that copy.
 The table covers the nine steps that existed at that measurement. `citations` and
 `bounds` were added later the same day, each driven by its own absence check at
 introduction: delete the step from a copy, watch its scenario report ABSENT.
 Neither was driven by a re-run of this sweep:
 
-| step deleted from `verify.sh` | oracle scenarios that went red |
+| step deleted from [`verify.sh`](../verify.sh) | oracle scenarios that went red |
 |---|---|
 | `build`     | 1 (`vet-violation`, whose bait must compile) |
 | `vet`       | 1 (`vet-violation`); **0 before that scenario existed** |
@@ -272,21 +272,22 @@ that subset, so the scenario can assert `build`, `gofmt` and `unit-suite` all
 still PASS. That is the preservation control that makes the vet row's FAIL
 attributable.
 
-**The oracle also checks that `verify.sh` still runs it.** MEASURED 2026-08-29:
+**The oracle also checks that [`verify.sh`](../verify.sh) still runs it.** MEASURED 2026-08-29:
 replacing the oracle step with a hardcoded PASS survived every other scenario,
-and had to. This script is the *control* for those mutants, so `verify.sh`
+and had to. This script is the *control* for those mutants, so [`verify.sh`](../verify.sh)
 dropping the step is invisible from inside it. That is the same defect class as
 both blocking findings: a check that cannot see its own domain. It is now driven
-by replacing the copy's oracle with a stub and running the copy's `verify.sh`
+by replacing the copy's oracle with a stub and running the copy's [`verify.sh`](../verify.sh)
 with **no** flag. The stub answers and no recursion happens, this scenario
 chooses its answer, and both directions are asserted: a passing stub must produce
 a PASS row that quotes the stub, and a failing stub must fail the run.
 
 **This section used to say the opposite, and the reason it gave was wrong.** It
-said verify.sh could have no automated test because the harness would run
-`verify.sh` against a mutated copy and the copy would run the harness again. That
+said [`verify.sh`](../verify.sh) could have no automated test because the
+harness would run
+[`verify.sh`](../verify.sh) against a mutated copy and the copy would run the harness again. That
 obstacle is real, and it is specific to writing the harness as a **`go test`**:
-`verify.sh` runs `go test ./...`, so a Go test that ran `verify.sh` re-enters it
+[`verify.sh`](../verify.sh) runs `go test ./...`, so a Go test that ran [`verify.sh`](../verify.sh) re-enters it
 with nowhere to put a flag. As a standalone script with an explicit `--inner` on
 the inner invocation, there is no recursion to break. The correction is on the
 record because a false justification is worse than an admitted gap: the gap gets
@@ -298,14 +299,14 @@ into the invocation you are reading.
 
 ### What the oracle cannot see
 
-0. **`verify.sh` no longer calling the oracle.** The row above says 4 scenarios
+0. **[`verify.sh`](../verify.sh) no longer calling the oracle.** The row above says 4 scenarios
    catch it. That number is honest and the mechanism is not what it looks like:
    the catch is `shellcheck` objecting that deleting the step left `--inner`'s
    variable unused. MEASURED 2026-08-29, composing past that single objection
    with one `disable=SC2034` and a `: "$INNER"`, the copy prints a PASS verdict
    with the arbiter's own arbiter silently gone. This is inherent and cannot be
-   fixed from inside: a `verify.sh` that drops the step never runs the scenario
-   that checks the step is there. Running `scripts/test-verify.sh` by hand is
+   fixed from inside: a [`verify.sh`](../verify.sh) that drops the step never runs the scenario
+   that checks the step is there. Running [`scripts/test-verify.sh`](../scripts/test-verify.sh) by hand is
    the only check for it, and running it by hand is a human act. Recorded
    because an incidental catch is the easiest thing in this file to mistake for
    a designed one.
@@ -333,7 +334,7 @@ into the invocation you are reading.
    to have no `verify-oracle` row, and no mutant drives it, because that mutant
    is unbounded recursion and running it on a shared machine is not worth the
    evidence. MEASURED 2026-08-29 by hand instead, in both directions:
-   `./verify.sh` reports exactly one step more than `./verify.sh --inner`, and
+   [`./verify.sh`](../verify.sh) reports exactly one step more than `./verify.sh --inner`, and
    the extra row is `verify-oracle`; the inner run has no such row. The counts
    themselves are left out here. They move with every step added.
 4. **Two defensive arms that are unreachable today.** The `*)` unexpected
@@ -350,7 +351,7 @@ into the invocation you are reading.
   beginning `func`/`var`/`const`/`type`. It exists because converting a
   fact-comment into a pointer at a test is exactly how an invented test name
   gets written down and believed: one was invented during that conversion, and
-  one already in the tree (`internal/gates/rings/policy_test.go`) named a test
+  one already in the tree ([`internal/gates/rings/policy_test.go`](../internal/gates/rings/policy_test.go)) named a test
   that had never existed.
 
   **This bullet described a stricter check than the code performed.** A reviewer
@@ -364,7 +365,7 @@ into the invocation you are reading.
   narrowing the match back to column 0 kills it. `citation-vacuous` drives the
   other direction: a scan that finds no domain at all must FAIL, and may not
   report that every citation resolved. The eight remaining bounds are listed
-  beside the implementation in `verify.sh` and are not restated here. The first
+  beside the implementation in [`verify.sh`](../verify.sh) and are not restated here. The first
   is block comments, and none of them is a completeness claim.
 
   The seventh was added 2026-08-30 after a reviewer measured the direction this
@@ -400,7 +401,7 @@ into the invocation you are reading.
   the array, is CLOSED as of 2026-08-30. It was wider than it read: such an
   invocation takes `-count=1` with it too, so it also defeats the cached-result
   check, and every row stays green while `bounds` prints that the suite runs
-  with the checked flags. The step now reads `verify.sh`'s own source and
+  with the checked flags. The step now reads [`verify.sh`](../verify.sh)'s own source and
   requires exactly one suite invocation expanding `"${SUITE_ARGS[@]}"`. A check
   that reads its own source and cannot read it records FAIL, and does not fall
   through to the PASS. `suite-args-detached` plants the detached invocation.
@@ -424,7 +425,7 @@ rounds, each time only where somebody happened to look:
 | level | what passed over an absent subject | found |
 |---|---|---|
 | the suite | all 22 `_test.go` files build-tagged out; 0 tests ran | round 5, by the author |
-| the oracle | `scripts/test-verify.sh` replaced by `exit 0` | round 6, by review (B7) |
+| the oracle | [`scripts/test-verify.sh`](../scripts/test-verify.sh) replaced by `exit 0` | round 6, by review (B7) |
 | the row roster | a `step` call replaced by `true`; `PASS (10 steps)` | round 7, by the author |
 
 All three inherited one default: a command with nothing to do exits 0. Fixing
@@ -432,7 +433,7 @@ them one at a time was fixing instances of a class, and the class is what the
 contract closes.
 
 **What the contract does NOT do, stated because it is the whole residual.**
-Nothing inside `verify.sh` can force a count to be DERIVED. A written one
+Nothing inside [`verify.sh`](../verify.sh) can force a count to be DERIVED. A written one
 satisfies it: `record "build" PASS "ok" 1` passes completely. That is closed
 from outside, by a scenario that empties a row's domain and requires the row to
 go red.
@@ -462,16 +463,16 @@ What exists now, row by row, and what does not:
 The three with none are structural. They are no outstanding work, and saying so
 is the point of listing them. `shellcheck`'s domain is the shell scripts of the
 tree, and the tree cannot hold none of them: emptying it means deleting
-`verify.sh`. `gate-roster`'s domain is `MANIFEST_GATES`, and emptying that is
+[`verify.sh`](../verify.sh). `gate-roster`'s domain is `MANIFEST_GATES`, and emptying that is
 refused by `manifest_check` before any row runs. `bounds` reads constants out of
-`verify.sh`, so its domain is empty only when the file is. `self-check` probes a
+[`verify.sh`](../verify.sh), so its domain is empty only when the file is. `self-check` probes a
 fixed set of four cases, and its evidence is `self-check-guard-deleted`, which
 deletes what it probes.
 
 **`MANIFEST_ROWS`** is cross-checked against the rows recorded, in both
 directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
 
-- **`verify-oracle`** takes its expectation from `verify.manifest.sh`, a file
+- **`verify-oracle`** takes its expectation from [`verify.manifest.sh`](../verify.manifest.sh), a file
   the oracle does not own, and reads the oracle's report against it. This
   sentence used to say the expectation came from the oracle's own SOURCE, the
   `sc_` function definitions; that stopped being true when round 9 moved the
@@ -481,7 +482,7 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   review named as its own remedy's bound. Scenarios `oracle-stub-total`,
   `oracle-stub-partial`, `oracle-names-fabricated`.
 
-  **When it runs, since D41.** Locally, on demand: `./verify.sh` skips the row
+  **When it runs, since D41.** Locally, on demand: [`./verify.sh`](../verify.sh) skips the row
   when this tree already produced an `ORACLE PASS:` at this arbiter's hash, and
   `./verify.sh --oracle` runs it regardless. In CI it is a matrix of hosted jobs
   over shards of the roster, and it runs on a push to the release branch, on
@@ -490,7 +491,7 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   with no second list of paths anywhere. Every other push gets the row SKIPPED,
   and the skip is red unless the lane can name the run it rests on: a run id and
   the hash that run passed at, read back from the API and carried in no file.
-  `docs/verifying.md`, "In CI", carries the rule, the refusals and the
+  [`docs/verifying.md`](verifying.md), "In CI", carries the rule, the refusals and the
   measurements.
 
   **The bound this bullet used to state is now closed, and it is what round 11
@@ -499,7 +500,8 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   exactly that, keeping four names and deleting four bodies, and got
   `VERDICT: PASS` on twelve steps with a live defect in the tree. Every operand
   answered *is it there*. None answered *does it do anything*. What answers it
-  now is `MANIFEST_SCENARIO_CONTRACTS`: see "Contract binding" below.
+  now is `MANIFEST_SCENARIO_CONTRACTS`: see
+  [Contract binding](#contract-binding-added-2026-08-30-round-11) below.
 - **`build` and `gofmt` had no non-vacuity guard of their own** and were held
   by their neighbours reddening, which is adjacency and no data dependency.
   MEASURED: `go build ./...` over zero packages exits **0**, `go vet ./...`
@@ -522,16 +524,16 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   escape.** MEASURED by review at `86cb3c5`: with the population keyed on
   packages, ten of twenty-two test files could be build-tagged out, one file per
   package kept, taking the suite from 161 declared tests to 61 with every row
-  green. Package granularity was exactly the boundary; including `wire`'s only
+  green. Package granularity was exactly the boundary; including [`wire`](../wire)'s only
   test file DID go red. The comment defended the choice on two true grounds and
   stated no escape, and the measurement was the escape.
 
   The population is now declared test FUNCTIONS: every `Test`/`Benchmark`/
   `Fuzz`/`Example` function declared in a `_test.go` file must appear in
-  `go test -list`. `internal/tools/testroster` derives the declarations by
+  `go test -list`. [`internal/tools/testroster`](../internal/tools/testroster) derives the declarations by
   walking the filesystem and parsing. It walks because `go list` honours the
   build constraints that hid those ten files, and it parses because
-  `internal/gates/t2` embeds test bodies inside raw string literals and a grep
+  [`internal/gates/t2`](../internal/gates/t2) embeds test bodies inside raw string literals and a grep
   reports two declarations that do not exist. MEASURED at `16cb791`: declared
   and listed identical; with the review's ten-file plant, the row named every
   test that did not run. The live figure is in the row's own detail column on
@@ -545,7 +547,7 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   is the round-9 lesson in one sentence.** It read: "a test DELETED, and not
   merely disabled, leaves both sides agreeing." It was true because both sides
   were derived from the tree, so a deletion moved both at once.
-  `MIN_DECLARED_TESTS` is a literal in `verify.manifest.sh`, derived from
+  `MIN_DECLARED_TESTS` is a literal in [`verify.manifest.sh`](../verify.manifest.sh), derived from
   nothing, and a literal does not move when the tree does. Scenario
   `min-declared-tests-floor`, which deletes a whole test package and requires
   the row to go red.
@@ -559,13 +561,13 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   One thing this round's own fixes did that is worth recording, because it is
   the failure the round was called for: asking each new check what it does when
   it CANNOT do its job found a defect in one of them. `bounds` reads
-  `verify.sh`'s own source, and naming that file `"$0"` names the path the
+  [`verify.sh`](../verify.sh)'s own source, and naming that file `"$0"` names the path the
   CALLER typed, which stops resolving as soon as the script cd's to its own
   directory. MEASURED 2026-08-30 on an untouched tree: invoking
   `library/verify.sh` from the parent directory recorded
   `bounds FAIL … is not readable`. The path is resolved after the cd now, and
   `invoked-by-relative-path` is the preservation control. It is the one scenario
-  that invokes the copy from outside as something other than `./verify.sh`,
+  that invokes the copy from outside as something other than [`./verify.sh`](../verify.sh),
   which is why no other scenario could reach it.
 
 Every scenario named above was driven by its own absence: with the step it
@@ -582,8 +584,8 @@ line carrying its own literal `-timeout 300s` left `bounds` PASS. With the sourc
 read added, the same plant records
 `found 0 suite invocation(s) expanding SUITE_ARGS`.
 
-`shellcheck -S warning` runs on `verify.sh` and on the oracle as one of
-`verify.sh`'s own steps. The linted list is enumerated AND cross-checked
+`shellcheck -S warning` runs on [`verify.sh`](../verify.sh) and on the oracle as one of
+[`verify.sh`](../verify.sh)'s own steps. The linted list is enumerated AND cross-checked
 against the shell scripts the tree holds, for the reason the gate roster is: a
 list that discovers itself is silenced by moving a file, and a list that is
 only enumerated is silenced by adding one.
@@ -615,7 +617,7 @@ levels.
 
 MEASURED 2026-08-30 by review, against the head that added the row contract:
 delete the `shellcheck` gate, its `step` call, its name in the row roster and
-its two oracle scenarios, and `verify.sh` printed `VERDICT: PASS (10 steps)`
+its two oracle scenarios, and [`verify.sh`](../verify.sh) printed `VERDICT: PASS (10 steps)`
 with four live `SC2034` findings in the tree the deleted gate would have caught.
 Replacing the whole oracle with forty-five empty `sc_fakeN(){}` definitions plus
 one `echo` also passed. So did deleting the count guard together with the two
@@ -623,19 +625,19 @@ scenarios that drive it and the plant they edit.
 
 **One cause, and it had survived four rounds: every guard derived its domain
 from the thing it guarded.** The oracle's expected count was a `grep` over the
-oracle. The row-coverage check read the row roster out of `verify.sh`. The
+oracle. The row-coverage check read the row roster out of [`verify.sh`](../verify.sh). The
 roster cross-check compared the roster against the rows produced under it. Every
 one of them had a non-vacuity floor and every floor was at zero. Zero is the one
 size a population cannot reach by deleting a member, so shrinking a domain by
 one was invisible in all of them.
 
-`verify.manifest.sh` is the answer, and it is a property: **an expectation the
+[`verify.manifest.sh`](../verify.manifest.sh) is the answer, and it is a property: **an expectation the
 subject cannot shrink.** The file contains declarations and nothing else. Row
 names, gate names, shell-script names, scenario names, a literal count beside
 each list, and `MIN_DECLARED_TESTS`, a floor under the suite's declared-test
 population. Four layers rest on it:
 
-1. **It is sourced by both readers.** `verify.sh` and `scripts/test-verify.sh`
+1. **It is sourced by both readers.** [`verify.sh`](../verify.sh) and [`scripts/test-verify.sh`](../scripts/test-verify.sh)
    read the same file, so neither derives its expectation from itself or from
    the other. Missing or unreadable is a hard refusal before any row is
    recorded, because a row is something the manifest declares. Scenario
@@ -644,7 +646,7 @@ population. Four layers rest on it:
    without editing that number is a refusal. One edit is not enough even inside
    this file. Checked from the shell by `manifest_check` and, separately, from
    Go. Scenario `manifest-count-lies`.
-3. **`internal/manifest` pins the same names and numbers in Go**, in another
+3. **[`internal/manifest`](../internal/manifest) pins the same names and numbers in Go**, in another
    language and another directory, with no derivation shared with the shell. It
    runs inside the unit suite. Scenarios `manifest-row-removed` (the review's
    own defeat, replayed) and `manifest-scenario-removed`.
@@ -681,7 +683,7 @@ The second residual above was no residual. It was the next defeat, and the
 review took it: keep every scenario NAME, delete four scenario BODIES, make
 `record()`'s guard inert while leaving the anchor text its scenario plants on,
 gut `self_check()` to report `PASS` unconditionally, delete one comment, and
-`verify.sh` reports `VERDICT: PASS` with a live defect in the tree. The manifest
+[`verify.sh`](../verify.sh) reports `VERDICT: PASS` with a live defect in the tree. The manifest
 and the Go pin were never touched. Every count was satisfied in full.
 
 **The row-coverage check was the whole distance**, and it was `grep -q` over the
@@ -704,7 +706,7 @@ DETECTION while the population is intact.** Every operand up to here answered
   had a single user, and that user now reports the value it read.
 
 The oracle records an OBSERVATION every time a scenario reads a row verdict or a
-process result, and prints them beside its per-scenario result. `verify.sh` reads
+process result, and prints them beside its per-scenario result. [`verify.sh`](../verify.sh) reads
 the report against the manifest. **The comparison is in none of the three places
 somebody would edit to make a scenario stop working:** the scenario, the
 manifest and the oracle's roster all sit outside it.
@@ -784,16 +786,16 @@ that goes red. The other direction is the one that goes quiet.
 
 ### `doc-numbers`, the sweep as a row
 
-Round 9 removed thirteen numbers from `README.md` and `docs/*.md` that an
+Round 9 removed thirteen numbers from [`README.md`](../README.md) and `docs/*.md` that an
 instrument recomputes, and argued the class was closed "by removal", so that no
 vigilance was needed. Round 10 measured what that argument was worth with no observer
 behind it: **the same round wrote a fresh derived number into this document, in
 the sentence explaining the deletions.**
 
-`scripts/sweep-doc-numbers.sh` is that sweep, executable, and `verify.sh` runs
-it as a row. Its domain is the prose pages of the repository: `README.md`,
-`SECURITY.md` and `docs/*.md`. `verify.manifest.sh`'s population marker states
-that set beside the number it measured, and `internal/manifest` holds the two to
+[`scripts/sweep-doc-numbers.sh`](../scripts/sweep-doc-numbers.sh) is that sweep, executable, and [`verify.sh`](../verify.sh) runs
+it as a row. Its domain is the prose pages of the repository: [`README.md`](../README.md),
+[`SECURITY.md`](../SECURITY.md) and `docs/*.md`. [`verify.manifest.sh`](../verify.manifest.sh)'s population marker states
+that set beside the number it measured, and [`internal/manifest`](../internal/manifest) holds the two to
 each other, so the domain cannot drift from the sweep to the page that records
 it.
 
@@ -841,7 +843,7 @@ must redden, and nothing named the defect it must plant.**
 
 **The fourth contract field is the diagnosis, and the ARBITER writes it.** A
 verdict says a row went red. Only the note says why. The note is emitted by
-`verify.sh` and never by the scenario that planted the defect, so a scenario
+[`verify.sh`](../verify.sh) and never by the scenario that planted the defect, so a scenario
 that reddens the right row by planting a different defect now reports a
 different note and no longer passes for it. Where the arbiter's own note was
 generic, an `exit N` with no output or a roster mismatch that did not say which
@@ -868,7 +870,7 @@ halves.
 not cascade into the rows on the preservation list. It is a lower bound on the
 arbiter's liveness and no proof of it, and the seven rows it does not plant stay
 blindable. What it changes is the price: blinding one of those seven now needs
-an edit to `verify.sh` as well as to the oracle.
+an edit to [`verify.sh`](../verify.sh) as well as to the oracle.
 
 **And the fabrication itself is NOT stopped, which the tree says out loud.**
 MEASURED: a single-file fabricator that *injects* before the oracle's
@@ -889,7 +891,7 @@ second member landed: it said "capped at ONE, its one member" while the pin said
 two and the table held two.
 
 **Anchors.** Three scenarios still anchored their plant on a literal copy of a
-constant in `verify.sh`. They read it from the copy now. `edit()` refuses an
+constant in [`verify.sh`](../verify.sh). They read it from the copy now. `edit()` refuses an
 anchor that occurs more than once and no longer patches the first silently,
 which immediately caught two scenarios whose row-name anchor had stopped being
 unique. Those two now delete from a NAMED ARRAY and match no line. Round 11
@@ -901,14 +903,14 @@ line that contains the pattern.
 run's report. Unindented, that report's table is indistinguishable from the
 run's own table to anything parsing the stream, and the oracle parses the
 stream. It cost every row of two scenarios' readings coming back `ABSENT`.
-`verify.sh` indents every quoted sub-report and the oracle reads the LAST table.
+[`verify.sh`](../verify.sh) indents every quoted sub-report and the oracle reads the LAST table.
 Either alone would have fixed it, and both are cheap.
 
 **`silent-scenario-named`.** A scenario that dies loudly is caught by the death
 reporter. A scenario that dies SILENTLY, killed before it can print, is caught
 only by the population count, and the oracle's refusal names which one went
 quiet. That naming was reachable, correct, and asserted on by nothing.
-`verify.sh` now also carries the oracle's own refusal line into the
+[`verify.sh`](../verify.sh) now also carries the oracle's own refusal line into the
 `verify-oracle` row, because `exit 137` is no diagnosis.
 
 ### The contaminated oracle run of round 9, settled
@@ -925,7 +927,7 @@ runs. That is the whole remedy.
 
 ## The policy is itself under test
 
-Everything the gates enforce is a table in `internal/gates/rings/rings.go`. A
+Everything the gates enforce is a table in [`internal/gates/rings/rings.go`](../internal/gates/rings/rings.go). A
 gate can be perfect and enforce a widened table, and MEASURED 2026-08-28 by
 review, that was the state. Mutating the gate logic killed every mutant. Mutating
 the **policy**, by adding `net`, `time`, `os`, `syscall` to the ring-1 allowlist
@@ -935,7 +937,7 @@ at 21 widenings, 12 survived.
 
 Two layers now stand behind those tables, and they fail differently on purpose.
 
-**Derived (`internal/gates/rings/policy_test.go`).** These do not read a list of
+**Derived ([`internal/gates/rings/policy_test.go`](../internal/gates/rings/policy_test.go)).** These do not read a list of
 names; they compute the answer from the standard library and compare.
 
 | Check | What it derives | Killed by |
@@ -983,8 +985,8 @@ therefore takes a second signal: the name must also appear as a whole word in
 allowlisted identifier with no false miss.
 
 **Enumerated, and driven through the real binary**
-(`internal/gates/t1/policy_driven_test.go`,
-`internal/gates/t2/policy_driven_test.go`). `PureRefusedPkgs`,
+([`internal/gates/t1/policy_driven_test.go`](../internal/gates/t1/policy_driven_test.go),
+[`internal/gates/t2/policy_driven_test.go`](../internal/gates/t2/policy_driven_test.go)). `PureRefusedPkgs`,
 `PureRefusedIdents` and `TestRefusedIdents` are things the tables must never
 admit. Membership in a map proves nothing about behaviour, so each case is
 generated into a fixture and run through the built gate: the gate must exit
@@ -1037,7 +1039,7 @@ stood here as literals. Every one was stale, and the paragraph named
 that falsifies all six in a fraction of a second. Round 9 deleted them and then,
 in the same edit, wrote the correcting figures into the sentence that explained
 the deletion. That third instance is why the sweep is now
-`scripts/sweep-doc-numbers.sh` and a `doc-numbers` row. A paragraph was not
+[`scripts/sweep-doc-numbers.sh`](../scripts/sweep-doc-numbers.sh) and a `doc-numbers` row. A paragraph was not
 enough: prose about not writing numbers is still prose.
 
 A number an instrument recomputes on every run does not belong beside a pointer
