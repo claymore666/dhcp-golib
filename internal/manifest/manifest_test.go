@@ -33,6 +33,7 @@ import (
 const (
 	manifestPath = "../../verify.manifest.sh"
 	oraclePath   = "../../scripts/test-verify.sh"
+	sweepPath    = "../../scripts/sweep-doc-numbers.sh"
 )
 
 // The pinned row set. Exact and ordered: this is the verdict table, and a row
@@ -995,7 +996,52 @@ func TestStaleAnchorBoundNamesWhatTheOracleDerives(t *testing.T) {
 // docNumberMarker pins the ONE place verify.manifest.sh's derivation paragraph
 // states the population it measured. A date and a number, in a fixed form, so
 // the claim can be read back instead of believed.
-var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED ([0-9]{4}-[0-9]{2}-[0-9]{2}): ([0-9]+)$`)
+//
+// 2026-09-08, the docs round: the marker carries its DOMAIN as well, because a
+// count is a count of a population and this one had never named its. The
+// domain is held to the sweep's own FILES array by the test below it.
+var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED ([0-9]{4}-[0-9]{2}-[0-9]{2}) over (.+): ([0-9]+)$`)
+
+// sweepFiles reads the domain out of scripts/sweep-doc-numbers.sh, which is
+// the thing that actually walks it.
+var sweepFiles = regexp.MustCompile(`(?m)^FILES=\(([^)]*)\)$`)
+
+// TestTheStatedDomainIsTheOneTheSweepReads — a count is a count of a
+// population, and until 2026-09-08 this one did not say which.
+//
+// The domain was spelled three times: the sweep's FILES array, a `find` in
+// verify.sh that counted the row's steps, and nowhere at all in the paragraph
+// that records the number. One fact derived twice has two answers and the
+// looser one decides; derived three times it is worse. verify.sh now asks the
+// sweep for its domain instead of spelling it, and this holds the marker's
+// spelling to the sweep's.
+//
+// BOUND: it compares two spellings of the domain. It does not check that the
+// domain is the right set of pages. A page added to the repository and to
+// neither side is invisible to it, and that is what the ceiling and the margin
+// are for.
+func TestTheStatedDomainIsTheOneTheSweepReads(t *testing.T) {
+	m := docNumberMarker.FindAllStringSubmatch(readManifest(t), -1)
+	if len(m) != 1 {
+		t.Fatalf("found %d DOC-NUMBER POPULATION MEASURED marker(s) in %s; the domain is stated in exactly one place", len(m), manifestPath)
+	}
+	b, err := os.ReadFile(sweepPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", sweepPath, err)
+	}
+	f := sweepFiles.FindAllStringSubmatch(string(b), -1)
+	if len(f) != 1 {
+		t.Fatalf("found %d FILES=(...) declaration(s) in %s; the sweep walks one domain and this test reads it from one line", len(f), sweepPath)
+	}
+	stated := strings.Join(strings.Fields(m[0][2]), " ")
+	swept := strings.Join(strings.Fields(f[0][1]), " ")
+	if swept == "" {
+		t.Fatalf("%s declares an empty domain; a sweep over nothing passes over anything", sweepPath)
+	}
+	if stated != swept {
+		t.Errorf("the marker in %s says it measured over %q and %s walks %q; the population is a count of whichever set the sweep uses, and the paragraph is the half nothing checked", manifestPath, stated, sweepPath, swept)
+	}
+}
 
 // TestTheStatedPopulationIsWhatTheSweepCounts — one number, one derivation.
 //
@@ -1010,11 +1056,19 @@ var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED 
 // Three readings, one fact, and only two of them are made HERE:
 //   - the marker, which is what the author says was measured;
 //   - the constant, which is what the row enforces;
-//   - what scripts/sweep-doc-numbers.sh counts, which is the population — and
+//   - what scripts/sweep-doc-numbers.sh counts, which is the population, and
 //     that comparison is the DOC-NUMBERS ROW's, made by the arbiter on every
-//     run, at DOC_NUMBER_MARGIN=0, where it is an equality. Marker equals
-//     constant equals population follows, and the number that was wrong is the
-//     one this test reads.
+//     run. Marker plus margin equals constant, and the number that was wrong is
+//     the one this test reads.
+//
+// 2026-09-08, THE DOCS ROUND, and the arithmetic moved with the margin. The
+// marker states the POPULATION, which is the band's LOWER edge: the row
+// refuses a population under DOC_NUMBER_CEILING - DOC_NUMBER_MARGIN, so the
+// marker names a number the population may not fall below, and the ceiling is
+// that number plus the margin. At the previous margin of zero the two were the
+// same statement. The margin is now one, derived in the manifest over this
+// repository's own history, so the population may rise by one with nothing
+// red.
 //
 // WHY THE SWEEP IS NOT RUN AGAIN HERE, which was tried and MEASURED wrong on
 // run 34214582437: re-running it inside the unit suite makes a second
@@ -1029,30 +1083,31 @@ var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED 
 // quietly overwritten.
 //
 // BOUND: it says nothing about whether the population SHOULD be that size.
-// docNumberCeilingCap above is what holds it from growing. It also rests on
-// DOC_NUMBER_MARGIN being zero for the transitive step, which is asserted
-// below rather than assumed.
+// docNumberCeilingCap above is what holds it from growing. A SECOND bound
+// arrived with the margin: the marker pins the population exactly from below
+// and only to within the margin from above, so up to DOC_NUMBER_MARGIN bare
+// numbers may enter the prose before the marker is wrong. docNumberMarginCap
+// is what stops that slack being widened instead of the ceiling earned down.
+// The domain the number was measured over is checked by
+// TestTheStatedDomainIsTheOneTheSweepReads above.
 func TestTheStatedPopulationIsWhatTheSweepCounts(t *testing.T) {
 	src := readManifest(t)
 	m := docNumberMarker.FindAllStringSubmatch(src, -1)
 	if len(m) != 1 {
 		t.Fatalf("found %d DOC-NUMBER POPULATION MEASURED marker(s) in %s; the derivation states its measurement in exactly one place, and none or several is a number nobody can read back", len(m), manifestPath)
 	}
-	stated, err := strconv.Atoi(m[0][2])
+	stated, err := strconv.Atoi(m[0][3])
 	if err != nil {
-		t.Fatalf("the marker's number %q does not parse: %v", m[0][2], err)
+		t.Fatalf("the marker's number %q does not parse: %v", m[0][3], err)
 	}
 	ceiling := number(t, src, "DOC_NUMBER_CEILING")
-	if stated != ceiling {
-		t.Errorf("the derivation says it measured %d on %s and DOC_NUMBER_CEILING is %d; with DOC_NUMBER_MARGIN=0 one of those two reddens the doc-numbers row, and the paragraph is the half nothing checked", stated, m[0][1], ceiling)
-	}
-	// The step the argument above rests on, read rather than assumed: at a
-	// margin of zero the doc-numbers row is an equality between the ceiling and
-	// the population, so pinning the marker to the ceiling pins it to the
-	// population. At any other margin the marker would bound the population
-	// instead of naming it, and this test would be saying less than it looks.
-	if margin := number(t, src, "DOC_NUMBER_MARGIN"); margin != 0 {
-		t.Errorf("DOC_NUMBER_MARGIN is %d, not 0; the doc-numbers row is then a band and the marker above no longer names the population — say what the marker means before widening it", margin)
+	margin := number(t, src, "DOC_NUMBER_MARGIN")
+	// The row refuses a population under ceiling-margin and over ceiling, so
+	// the marker, which states the measured population, IS the lower edge. Any
+	// other relation between the three and the paragraph is describing a band
+	// the row does not enforce.
+	if stated+margin != ceiling {
+		t.Errorf("the derivation says it measured %d on %s against DOC_NUMBER_CEILING=%d and DOC_NUMBER_MARGIN=%d; the row refuses a population under %d, so the marker is the band's lower edge and the ceiling is the marker plus the margin", stated, m[0][1], ceiling, margin, ceiling-margin)
 	}
 }
 

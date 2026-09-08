@@ -140,8 +140,18 @@ type Machine6 struct {
 	// answered for by someone else — not the number one process saw. On a
 	// stable link that is zero or one and it never moves; on a link with a
 	// rotating pool and a persistent squatter it grows by one per distinct
-	// address, once each, because rememberDeclined deduplicates. Sixteen bytes
-	// an entry plus the slice, in the caller's own record.
+	// address, once each, because rememberDeclined deduplicates.
+	//
+	// WHAT AN ENTRY COSTS, MEASURED 2026-09-08 on go1.25.0/linux/amd64 rather
+	// than estimated, because the figure that stood here was sixteen and both
+	// halves of it were wrong. In memory, 24 bytes:
+	// unsafe.Sizeof(netip.Addr{}) is 24, which is the 16 bytes of address and
+	// an 8-byte zone handle, plus one 24-byte slice header for the whole set.
+	// In the caller's record, up to 41 bytes: netip.Addr marshals as a JSON
+	// string, the longest text form of an IPv6 address carrying no zone is 39
+	// characters, and the two quotes make 41, plus one byte for the comma
+	// between entries. json.Marshal of the all-ones address measures 41 and of
+	// 2001:db8::1 measures 13, so 41 is a bound and not a typical entry.
 	//
 	// This library does not cap it, and the reason is the one above: a cap is
 	// a set that forgets, and the first thing it forgets is the address that

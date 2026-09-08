@@ -22,21 +22,27 @@ and it needs no root.
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
 | Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
-| Report the gateway, the static routes and the link MTU | yes | planned |
+| Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | n/a | planned |
-| Prefix delegation (IA_PD) | n/a | planned |
-| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | planned |
+| Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
+| Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
+| Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
+| Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/925) |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
 
 - **yes**: in the tree today, with a test that drives it, against a real
   server or through the state machine.
-- **planned**: not there yet. The roadmap below names it for v1.0.0.
+- **v1.0.0**: in the tree at v1.0.0. The roadmap below names the scope.
+- **planned**: intended. No release names it yet, and the linked issue holds
+  the plan.
 - **unsupported**: the protocol has it, this library deliberately does not.
   "Out of scope" gives the reason.
 - **n/a**: the protocol has no such thing.
+
+A mark that is a link points at the issue that holds the plan.
 
 ## Status and roadmap
 
@@ -44,20 +50,20 @@ IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its two flags, and nothing else
 is taken from it. No address is formed from a prefix. There is no prefix
 delegation. A server cannot reconfigure a client that already holds a lease.
-The DHCPv4 column has no `planned` row.
+Nothing on DHCPv4 is planned for a later release.
 
 The library is pre-1.0 and the API is not stable. It moves without a
 deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.
 The API still moves between tags. One consumer is being built on it. Nothing
 that uses it has shipped.
 
-v1.0.0 is when every `planned` row above is shipped. The scope of v1.0.0 is
+v1.0.0 is when every `v1.0.0` row above is shipped. The scope of v1.0.0 is
 exactly those rows. They are this library's share of the IPv6 work on the
 `docker-net-dhcp` plugin's `v2.2.0` milestone. That milestone is wider than
 this matrix, and its other rows land in the plugin.
 
 What works today, claim by claim with the test that drives each one, is
-`docs/design.md`.
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-m7).
 
 ## Usage
 
@@ -170,7 +176,7 @@ func ExampleClient6() {
 ```
 
 Both blocks are `ExampleClient` and `ExampleClient6` in
-`runtime/example_test.go`, byte for byte. The arbiter's `readme-usage` row
+[`runtime/example_test.go`](runtime/example_test.go), byte for byte. The arbiter's `readme-usage` row
 diffs them and fails if either side moves, so this section cannot go stale.
 Set `DHCP_GOLIB_EXAMPLE_IFACE` to a link with a DHCP server on it to run them.
 
@@ -219,7 +225,7 @@ The bounds below are written down so that nobody has to infer them.
   another host's messages.
 - No server-initiated reconfiguration on IPv4. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `planned` row above.
+  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `v1.0.0` row above.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.
@@ -233,21 +239,21 @@ The bounds below are written down so that nobody has to infer them.
 
 ## Testing
 
-`./verify.sh` is the only arbiter this repository has. One command, one verdict
+[`./verify.sh`](verify.sh) is the only arbiter this repository has. One command, one verdict
 line. No row may report PASS without also saying how many things it examined.
-It needs no root and touches no host state. `docs/verifying.md` covers the
-measurement behind each row. `docs/gates.md` covers the two ring gates and
+It needs no root and touches no host state. [`docs/verifying.md`](docs/verifying.md) covers the
+measurement behind each row. [`docs/gates.md`](docs/gates.md) covers the two ring gates and
 their blind spots.
 
 ## Licence
 
-MIT. See `LICENSE`. Every `.go` and `.sh` file carries a one-line copyright
+MIT. See [`LICENSE`](LICENSE). Every `.go` and `.sh` file carries a one-line copyright
 notice, so a file copied out of here carries its licence with it. The unit
 suite fails if one does not.
 
 ## Contributing
 
-`./verify.sh` is the gate, and it is the same command in CI as on a desk. One
+[`./verify.sh`](verify.sh) is the gate, and it is the same command in CI as on a desk. One
 thing is worth knowing first: a pull request from a fork does not run the
 arbiter. The lane is triggered by `push` and by manual dispatch, and it is the
 only workflow here that produces a verdict on a tree. The scans beside it,
@@ -257,13 +263,13 @@ properties make that safe. No job on a machine of ours is reachable from a
 fork's pull request. No workflow here is triggered by `pull_request_target`,
 the event that would hand this repository's own token to a run beside a
 proposed tree. To have a contribution arbitrated, a maintainer pushes the
-branch to this repository or dispatches the workflow. `docs/verifying.md`,
-section **In CI**, states both properties and names the tests that enforce
-them.
+branch to this repository or dispatches the workflow.
+[Section **In CI** of `docs/verifying.md`](docs/verifying.md#in-ci) states both
+properties and names the tests that enforce them.
 
 ## More
 
-- `docs/design.md`: the four rings, the milestones, the proof behind each claim
-- `docs/verifying.md`: the measurement behind every arbiter row
-- `docs/gates.md`: the two ring gates, and their blind spots
-- `SECURITY.md`: how to report a vulnerability, and the attack surface
+- [`docs/design.md`](docs/design.md): the four rings, the milestones, the proof behind each claim
+- [`docs/verifying.md`](docs/verifying.md): the measurement behind every arbiter row
+- [`docs/gates.md`](docs/gates.md): the two ring gates, and their blind spots
+- [`SECURITY.md`](SECURITY.md): how to report a vulnerability, and the attack surface

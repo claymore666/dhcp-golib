@@ -974,10 +974,18 @@ fi
 #
 # So the sweep is a row. The domain is the prose files themselves, counted here
 # so that an empty one is a FAIL rather than a vacuous pass.
-doc_files_n="$(find . -maxdepth 2 \( -name 'README.md' -o -path './docs/*.md' \) -printf 'x\n' | grep -c . || true)"
+#
+# 2026-09-08, THE DOCS ROUND. That count used to be a `find` written out here,
+# which spelled the domain a second time: this file said README.md and
+# docs/*.md, the sweep's own FILES array said the same thing in another
+# language, and nothing reconciled them. One fact derived twice has two
+# answers, and the looser derivation decides. The sweep prints its own domain
+# now and this counts what it prints, so adding SECURITY.md to it moved both
+# ends at once.
 if [ ! -x "$ROOT/scripts/sweep-doc-numbers.sh" ]; then
 	record "doc-numbers" FAIL "scripts/sweep-doc-numbers.sh is missing or not executable; the numbers round 9 removed from prose have no observer"
 else
+	doc_files_n="$("$ROOT/scripts/sweep-doc-numbers.sh" --files | grep -c . || true)"
 	step "doc-numbers" "$doc_files_n" "$ROOT/scripts/sweep-doc-numbers.sh" --check
 fi
 

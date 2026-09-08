@@ -406,7 +406,26 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #
 # None is a netns test, so the netns enumeration in verify.sh does not move in
 # this round and is not re-measured.
-MIN_DECLARED_TESTS=653
+#
+# THE DOCS ROUND, ROUND 2: 653 -> 654, measured the same way, one testroster
+# run over the base and one over this head, and the difference taken as a set
+# rather than as two numbers. One added, in one file, and it is the observer
+# the domain of the doc-numbers sweep did not have:
+#
+#   internal/manifest/manifest_test.go  (1)  TheStatedDomainIsTheOneTheSweep
+#     Reads
+#
+# It is not a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+#
+# ROUND 1 OF THIS ROUND LEFT IT AT 653 AND THAT IS THE FINDING. The band was
+# full: 654 declared against 653 plus a margin of 1, so every oracle scenario
+# that plants a test into its own copy reached 655 and failed the unit-suite
+# row it was not driving. Shard 2's ceiling-control and shard 1's
+# ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
+# the plant only exists inside the oracle.
+MIN_DECLARED_TESTS=654
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -600,20 +619,38 @@ SELF_DRIVE_SURVIVES_N=5
 # coincidence, and it is written down here because "the number did not move" is
 # a measurement like any other.
 #
+# WHAT MOVED IT IN THE DOCS WORDING ROUND, 2026-09-08, +2, and the two lines
+# are enumerated because a bump without the list is a ratchet nobody earned:
+# docs/design.md's heading is now the noun "Purity of ring 1" and carries a
+# ring number, and docs/verifying.md's ceilings paragraph re-wrapped so that
+# the sentence about the old two-core figure now sits on a line of its own.
+# Both are reflow. No number was added to the prose and none was deleted.
+#
+# THE POPULATION RULE, stated in the marker line below and nowhere else here.
+# The domain is the prose pages of the repository: README.md, SECURITY.md and
+# docs/*.md, which is the FILES array in scripts/sweep-doc-numbers.sh.
+# SECURITY.md joined the domain in this round and contributes zero lines,
+# MEASURED at the head of it, so the number below does not move for it. A URL's
+# digits are blanked as a token there, the way a date and an RFC number are: an
+# issue number in a link is an address, and no instrument recomputes it.
+# internal/manifest's TestTheStatedDomainIsTheOneTheSweepReads holds the two
+# spellings of the domain to each other, so it cannot drift from the page that
+# records the count.
+#
 # ONE NUMBER, TWO READINGS HERE AND THE THIRD IN THE ROW. The marker on the
-# next line is the ONLY place this paragraph states the measurement.
+# next line is the ONLY place this paragraph states the measurement, and what
+# it states is the POPULATION, which is the band's lower edge.
 # internal/manifest's TestTheStatedPopulationIsWhatTheSweepCounts compares that
-# marker to the constant under it and asserts DOC_NUMBER_MARGIN is zero; it
-# does NOT run the sweep, deliberately — a second doc-numbers row made out of a
-# unit test reddens on exactly the trees the self-drive row plants a bare
-# number into, which is what took five oracle shards down on run 34214582437.
-# The third leg is the doc-numbers ROW itself, which the arbiter runs on every
-# run and which at margin zero is an equality between this ceiling and the
-# population the sweep counts. Marker = constant = population follows, with
-# each leg made once. Re-measuring is a one-line edit to the marker, and
-# forgetting the marker is red.
-# DOC-NUMBER POPULATION MEASURED 2026-09-08: 70
-DOC_NUMBER_CEILING=70
+# marker to the constant under it through the margin: ceiling = marker +
+# margin. It does NOT run the sweep, deliberately, because a second doc-numbers
+# row made out of a unit test reddens on exactly the trees the self-drive row
+# plants a bare number into, which is what took five oracle shards down on run
+# 34214582437. The third leg is the doc-numbers ROW itself, which the arbiter
+# runs on every run and which refuses a population under the marker or over the
+# ceiling. Marker = population follows, with each leg made once. Re-measuring
+# is a one-line edit to the marker, and forgetting the marker is red.
+# DOC-NUMBER POPULATION MEASURED 2026-09-08 over README.md SECURITY.md docs/*.md: 72
+DOC_NUMBER_CEILING=73
 
 # How far UNDER the ceiling the population may sit before the row refuses.
 #
@@ -635,10 +672,44 @@ DOC_NUMBER_CEILING=70
 # to README.md — "22 of the 102 allowlisted identifiers" — is caught by the
 # PATTERN list above it and never reaches the count, so it moves no margin.
 #
-# BOUND, and it is the same one the ceiling already had: this is a size, not a
+# BOUND, and it is the same one the ceiling already had: this is a size and no
 # membership. Deleting one bare number and adding another is invisible to both
 # edges.
-DOC_NUMBER_MARGIN=0
+#
+# 2026-09-08, THE DOCS WORDING ROUND, and this is where the margin stops being
+# zero. At zero the band is an equality and every docs change that touches a
+# line carrying a digit is red until somebody edits this file, which prices a
+# wording pass at a machinery edit and puts the oracle matrix on the push. The
+# brief for this round asked for a stated margin instead.
+#
+# ONE, and the derivation is a measurement over this repository's own history.
+# MEASURED 2026-09-08 with scripts/sweep-doc-numbers.sh, replayed over the
+# twenty most recent commits that touch README.md, SECURITY.md or docs/: the
+# population moved by zero in eighteen of them, by one in 237536d, and by five
+# in 0998583, the round that re-derived the CI ceilings and raised this ceiling
+# with its lines enumerated. So one bare number is what an ordinary docs change
+# adds. The margin buys exactly that one. A change that adds two is red and
+# raises the ceiling with its lines named, which is the ratchet the paragraph
+# above asks for, and docNumberMarginCap in internal/manifest holds this edge
+# from growing.
+#
+# THE MARGIN IS HEADROOM IN ONE DIRECTION AND THE ROW REFUSES IN BOTH, which
+# the paragraph above did not say and which a wording pass pays for. The band
+# is [marker, marker + margin]. A docs change that ADDS one bare-number line
+# stays green. A docs change that REMOVES one, or that reflows two of them onto
+# a single line, falls under the marker and is RED, so a wording pass still
+# costs a manifest edit in the falling direction. That is deliberate and it is
+# not an oversight: the lower edge is the whole reason this margin exists at
+# all, since a ceiling standing above its population IS an allowance, which is
+# what 66 against 64 bought on the previous head. Widening the band downward by
+# the margin would hand that allowance back, doubled. What the falling
+# direction costs is bounded and named: one line to the marker and one to the
+# ceiling, printed by scripts/sweep-doc-numbers.sh's own diagnosis as the pair
+# internal/manifest accepts. MEASURED 2026-09-08 in this round: deleting one
+# bare-number line from docs/design.md takes the population to 71 and the row
+# red, and the pair the diagnosis then prints, marker 71 with the ceiling at
+# 72, leaves the row green and internal/manifest green.
+DOC_NUMBER_MARGIN=1
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
 # 77 scenarios MANIFEST_SCENARIOS declared then: 623s, from the verify-oracle
