@@ -139,6 +139,14 @@ func TestInterfaceLinkLocalRefusesAnAddressTheKernelIsStillChecking(t *testing.T
 			// as "1 tentative, 0 failed" — the distinction readLinkLocal's own
 			// comment says a caller must be able to make, because one is
 			// waited out and the other never resolves.
+			//
+			// THE MEASUREMENT IS NOW IN THE SUITE AND NOT ONLY IN THIS
+			// COMMENT. This row is still a fabrication and can still only be
+			// as right as the hand that wrote it; what stops it from being a
+			// number nobody re-checks is
+			// TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed,
+			// which builds the same collision in a namespace on every run and
+			// reads the byte out of the kernel's own dump.
 			name:    "the kernel's real duplicate carries both flags and is reported as failed",
 			msgs:    func() [][]byte { return [][]byte{newAddr(ours, 0xc8, llA)} },
 			wantErr: true,
@@ -357,6 +365,95 @@ func TestInterfaceLinkLocalReportsAnInterfaceThatIsNotThere(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), absent) {
 		t.Errorf("the refusal %q does not name %s", err, absent)
+	}
+}
+
+// TestTheLinkLocalWaitDoesNotNoticeAnInterfaceThatWentAway is the OTHER half
+// of the bound InterfaceLinkLocal's comment states, and the half nothing drove.
+//
+// The comment says existence is checked ONCE, at entry, and draws the two
+// consequences: a link that does not exist yet is refused at once (driven by
+// TestInterfaceLinkLocalReportsAnInterfaceThatIsNotThere), and a link that goes
+// away DURING the wait is not noticed — the loop re-reads ADDRESSES and never
+// re-reads the LINK, so a torn-down interface is reported as one whose address
+// has not arrived, with the elapsed wait spent on it.
+//
+// THAT SECOND SENTENCE IS A CLAIM ABOUT CODE THAT NO TEST MADE. It is the
+// weaker of the two behaviours and it is deliberate — a per-poll existence
+// check would cost a second dump on every one of the two hundred ticks — so
+// what is owed is not a fix but an observer, and one that goes RED if the
+// per-poll check is ever added silently. This is it: the index handed to the
+// wait belongs to no interface on this host, and the wait keeps asking anyway
+// and returns the address when it appears. A version that re-resolved the
+// interface on each poll would refuse at the first one, with an error that
+// does not wrap ErrNoLinkLocal, and this test would say so.
+//
+// IT COSTS THREE POLLS AND NOT linkLocalWait. The dump answers "no rows for
+// that index" — which is exactly what a vanished link looks like from inside
+// the loop, the kernel having removed its addresses with it — and then
+// answers with the address, so the wait ends on the success path. What is
+// measured is that it was still asking on the third tick, not how it gives up;
+// how it gives up is measured by the netns proof against a real link that
+// never gets an address.
+func TestTheLinkLocalWaitDoesNotNoticeAnInterfaceThatWentAway(t *testing.T) {
+	// An index no interface on this host holds, so that a per-poll existence
+	// check would have something to fail on.
+	const gone = 0x7ffffffe
+	if ifi, err := net.InterfaceByIndex(gone); err == nil {
+		t.Fatalf("index %d is %s on this host; this case needs an index no interface has", gone, ifi.Name)
+	}
+	const ll = "fe80::3802:f6ff:fe2c:9d01"
+	settled := netlinkAddrMsg(syscall.RTM_NEWADDR, syscall.AF_INET6, 64, 0x80, 0x20, gone, syscall.IFA_ADDRESS, bytes6(t, ll))
+
+	// FIRST, THE SENTENCE. A dump with no row for the index is refused with
+	// the wording InterfaceLinkLocal's comment quotes for a vanished link, and
+	// that wording is the whole reason the case is worth stating: it sends a
+	// reader to an address that has not arrived, not to a link that is gone.
+	func() {
+		old := linkLocalDump
+		linkLocalDump = func() ([]byte, error) { return nil, nil }
+		defer func() { linkLocalDump = old }()
+
+		_, err := readLinkLocal(gone, "v6cli0")
+		if err == nil {
+			t.Fatal("readLinkLocal returned an address from a dump with no rows at all")
+		}
+		if !errors.Is(err, ErrNoLinkLocal) {
+			t.Errorf("error %v does not wrap ErrNoLinkLocal", err)
+		}
+		if want := "(0 tentative, 0 failed duplicate address detection)"; !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q and does not carry %q; that sentence is what a caller sees when the link it asked about has been torn down, and it is quoted in InterfaceLinkLocal's own comment", err, want)
+		}
+	}()
+
+	// AND THEN THE LOOP. Two ticks against an index the host does not have,
+	// and it is still asking on the third.
+	dumps := 0
+	old := linkLocalDump
+	linkLocalDump = func() ([]byte, error) {
+		dumps++
+		if dumps < 3 {
+			return nil, nil
+		}
+		return settled, nil
+	}
+	defer func() { linkLocalDump = old }()
+
+	start := time.Now()
+	got, err := interfaceLinkLocal(gone, "v6cli0")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("the wait refused index %d after %s and %d dump(s): %v — existence is checked once at entry, so an index with no rows in the dump is a link whose address has not arrived and the wait must keep asking",
+			gone, elapsed.Round(time.Millisecond), dumps, err)
+	}
+	if got.String() != ll {
+		t.Errorf("the wait returned %s, want %s", got, ll)
+	}
+	if dumps != 3 {
+		t.Errorf("the kernel was asked for its addresses %d time(s); the address appeared on the third dump and the two before it carried no row for the index, so anything but 3 means the loop stopped repeating the question", dumps)
+	}
+	if elapsed >= linkLocalWait {
+		t.Errorf("three polls took %s, which is linkLocalWait (%s) or more", elapsed, linkLocalWait)
 	}
 }
 

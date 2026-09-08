@@ -124,7 +124,7 @@ plugin for months.
   restricted too: a deadline on a context is a wall-clock wait under another
   name, because whatever blocks on `ctx.Done()` is blocking until a timer
   fires.
-- **A wall-clock ceiling on the suite**, in `verify.sh`, currently 60s. This is
+- **A wall-clock ceiling on the suite**, in `verify.sh`, currently 84s. This is
   a genuinely different instrument: the gate reads source, the ceiling reads
   the clock, so a wait the gate cannot see still costs time here.
 
@@ -322,9 +322,14 @@ to be typed into the invocation you are reading.
    ceiling lowered in the copy must FAIL, and the same suite against the
    shipped ceiling must PASS — that second one is the control, without which
    the first proves only that a busy loop breaks something), and checks the
-   declared value is inside 5..120. The band check is STRUCTURAL and weaker
+   declared value is inside 13..102. The band check is STRUCTURAL and weaker
    than the rest; it kills "delete the line" and "raise it to 6000" and nothing
-   subtler.
+   subtler. Those edges are derived, in the scenario, from the figures this row
+   draws on the machine the lane runs on; the two pages that state them are
+   held to what the scenario declares by
+   `TestTheStatedCeilingBandIsTheOneTheOracleChecks` — this sentence named the
+   band the round before last for a round after the band had moved, which is
+   what that answers.
 3. **`--inner` failing to SUPPRESS the oracle.** The other half — that the
    unflagged invocation still runs it — is driven by the stub scenario above.
    Suppression is asserted (the clean-copy scenario requires the inner run to
@@ -482,6 +487,18 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   `RESULT <name> PASS` line per declared scenario closes the partial stub the
   review named as its own remedy's bound. Scenarios `oracle-stub-total`,
   `oracle-stub-partial`, `oracle-names-fabricated`.
+
+  **When it runs, since D41.** Locally, on demand: `./verify.sh` skips the row
+  when this tree already produced an `ORACLE PASS:` at this arbiter's hash, and
+  `./verify.sh --oracle` runs it regardless. In CI it is a matrix of hosted
+  jobs over shards of the roster, and it runs on a push to the release branch,
+  on `workflow_dispatch`, and on any push whose tree reaches an arbiter no
+  green run has published — which is how "the oracle's own domain changed" is
+  asked, without a second list of paths anywhere. Every other push gets the
+  row SKIPPED, and the skip is red unless the lane can name the run it rests
+  on: a run id and the hash that run passed at, read back from the API rather
+  than carried in a file. `docs/verifying.md`, "In CI", carries the rule, the
+  refusals and the measurements.
 
   **The bound this bullet used to state is now closed, and it is what round 11
   was about.** It read: *"this counts DEFINITIONS, so a scenario body emptied

@@ -1,0 +1,104 @@
+name: CodeQL
+
+# The scan a public Go repository is expected to carry, and here it has a
+# subject rather than a badge: this library's whole input is a DHCP reply
+# written by somebody else's server, decoded in `wire/` before anything has
+# authenticated anything. That is the code CodeQL reads. The `actions`
+# language reads the workflows in this directory, which are the other thing a
+# stranger can send here.
+#
+# D37/D41. This is a HOSTED scan and it may carry `pull_request`, which the
+# arbiter lane may not: a fork's pull request proposes the fork's tree, and the
+# only reason the lane refuses that trigger is the machine the job would run
+# on. These jobs run on GitHub's own image, hold no secret and write nothing
+# but a SARIF report about the tree they were given. The property that has to
+# stay true is the one internal/publication checks — a job on a machine of
+# ours is never reachable from a fork's pull request — and it is about the
+# RUNNER, not about the trigger.
+#
+# WHY `build-mode: manual` AND NOT `autobuild`: this module builds with one
+# command and no toolchain of its own, so driving the build here is shorter
+# than letting CodeQL guess at it, and it is the guess that goes stale.
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - dev
+      - main
+  schedule:
+    # Weekly. An advisory that publishes between two pushes is exactly what a
+    # scan on pushes alone never sees, and this repository can go a week
+    # without one.
+    - cron: '17 6 * * 3'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-24.04
+    # MEASURED at 2401a1a, this branch's first head: run 34225540935, the go
+    # analysis 1m05s and the actions analysis 49s. That is the only CodeQL run
+    # at that head. The push trigger is limited to dev and main, so a topic
+    # branch produces the pull_request run alone and there is no three-run
+    # spread to quote yet. Ten minutes is therefore NOT twice a measured worst
+    # case, which is how verify.yml derives its budgets; it is the bound that
+    # ends a job wedged on a bundle download that never answers, an order of
+    # magnitude above what the scan takes. Re-derive it as twice the worst of
+    # three runs once dev has three.
+    timeout-minutes: 10
+    permissions:
+      # The SARIF upload, and nothing else. `actions: read` is not here: the
+      # repository is public, which is the only case CodeQL asks for it in.
+      # `id-token: write` is refused outright by internal/publication — it is
+      # a credential reached without the word this directory forbids.
+      contents: read
+      security-events: write
+    strategy:
+      # A red Go analysis and a red actions analysis are two different reports
+      # and the second is not a consequence of the first, so neither cancels
+      # the other.
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: actions
+            build-mode: none
+    steps:
+      - name: Check out the commit under analysis
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Go, from go.mod
+        if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # go.mod declares no dependency, so a module cache holds nothing this
+          # build needs, and a cache is a store that outlives a job.
+          cache: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # THE VACUITY ANSWER for the Go half, and it is the build itself: a
+      # database built over nothing analyses nothing and says so with a green
+      # tick. `go build ./...` compiles every package in the module, so a tree
+      # this step succeeds over is a tree CodeQL traced.
+      - name: Build every package so the tracer sees it
+        if: matrix.build-mode == 'manual'
+        run: go build ./...
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:${{ matrix.language }}"

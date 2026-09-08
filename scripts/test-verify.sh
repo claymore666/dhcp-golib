@@ -12,6 +12,9 @@
 #
 # Usage:  scripts/test-verify.sh              run every scenario
 #         scripts/test-verify.sh --scenario N run one (used by the parallel driver)
+#         scripts/test-verify.sh --shard I/N  run shard I of N, a round-robin
+#                                             share of MANIFEST_SCENARIOS; the
+#                                             lane's matrix runs these
 # Exit:   0 = every scenario behaved, 1 = at least one did not,
 #         2 = REFUSED, the oracle could not measure its own domain.
 #         A single --scenario run answers the same way for itself: 0 when it
@@ -46,6 +49,37 @@ MANIFEST="$ROOT/verify.manifest.sh"
 . "$MANIFEST"
 manifest_problem="$(manifest_check)" || refuse "$manifest_problem"
 SCENARIOS=("${MANIFEST_SCENARIOS[@]}")
+
+# --shard I/N — run a SHARE of the roster and report only about it.
+#
+# DECISION 2026-09-08 (D41). The lane runs the oracle as a matrix of hosted
+# jobs, one shard each, because one machine running all of it is an hour and a
+# half. The partition is cut from MANIFEST_SCENARIOS at run time, round-robin
+# by position, so it is derived from the roster in count AND membership: no
+# workflow types a scenario name, and a scenario added to the manifest lands in
+# a shard without anything else being edited.
+#
+# It is round-robin rather than contiguous because cost is not uniform: the
+# light scenarios and the full-scope ones are interleaved in the roster, so
+# every N-th member gives each shard a share of both.
+#
+# A shard that would run NOTHING is a refusal, not a fast pass: it is the
+# universal satisfied by emptying its domain, and it is what a shard count
+# above the population produces.
+SHARD_I=0
+SHARD_N=0
+if [ "${1:-}" = "--shard" ]; then
+	[ -n "${2:-}" ] || refuse "--shard needs a shard of the form I/N"
+	case "$2" in
+	[0-9]*/[0-9]*) ;;
+	*) refuse "'$2' is not a shard of the form I/N" ;;
+	esac
+	SHARD_I="${2%%/*}"
+	SHARD_N="${2##*/}"
+	[ "$SHARD_N" -ge 1 ] || refuse "a shard count of $SHARD_N is not a partition"
+	{ [ "$SHARD_I" -ge 1 ] && [ "$SHARD_I" -le "$SHARD_N" ]; } ||
+		refuse "shard $SHARD_I is outside 1..$SHARD_N"
+fi
 
 # copy_tree DEST — the subject, minus .git and minus the toolchain's caches.
 #
@@ -1736,6 +1770,27 @@ echo \"one more line, printed after the account and before the exit\""
 	esac
 }
 
+sc_contract_check_deleted() {
+	# D41 moved the contract loop out of verify.sh into a file of its own, and
+	# a check that lives in a separate file is the shape round 8 shipped a
+	# green run over: the row still ran, the thing it depended on was gone, and
+	# nothing said so. Delete it and the verify-oracle row must refuse BEFORE
+	# it spends the oracle's wall clock, because a report nothing is held to is
+	# an account of names.
+	local d="$1"
+	copy_tree "$d"
+	rm -f "$d/scripts/oracle-contracts.sh"
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "the contract check was deleted and the run passed"
+	[ "$(row verify-oracle)" = FAIL ] ||
+		note "an absent contract check did not fail the oracle row: $(row verify-oracle)"
+	# The second operand, and neither is reachable from the other's edit: the
+	# manifest still lists a shell script that is gone, so the linted-list
+	# cross-check sees the file leave even if the arm above were removed.
+	[ "$(row shellcheck)" = FAIL ] ||
+		note "the linted-list cross-check did not see the script leave: $(row shellcheck)"
+}
+
 # ------------------------------------------- the netns row (item 3, Q8) ----
 
 sc_netns_row_empty_domain() {
@@ -2028,8 +2083,30 @@ sc_ceiling_band() {
 		note "verify.sh declares no numeric NETNS_CEILING_SECONDS; the netns row's wall-clock ceiling is gone"
 		return
 	}
-	[ "$v" -ge 5 ] && [ "$v" -le 120 ] ||
-		note "SUITE_CEILING_SECONDS=$v is outside 5..120; a ceiling no suite can reach is not a ceiling"
+	# 13..102, and the band is DERIVED, 2026-09-08 (D41). It used to be 5..120
+	# with no derivation written anywhere, set when the ceiling it bounds was
+	# 60 and left where it was when that ceiling became 102. Both edges now
+	# come from the same two rules the netns band below already states, applied
+	# to this row's own figures on the machines the lane runs on — which since
+	# D41 is GitHub-hosted `ubuntu-24.04` and nothing else:
+	#
+	#   UPPER 102 = twice the LARGEST healthy figure this row has drawn on a
+	#   lane machine (51s, two-core hosted, run 34008425787). Twice the slowest
+	#   measurement is the ceiling's own derivation rule, so the upper edge is
+	#   the largest ceiling any lane machine has ever justified. A slower image
+	#   than any seen yet needs a deliberate edit in two files, which is the
+	#   whole point of pinning the value in the manifest as well.
+	#
+	#   LOWER 13 = under a third of the SMALLEST healthy figure on a lane
+	#   machine (41s, run 34207096133). A ceiling under the figure the healthy
+	#   row draws reddens every green run and gets the row discharged; the
+	#   netns band's lower edge is derived the same way and for the same
+	#   reason.
+	#
+	# Both edges TIGHTEN: 5 -> 13 and 120 -> 102. The value they bound today is
+	# 84.
+	[ "$v" -ge 13 ] && [ "$v" -le 102 ] ||
+		note "SUITE_CEILING_SECONDS=$v is outside 13..102; a ceiling under the healthy row's own figure reddens every run, and one above twice the slowest figure any lane machine has drawn is not a drift detector"
 	# The netns band's edges are NOT the suite's, and neither is guessed. 175 is
 	# the last value below NETNS_TIMEOUT_SECONDS=180: a netns ceiling at or
 	# above the hang timeout can never fire, because the parent kills the run
@@ -2281,6 +2358,241 @@ sc_min_declared_tests_margin() {
 	out_has 'set MIN_DECLARED_TESTS=' || note "the diagnosis does not say what number to write"
 }
 
+# ------------------------------------------------ the lane's decisions (D41) --
+#
+# ROUND 2 of the hosted lane, 2026-09-08, and it closes a hole the review
+# MEASURED at 0998583: every refusal that decides whether a hosted run may
+# skip the oracle lives in .github/lane/*.sh, and NO SCENARIO DROVE ANY OF
+# THEM. `.github/lane/verdict.sh`'s hash comparison changed to `elif false`
+# left `shellcheck` clean, `go test ./internal/...` green, the domain hash
+# unchanged, and the lane accepting a justification that named a different
+# arbiter. A silent, free removal of the property the whole design rests on.
+#
+# Two things answer it and both are needed. verify.sh's oracle_domain() now
+# hashes .github/lane/, so touching one of those files is a domain change and
+# the oracle has to run; and the scenarios below drive the scripts, so the
+# oracle running is a verdict about them rather than a re-run.
+#
+# They are `static` scenarios: they never invoke the copy's verify.sh, because
+# the subject here is a lane script and not the arbiter. What each one observes
+# is the refusal's OWN diagnosis and not its exit status — deliberately. With
+# the refusal removed, verdict.sh still exits non-zero in a copy, because the
+# API read below it has no token and refuses; an assertion on rc alone would
+# let the reviewer's mutant survive. The note is the check.
+
+# lane_arbiter_output FILE HASH — a full green arbiter table, built from
+# MANIFEST_ROWS at run time. A fixture typed out here would go stale against
+# the roster it is supposed to be a complete instance of.
+lane_arbiter_output() { # FILE HASH
+	local f="$1" h="$2" r
+	: >"$f"
+	for r in "${MANIFEST_ROWS[@]}"; do
+		if [ "$r" = verify-oracle ]; then
+			printf '%-20s SKIPPED a synthetic account — hash %s, which already produced %s %s scenarios in this tree\n' \
+				"$r" "${h:0:16}" "$MANIFEST_ORACLE_PASS_PREFIX" "${#MANIFEST_SCENARIOS[@]}" >>"$f"
+		else
+			printf '%-20s PASS    a synthetic account\n' "$r" >>"$f"
+		fi
+	done
+	printf 'VERDICT: PASS (%s steps)\n' "$MANIFEST_ROWS_N" >>"$f"
+}
+
+# lane_justification FILE RUN HASH
+lane_justification() { # FILE RUN HASH
+	printf 'run %s\nhash %s\nscenarios %s\nfiles 12\n' \
+		"$2" "$3" "${#MANIFEST_SCENARIOS[@]}" >"$1"
+}
+
+# lane_verdict DIR — runs the COPY's verdict.sh over the copy's own fixture,
+# into LANE_RC and LANE_OUT. GH_TOKEN and GH_REPO are deliberately absent: a
+# scenario may not reach the network, and every refusal driven here sits above
+# the API read.
+lane_verdict() { # DIR
+	LANE_RC=0
+	LANE_OUT="$(cd "$1" && env -u GH_TOKEN -u GH_REPO \
+		./.github/lane/verdict.sh "$SCRATCH/out.txt" "$SCRATCH/just.txt" 2>&1)" || LANE_RC=$?
+}
+
+# lane_has PATTERN SLUG — the refusal's own diagnosis, recorded as the
+# observation the manifest pins. Absent is silent otherwise, which is the state
+# the mutant produces.
+lane_has() { # PATTERN SLUG
+	if printf '%s\n' "$LANE_OUT" | grep -qF -- "$1"; then
+		obs "lane-refusal:$2"
+		return 0
+	fi
+	note "the lane did not refuse with '$1'; rc was $LANE_RC and it said: $(printf '%s' "$LANE_OUT" | tr '\n' ' ' | head -c 300)"
+	return 1
+}
+
+sc_lane_scripts_are_in_the_oracles_domain() {
+	# The other half of the review's blocking finding: the scripts must be
+	# INSIDE the set the stamp hashes, so that editing one is a domain change
+	# and the oracle cannot be skipped over it.
+	#
+	# It reads the domain the way the lane reads it — `./verify.sh
+	# --oracle-hash` — rather than reading oracle_domain()'s source, because
+	# the lane's question is the subject and a second reading of the function
+	# would be the same fact derived twice.
+	local d="$1" covered f missing=""
+	copy_tree "$d"
+	covered="$(cd "$d" && ./verify.sh --oracle-hash | sed -n 's/^covers //p')"
+	for f in "$d"/.github/lane/*.sh; do
+		printf '%s\n' "$covered" | grep -qxF ".github/lane/$(basename "$f")" ||
+			missing="$missing .github/lane/$(basename "$f")"
+	done
+	if [ -n "$missing" ]; then
+		note "the oracle's domain does not cover the lane's own decisions:$missing"
+	else
+		obs "lane-domain:covers-the-lane"
+	fi
+	# Both directions on one subject: a file REMOVED from the tree must change
+	# the hash, or the domain is a list rather than a measurement.
+	local before after
+	before="$(cd "$d" && ./verify.sh --oracle-hash | sed -n 's/^hash //p')"
+	printf '\n# a byte the arbiter is about\n' >>"$d/.github/lane/verdict.sh"
+	after="$(cd "$d" && ./verify.sh --oracle-hash | sed -n 's/^hash //p')"
+	[ "$before" != "$after" ] ||
+		note "editing .github/lane/verdict.sh did not change the arbiter's hash; the lane's decisions are outside the stamp"
+	obs "lane-domain:hash-moves-with-the-lane"
+}
+
+sc_lane_verdict_foreign_hash() {
+	# THE EXACT MUTATION THE REVIEWER MADE, driven from the other end. With
+	# `.github/lane/verdict.sh:116` changed to `elif false`, this diagnosis
+	# disappears and this scenario goes red.
+	local d="$1"
+	copy_tree "$d"
+	lane_arbiter_output "$SCRATCH/out.txt" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	lane_justification "$SCRATCH/just.txt" 34208460326 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+	lane_verdict "$d"
+	lane_has 'a skip may not rest on a run that proved a different arbiter' foreign-hash
+	# The preservation control, on the same subject and in the same run: the
+	# matching pair must NOT be refused for this reason. Without it the
+	# assertion above is satisfied by a step that refuses everything.
+	lane_arbiter_output "$SCRATCH/out.txt" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	lane_justification "$SCRATCH/just.txt" 34208460326 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	lane_verdict "$d"
+	printf '%s\n' "$LANE_OUT" | grep -qF 'a skip may not rest on a run that proved a different arbiter' &&
+		note "the matching hash was refused as a foreign one; the comparison is not a comparison"
+	obs "lane-refusal:foreign-hash-control"
+	return 0
+}
+
+sc_lane_verdict_roster_shrunk() {
+	# The row roster, which is the refusal that stops a verdict taken over a
+	# shrunken table. Driven by removing one declared row from the account.
+	local d="$1" victim
+	copy_tree "$d"
+	victim=gofmt
+	lane_arbiter_output "$SCRATCH/out.txt" cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+	grep -v "^${victim} " "$SCRATCH/out.txt" >"$SCRATCH/out.tmp" && mv "$SCRATCH/out.tmp" "$SCRATCH/out.txt"
+	lane_justification "$SCRATCH/just.txt" 34208460326 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+	lane_verdict "$d"
+	lane_has "the arbiter recorded no PASS for the declared row $victim" roster-shrunk
+	# The preservation control, and this scenario needed it: MEASURED
+	# 2026-09-08, the sibling refusal below survived being rewritten to fire
+	# unconditionally, because a step that refuses everything satisfies an
+	# assertion that only asks whether it refused. The complete table must not
+	# be read as a shrunken one.
+	lane_arbiter_output "$SCRATCH/out.txt" cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+	lane_verdict "$d"
+	printf '%s\n' "$LANE_OUT" | grep -qF 'recorded no PASS for the declared row' &&
+		note "the complete table was read as a shrunken one; the roster refusal fires whatever it is given"
+	obs "lane-refusal:roster-shrunk-control"
+	return 0
+}
+
+sc_lane_verdict_two_verdicts() {
+	# A green account with a second verdict line after it. The row loop cannot
+	# see the second line, and neither can a step that greps for the first.
+	local d="$1"
+	copy_tree "$d"
+	lane_arbiter_output "$SCRATCH/out.txt" dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+	printf 'VERDICT: FAIL (1 step)\n' >>"$SCRATCH/out.txt"
+	lane_justification "$SCRATCH/just.txt" 34208460326 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+	lane_verdict "$d"
+	lane_has 'VERDICT lines; one run states one verdict' two-verdicts
+	# The preservation control, MEASURED as necessary: with the comparison
+	# rewritten from `-ne 1` to `-ge 0` this scenario PASSED, because a count
+	# that is always wrong is always refused and the assertion above cannot
+	# tell that from a count that is wrong here.
+	lane_arbiter_output "$SCRATCH/out.txt" dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+	lane_verdict "$d"
+	printf '%s\n' "$LANE_OUT" | grep -qF 'one run states one verdict' &&
+		note "one verdict line was counted as several; the refusal fires whatever it is given"
+	obs "lane-refusal:two-verdicts-control"
+	return 0
+}
+
+# lane_shard_account FILE COUNT ELAPSED OMIT — one shard holding the WHOLE
+# roster, minus OMIT when it is named. Built from MANIFEST_SCENARIOS so it is
+# the roster and not a copy of it.
+lane_shard_account() { # FILE ELAPSED OMIT
+	local f="$1" elapsed="$2" omit="${3:-}" s members="" n=0
+	for s in "${MANIFEST_SCENARIOS[@]}"; do
+		[ "$s" = "$omit" ] && continue
+		members="$members $s"
+		n=$((n + 1))
+	done
+	{
+		printf 'SHARD 1/1 MEMBERS:%s\n' "$members"
+		for s in $members; do printf '  RESULT %s PASS obs=scope:full\n' "$s"; done
+		printf 'ORACLE SHARD 1/1 PASS: %s of %s scenarios\n' "$n" "${#MANIFEST_SCENARIOS[@]}"
+		printf 'SHARD EXIT: 0\nSHARD ELAPSED: %s\nSHARD CONTRACTS RC: 0\n' "$elapsed"
+		printf 'SHARD CONTRACT accounted\t%s\nSHARD CONTRACT unaccounted\t\nSHARD CONTRACT breached\t\n' "$n"
+	} >"$f"
+}
+
+# lane_aggregate DIR — the COPY's aggregation over the accounts in $SCRATCH/acc.
+lane_aggregate() { # ROOT DIR
+	LANE_RC=0
+	LANE_OUT="$(cd "$1" && ./.github/lane/oracle-aggregate.sh "$SCRATCH/acc" 1 success 2>&1)" || LANE_RC=$?
+}
+
+sc_lane_aggregate_short_count() {
+	# One scenario missing from the shards, consistently: not in the members,
+	# not in the results, not in the count. Only the SUM is short, which is the
+	# shape a shard that quietly dropped a scenario would produce.
+	local d="$1" floor
+	copy_tree "$d"
+	mkdir -p "$SCRATCH/acc"
+	floor=$((ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO * ${#MANIFEST_SCENARIOS[@]}))
+	lane_shard_account "$SCRATCH/acc/shard-1.txt" "$floor" ceiling-control
+	lane_aggregate "$d"
+	lane_has "verify.manifest.sh declares ${#MANIFEST_SCENARIOS[@]}" short-count
+	# The control: the same fixture with nothing omitted must aggregate.
+	lane_shard_account "$SCRATCH/acc/shard-1.txt" "$floor"
+	lane_aggregate "$d"
+	[ "$LANE_RC" -eq 0 ] ||
+		note "the complete account was refused, so the count refusal above measures the fixture rather than the omission: $(printf '%s' "$LANE_OUT" | tr '\n' ' ' | head -c 300)"
+	obs "lane-refusal:short-count-control"
+	return 0
+}
+
+sc_lane_aggregate_instant_shard() {
+	# The arm the review found could not fire: nothing drove it, and its floor
+	# was a share of a figure measured on another machine for another shape.
+	# One second over the whole roster is the account a hand-written file gives.
+	local d="$1" floor
+	copy_tree "$d"
+	mkdir -p "$SCRATCH/acc"
+	floor=$((ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO * ${#MANIFEST_SCENARIOS[@]}))
+	lane_shard_account "$SCRATCH/acc/shard-1.txt" 1
+	lane_aggregate "$d"
+	lane_has 'it reported the right account without doing the work' instant-shard
+	# The edge, from the manifest and not from a literal: exactly the floor
+	# passes, one under it does not.
+	lane_shard_account "$SCRATCH/acc/shard-1.txt" "$floor"
+	lane_aggregate "$d"
+	[ "$LANE_RC" -eq 0 ] || note "a shard at exactly its floor was refused: $(printf '%s' "$LANE_OUT" | tr '\n' ' ' | head -c 200)"
+	lane_shard_account "$SCRATCH/acc/shard-1.txt" $((floor - 1))
+	lane_aggregate "$d"
+	[ "$LANE_RC" -ne 0 ] || note "a shard one second under its floor was accepted; the floor is not an edge"
+	obs "lane-refusal:instant-shard-edges"
+	return 0
+}
+
 # ------------------------------------------------------------------- driver --
 
 # A scenario that dies mid-body — an anchor that no longer matches, a helper
@@ -2294,7 +2606,7 @@ sc_min_declared_tests_margin() {
 SC_DONE=1
 SC_NAME=""
 run_one_exit() {
-	local rc="$1" d="$2" obsf="$3"
+	local rc="$1" d="$2" obsf="$3" scratch="${4:-}"
 	if [ "$SC_DONE" -eq 0 ]; then
 		printf 'RESULT %s FAIL obs=%s the scenario died before reporting (exit %s); its plant did not apply, so it measured nothing — this is not a pass and it is not a subject failure\n' \
 			"$SC_NAME" \
@@ -2302,6 +2614,7 @@ run_one_exit() {
 			"$rc"
 	fi
 	rm -rf "$d" "$obsf"
+	[ -z "$scratch" ] || rm -rf "$scratch"
 }
 
 run_one() {
@@ -2310,12 +2623,19 @@ run_one() {
 	command -v "$fn" >/dev/null 2>&1 || refuse "no function $fn for scenario $name"
 	d="$(mktemp -d)"
 	OBSFILE="$(mktemp)"
+	# SCRATCH is where a scenario writes fixtures of its OWN — an arbiter
+	# account it fabricated, a justification, a directory of shard accounts.
+	# It is deliberately NOT inside the copy: a path under the copy root is
+	# read by internal/manifest as an anchor on the product, and a file the
+	# scenario just wrote cannot go stale against a tree it never came from.
+	# Fixtures belong here; plants into the subject belong under $d.
+	SCRATCH="$(mktemp -d)"
 	SC_DONE=0
 	SC_NAME="$name"
 	SCOPE=full
 	if in_list "$name" "${MANIFEST_LIGHT_SCENARIOS[@]}"; then SCOPE=light; fi
 	# shellcheck disable=SC2064  # both paths must expand now, not at trap time
-	trap "run_one_exit \$? '$d' '$OBSFILE'" EXIT
+	trap "run_one_exit \$? '$d' '$OBSFILE' '$SCRATCH'" EXIT
 	FAILS=()
 	obs "scope:$SCOPE"
 	"$fn" "$d"
@@ -2429,22 +2749,43 @@ fi
 # in Go (internal/manifest), and a contract is satisfied only by a row verdict
 # the scenario actually OBSERVED. A comment cannot observe anything.
 
+# The set this invocation is answerable for: the whole roster, or one shard of
+# it. Everything below counts, names and reports over RUN_SET, so a shard's
+# account is about a shard and cannot be read as an account of the roster.
+RUN_SET=()
+if [ "$SHARD_N" -ne 0 ]; then
+	shard_idx=0
+	for s in "${SCENARIOS[@]}"; do
+		[ "$((shard_idx % SHARD_N))" -ne "$((SHARD_I - 1))" ] || RUN_SET+=("$s")
+		shard_idx=$((shard_idx + 1))
+	done
+	[ "${#RUN_SET[@]}" -gt 0 ] ||
+		refuse "shard $SHARD_I of $SHARD_N is empty over ${#SCENARIOS[@]} declared scenario(s); a job that runs nothing is a universal satisfied by emptying its domain, not a share of the work"
+	# The membership, printed so the aggregation can check the partition rather
+	# than recompute it: N shards that each cut their own share are N answers
+	# to one question, and the aggregation is the place that asks whether they
+	# add up to the roster.
+	printf 'SHARD %s/%s MEMBERS: %s\n' "$SHARD_I" "$SHARD_N" "${RUN_SET[*]}"
+else
+	RUN_SET=("${SCENARIOS[@]}")
+fi
+
 results="$(mktemp)"
 trap 'rm -f "$results"' EXIT
 
-printf '%s\n' "${SCENARIOS[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-verify.sh" --scenario {} >"$results" 2>&1 || true
+printf '%s\n' "${RUN_SET[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-verify.sh" --scenario {} >"$results" 2>&1 || true
 
 lines="$(grep -c '^RESULT ' "$results" || true)"
-if [ "$lines" != "${#SCENARIOS[@]}" ]; then
+if [ "$lines" != "${#RUN_SET[@]}" ]; then
 	sed 's/^/  /' "$results" >&2
 	missing=""
-	for s in "${SCENARIOS[@]}"; do
+	for s in "${RUN_SET[@]}"; do
 		grep -q "^RESULT $s " "$results" || missing="$missing $s"
 	done
 	# NAME them. The count alone is a true statement that sends the reader to
 	# a diff of two sorted lists; it cost one such diff to find the scenario
 	# whose anchor had gone stale.
-	refuse "collected $lines result line(s) for ${#SCENARIOS[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass. Silent:${missing:-" none by name — a duplicate or malformed RESULT line"}"
+	refuse "collected $lines result line(s) for ${#RUN_SET[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass. Silent:${missing:-" none by name — a duplicate or malformed RESULT line"}"
 fi
 
 # The RESULT prefix is KEPT, not stripped. verify.sh requires one
@@ -2455,6 +2796,19 @@ sort -k2,2 "$results" | sed 's/^/  /'
 
 bad="$(grep -c '^RESULT [^ ]* FAIL' "$results" || true)"
 echo "---"
+# A SHARD NEVER PRINTS THE ACCOUNT LINE. MANIFEST_ORACLE_PASS_PREFIX is the
+# spelling verify.sh parses the scenario COUNT of a whole run out of, and a
+# shard has not run a whole roster; a shard that printed it would be an
+# eleven-scenario run claiming to be the oracle. Its own verdict names the
+# shard and the share.
+if [ "$SHARD_N" -ne 0 ]; then
+	if [ "$bad" -eq 0 ]; then
+		echo "ORACLE SHARD $SHARD_I/$SHARD_N PASS: ${#RUN_SET[@]} of ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
+		exit 0
+	fi
+	echo "ORACLE SHARD $SHARD_I/$SHARD_N FAIL: $bad of ${#RUN_SET[@]} scenarios did not behave"
+	exit 1
+fi
 if [ "$bad" -eq 0 ]; then
 	echo "$MANIFEST_ORACLE_PASS_PREFIX ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
 	exit 0

@@ -113,6 +113,39 @@ type Params6 struct {
 	// is free to ignore one that is sent.
 	Hint netip.Addr
 
+	// Declined is every address this client has already sent a Decline for,
+	// and the machine will not hint one of them however often it is asked.
+	//
+	// IT IS HERE AND NOT ONLY ON THE MACHINE BECAUSE Hint OUTLIVES THE
+	// PROCESS AND THE MACHINE'S OWN SET DOES NOT. lease.SnapshotParams6
+	// copies a Params6 — Hint included — into the record a restart is
+	// rebuilt from, so a client that declined its hint, was restarted and
+	// was rebuilt from that record asked for the same address again on its
+	// first Solicit: §18.2.10.1's recovery walking back into the address it
+	// gave back, one process boundary later. Machine6.declined says why that
+	// loop does not converge.
+	//
+	// IT IS AN INPUT AND NOT A READ-BACK. A caller supplies what it
+	// remembered; New6 seeds the machine from it and this field then stops
+	// moving, so Params() gives it back unchanged and a journal replayed
+	// against those parameters sees the machine the run started as. What the
+	// machine has declined SINCE is read with Machine6.Declined(), and the
+	// two are separate for the reason Params() states: one is what a journal
+	// replays against and the other is what the next process is seeded from.
+	//
+	// BOUND, TWO OF THEM.
+	//
+	// An entry that is not a usable IPv6 address is kept and is inert: the
+	// only comparison it takes part in is against Hint, which validate
+	// refuses unless it is one.
+	//
+	// And the set is DURABLE, so its size is the caller's bound rather than
+	// this machine's — a caller that writes Machine6.Declined() back into
+	// this field at every restart carries every distinct address the link has
+	// ever had answered for by another node. Machine6.declined's own bound
+	// says what that costs and why nothing here caps it.
+	Declined []netip.Addr
+
 	// ORO is the option codes the caller wants beyond the ones the machine
 	// requests on its own. §21.24 and §21.25 make 82 and 83 mandatory on the
 	// Solicit and the Information-request respectively, and §21.23 makes 32

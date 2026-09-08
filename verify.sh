@@ -14,6 +14,11 @@
 #         ./verify.sh --light    also minus the unit suite and the netns row
 #                                (see MANIFEST_SCOPED_OUT_ROWS): a SCOPED run,
 #                                which says so in its verdict line
+#         ./verify.sh --oracle-hash
+#                                print the oracle's domain — its file count and
+#                                the hash the skip stamp is keyed on — and
+#                                measure nothing. The lane asks this question
+#                                instead of keeping a path list of its own.
 # Exit:   0 = PASS, 1 = FAIL. A step that cannot be measured is a FAIL, never
 #         a skip. SKIPPED is not that: it is one row, verify-oracle, declining
 #         to repeat a measurement whose subject has not changed, and it names
@@ -46,11 +51,13 @@ SELF="$ROOT/$(basename "$0")"
 INNER=0
 LIGHT=0
 FORCE_ORACLE=0
+PRINT_ORACLE_HASH=0
 for arg in "$@"; do
 	case "$arg" in
 	--inner) INNER=1 ;;
 	--light) LIGHT=1 ;;
 	--oracle) FORCE_ORACLE=1 ;;
+	--oracle-hash) PRINT_ORACLE_HASH=1 ;;
 	*)
 		echo "VERDICT: FAIL — unknown argument $arg; nothing was measured." >&2
 		exit 1
@@ -110,6 +117,60 @@ row_omitted() { # NAME
 	in_list "$1" "${MANIFEST_SCOPED_OUT_ROWS[@]}"
 }
 
+# oracle_domain — the ARBITER's own file set and the hash the skip stamp is
+# keyed on, into ORACLE_COVERED, ORACLE_COVERED_N and ORACLE_HASH.
+#
+# It is a function and not two copies for the reason D41 made it one: the lane
+# has to ask which files the oracle is about, in order to decide whether it
+# must run the oracle at all, and a path list typed into a workflow is the same
+# fact derived twice — with the looser derivation deciding. The lane runs
+# `./verify.sh --oracle-hash` and reads this. Nothing else knows the set.
+#
+# The PATHS are hashed beside the bytes: a renamed script is a changed arbiter,
+# and a hash over contents alone cannot see a rename.
+#
+# 2026-09-08, round 2, and it is the correction of a real hole rather than an
+# extension: .github/lane/ was NOT in this set. Every refusal that decides
+# whether a hosted run may skip the oracle lives in those scripts, so removing
+# one changed no covered byte, left this hash where it was, and let the lane
+# answer "an arbiter this green has already proved" about an arbiter that had
+# just stopped checking. MEASURED by review at 0998583: with
+# .github/lane/verdict.sh's hash comparison disabled, the head's own
+# justification was accepted against a row carrying a different hash, and
+# `--oracle-hash` still printed the same digest. The lane's decisions are part
+# of the arbiter, so they are hashed with it.
+#
+# The ROOTS are derived here too, for the row that names them: a skip that
+# printed a hand-typed list of directories would be this same fact derived
+# twice, one file along.
+oracle_domain() {
+	ORACLE_COVERED="$( {
+		printf 'verify.sh\nverify.manifest.sh\n'
+		find scripts .github/lane -type f -printf '%p\n' 2>/dev/null
+	} | LC_ALL=C sort -u)"
+	ORACLE_COVERED_N="$(printf '%s\n' "$ORACLE_COVERED" | grep -c . || true)"
+	ORACLE_ROOTS="$(printf '%s\n' "$ORACLE_COVERED" |
+		sed 's|/[^/]*$|/|' | LC_ALL=C sort -u | paste -sd, - | sed 's/,/, /g')"
+	ORACLE_HASH="$(printf '%s\n' "$ORACLE_COVERED" | while IFS= read -r f; do
+		if [ -r "$ROOT/$f" ]; then
+			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
+		else
+			printf 'ABSENT  %s\n' "$f"
+		fi
+	done | sha256sum | cut -d' ' -f1)"
+}
+
+# --oracle-hash answers and stops. It is above every row on purpose: it must
+# cost nothing, and a question that measured something on the way would be a
+# run whose verdict nobody read.
+if [ "$PRINT_ORACLE_HASH" -eq 1 ]; then
+	oracle_domain
+	printf 'files %s\nhash %s\nscenarios %s\n' \
+		"$ORACLE_COVERED_N" "$ORACLE_HASH" "${#MANIFEST_SCENARIOS[@]}"
+	printf '%s\n' "$ORACLE_COVERED" | sed 's/^/covers /'
+	exit 0
+fi
+
 # The wall-clock ceiling on the unit suite, in seconds — T2's second
 # instrument, reading the clock where the identifier gate reads source.
 #
@@ -133,23 +194,44 @@ row_omitted() { # NAME
 # it was paid deliberately — the alternative shapes (an environment override,
 # a machine-relative derivation) were measured or ruled out first.
 #
-# 2026-09-06, D36: there is now ONE machine. CI runs on the box this
-# paragraph calls "the session box", so the number no longer serves two, and
-# the 102 above is a hosted-runner measurement kept in force over a machine
-# that never produced it. It is NOT re-derived down here, and that is a
-# choice: a ceiling derived from a 51s two-core run is loose on this box but
-# it is loose in the safe direction, the runner arrangement is temporary, and
-# lowering it would have to be undone the day the lane moves to a pool whose
-# cores are nobody's to predict. What the looseness costs is stated above and
-# is unchanged. Re-deriving it is owed to whichever round makes the lane's
-# machine permanent.
+# 2026-09-06, D36: there is now ONE machine. CI ran on the box that paragraph
+# calls "the session box", so the number no longer served two, and the 102
+# above was a hosted-runner measurement kept in force over a machine that
+# never produced it. It was NOT re-derived there, deliberately: the runner
+# arrangement was temporary, and lowering a ceiling for a machine that is
+# about to change is work that has to be undone. Re-deriving it was owed to
+# whichever round made the lane's machine permanent.
 #
-# The HIGHEST value this row has produced on this machine, which is the number
-# a reader wants when judging whether 102 is loose: 24s, run 34067850871, the
-# lane sharing the box with a reviewer's own `./verify.sh --oracle`. Alone it
-# is 20s (run 34065275390). Contention costs this row four seconds; the
-# ceiling is four times the loaded figure.
-SUITE_CEILING_SECONDS=102
+# 2026-09-08, D41, 102 -> 84, and this is that round. The lane runs on
+# GitHub-hosted `ubuntu-24.04` and nothing else; the self-hosted runner is
+# idle. The RULE IS UNCHANGED — twice the slowest measurement of the unmutated
+# suite in the shape CI runs it — and it is applied to three runs at the head
+# of this branch on the image that now runs the lane, `nproc` 4 (printed by the
+# job, not assumed): 42s run 34204814646, 42s run 34206597940, 41s run
+# 34207096133. Twice 42 is 84. The old 102 came from 51s on a TWO-core hosted
+# runner and is 2.4 times the figure this machine draws, which is looser than
+# the rule asks; nothing about the suite changed, the machine did.
+#
+# WHAT 84 STILL HAS TO COVER, and it is the reason this is not simply 2x: a
+# scenario runs a COPY of this suite, and a copy is not the shape the rule
+# measures. The one figure that pairs the two is from the two-core image: 63s
+# in a copy against 51s in the arbiter, a ratio of 1.24. Applied to 42s that
+# is 52s, and 84 leaves 32s over it. A COPY'S FIGURE IS NOT OBSERVABLE FROM
+# OUTSIDE, which is the bound rather than the argument: scripts/test-verify.sh
+# squashes digits out of every observation it records, so the only evidence
+# that a copy stayed under this number is that no scenario reddened on it. The
+# matrix run of the push that introduced this value is that evidence, over all
+# 79 scenarios; a copy that breached 84 would have reddened its scenario's
+# unit-suite row and taken its shard with it.
+#
+# The HIGHEST value this row has produced on the machine that used to run the
+# lane, kept because it is what a reader wants when judging a ceiling against
+# a faster box: 24s, run 34067850871, that lane sharing the box with a
+# reviewer's own `./verify.sh --oracle`; alone it was 20s (run 34065275390).
+# Contention cost this row four seconds there. On the hosted image the same
+# question is answered by the facts step, which prints the load average before
+# and after every arbiter run.
+SUITE_CEILING_SECONDS=84
 
 # The hang bound, in seconds, passed to `go test -timeout`. The ceiling above
 # cannot bound a hang: it is computed after `go test` returns (scenario
@@ -218,52 +300,62 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # loop. The whole list is one run again rather than the previous one with a
 # line inserted.
 #
-# MEASURED 2026-09-07 on the session box at the M7e head, exactly as this file
-# runs the row (-race -count=1 -v -timeout 180s, -run over the roster), taking
-# the OUTER (re-exec parent) figure per test. This is also the machine CI runs
-# on (D36), so this table and the CI row measure the same hardware:
+# AND AGAIN AT M7f: the roster is 34 with
+# TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed, which
+# drives a real duplicate-address collision on a real link so that the flag
+# byte readLinkLocal branches on is the kernel's and not a fabrication. One run
+# again, not a line inserted.
 #
-#   TestAClientOnALinkWithNoRouterStillAcquires                 3.24
-#   TestADeclinedHintIsNotAskedForAgain                         3.59
-#   TestADuplicateAddressOnTheLinkIsDeclined                    1.35
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne     3.06
-#   TestARefusedResumeRestartsAgainstRealDnsmasq                1.35
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq               1.29
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq               3.48
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                       1.24
-#   TestASquatterAfterBoundTakesSection24sPath                  2.47
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline     2.56
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline      2.38
-#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.22
-#   TestAV6ClientAcquiresFromRealDnsmasq                        2.29
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport      4.23
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased       2.07
-#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress     5.04
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress   3.10
-#   TestAV6ReleaseReachesRealDnsmasq                            4.58
-#   TestAcquiresFromRealDnsmasq                                 1.16
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq              1.26
-#   TestAnOffClientPutsNoARPOnTheWire                           4.16
-#   TestDeclineAndReleaseReachRealDnsmasq                       2.16
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease     4.26
-#   TestPacketTransportDropsWhenTheConsumerStalls               3.60
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress        1.30
-#   TestPacketTransportOnARealLink                              1.26
-#   TestRenewalAndNakReachRealDnsmasq                           7.18
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn                  1.15
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic         9.05
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr               1.60
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile             1.45
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                2.96
-#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn     1.16
+# MEASURED 2026-09-08 on the session box at this branch's head, exactly as this
+# file runs the row (-race -count=1 -v -timeout 180s, -run over the roster),
+# taking the OUTER (re-exec parent) figure per test. The lane itself now runs on
+# a GitHub-hosted image (D41) and the figures that bound the ceiling there are
+# at the end of this block; this table is the session box's, and the two are
+# compared there rather than mixed:
 #
-# The per-test figures sum to 93.25s against a 94.54s wall clock; the
+#   TestAClientOnALinkWithNoRouterStillAcquires                         3.26
+#   TestADeclinedHintIsNotAskedForAgain                                 3.53
+#   TestADuplicateAddressOnTheLinkIsDeclined                            1.47
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne             3.07
+#   TestARefusedResumeRestartsAgainstRealDnsmasq                        1.30
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq                       1.29
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                       3.64
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                               1.27
+#   TestASquatterAfterBoundTakesSection24sPath                          2.50
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline             2.50
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline              2.38
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.23
+#   TestAV6ClientAcquiresFromRealDnsmasq                                3.12
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport              4.14
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               2.23
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress             5.03
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress           2.88
+#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed   1.43
+#   TestAV6ReleaseReachesRealDnsmasq                                    3.87
+#   TestAcquiresFromRealDnsmasq                                         1.15
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                      1.28
+#   TestAnOffClientPutsNoARPOnTheWire                                   4.18
+#   TestDeclineAndReleaseReachRealDnsmasq                               2.16
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease             4.26
+#   TestPacketTransportDropsWhenTheConsumerStalls                       3.66
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress                1.28
+#   TestPacketTransportOnARealLink                                      1.29
+#   TestRenewalAndNakReachRealDnsmasq                                   7.16
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn                          1.18
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                 9.37
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                       1.59
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile                     1.45
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                        2.48
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn             1.15
+#
+# The per-test figures sum to 94.78s against a 97s wall clock; the
 # difference is the build, the race instrumentation and the re-exec, and it is
 # why the ceiling is set off the WALL figure. The wall has NOT moved past what
-# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s here over a roster one
-# test larger again. The new test costs 3.59s of it; the remaining 1.4s against
-# the previous run's 91.92s is draw-to-draw variation in tests that WAIT on real
-# DHCP, ARP and DAD intervals.
+# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s at M7e, 97s here over
+# a roster one test larger again. The new test costs 1.43s of it; the remaining
+# 1.1s against the previous run is draw-to-draw variation in tests that WAIT on
+# real DHCP, ARP and DAD intervals — the paragraph below measures how wide that
+# variation gets on one row.
 #
 # THE VARIANCE IS NOT UNIFORM ACROSS THE LIST, and one row carries most of it.
 # MEASURED 2026-09-07 while building this table: a first pass put
@@ -279,10 +371,12 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
 # WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum. Neither re-measurement moves it:
-# 93s at 8c87caf over a roster one test larger, and 94.54s at M7e over a roster
-# one larger again, are both at the 94s the number was derived on — so nothing
-# here is re-derived, only re-checked, twice.
+# derived half and the ceiling is the sum. No re-measurement has moved it:
+# 93s at 8c87caf over a roster one test larger, 94.54s at M7e over a roster one
+# larger again, and 97s at M7f over a roster one larger than that, are all at
+# the 94s the number was derived on — so nothing here is re-derived, only
+# re-checked, three times. At 97s the headroom is 43s, which still clears the
+# 32s floor the rule below asks.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
 # the largest round-on-round increase this row has just shown. This round's
@@ -329,6 +423,23 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # is dominated by waits, not by cycles. What is NOT held any more is the case
 # where the lane's machine is not this one; when the runner moves off this box
 # the two-measurement shape returns and this paragraph is owed a re-derivation.
+#
+# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 is
+# RE-CHECKED rather than re-derived. The lane runs on GitHub-hosted
+# `ubuntu-24.04`, `nproc` 4. Three runs at the head: 86s run 34204814646, 88s
+# run 34206597940, 87s run 34207096133. The rule is the one stated above — the
+# ceiling is the measured wall plus headroom, and the headroom must cover two
+# more rounds of the largest round-on-round increase this row has shown, a 32s
+# floor. 140 minus the slowest of the three is 52s of headroom, which clears
+# it, so nothing moves.
+#
+# And the two-measurement shape did return, with the reassurance it used to
+# carry: 88s on a four-core hosted image against 94.54s on a thirty-two-core
+# box for the same roster. The machine with a quarter of the cores is FASTER
+# here, which is the same result the two-core runner gave against this box in
+# 2026-09, and it is what "dominated by waits" means when it is measured
+# rather than asserted. Two machines can disagree again, so they can warn
+# again.
 #
 # One machine does not mean one load, and that is now MEASURED rather than
 # argued. Run 34067850871 ran the whole lane while a reviewer's own
@@ -829,10 +940,22 @@ shell_files() {
 }
 
 if command -v shellcheck >/dev/null 2>&1; then
-	shell_expected="$(printf '%s\n' "${SHELL_SCRIPTS[@]}" | sort | tr '\n' ' ')"
-	shell_found="$(shell_files | sort | tr '\n' ' ')"
+	shell_expected="$(printf '%s\n' "${SHELL_SCRIPTS[@]}" | LC_ALL=C sort)"
+	shell_found="$(shell_files | LC_ALL=C sort)"
 	if [ "$shell_expected" != "$shell_found" ]; then
-		record "shellcheck" FAIL "the linted list [$shell_expected] is not every shell script in the tree [$shell_found]"
+		# The DIFFERENCE, in both directions, and not the two whole lists.
+		#
+		# 2026-09-08, D41, and it is a measurement rather than a preference:
+		# the lane's seven scripts took the two-list form past the 240 bytes
+		# scripts/test-verify.sh records a diagnosis in, so the note stopped
+		# naming the script the scenario had planted and unlinted-script and
+		# unlinted-shebang-script both breached their contracts while the row
+		# was doing its job. A diagnosis whose usefulness falls as the tree
+		# grows is a diagnosis with a size limit nobody declared; this one
+		# names what a maintainer acts on and stays the same length.
+		shell_unlinted="$(LC_ALL=C comm -13 <(printf '%s\n' "$shell_expected") <(printf '%s\n' "$shell_found") | tr '\n' ' ' | sed 's/ $//')"
+		shell_absent="$(LC_ALL=C comm -23 <(printf '%s\n' "$shell_expected") <(printf '%s\n' "$shell_found") | tr '\n' ' ' | sed 's/ $//')"
+		record "shellcheck" FAIL "the linted list is not every shell script in the tree: in the tree and linted by nothing: [$shell_unlinted]; listed in verify.manifest.sh and not in the tree: [$shell_absent]"
 	else
 		linted=()
 		for sh in "${SHELL_SCRIPTS[@]}"; do linted+=("$ROOT/$sh"); done
@@ -1403,20 +1526,10 @@ fi
 # when the derivation and the quote disagree.
 if [ "$INNER" -eq 0 ]; then
 	ORACLE_STAMP="$ROOT/.verify-oracle-stamp"
-	oracle_covered="$( {
-		printf 'verify.sh\nverify.manifest.sh\n'
-		find scripts -type f -printf '%p\n' 2>/dev/null
-	} | LC_ALL=C sort -u)"
-	oracle_covered_n="$(printf '%s\n' "$oracle_covered" | grep -c . || true)"
-	# The PATHS are hashed beside the bytes: a renamed script is a changed
-	# arbiter, and a hash over contents alone cannot see a rename.
-	oracle_hash="$(printf '%s\n' "$oracle_covered" | while IFS= read -r f; do
-		if [ -r "$ROOT/$f" ]; then
-			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
-		else
-			printf 'ABSENT  %s\n' "$f"
-		fi
-	done | sha256sum | cut -d' ' -f1)"
+	oracle_domain
+	oracle_covered_n="$ORACLE_COVERED_N"
+	oracle_hash="$ORACLE_HASH"
+	oracle_roots="$ORACLE_ROOTS"
 	stamp_root=""
 	stamp_hash=""
 	stamp_scn=""
@@ -1430,7 +1543,12 @@ if [ "$INNER" -eq 0 ]; then
 		[ "$stamp_root" = "$ROOT" ] &&
 		[ "$stamp_hash" = "$oracle_hash" ] &&
 		[ "$stamp_scn" = "${#MANIFEST_SCENARIOS[@]}" ]; then
-		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — ${oracle_roots} — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+	elif [ ! -x "$ROOT/scripts/oracle-contracts.sh" ]; then
+		# Before the oracle's wall clock, not after it: without this file every
+		# scenario reports and nothing compares the report to the contract, so
+		# the row would be an account of names. Scenario contract-check-deleted.
+		record "verify-oracle" FAIL "scripts/oracle-contracts.sh is missing or not executable; the scenarios would report and nothing would hold them to the contracts verify.manifest.sh declares"
 	elif [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		orc_start=$(date +%s)
 		orc_rc=0
@@ -1440,75 +1558,33 @@ if [ "$INNER" -eq 0 ]; then
 		# prints it from: three files agreeing by coincidence was carried
 		# review row R1.
 		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n "s/^${MANIFEST_ORACLE_PASS_PREFIX} \([0-9][0-9]*\) scenarios.*/\1/p" | tail -1)"
+		# ROUND 11, moved out by D41. Each scenario is held to what it must
+		# have OBSERVED, not to its name appearing in a line. The contract
+		# comes from the manifest, the observation from the oracle, and the
+		# comparison happens in a third file — scripts/oracle-contracts.sh —
+		# so it is in none of the three places an author would edit to make a
+		# scenario stop working. It moved out of this block because the lane
+		# runs the oracle as a matrix of shards that never reach this row, and
+		# a shard that counted names without checking contracts would be the
+		# round-11 defeat again, one machine along.
+		orc_file="$(mktemp)"
+		printf '%s\n' "$orc_out" >"$orc_file"
+		ctr_rc=0
+		ctr_out="$("$ROOT/scripts/oracle-contracts.sh" "$orc_file" 2>&1)" || ctr_rc=$?
+		rm -f "$orc_file"
 		accounted=0
 		unaccounted=""
 		breached=""
-		# ROUND 11. Each scenario is held to what it must have OBSERVED, not to
-		# its name appearing in a line. The contract comes from the manifest,
-		# the observation from the oracle, and the comparison happens here — so
-		# it is in none of the three places an author would edit to make a
-		# scenario stop working.
-		for contract in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
-			IFS='|' read -r sc_name want_rc want_tok want_diag <<<"$contract"
-			if ! printf '%s\n' "$orc_out" | grep -qE "^[[:space:]]*RESULT $sc_name PASS obs="; then
-				unaccounted="$unaccounted $sc_name"
-				continue
-			fi
-			accounted=$((accounted + 1))
-			got="$(printf '%s\n' "$orc_out" | sed -n "s/^[[:space:]]*RESULT $sc_name PASS obs=//p" | tail -1)"
-			sc_ok=1
-			case "$want_rc" in
-			zero) printf '%s' ",$got," | grep -q ',rc:0,' || sc_ok=0 ;;
-			nonzero) printf '%s' ",$got," | grep -qE ',rc:[1-9][0-9]*,' || sc_ok=0 ;;
-			static) [ -n "$got" ] || sc_ok=0 ;;
-			*) sc_ok=0 ;;
-			esac
-			# Unconditional. The "-" escape this used to carry meant "demand no
-			# observation", which is one manifest entry away from the defeat
-			# this whole check answers.
-			printf '%s' ",$got," | grep -q ",$want_tok," || sc_ok=0
-			# ROUND 13, B15. The row's own ACCOUNT of what it found, not only
-			# that it went red. A scenario cut down to the lines producing its
-			# contracted observation, planting whatever reaches the same row,
-			# satisfied everything up to here — because a verdict names a row
-			# and nothing named the defect. The note is written by the arbiter,
-			# so the scenario cannot supply it by planting something else.
-			case "$want_tok" in
-			*:FAIL | *:PASS | *:ABSENT)
-				sc_row="${want_tok%%:*}"
-				# Every note recorded for that row, not the first: a scenario
-				# may run the subject more than once (oracle-is-invoked runs a
-				# stub and then the real thing), and the reading that carries
-				# the diagnosis is not always the first one.
-				sc_note="$(printf '%s' "$got" | tr ',' '\n' | sed -n "s/^why:$sc_row://p")"
-				printf '%s\n' "$sc_note" | grep -qF -- "$want_diag" || {
-					sc_ok=0
-					want_tok="$want_tok/$want_diag"
-				}
-				;;
-			esac
-			# The SCOPE the scenario ran at, against the manifest's
-			# declaration of the scope it is entitled to (item 2, 2026-09-05).
-			# The scope is set by the oracle's dispatcher from that same list
-			# and recorded by the run helpers; a body that scopes itself down
-			# to skip the row it exists to drive reports a scope the manifest
-			# does not declare for it, and is a breach here — beside the older
-			# and stronger refusal, which is that the row it scoped away then
-			# reads ABSENT and fails its own contract.
-			#
-			# static scenarios never run verify.sh, so there is no scope to
-			# observe; they are exempt by rc-class, not by name.
-			if [ "$want_rc" != static ]; then
-				want_scope=full
-				in_list "$sc_name" "${MANIFEST_LIGHT_SCENARIOS[@]}" && want_scope=light
-				printf '%s' ",$got," | grep -q ",scope:$want_scope," || {
-					sc_ok=0
-					want_tok="$want_tok/scope:$want_scope"
-				}
-			fi
-			[ "$sc_ok" -eq 1 ] || breached="$breached $sc_name(wants $want_rc,$want_tok; observed [$got])"
-		done
-		if [ "$orc_rc" -ne 0 ]; then
+		if [ "$ctr_rc" -eq 0 ]; then
+			accounted="$(printf '%s\n' "$ctr_out" | sed -n 's/^accounted\t//p')"
+			unaccounted="$(printf '%s\n' "$ctr_out" | sed -n 's/^unaccounted\t//p')"
+			breached="$(printf '%s\n' "$ctr_out" | sed -n 's/^breached\t//p')"
+		fi
+		if [ "$ctr_rc" -ne 0 ]; then
+			record "verify-oracle" FAIL "the contract check refused: $(printf '%s' "$ctr_out" | tr '\n' ' '); the oracle reported and nothing held its scenarios to verify.manifest.sh"
+			printf '\n--- verify-oracle: the contract check could not run ---\n' >&2
+			quote_block "$ctr_out" >&2
+		elif [ "$orc_rc" -ne 0 ]; then
 			# The breach list rides along rather than waiting its turn. Both
 			# statements are true at once, and MEASURED 2026-08-30 replaying
 			# B14: the oracle's own exit 1 arrived first and "exit 1" was the

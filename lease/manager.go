@@ -158,6 +158,25 @@ type Manager struct {
 	journal Journal
 	packets PacketRing
 
+	// params6 mirrors the v6 machine's configuration for Params6, and
+	// declined6 the set it has declined for Declined6. Both are read under mu
+	// from a caller's goroutine, because the machine itself belongs to Run's.
+	//
+	// THEY ARE MAINTAINED DIFFERENTLY, and the difference is what the two
+	// fields are. params6 is what the machine RAN WITH: it is taken once, at
+	// construction, and only SolMaxRT and InfMaxRT move afterwards
+	// (§21.24, §21.25) — so a Step refreshes two integers rather than
+	// deep-copying four slices and a Resume6 to carry them across. The bound
+	// on that is proto.Machine6.MaxRT's: a third mutable field would have to
+	// be added in both places, and nothing here would notice if it were not.
+	// TestAServersSolMaxRTReachesTheManagersParameters is the observer.
+	//
+	// declined6 GROWS, so it is re-read after a Step — but only when the
+	// machine's set is longer than the mirror, which is once per distinct
+	// Decline rather than once per packet.
+	params6   proto.Params6
+	declined6 []netip.Addr
+
 	// machine6 is the v6 machine, and it is non-nil exactly when machine is
 	// nil: one Manager runs one lease in one family. Every place that has to
 	// know which reads this field, so "which family is this" has one
@@ -528,15 +547,17 @@ func newManager6(cfg Config) (*Manager, error) {
 		buf = 8
 	}
 	mg := &Manager{
-		cfg:      cfg,
-		machine6: m,
-		journal:  cfg.Journal,
-		journal6: cfg.Journal6,
-		packets:  cfg.Packets,
-		packets6: cfg.PacketsV6,
-		limiter:  newBucket(cfg.RateLimit),
-		events:   make(chan Event, buf),
-		requests: make(chan proto.Event, 4),
+		cfg:       cfg,
+		machine6:  m,
+		params6:   m.Params(),
+		declined6: m.Declined(),
+		journal:   cfg.Journal,
+		journal6:  cfg.Journal6,
+		packets:   cfg.Packets,
+		packets6:  cfg.PacketsV6,
+		limiter:   newBucket(cfg.RateLimit),
+		events:    make(chan Event, buf),
+		requests:  make(chan proto.Event, 4),
 	}
 	if mg.journal == nil {
 		mg.journal = discardJournal{}
@@ -880,6 +901,10 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// would be one fact derived twice, in two places that can be
 			// edited apart.
 			mg.router = mg.machine6.Router()
+			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
+			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
+				mg.declined6 = d
+			}
 			mg.mu.Unlock()
 
 			mg.journal6.Append(proto.NewJournalEntry6(seq, now, rnd, e, from, to, acts))
@@ -1201,6 +1226,46 @@ func (mg *Manager) Router() proto.RouterObservation {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	return mg.router
+}
+
+// Params6 is the configuration the v6 machine RAN WITH, and the second value
+// is false on a v4 manager.
+//
+// IT IS THE VALUE Record.Params6 HOLDS, which is to say the one proto.Replay6
+// re-runs a journal against. What comes back is what the caller supplied, with
+// SOL_MAX_RT and INF_MAX_RT as the servers on this link have last set them; it
+// does NOT carry what the machine has declined since, because a journal
+// replayed against parameters that grew during the run diverges at the first
+// message the growth would have changed. Declined6 is that half.
+//
+// The value is deep-copied on the way out, so a caller can keep it while the
+// manager runs on.
+func (mg *Manager) Params6() (proto.Params6, bool) {
+	if !mg.v6() {
+		return proto.Params6{}, false
+	}
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return SnapshotParams6(mg.params6), true
+}
+
+// Declined6 is every address the v6 machine has sent a Decline for, and the
+// second value is false on a v4 manager.
+//
+// IT IS THE OTHER HALF OF WHAT A RESTART NEEDS, and it is separate from
+// Params6 for the reason Params6 states: one is what a journal replays
+// against, the other is what the next process must not ask for. A caller
+// persists both — Record.Params6 and Record.Declined6 — and rebuilds by
+// putting this value into the next Params6.Declined.
+//
+// The slice is deep-copied on the way out.
+func (mg *Manager) Declined6() ([]netip.Addr, bool) {
+	if !mg.v6() {
+		return nil, false
+	}
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return append([]netip.Addr(nil), mg.declined6...), true
 }
 
 // Config is the stateless configuration this manager last received, on the v6

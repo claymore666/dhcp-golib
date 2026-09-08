@@ -78,6 +78,29 @@ type Record struct {
 	// and a reader does not have to decide which one to believe.
 	Params6 *proto.Params6
 
+	// Declined6 is every address the v6 machine sent a Decline for, and it is
+	// beside Params6 rather than inside it BECAUSE THE TWO FIELDS ANSWER
+	// DIFFERENT QUESTIONS ABOUT THE SAME RUN.
+	//
+	// Params6 is what the run started from, and it is what makes the saved
+	// journal mean anything: proto.Replay6 rebuilds a machine from it and
+	// re-runs the entries. Declined6 is what the run ENDED with — the same
+	// kind of fact as Lease, Phase and ACD, which are all here for the same
+	// reason. The next process seeds proto.Params6.Declined from it.
+	//
+	// PUTTING IT INSIDE Params6 IS THE DEFECT THIS FIELD EXISTS TO ANSWER,
+	// and it was measured rather than argued: a run that hints an address, is
+	// offered it, finds a duplicate and declines then wrote a record whose own
+	// journal diverged from its own Params6 at entry 1 — the recorded Solicit
+	// carried the hint and a machine rebuilt with the address already declined
+	// did not send it. Both facts are true and they cannot share one field.
+	//
+	// It is empty on a v4 record. RFC 2131 has a Decline too, and the v4
+	// machine keeps no such set; if it ever does, that set is a second field
+	// and not a widening of this one, for the reason Params and Params6 are
+	// two fields.
+	Declined6 []netip.Addr
+
 	// Lease is the lease as the caller sees it, on the WALL CLOCK. Ring 1
 	// computes every deadline on a monotonic Instant whose epoch is
 	// meaningless to the next process; these are the same deadlines converted
@@ -432,8 +455,16 @@ type RecordEvent struct {
 	Identity []byte         `json:"identity,omitempty"`
 	Params   *proto.Params  `json:"params,omitempty"`
 	Params6  *proto.Params6 `json:"params6,omitempty"`
-	Deadline time.Time      `json:"deadline,omitzero"`
-	StepsRef string         `json:"steps_ref,omitempty"`
+
+	// Declined6 is the v6 machine's declined set, for Record.Declined6. It is
+	// written whenever it is non-empty; the set only ever grows, so an event
+	// that carries none leaves what the record already holds alone rather
+	// than clearing it — a caller that reads Manager.Declined6() before the
+	// first Decline and writes it at every event would otherwise erase the
+	// field with an empty slice one event later.
+	Declined6 []netip.Addr `json:"declined6,omitempty"`
+	Deadline  time.Time    `json:"deadline,omitzero"`
+	StepsRef  string       `json:"steps_ref,omitempty"`
 
 	// Kind, Lease, Reason and Note carry a manager event, for OpLease and
 	// OpLost.
@@ -950,6 +981,9 @@ func Fold(rec Record, ev RecordEvent) (Record, error) {
 		p := SnapshotParams6(*ev.Params6)
 		next.Params6 = &p
 	}
+	if len(ev.Declined6) > 0 {
+		next.Declined6 = append([]netip.Addr(nil), ev.Declined6...)
+	}
 	if ev.StepsRef != "" {
 		next.StepsRef = ev.StepsRef
 	}
@@ -1172,12 +1206,19 @@ func SnapshotParams(p proto.Params) proto.Params {
 // that aliased the caller's slices would say a configuration was sent that the
 // caller went on to change afterwards.
 //
-// The slices are the DUID, the Option Request list and the Resume, and the
-// Resume is the one that carries slices of its own — Clone is what reaches
-// them.
+// The slices are the DUID, the Option Request list, the declined set and the
+// Resume, and the Resume is the one that carries slices of its own — Clone is
+// what reaches them.
+//
+// Declined is copied here as well, and it is the SEED the run was configured
+// with rather than what the run declined: proto.Machine6.Params gives back
+// what it was handed, and Record.Declined6 is where what the run declined is
+// kept. A snapshot that aliased the caller's slice would say a different thing
+// after the caller's next write than it said when the record was written.
 func SnapshotParams6(p proto.Params6) proto.Params6 {
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
+	p.Declined = append([]netip.Addr(nil), p.Declined...)
 	p.Resume = p.Resume.Clone()
 	return p
 }

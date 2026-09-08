@@ -231,7 +231,8 @@ one byte of the function.
 
 **`SKIPPED`, the third verdict, and the only one that means "not measured".**
 The oracle is most of the run's wall clock and its subject is `verify.sh`
-itself, the manifest and `scripts/`. When those files are byte for byte what
+itself, the manifest, `scripts/` and — since D41 — the lane's own decision
+scripts under `.github/lane/`. When those files are byte for byte what
 they were the last time the oracle passed here, `verify-oracle` records
 SKIPPED, naming the hash and the file set it covers, and the verdict line still
 says PASS only because every row that was not skipped passed. `./verify.sh
@@ -303,11 +304,15 @@ verdict-without-gomod
 vet-violation
 ```
 
-The rule is: a scenario names a path inside its copy of the tree that is not
-`verify.sh`, not `verify.manifest.sh` and not under `scripts/` — directly, or
-through a helper it calls. `TestStaleAnchorBoundNamesWhatTheOracleDerives`
+The rule is: a scenario names a path inside its copy of the tree that the
+oracle's own hash does not cover — directly, or through a helper it calls.
+Which paths those are is not restated here or in Go: the test runs
+`./verify.sh --oracle-hash`, which prints the covered set, and treats anything
+outside it as the product. `TestStaleAnchorBoundNamesWhatTheOracleDerives`
 performs that derivation and fails when it and this block differ, so the list
-cannot go stale the way the sentence it replaces did. Its BOUND, stated rather
+cannot go stale the way the sentence it replaces did. Fixtures a scenario
+writes for itself live outside the copy, in `$SCRATCH`, precisely so that a
+file with no product behind it does not enter this list. Its BOUND, stated rather
 than argued away: the derivation is textual, so a scenario reaching the product
 through a glob, a `find`, or a tool it runs inside the copy — with no path
 written down — is invisible to it, and `suite-tests-disabled` and
@@ -333,28 +338,236 @@ down.
 ### In CI
 
 `.github/workflows/verify.yml`. Every push of every branch, and a manual
-`workflow_dispatch`, produces one run with one job, and the job is:
+`workflow_dispatch`, produces one run. Since D41 that run is two lanes with one
+arbiter between them, and every job of both runs on a GitHub-hosted
+`ubuntu-24.04` image:
 
-    ./verify.sh --oracle
+| job | what it runs | when |
+| --- | --- | --- |
+| `the oracle's domain` | `./verify.sh --oracle-hash` | always |
+| `oracle shard I` | `./scripts/test-verify.sh --shard I/N` | see below |
+| `the oracle verdict` | the shards, aggregated into one verdict | with the shards |
+| `the arbiter` | `./verify.sh` | always |
 
-byte for byte the command this document gives a developer, at the oracle's own
-default job count.
+**The rule the shape comes from.** Maintainer, D41: every check on the way into
+`dev` finishes well under five minutes; `main` and a release may take longer;
+there is no nightly, because the machine that would run one may be off. "If
+GitHub is as fast as the hosted runner, prefer GitHub" — and for everything
+except the oracle it is. `the arbiter` is the job `dev` is protected on, so it
+is the job that has to meet the rule, and the oracle is the one row that cannot.
 
-**Where it runs, and this is TEMPORARY.** Until 2026-09-06 the job ran on a
-GitHub-hosted two-core `ubuntu-24.04` image and took about ninety minutes:
-twelve runs measured, the four unmutated ones at the end of that period each
-between eighty-seven and ninety-one billed minutes (runs 34036002593,
-34040618756, 34045474164, 34050089381). Since D36 it runs on a standing
-self-hosted runner labelled
-`dhcp-golib`, on the same machine every ceiling, floor and timeout in
-`verify.sh` and `verify.manifest.sh` was derived on, where the same command
-takes about a seventh of that. MEASURED: `./verify.sh --oracle` wall to wall in
-a local copy at 8c87caf is 818s, and on the runner the branch's own green run
-34065275390 recorded 831s inside a job of 13m51s, checkout to verdict. The
-runner leaves that machine when a shared pool serves this repository;
-`runs-on` is the only line that has to move.
+**Measured, not asserted.** Three runs of `the arbiter` at the head of the
+branch that moved the lane here, each the whole arbiter with the oracle row
+honestly skipped, on `ubuntu-24.04` with `nproc` 4 and 16 GB — the job prints
+the core count rather than this page assuming it:
 
-**Why a job may run on a machine of ours at all, and what has to stay true.**
+| run | job start to verdict | `verify.sh` itself | `unit-suite` | `netns-suite` |
+| --- | --- | --- | --- | --- |
+| 34204814646 | 4m03s | 198s | 42s | 86s |
+| 34206597940 | 4m06s | 201s | 42s | 88s |
+| 34207096133 | 4m20s | 200s | 41s | 87s |
+
+So the rule is met with about forty seconds to spare, and the spare is where a
+reader should look first when it stops being met: roughly half of each job is
+`verify.sh` and the other half is the checkout, the toolchain and the three
+packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of
+ten shards whose longest ran 11m34s (run 34204814646) — which is why it is not
+in this table.
+
+**Which pushes wait for it, since the required check is downstream of it.**
+`the arbiter` is the job `dev` is protected on, and it carries
+`needs: [the oracle's domain, the oracle verdict]`. On a push where the oracle
+is not asked for, that need is SKIPPED and costs nothing: the check concludes
+in the four minutes the table measures, which is the case D41 is about and the
+case nearly every push into `dev` is. On a push where the oracle IS asked for
+— the release branch, a dispatch, or a tree whose arbiter no green run has
+published — the required check does not conclude until the matrix has: run
+34208460326 was created at 09:09:45Z and `the arbiter` concluded at 09:25:47Z,
+sixteen minutes later, of which the arbiter's own work was four.
+
+**And it must.** The alternative is a required check that concludes green while
+the matrix that proves this arbiter is still running, which is a merge button
+lit by a run that has not finished checking. The pushes that wait are exactly
+the pushes that changed the checking machinery — a change to `verify.sh`, to
+the manifest, to `scripts/`, to `.github/lane/` — or that are going to the
+release branch, and D41 says in as many words that `main` and release may take
+longer. A push that touches ring code only never waits. If that ever stops
+being true — if ordinary branch work starts paying sixteen minutes — the thing
+to look at is what put the arbiter's own files in the diff, not this
+dependency.
+
+**The ceilings were re-derived on this image, by the method each states**, and
+that is a thing to do on the machine that runs them rather than a formality:
+`SUITE_CEILING_SECONDS` moved 102 to 84 (twice the slowest of the three figures
+above, the rule unchanged; the old value came from a two-core hosted runner and
+was 2.4 times what this image draws), and `NETNS_CEILING_SECONDS` stayed at 140
+(the measured wall plus headroom that covers two more rounds of this row's
+largest increase; 140 minus 88 leaves 52s against a floor of 32s). The
+`ceiling-band` scenario's own band moved with them, 5..120 to 13..102, and its
+edges are now derived from this row's figures instead of being inherited from a
+ceiling two values ago.
+
+**When the oracle runs**, stated here and enforced in the workflow rather than
+the other way round:
+
+- a push to the release branch, always;
+- a `workflow_dispatch`, always;
+- any push whose tree reaches an arbiter that no green run has published.
+
+**There is no path filter, and that is the design.** "The oracle's own domain
+changed" is one fact, and `verify.sh` already derives it: the file set its skip
+stamp hashes, which is `verify.sh` itself, `verify.manifest.sh` and everything
+under `scripts/` and `.github/lane/`. `./verify.sh --oracle-hash` prints that
+set, its size and its hash and measures nothing; the lane asks, and keeps no
+list.
+
+**Why `.github/lane/` is in that set, since it was not at first.** Every
+refusal deciding whether a run may skip the oracle lives in those scripts —
+the hash comparison, the row roster, the single verdict line, the shard
+account. Review MEASURED what that cost while they sat outside the domain: the
+hash comparison changed to `elif false` accepted a justification naming a run
+that had proved a DIFFERENT arbiter, and the tree stayed shellcheck-clean, kept
+its unit suite green, printed the same domain hash and skipped the oracle. The
+property was removable in silence and for free. Two things answer it and both
+are needed: the scripts are hashed, so editing one is a domain change and the
+oracle has to run; and six oracle scenarios drive them, so the oracle running
+is a verdict about them rather than a re-run. Each of the six asserts on the
+refusal's own DIAGNOSIS and not on an exit status — with a refusal deleted
+`verdict.sh` still exits non-zero in a copy, because the API read below it has
+no token, so a scenario reading the exit status alone would have watched the
+reviewer's mutant pass. A `paths:` filter
+in the workflow would be the same fact derived a second time, and the looser
+derivation would decide which pushes are checked — so `internal/publication`
+refuses a `paths:` or `paths-ignore:` key anywhere in a workflow here, and
+demands that the lane still asks the question.
+
+Keying on the CONTENT rather than on a diff against a ref is stronger than
+"the diff touched `scripts/`", in the direction that matters: a change and its
+revert are the same tree, and the second one is already proved; a tree nobody
+has proved runs the oracle even if the push that produced it looks innocent.
+
+**What a skip rests on, and why it is not a file.** Locally the oracle's skip
+stamp is a per-clone cache: this tree ran this oracle, at this hash, and need
+not run it again. A hosted machine has no such history — every job starts fresh
+— so the sentence has to cross machines, and there were three ways to do it:
+
+- **an Actions cache keyed on the hash.** Cheap and wrong: a cache entry is
+  restorable by any branch that shares the key, the path is the same for every
+  branch, and the entry is a file whose provenance is its own name. Nothing
+  reads back who wrote it.
+- **an artifact carrying the stamp.** The same objection with a longer
+  download. A file that has to be trusted to be read is not evidence.
+- **nothing carried at all.** The stamp is COMPUTED in the job, from the
+  checked-out tree's own hash, and it is written only after the API says a
+  green `the oracle verdict` job published that hash. A run id is a thing the
+  API answers about; a file is not.
+
+The third is what the lane does. `.github/lane/oracle-skip.sh` asks
+`verify.sh --oracle-hash` for the hash, lists the unexpired artifacts named
+`oracle-pass-<hash>`, and puts each owning run through three conditions in
+`.github/lane/oracle-run-check.sh`: the artifact exists unexpired and that run
+owns it; the run is a run of this repository's `verify.yml`; and it holds a job
+named `the oracle verdict` whose conclusion is `success` — the JOB, because a
+run's own conclusion is null while it is in flight and can be `success` over an
+oracle that was skipped. Only then is the stamp written, and the write sits
+below that check and below nothing else. The publication sits below the
+aggregation in the same way: `the oracle verdict` uploads the name only on its
+own success, so **a red run leaves no name to look up.**
+
+The lane then runs `./verify.sh` — the arbiter, whole, with the one row the
+manifest declares skippable honestly SKIPPED — and the vacuity step asks the
+API *again*, over the hash the arbiter itself printed. Three fooling shapes die
+there: a justification naming a run that passed at a different hash (the
+arbiter's own row names the hash it skipped at, and the two are compared); a
+justification naming a run whose aggregation job was red or cancelled; and a
+justification naming a run that does not exist, or exists in another repository
+or another workflow. With no stamp at all, `./verify.sh` simply runs the whole
+oracle itself and the job hits its timeout — which is loud, and is the correct
+direction: **a lane that cannot earn its skip does not get one.**
+
+**The escapes, beside the claim.** Anybody who can push a branch here can also
+edit `.github/`, and `.github/` is not in the set the hash covers — so a
+workflow edited to publish the name is a deliberate forgery this does not
+close, exactly as the local stamp's own comment says of a stamp written by
+hand. What is closed is the accident and the cheap attempt: a red run, a run at
+another hash, a run that does not exist, an expired artifact, a run in another
+repository. The second escape is a deadline rather than a hole: the artifact
+expires after thirty days and the lookup demands an unexpired one, so an
+untouched arbiter is re-proved after thirty days rather than skipped forever.
+
+**The oracle matrix is one verdict.** The shards are cut from
+`MANIFEST_SCENARIOS` at run time — the count is the roster divided by the shard
+size, the membership is a round-robin over the same list — so a scenario added
+to the manifest lands in a shard with nothing in the workflow edited, and a
+shard that would be empty is a refusal rather than a job that quietly runs
+nothing. Each shard holds its own scenarios to the contracts
+`verify.manifest.sh` declares for them, through `scripts/oracle-contracts.sh` —
+the same comparison `verify.sh` makes, restricted to that shard — because a
+shard that only collected `RESULT` lines would be a count of names.
+`the oracle verdict` then refuses: a matrix result that is not `success`, a
+shard that left no account, a shard that named no members, a non-zero shard
+exit or contract status, an unaccounted or breached scenario, a shard that held
+fewer scenarios to their contracts than it ran, a scenario in two shards, a
+scenario in none, a shard that answered under its share of the oracle's own
+time floor, and a total that is not the roster's size.
+
+**One copy of the suite at a time inside a shard.** `ORACLE_JOBS` is pinned to
+one in the matrix, and that is the point of sharding rather than a concession
+to it: every ceiling in `verify.manifest.sh` is a wall clock derived with one
+copy of the suite running, and a shard running four copies at once would be
+measuring contention against a ceiling nothing derived under contention. The
+parallelism lives across jobs, where it cannot perturb a wall clock.
+
+**Three scans run beside the lane**, added when the repository went public
+(D37). Each runs on a GitHub-hosted image, in parallel with the arbiter, and
+none of them is a required check:
+
+| workflow | what it reads | when |
+| --- | --- | --- |
+| `codeql.yml` | the Go source, and the workflow files as the `actions` language | push and pull request on `dev` and `main`, and weekly |
+| `govulncheck.yml` | advisories reachable from code this module actually calls | every push, every pull request, and weekly |
+| `actionlint.yml` | the workflows, and shellcheck over every `run:` block in them | every push and every pull request |
+
+**They carry `pull_request` and the lane may not.** Two rules below decide
+that, not one. Rule Three is about the MACHINE: a job on a runner of OURS is
+never reachable from a fork's pull request, and these jobs run on GitHub's own
+images. Rule Five is about the TOKEN: `pull_request` gets a read-only one,
+which is why these jobs may carry it, while `pull_request_target` gets this
+repository's own and is refused outright, on any runner. The scans hold no
+secret, are granted `contents: read` — plus, for the CodeQL upload alone,
+`security-events: write` — and produce a report about the tree they were
+handed. There is nothing for a stranger's tree to take, no machine of ours for
+it to run on, and no token for it to reach. The arbiter is a different matter
+and keeps its `push`-only trigger, for the reason the section below gives.
+
+**The weekly schedule is the point of the vulnerability scan**, not a
+formality: an advisory publishes on its own schedule, and a scan that runs only
+on pushes learns nothing about a module nobody has pushed to this month. It is
+also the one thing here that may go red without a commit having changed
+anything, which is the correct direction — the tree did not move, the world
+did.
+
+**What is driven, and what is not.** `actionlint` is driven in its own job
+against a workflow planted outside the repository, carrying a trigger that is
+not an event GitHub honours: a linter with nothing to say fails that job rather
+than passing it. `govulncheck` is not driven that way and cannot easily be —
+this module has no dependency to make vulnerable — so what stands behind it is
+a measurement rather than a gate, taken by hand when the workflow was written:
+the same command over the same tree reported a reachable standard-library
+advisory under an older toolchain and nothing under the newest one. The version
+it scans is the one `setup-go` resolves from the `go` line in `go.mod`, so a
+red there says the newest toolchain a consumer can build this library with has
+a reachable advisory.
+
+**Why a job might run on a machine of ours, and what has to stay true if one
+ever does.** Since D41 no job here names a self-hosted label: the standing
+runner stays registered and idle, for the day something needs a machine of
+ours. The rule below is therefore VACUOUS over today's tree, and it is kept and
+published anyway, because it is a property of the workflow SET and not of the
+runner — the day a job needs that machine, this is the only thing between the
+machine and a stranger's tree, and a rule written on that day would be written
+by somebody who wanted the job to run.
+
 A pull request from a fork proposes the FORK's tree. A job that runs on a
 self-hosted runner and can be started by one is a stranger's code executing on
 that machine, with that machine's filesystem, network and whatever the runner's
@@ -371,19 +584,32 @@ who finds one here should treat it as a defect in this page.
 This lane satisfies it structurally rather than by configuration. Its triggers
 are `push` and `workflow_dispatch`, and it has no `pull_request` or
 `pull_request_target`. A fork's push is a push in the fork, and starts nothing
-here — so **a fork's pull request runs nothing in this repository at all**: no
-job, no step, no checkout of the proposed tree onto the runner. The lane also
+here — so **a fork's pull request never starts the arbiter**: no job of it, no
+step, no checkout of the proposed tree onto a machine of ours. The lane also
 holds no secret, so there is nothing for a job to carry off even if one could
 be reached.
 
-**Running a contributor's branch is therefore a deliberate act**, and that is
-the cost of the arrangement rather than a gap in it: somebody who can write
-here pushes the branch to this repository, or dispatches the workflow, having
-read the diff first. A pull request never buys itself a run.
+**It does start the three hosted scans, and that is deliberate** (D37). Until
+they arrived, no workflow here carried a fork trigger at all and the sentence
+above could be written about the repository rather than about the lane; it no
+longer can, and the distinction is the property itself. A fork's pull request
+runs CodeQL, `govulncheck` and `actionlint` — on GitHub's own images, with a
+read-only token, holding no secret, writing nothing but a report about the
+proposed tree. What it still cannot do is put that tree on a machine of ours,
+which is the thing the rule below is about.
+
+**Running a contributor's branch through the ARBITER is therefore a deliberate
+act**, and that is the cost of the arrangement rather than a gap in it:
+somebody who can write here pushes the branch to this repository, or dispatches
+the workflow, having read the diff first. A pull request never buys itself a
+verdict.
 
 **The observer is `internal/publication`**, in the unit suite, and it carries
-two rules. They are stated here once each, and both are true of the code as it
-is written rather than of a scan that has to be right about a workflow first.
+five rules. They are stated here once each. The first two are true of the
+bytes as they are written, and need no scan that has to be right about a
+workflow first; the other three read a stated subset of YAML and refuse what
+they cannot read, so what each of them supports is not a universal over every
+workflow that could be written but the claim its own refusal makes true.
 
 > **One.** The word `secrets` does not appear anywhere under `.github/`.
 
@@ -403,13 +629,24 @@ this lane holds no secret and needs none, so there is no innocent occurrence to
 tell from a guilty one.
 
 The boundary is a word boundary, and that is the whole of it: `secretsmanager`
-and `my_secrets_dir` are other words and are not refused. A workflow file
+and `my_secrets_dir` are other words and are not refused. **A hyphen is not a
+word character, so `secrets-scan` IS the word and is refused** — the two
+examples above are both permitted ones and would leave a reader expecting the
+hyphenated form to be permitted too, which is why this sentence is here.
+Anything that reads as `secrets` with a non-identifier character on each side
+is the word: a job named `secrets-scan`, a file called `secrets.txt`, a step
+that only mentions it. A workflow file
 reaches a repository secret in exactly two ways — the `secrets` context and the
 `secrets:` key of a call to a reusable workflow — and both are the bare word.
 Refusing an identifier that merely contains those letters would make this a
 rule about letters. The escape, stated beside the claim: the automatic token
 also arrives as `github.token`, which carries no such word; that one is bounded
-by `permissions:`, which this lane sets to `contents: read`.
+by `permissions:`, which this lane sets to `contents: read` for the checkout
+and `actions: read` for the API reads the skip is built on — listing a hash's
+publication, and asking what the run and the job behind it concluded. Neither
+grant can write anything, and `actions: read` is named here rather than left
+implicit because the entire skip mechanism rests on it: without it the lookup
+fails, and a lookup that fails refuses the skip.
 
 The domain is the directory rather than the repository, and that is not an
 exemption for the rest of the tree — it is the shape of the rule. A rule has to
@@ -422,7 +659,24 @@ and its cases moving together, with the argument for why that lane may hold
 one — and never by teaching the check to tell a harmless occurrence from a
 harmful one.**
 
-> **Two.** No job on a runner of ours is reachable from a fork's pull request.
+> **Two.** Every file under `.github/` is text, in UTF-8.
+
+This is the encoding half of rule One and it exists because the rule above is a
+pattern over bytes read as UTF-8. `secrets` written in UTF-16 is not that byte
+sequence, so the word rule reads such a file and finds nothing — measured, and
+driven in the test as a case that shows the word rule silent and this one red.
+No widening of the pattern can answer that; the encoding is closed instead.
+
+Two shapes are refused, by file name and byte offset: a byte sequence that is
+not valid UTF-8, and a NUL byte. The second is what makes a UTF-16 file without
+a byte-order mark the hard case — its ASCII half is code points below `0x80`
+and passes a validity check, while every second byte is a NUL that no text file
+here has a use for. The bound, beside the claim: this says the file is text,
+not that a reader understands what it says. A UTF-8 file using a homoglyph, or
+a word encoded inside a string, is text and is not refused; what is closed is
+the class where the bytes on disk are not the characters a reader sees.
+
+> **Three.** No job on a runner of ours is reachable from a fork's pull request.
 
 The scan reads the workflows over a STATED SUBSET of YAML rather than over
 YAML. Inside the subset it fails if the workflow SET puts a runner whose label
@@ -482,27 +736,113 @@ is satisfied by any one job that does — and a job whose runner went unread,
 beside a job carrying a `uses:`, is exactly what stayed invisible.
 
 Two things it deliberately does not do: it does not refuse `self-hosted` as
-such — this lane is self-hosted by decision and such a gate would be red on the
-day it was written — and it does not know who owns a runner, only that a label
-is not one GitHub hosts. Its remaining bound is stated in the file: a `uses:`
-edge it cannot follow — a workflow in another repository, or a local path
-naming no file here — is a failure whenever the calling workflow carries a fork
-trigger, not an omission.
+such — the lane was self-hosted by decision when the scan was written, and such
+a gate would have been red on that day and deleted rather than obeyed — and it
+does not know who owns a runner, only that a label is not one GitHub hosts. Its
+remaining bound is stated in the file: a `uses:` edge it cannot follow — a
+workflow in another repository, or a local path naming no file here — is a
+failure whenever the calling workflow carries a fork trigger, not an omission.
 
-Two consequences worth stating rather than discovering:
+**What keeps a vacuous row from being a check with one possible verdict.** The
+row applies the scan to the tree, and the tree gives it nothing to find. Its
+verdict is driven elsewhere: the scan's own cases put fork-reachable
+self-hosted pairs through the same functions, direct and inherited across a
+`uses:` edge, and demand the finding — as they do for every shape in the subset
+above, in both directions. The row is the application; the cases are the check. Since D37 that row is vacuous on one side only: the hosted scans carry
+`pull_request`, so the fork trigger is live in the set and a finding is one
+self-hosted label away rather than a label and a trigger away.
 
-- **One runner is one job at a time.** GitHub queues the rest. Nothing here
-  serialises anything and no bound was changed for it; `timeout-minutes`
-  counts execution, not the wait for a slot.
-- **The lane shares the machine with the people who read it.** A reviewer
-  running `./verify.sh --oracle` on that box is competing with the job for the
-  same cores, and both are timed against wall-clock ceilings. Measured, not
-  assumed: run 34067850871 ran the whole lane inside a reviewer's local
-  `--oracle` at the oracle's default job count, and both printed `VERDICT:
-  PASS`. The lane's `netns-suite` went from 90s to 106s against its 140s
-  ceiling and its `unit-suite` from 20s to 24s against 102s. Nothing broke and
-  no ceiling was moved to accommodate it; if contention ever does redden a row,
-  the answer is a scheduling rule, not a looser ceiling.
+> **Four.** No workflow grants a permission these checks do not need.
+
+A workflow reaches a repository secret through the word rule One refuses. It
+reaches a CREDENTIAL without that word through `permissions: id-token: write`,
+which mints an OIDC token for the job that a service outside this repository
+will trade for one of its own. Nothing under `.github/` would spell `secrets`
+and a job could still authenticate to something. Until D37 nothing here read a
+`permissions:` key at all.
+
+The rule is the COMPLEMENT rather than a list of dangerous grants, for the
+reason rule One is a word rather than a read: an enumeration of what is
+dangerous cannot be finished. **The permitted set is PAIRS and not names** —
+`contents: read` (the checkout), `actions: read` (the whole oracle skip rests
+on it) and `security-events: write` (the CodeQL upload, and the only grant here
+that writes anything at all). Every other scope is refused by name and line —
+`id-token` with its own sentence, because it is the one this rule was written
+for — and so is one of those three scopes at any other value, because
+`contents: write` is a token that can push to this repository and it is reached
+with no `secrets` word anywhere and no `id-token`. That the set is pairs is
+this page's oldest claim about it and was for one round not what the code did:
+the reader tested the NAME and let the value through, which review round 1 of
+D37 measured with a plant. A value that is not `read`, `write` or `none` is
+refused too, and so is a `permissions:` written in a form this reader does not
+enumerate: `read-all`, `write-all`, an expression, a block spread over lines it
+does not join. A scope set to `none` grants nothing and is permitted whatever
+its name, because a workflow saying it wants no token is saying the right
+thing.
+
+Two things it does that are worth knowing. It demands that every workflow
+declare a top-level `permissions:` key, because a workflow that declares none
+takes whatever this repository's default is — a grant that lives outside the
+tree, which no rule written in the tree can be about. And it strips comments
+first, unlike rule One: a permission is a grant or it is prose, and a page that
+may not name `id-token: write` in a comment is a page that cannot explain why
+it refuses it.
+
+> **Five.** No workflow here is triggered by `pull_request_target`.
+
+The two events a fork's pull request can start are not one thing, and rules
+Three and Five are the two halves of that. Rule Three is about the MACHINE and
+treats them together, correctly: a job on a runner of ours is refused under
+either. This rule is about the TOKEN, and there the two are opposites.
+
+`pull_request` runs the fork's tree on GitHub's image with a read-only token
+and no reach into this repository. That is why the three scans may carry it,
+and it is the whole of why a hosted job on a fork trigger is not the thing rule
+Three refuses.
+
+`pull_request_target` runs the BASE branch's workflow definition — this
+repository's own file, not the fork's — with this repository's own token and
+whatever `permissions:` grants it. The proposed tree is then one `ref:` away in
+a checkout step, and a stranger's code is running beside a writable token. It
+is a real event with real uses, and this repository has none of them: every
+check here reads a tree and writes a verdict about it, and not one needs to act
+on this repository on somebody else's behalf.
+
+So the refusal is absolute rather than a judgement about how a given workflow
+uses the trigger. That is deliberate. A rule that permitted the trigger and
+refused a dangerous checkout beside it would need a reader that is right about
+what a step does, which is the enumeration rule One exists not to attempt.
+Refusing the trigger needs no such reader. The escape, stated beside the claim:
+a workflow that genuinely needed the event would widen this rule and this
+paragraph together, with the argument for what it acts on.
+
+**The page and the security page are held to each other.** The count above and
+each rule's sentence are quoted in `SECURITY.md`, and a test reads both files
+and refuses a disagreement — the count, the ordinals running One to Five with
+no gap, and every sentence verbatim. It was written because this page said four
+rules while `SECURITY.md` told a reporter the workflows are held to two, in the
+same commit, with nothing red. What it does NOT check is that either page is
+true of the code: the rules are prose headings on one side and tests on the
+other, and no instrument derives one population from the other.
+
+**What a hosted machine closes, and what it does not.** Every job starts on a
+fresh image, so the things a standing runner carried between jobs are gone:
+warm Go caches nothing read back, a writable `~/.config/go/env` any job could
+have edited, a stamp left in a work directory, and a queue of one job at a time
+where a reviewer's own `--oracle` competed with the lane for the same cores
+(run 34067850871 cost `netns-suite` 16s of its margin that way). What a hosted
+machine reopens instead is a shared store that outlives a job: the Actions
+cache and the artifact store are reachable by every branch, which is exactly
+why the oracle skip carries nothing through either of them and asks the API
+about a run instead, and why `cache: false` is set on every `setup-go` here.
+
+**Contention is now recorded rather than inferred.** A hosted image is not a
+machine with nobody else on it — it is a virtual machine whose host has other
+tenants — so the arbiter job prints its core count, its memory and its load
+average before AND after the arbiter, into the same artefact as the row times.
+Twice, because a figure taken once cannot say whether the load arrived during
+the measurement. That is what a ceiling row's first red is read against: with
+no load figure, the first red of that class reads as drift in the suite.
 
 **The job's verdict IS the arbiter's verdict.** Green means `verify.sh` printed
 `VERDICT: PASS` over every row `verify.manifest.sh` declares. Anything else is
@@ -511,24 +851,36 @@ the job's own timeout. There is no branch filter and no path filter, because an
 absent run is not a green run and nothing about a commit should be able to
 decide that this job does not apply to it.
 
-**Always `--oracle`, and the last step is why that is not enough on its own.**
-The skip is a per-clone local cache. A standing runner is exactly the machine
-that could carry one from a previous job, so the flag stops being a formality
-here — and the checkout step's own clean removes the stamp before it can
-matter. What the flag removes is the shape where a `VERDICT: PASS` line reads
-the same whether the oracle ran or was skipped. A job reading only the exit
-status, or only that line, cannot tell those two apart, nor either of them from
-an arbiter that printed nothing at all.
+**A `VERDICT: PASS` line reads the same whether the oracle ran or was
+skipped**, and a job reading only the exit status, or only that line, cannot
+tell those two apart — nor either of them from an arbiter that printed nothing
+at all. That is what the last step is for, and since D41 it has one more thing
+to tell apart: a skip that rests on a run from a skip that rests on a file
+somebody wrote.
 
-So the job's last step refuses an empty output; requires a `PASS` row for
+So `.github/lane/verdict.sh` refuses an empty output; requires a `PASS` row for
 **every** name in `MANIFEST_ROWS`, sourced from the manifest while the job
-runs, and refuses any row that recorded something else; requires the
-`verify-oracle` row to carry the oracle's own account over the scenario count
-the manifest declares; and requires one verdict line naming the manifest's row
-count. What that step is not is a second manifest: it types no name and no
-number of its own, and an edit that shrinks the roster and the counts together
-still has to get past `manifest_check` and `internal/manifest`, where CI adds
-no layer.
+runs, allowing SKIPPED only for a row `MANIFEST_SKIPPABLE_ROWS` declares
+skippable, and refusing any declared row that recorded a FAIL; requires the
+`verify-oracle` row either to carry the oracle's own account over the scenario
+count the manifest declares, or, if it is SKIPPED, to name its own hash and its
+own count and to have a justification whose hash is the one the arbiter printed;
+requires one verdict line naming the manifest's row count; and only then asks
+the API a second time about the run that skip rests on. What that step is not is
+a second manifest: it types no name and no number of its own, and an edit that
+shrinks the roster and the counts together still has to get past
+`manifest_check` and `internal/manifest`, where CI adds no layer.
+
+**The anchor is the margin**, and it is why every pattern in that step is
+anchored on a row name at column zero: a SKIPPED oracle row's own detail
+CONTAINS the string `ORACLE PASS:`, because it quotes what the stamp recorded.
+A grep for that token anywhere in the output accepts a skipped oracle, which is
+the check the D35 design would have shipped.
+
+**It is a script and not a `run:` block**, and so are the lane's other
+decisions — the domain, the shard, the skip, the aggregation. Two reasons that
+are the same reason: the `shellcheck` row lints a script and cannot lint a step
+body, and an oracle scenario can drive a script and cannot drive a step.
 
 **The merge rule.** A green run at the head SHA being merged, plus the
 reviewer's CLEAR. The reviewer no longer re-runs the oracle on their own box.
@@ -537,26 +889,29 @@ branch and leaves its run behind, and an absent run is not among the things it
 accepts. A cancelled run at that SHA is neither green nor red; it is not a
 verdict, and the green run is the one to read.
 
-**The bound, and it has changed shape.** While the lane ran on a hosted image,
-the honest statement was that two executions of one script are not one
-execution: the runner was not the box the ceilings, timeouts and floors were
-measured on, and its differences changed a verdict **four** times. MEASURED,
-and each cause named with the runs that show it:
+**The bound, and it is back.** Two executions of one script are not one
+execution: the machine the lane runs on is not the box a developer runs
+`./verify.sh` on, and its differences have changed a verdict four times.
+MEASURED on the hosted images of 2026-08 and 2026-09, each cause named with the
+runs that show it — the list is kept because every one of these is a hosted
+image again:
 
 - **Namespaces.** The image restricted unprivileged user namespaces through
   AppArmor. Left at its default the namespaced child STARTED — the namespace
   was created — and then every netlink call inside it was refused, so `ip link
   add` answered `Operation not permitted` and the `netns-suite` row went red
-  (run 33992151078). The workflow cleared that with one sysctl. That step is
-  gone with the image: this kernel has no such knob, and the netns rows have
-  run unprivileged on this machine since 2026-08-29.
+  (run 33992151078). `.github/lane/prepare.sh` clears it with one sysctl on
+  every hosted job, and records the fact where the knob does not exist rather
+  than assuming its absence.
 - **Cores, against a ceiling derived elsewhere.** The pure suite's ceiling was
   measured on a box with many times that runner's two cores. With the oracle
   running two copies at once, the root run's suite and the copies' suites all
   ran past the ceiling and nothing else was wrong with them (runs 33992151078,
-  34008425787). So the hosted lane ran one copy at a time and pinned
-  `ORACLE_JOBS`. That pin is gone too: this is the machine the ceiling was
-  derived on.
+  34008425787). The matrix answers it by running one copy per shard and putting
+  the parallelism across jobs, and the ceilings themselves are re-derived on the
+  image that runs them; `verify.sh` states each derivation beside its number
+  and `verify.manifest.sh` pins the value, so moving one is an edit in two
+  files.
 - **Scheduling, and this is the one that found a real defect.** Two cores made
   `TestSquatterWaitReportsTheFramesThatArriveDuringIt` deadlock: the waiter it
   drives returned through its match arm without reporting the frame that ended
@@ -575,13 +930,15 @@ and each cause named with the runs that show it:
   strongest instance of the whole paragraph, and it went unnamed here for a
   day — the fourth cause the sentence above used to undercount.
 
-**What that bound is now.** There is one machine. The lane's ceilings and the
-lane's runs describe the same hardware, so they can no longer disagree — and
-therefore can no longer warn. The two-measurement shape returns the day the
-runner moves off this box, and every paragraph that rests on it (the netns
-ceiling's closing bound in `verify.sh`, the suite ceiling's) says so where it
-stands. A green run and a green local arbiter are now one measurement taken
-twice, which is a weaker thing than what this section used to be able to claim.
+**What that bound is now.** Two machines again, which is the useful state: a
+developer's box and a hosted image are different hardware, and a ceiling that
+one meets and the other does not is a thing somebody has to look at rather than
+a thing nobody can see. The first two causes above are handled by the lane
+rather than by luck — `.github/lane/prepare.sh` clears the namespace
+restriction where the knob exists and installs the three tools the arbiter
+shells out to, and the shards run one copy of the suite at a time — and the
+last two were real defects in the library that only a machine with contention
+could show. A green run and a green local arbiter are two measurements again.
 
 
 ### The two gates

@@ -312,3 +312,315 @@ func TestAnAddressDeclinedWithNoServerToTellIsStillNotHintedAgain(t *testing.T) 
 		t.Fatalf("the restarted Solicit asks for %v, an address another node answers for", got)
 	}
 }
+
+// ------------------------------------------- the three after-bind paths --
+
+// declineAfterBound drives a machine that HOLDS the lease through ev — the
+// event that says another node answers for its address — the Decline exchange
+// §18.2.8 runs, and the restart, and returns the Solicit that restart sent.
+//
+// It is a second driver beside declineOnce rather than a parameter on it,
+// because the two enter the Decline from different histories and the
+// difference is the whole point of these three cases: declineOnce's machine
+// has never held a lease and is in State6DAD with an address merely pending,
+// while this one is BOUND or renewing and loses what it holds. Those are
+// machine6.go's three other calls into declineAll, and until this round the
+// declined-hint property was driven from the pre-bind one alone.
+func declineAfterBound(t *testing.T, m *Machine6, ev Event, addr string, base int64) *wire.MessageV6 {
+	t.Helper()
+	if _, held := m.Lease(); !held {
+		t.Fatalf("the machine holds no lease before %s, so this drive would enter the Decline from the pre-bind path that is already covered", ev.Kind)
+	}
+	s, acts := m.Step(at(base), 5, ev)
+	if s != State6DAD {
+		t.Fatalf("%s left the machine in %s, want %s (declineAll runs the Decline from there)", ev.Kind, s, State6DAD)
+	}
+	if _, held := m.Lease(); held {
+		t.Fatalf("the machine still holds the lease it is declining after %s", ev.Kind)
+	}
+	dec := mustSendV6(t, acts, wire.MsgDecline6)
+	got := declinedAddrs(t, dec)
+	if len(got) != 1 || got[0].Addr != addr6(addr) {
+		t.Fatalf("the Decline named %v, want %s", got, addr)
+	}
+	s, _ = m.Step(at(base+1), 6, receivedV6(t, wire.MsgReply, dec.XID,
+		optClientID(capDUID), optServerID(testServerDUID), optStatus(wire.StatusSuccess)))
+	if s != State6Init {
+		t.Fatalf("the Reply to the Decline left the machine in %s, want %s (§18.2.8 restarts discovery)", s, State6Init)
+	}
+	_, acts = m.Step(at(base+2), capXIDSolicit, TimerFired(Timer6Delay))
+	return mustSendV6(t, acts, wire.MsgSolicit)
+}
+
+// boundOnItsHint takes a machine to BOUND on the address the caller asked for
+// and asserts that it got there, so a case below cannot pass by never having
+// bound at all.
+func boundOnItsHint(t *testing.T) *Machine6 {
+	t.Helper()
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+	m := bind6(t, p, hintedAddr)
+	l, held := m.Lease()
+	if !held || len(l.Addrs) != 1 || l.Addrs[0].Addr != addr6(hintedAddr) {
+		t.Fatalf("the machine holds %v (held=%v), want a lease on the hinted %s", l.Addrs, held, hintedAddr)
+	}
+	return m
+}
+
+// TestAnAddressWithdrawnUnderABoundLeaseIsNotHintedAgain is machine6.go's
+// EvAddressLost arm in BOUND, and it is the shape the plugin actually pins.
+//
+// The library's other Decline cases meet the squatter BEFORE the address is
+// bound: the fixture squats first and the client's own duplicate check finds
+// it. What a container meets is the other order — it holds the address, and
+// something else on the link takes it afterwards. Lead ruling 8 says the
+// withdrawal is evidence that somebody else has it, and §18.2.8's Decline is
+// what the client sends; the address is then exactly as unusable as one found
+// duplicate before binding, and the recovery that asks for it again is the
+// same non-converging loop.
+//
+// THE ASSERTION IS ON THE RESTARTED SOLICIT'S BYTES, for the reason
+// TestTheSolicitAfterADeclineDoesNotAskForTheDeclinedAddress gives.
+func TestAnAddressWithdrawnUnderABoundLeaseIsNotHintedAgain(t *testing.T) {
+	m := boundOnItsHint(t)
+	next := declineAfterBound(t, m, Simple(EvAddressLost), hintedAddr, 6)
+	if got := solicitHintOf(t, next); got.IsValid() {
+		t.Fatalf("the Solicit that restarts discovery after a BOUND address was withdrawn still asks for %v, "+
+			"the address this machine has just declined", got)
+	}
+}
+
+// TestADuplicateFoundUnderABoundLeaseIsNotHintedAgain is the EvDADResult arm
+// in BOUND: the chassis re-runs duplicate address detection on an address that
+// is already installed and reports a duplicate.
+//
+// It is a separate case from the withdrawal above and not a table row, because
+// the two arms carry different journal text and reach declineAll through
+// different lines; a table would pass with one arm calling the other.
+func TestADuplicateFoundUnderABoundLeaseIsNotHintedAgain(t *testing.T) {
+	m := boundOnItsHint(t)
+	next := declineAfterBound(t, m, DADResult(addr6(hintedAddr), true), hintedAddr, 6)
+	if got := solicitHintOf(t, next); got.IsValid() {
+		t.Fatalf("the Solicit that restarts discovery after a duplicate under a bound lease still asks for %v", got)
+	}
+}
+
+// TestAnAddressWithdrawnWhileRenewingIsNotHintedAgain is the third path,
+// machine6.go's EvAddressLost arm in the renewal states.
+//
+// A Renew is in flight when the address goes away, so the machine is neither
+// in BOUND nor in State6DAD; it still holds the lease, and the Decline still
+// has to record what it gave back.
+func TestAnAddressWithdrawnWhileRenewingIsNotHintedAgain(t *testing.T) {
+	m := boundOnItsHint(t)
+	if s, _ := m.Step(at(5), 0, TimerFired(Timer6Renew)); s != State6Renewing {
+		t.Fatalf("T1 firing left the machine in %s, want %s", s, State6Renewing)
+	}
+	next := declineAfterBound(t, m, Simple(EvAddressLost), hintedAddr, 6)
+	if got := solicitHintOf(t, next); got.IsValid() {
+		t.Fatalf("the Solicit that restarts discovery after an address was withdrawn while renewing still asks for %v", got)
+	}
+}
+
+// TestADeclineUnderABoundLeaseLeavesAnUnrelatedHintAlone is the preservation
+// control for all three cases above.
+//
+// The server put the client on an address other than the one it asked for; the
+// node that takes THAT address away says nothing about the caller's
+// preference, and a machine that dropped the hint here would give up an
+// address no node on this link has ever answered for.
+func TestADeclineUnderABoundLeaseLeavesAnUnrelatedHintAlone(t *testing.T) {
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+	m := bind6(t, p, substituteAll)
+
+	next := declineAfterBound(t, m, Simple(EvAddressLost), substituteAll, 6)
+	if got := solicitHintOf(t, next); got != addr6(hintedAddr) {
+		t.Fatalf("after the substituted address %s was withdrawn under a bound lease the Solicit hints %v, want the caller's %s",
+			substituteAll, got, hintedAddr)
+	}
+}
+
+// ------------------------------------------------- across a restart --
+
+// TestAResumedMachineDoesNotAskForAnAddressItDeclined is the process boundary,
+// and it is the half of item 1 that did not survive a restart.
+//
+// The declined set lived on the machine and died with it, while Params6.Hint
+// is exactly the field a caller persists — lease.SnapshotParams6 copies a
+// Params6, Hint included, into the record a rebuild is made from. So a client
+// that declined its hint, was restarted and was rebuilt from that record asked
+// for the same address again on its FIRST Solicit: §18.2.10.1's recovery
+// walking back into the address it gave back, one process boundary later, on
+// a link where the other node is still there.
+//
+// THE SET IS TAKEN FROM THE MACHINE AND NOT WRITTEN BY THIS TEST. A case that
+// set Declined by hand would pass against a machine that never reports what it
+// declined, which is the defect.
+//
+// A RESTART IS TWO HALVES, and this case asserts both and their order. Params()
+// is what the run RAN WITH — the seed, so that a journal recorded by this run
+// replays against it — and Declined() is what the run ACCUMULATED. The caller
+// persists both and puts the second into the first's Declined on the way back
+// in. The first half alone is asserted here to be NOT ENOUGH, because that is
+// the whole reason the second accessor exists.
+func TestAResumedMachineDoesNotAskForAnAddressItDeclined(t *testing.T) {
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+
+	m, _ := solicit6(t, p)
+	offerAndReply(t, m, hintedAddr, 2)
+	if got := solicitHintOf(t, declineOnce(t, m, hintedAddr, 4)); got.IsValid() {
+		t.Fatalf("the machine that did the declining still hints %v", got)
+	}
+
+	saved := m.Params()
+	if len(saved.Declined) != 0 {
+		t.Fatalf("Params() reports Declined=%v; it is the SEED this machine was configured with, "+
+			"and a run's own journal replays against it", saved.Declined)
+	}
+	run := m.Declined()
+	if !containsAddr(run, addr6(hintedAddr)) {
+		t.Fatalf("Declined() reports %v after a Decline of %s; a caller has nothing to persist", run, hintedAddr)
+	}
+
+	// The parameters WITHOUT the accumulated set are not a restart: this is
+	// the cost of the split, stated rather than discovered.
+	if _, half := solicit6(t, saved); solicitHintOf(t, half) != addr6(hintedAddr) {
+		t.Fatalf("a machine rebuilt from the parameters alone does not re-hint %s; "+
+			"then Declined() is carrying nothing and this case proves nothing", hintedAddr)
+	}
+
+	saved.Declined = run
+	next, first := solicit6(t, saved)
+	if got := solicitHintOf(t, first); got.IsValid() {
+		t.Fatalf("the machine rebuilt from the saved parameters asks for %v on its first Solicit, "+
+			"the address the previous run declined", got)
+	}
+	if got := next.Declined(); !containsAddr(got, addr6(hintedAddr)) {
+		t.Fatalf("the rebuilt machine reports Declined=%v; the set must survive one more restart too", got)
+	}
+	if got := next.Params().Declined; !containsAddr(got, addr6(hintedAddr)) {
+		t.Fatalf("the rebuilt machine's Params() reports Declined=%v; the seed it was CONFIGURED with "+
+			"carried the address, so it must read back", got)
+	}
+}
+
+// TestARestartWithNothingDeclinedStillHints is the preservation control for
+// the case above: the ordinary restart, where the previous run declined
+// nothing and the whole point of persisting a Hint is that it comes back.
+func TestARestartWithNothingDeclinedStillHints(t *testing.T) {
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+
+	m := bind6(t, p, hintedAddr)
+	saved := m.Params()
+	saved.Declined = m.Declined()
+	if len(saved.Declined) != 0 {
+		t.Fatalf("a machine that declined nothing reports Declined=%v", saved.Declined)
+	}
+	_, first := solicit6(t, saved)
+	if got := solicitHintOf(t, first); got != addr6(hintedAddr) {
+		t.Fatalf("the restarted machine hints %v, want the caller's %s (§18.2.1)", got, hintedAddr)
+	}
+}
+
+// TestTheDeclinedSetHandedOutIsNotTheMachinesOwn is the aliasing control.
+//
+// Declined() hands the set to a caller that is about to persist it, and a
+// caller that then sorted, trimmed or appended to that slice would be editing
+// the set the machine reads at its next Solicit.
+func TestTheDeclinedSetHandedOutIsNotTheMachinesOwn(t *testing.T) {
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+
+	m, _ := solicit6(t, p)
+	offerAndReply(t, m, hintedAddr, 2)
+	declineOnce(t, m, hintedAddr, 4)
+
+	got := m.Declined()
+	if len(got) != 1 {
+		t.Fatalf("Declined() reports %v, want the one declined address", got)
+	}
+	got[0] = addr6(substituteAll)
+
+	offerAndReply(t, m, substituteAll, 8)
+	s, acts := m.Step(at(10), 7, DADResult(addr6(substituteAll), false))
+	if s != State6Bound {
+		t.Fatalf("a clean DAD verdict left the machine in %s", s)
+	}
+	_ = acts
+	if again := m.Declined(); len(again) != 1 || again[0] != addr6(hintedAddr) {
+		t.Fatalf("the machine's set is %v after a caller wrote into the slice Declined() returned; want the declined %s", again, hintedAddr)
+	}
+}
+
+// TestTheDeclinedSetSurvivesSeveralRebuilds is the DURABLE bound, stated as a
+// case rather than as a paragraph.
+//
+// Round 1 made the set outlive the process, and a set that outlives the
+// process needs a size argument that outlives it too. Machine6.declined's own
+// bound — "a machine can only decline what it was offered" — is an argument
+// about one process and stops being one the moment the caller writes the set
+// back. The durable bound is the one the field's comment now states: one entry
+// per DISTINCT address the link has ever had answered for by another node,
+// never trimmed, and the caller owns it.
+//
+// Both halves are here, because only the pair is a bound. FOUR CYCLES: three
+// distinct addresses and one repeat. The set must grow by exactly one for each
+// distinct address and NOT AT ALL for the repeat — a set that grew on the
+// repeat would be bounded by the number of Declines, which is unbounded on
+// exactly the link this field exists for (sixteen rounds in sixteen seconds,
+// run 34058213252).
+//
+// The caller here is the one the library documents: persist Params6, persist
+// Declined(), put the second into the first on the way back in.
+func TestTheDeclinedSetSurvivesSeveralRebuilds(t *testing.T) {
+	const third = "fd00:99::215"
+
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+
+	for _, cycle := range []struct {
+		declines string
+		want     []string
+	}{
+		{hintedAddr, []string{hintedAddr}},
+		{substituteAll, []string{hintedAddr, substituteAll}},
+		// The repeat. A rotating pool hands the same squatted address back
+		// on a later run, and the set must not count it twice.
+		{substituteAll, []string{hintedAddr, substituteAll}},
+		{third, []string{hintedAddr, substituteAll, third}},
+	} {
+		t.Run("declines "+cycle.declines, func(t *testing.T) {
+			// The seed is what the previous cycle ended with, and it reads
+			// back out of Params() unchanged: that is the replay contract,
+			// checked once per cycle rather than assumed.
+			m, _ := solicit6(t, p)
+			if got := m.Params().Declined; len(got) != len(p.Declined) {
+				t.Fatalf("Params() reports Declined=%v, want the %d-entry seed %v", got, len(p.Declined), p.Declined)
+			}
+
+			offerAndReply(t, m, cycle.declines, 2)
+			declineOnce(t, m, cycle.declines, 4)
+
+			got := m.Declined()
+			if len(got) != len(cycle.want) {
+				t.Fatalf("after declining %s the set is %v, want %d entries %v",
+					cycle.declines, got, len(cycle.want), cycle.want)
+			}
+			for _, w := range cycle.want {
+				if !containsAddr(got, addr6(w)) {
+					t.Fatalf("the set is %v after declining %s; %s is missing", got, cycle.declines, w)
+				}
+			}
+			p.Declined = got
+		})
+	}
+
+	// The set the caller ends holding is the one the next process is seeded
+	// from, and nothing in the library trimmed it on the way through.
+	if len(p.Declined) != 3 {
+		t.Fatalf("four cycles over three distinct addresses left %v", p.Declined)
+	}
+}
