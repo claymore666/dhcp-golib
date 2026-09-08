@@ -160,7 +160,10 @@ const (
 //     2026-09-06: a link deleted one second into the bound still produced
 //     "(0 tentative, 0 failed duplicate address detection) after waiting 4.0s"
 //     at 4.013 s, because the loop below re-reads addresses and never re-reads
-//     the link.
+//     the link. That is a claim about this code and it has an observer:
+//     TestTheLinkLocalWaitDoesNotNoticeAnInterfaceThatWentAway hands the wait
+//     an index no interface holds and asserts it goes on asking, so adding the
+//     per-poll check below turns this paragraph red instead of stale.
 //
 // A per-poll existence check would close the second and cost a second dump on
 // every one of the two hundred ticks; it is stated instead, because the case is
@@ -194,10 +197,12 @@ const (
 // Solicits and time out with nothing to point at.
 //
 // So the address is READ, and wire.LinkLocalFromMAC stays what its own comment
-// says it is — the fixture's way of predicting what the kernel will do. The
-// netns proof asserts the two agree there, which is what keeps this from being
-// an unexamined divergence: the derivation is checked against the kernel in
-// the one environment where both are available.
+// says it is — the fixture's way of predicting what the kernel will do. The two
+// are asserted to agree where both are available:
+// TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed gives a
+// veth pair a fixed hardware address in a network namespace and compares the
+// address the kernel forms with the derivation, on both ends of the link. That
+// is what keeps this from being an unexamined divergence.
 //
 // TENTATIVE AND DAD-FAILED ADDRESSES ARE REFUSED. RFC 4862 section 5.4: "An
 // address on which the Duplicate Address Detection procedure is applied is
@@ -207,6 +212,17 @@ const (
 // assigned, which is what section 5.4's whole procedure exists to prevent, and
 // ifa_flags is where Linux says so — MEASURED: a freshly-upped veth reads flag
 // 0xc0 (permanent | tentative) and settles to 0x80 about a second later.
+//
+// THE TWO ARMS BELOW ARE NOT MUTUALLY EXCLUSIVE, SO THEIR ORDER IS THE
+// BEHAVIOUR. Linux does not clear IFA_F_TENTATIVE when it finds a duplicate;
+// it adds IFA_F_DADFAILED to an address that is still tentative, because an
+// address that lost the check never finished it. MEASURED 2026-09-08 on a real
+// collision on a real link — two veth ends given one hardware address, one of
+// them defending — the byte is 0xc8: permanent, tentative AND failed. Testing
+// DADFAILED first is therefore what makes such an address count as one that
+// will never settle rather than one worth waiting four seconds for, and
+// TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed drives it
+// against the kernel's own byte rather than a fabricated one.
 //
 // BOUND: the namespace it reports is the namespace of the thread this
 // goroutine is running on, and a goroutine that is not locked to its thread
