@@ -152,6 +152,13 @@ jobs:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # THE ATTEMPT IS IN THE NAME on both sides of this pair, and the stated
+      # consequence is that "re-run failed jobs" can never aggregate: attempt 2
+      # re-runs only the shards that failed, so only their accounts carry
+      # attempt 2 and the aggregation refuses a roster it cannot complete. That
+      # is the fail-closed direction — a partial re-run must not produce a
+      # verdict over shards nobody re-ran — and the remedy is to re-run the
+      # whole run, which is why the publication above may overwrite.
       - name: Collect every shard's account
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -178,6 +185,16 @@ jobs:
       # and the lookup demands an unexpired one, so an untouched arbiter is
       # re-proved after thirty days rather than skipped forever. That is the
       # fail-closed direction and it is deliberate.
+      #
+      # `overwrite`, and it is why this name alone carries no run attempt while
+      # the shard names above do. The name IS the key: the lookup is an exact
+      # `?name=oracle-pass-<hash>` query, so an attempt number in it would make
+      # the key unguessable and force a prefix scan, which is a weaker lookup
+      # than the one the design rests on. Re-running a green run whole would
+      # then collide on the name and fail a job that had just done the work
+      # correctly. Replacing is the honest reading: the run publishing is the
+      # run that just aggregated a green matrix at this hash, which is exactly
+      # what the previous attempt's artefact said.
       - name: Publish that this arbiter's oracle passed
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -186,6 +203,7 @@ jobs:
             oracle-matrix.txt
             shards
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
 
   verify:

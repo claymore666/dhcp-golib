@@ -322,9 +322,14 @@ to be typed into the invocation you are reading.
    ceiling lowered in the copy must FAIL, and the same suite against the
    shipped ceiling must PASS — that second one is the control, without which
    the first proves only that a busy loop breaks something), and checks the
-   declared value is inside 5..120. The band check is STRUCTURAL and weaker
+   declared value is inside 13..102. The band check is STRUCTURAL and weaker
    than the rest; it kills "delete the line" and "raise it to 6000" and nothing
-   subtler.
+   subtler. Those edges are derived, in the scenario, from the figures this row
+   draws on the machine the lane runs on; the two pages that state them are
+   held to what the scenario declares by
+   `TestTheStatedCeilingBandIsTheOneTheOracleChecks` — this sentence named the
+   band the round before last for a round after the band had moved, which is
+   what that answers.
 3. **`--inner` failing to SUPPRESS the oracle.** The other half — that the
    unflagged invocation still runs it — is driven by the stub scenario above.
    Suppression is asserted (the clean-copy scenario requires the inner run to

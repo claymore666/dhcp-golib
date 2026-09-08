@@ -332,7 +332,13 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #
 #   internal/publication/workflows_test.go (1)  TheForbiddenWordIsRefusedIn
 #     EverySpellingGitHubHonours
-MIN_DECLARED_TESTS=620
+#
+# D41 ROUND 2: 620 -> 622, and both are read-backs of a number that used to be
+# stated in prose and checked by nobody:
+#
+#   internal/manifest/manifest_test.go (2)  TheStatedPopulationIsWhatThe
+#     SweepCounts, TheStatedCeilingBandIsTheOneTheOracleChecks
+MIN_DECLARED_TESTS=622
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -492,9 +498,41 @@ SELF_DRIVE_SURVIVES_N=5
 # bare numbers to arrive with nothing red — which is the whole thing this
 # number exists to refuse. Both edges now name the number to write, so a
 # population that FELL is a one-line edit here rather than a silent widening,
-# and a population that ROSE is the same one-line edit. RE-MEASURED after this
-# round's rewrite of "In CI": 64.
-DOC_NUMBER_CEILING=69
+# and a population that ROSE is the same one-line edit.
+#
+# 2026-09-08, D41 round 2, and this is the row review MEASURED on the previous
+# head: the sentence that used to end this paragraph — RE-MEASURED after this
+# round's rewrite of "In CI": 64 — was the PREVIOUS round's measurement left
+# standing above a ceiling this round had moved. With DOC_NUMBER_MARGIN=0 the
+# two edges are an equality, so writing the paragraph's own number into the
+# constant reddens the row: the prose and the number disagreed by five and
+# nothing could see it, because a measurement in a comment is a claim nobody
+# reads back.
+#
+# THE HISTORY, since the record got it wrong in the same way: 64 for most of
+# the library's life; 66 on 2026-09-06 with the two lines enumerated above;
+# back to 64 at d1f3964, when the "In CI" rewrite removed them; and what the
+# marker below records, set here.
+#
+# WHAT MOVED IT IN ROUND 1: "In CI" gained the measured run table D41 asks for
+# — three runs, four figures each — and every figure is a bare number in a
+# prose line. The ceiling is the POPULATION and not headroom over it.
+#
+# WHAT MOVED IT IN ROUND 2, +1, and the line is enumerated because a bump
+# without the list is a ratchet nobody earned: docs/verifying.md now says which
+# pushes into `dev` wait for the oracle matrix and which do not, and cites the
+# run and the two timestamps review measured it on. One line, one bare number
+# that is a run id and two that are clock times.
+#
+# ONE NUMBER, ONE DERIVATION. The marker on the next line is the ONLY place
+# this paragraph states it, and internal/manifest's
+# TestTheStatedPopulationIsWhatTheSweepCounts reads three things — that
+# marker, the constant under it, and the count
+# scripts/sweep-doc-numbers.sh --check actually makes over the docs — and
+# refuses any two of the three disagreeing. Re-measuring is therefore a
+# one-line edit to the marker, and forgetting the marker is red.
+# DOC-NUMBER POPULATION MEASURED 2026-09-08: 70
+DOC_NUMBER_CEILING=70
 
 # How far UNDER the ceiling the population may sit before the row refuses.
 #
@@ -541,6 +579,33 @@ DOC_NUMBER_MARGIN=0
 ORACLE_MEASURED_SECONDS=623
 ORACLE_MIN_PERCENT=5
 ORACLE_MIN_SECONDS=$((ORACLE_MEASURED_SECONDS * ORACLE_MIN_PERCENT / 100))
+
+# The SHARD floor, which is a DIFFERENT measurement of a different shape and
+# not a share of the one above. Added 2026-09-08 round 2, because a share of
+# the one above could not fire: 31s scaled to a shard of eight is 3s, against
+# shards that measured 169s to 661s, and a fabricated `SHARD ELAPSED: 3` was
+# accepted by the aggregation. MEASURED by review at 0998583.
+#
+# The figures, run 34204814646, ten shards of eight on GitHub-hosted
+# ubuntu-24.04: shard elapsed 169s to 661s, which is 21s to 83s per scenario. A
+# factor of four across shards of the same size on the same image, because the
+# cost is the scenario's and not the shard's.
+#
+# THE RULE: a quarter of the FASTEST per-scenario cost measured on the image
+# the shards run on. A quarter, because four is the spread the same image
+# already produces between its own shards — a floor under the whole observed
+# spread cannot fire on an honest shard unless hosted becomes four times faster
+# than its fastest measurement, and it refuses an account that did no work.
+#
+# IT IS STILL A FLOOR AND STILL NOT PROOF OF WORK. A stub that sleeps its
+# share passes it, exactly as the roster floor's own paragraph says. What it
+# closes is the cheap edit — an account written by hand, a shard whose job died
+# after writing its file — not a deliberate forgery. Driven by scenario
+# lane-aggregate-instant-shard, which is the other half of the finding: nothing
+# drove this arm at all.
+ORACLE_SHARD_MEASURED_SECONDS_PER_SCENARIO=21
+ORACLE_SHARD_MIN_PERCENT=25
+ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO=$((ORACLE_SHARD_MEASURED_SECONDS_PER_SCENARIO * ORACLE_SHARD_MIN_PERCENT / 100))
 
 # The oracle's scenarios. The oracle no longer holds this list; it cross-checks
 # its sc_* functions against this file, and verify.sh requires the oracle's
@@ -625,8 +690,14 @@ MANIFEST_SCENARIOS=(
 	scenario-rc-follows-the-verdict
 	v6-fixture-mode-drift
 	v6-ra-absent
+	lane-scripts-are-in-the-oracles-domain
+	lane-verdict-foreign-hash
+	lane-verdict-roster-shrunk
+	lane-verdict-two-verdicts
+	lane-aggregate-short-count
+	lane-aggregate-instant-shard
 )
-MANIFEST_SCENARIOS_N=79
+MANIFEST_SCENARIOS_N=85
 
 # The scenarios that run the subject at the LIGHT scope: --inner --light, which
 # is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
@@ -850,8 +921,18 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"v6-fixture-mode-drift|nonzero|netns-suite:FAIL|TestASLAACOnlyLinkSaysThereIsNoDHCPv"
 	"v6-ra-absent|nonzero|netns-suite:FAIL|TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne"
 	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
+	# The lane's own decisions, round 2 of the hosted lane. Each pins the
+	# refusal's DIAGNOSIS beside its control, as one comma-joined token: the
+	# observations sort adjacent and the scenario emits no others between them,
+	# so half a pin cannot be dropped quietly.
+	"lane-scripts-are-in-the-oracles-domain|static|lane-domain:covers-the-lane,lane-domain:hash-moves-with-the-lane|no row"
+	"lane-verdict-foreign-hash|static|lane-refusal:foreign-hash,lane-refusal:foreign-hash-control|no row"
+	"lane-verdict-roster-shrunk|static|lane-refusal:roster-shrunk,lane-refusal:roster-shrunk-control|no row"
+	"lane-verdict-two-verdicts|static|lane-refusal:two-verdicts,lane-refusal:two-verdicts-control|no row"
+	"lane-aggregate-short-count|static|lane-refusal:short-count,lane-refusal:short-count-control|no row"
+	"lane-aggregate-instant-shard|static|lane-refusal:instant-shard,lane-refusal:instant-shard-edges|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=79
+MANIFEST_SCENARIO_CONTRACTS_N=85
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members
@@ -880,8 +961,14 @@ MANIFEST_STATIC_CONTRACTS=(
 	ceiling-band
 	scenario-death-is-reported
 	scenario-rc-follows-the-verdict
+	lane-scripts-are-in-the-oracles-domain
+	lane-verdict-foreign-hash
+	lane-verdict-roster-shrunk
+	lane-verdict-two-verdicts
+	lane-aggregate-short-count
+	lane-aggregate-instant-shard
 )
-MANIFEST_STATIC_CONTRACTS_N=3
+MANIFEST_STATIC_CONTRACTS_N=9
 
 
 # manifest_check — layer 2, run by every reader of this file BEFORE it is
@@ -927,6 +1014,9 @@ manifest_check() {
 	[ "$MAX_DECLARED_MARGIN" -ge 0 ] && [ "$MAX_DECLARED_MARGIN" -le 4 ] ||
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
+	[ "$ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO" -eq "$((ORACLE_SHARD_MEASURED_SECONDS_PER_SCENARIO * ORACLE_SHARD_MIN_PERCENT / 100))" ] ||
+		bad="$bad ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO is $ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO but $ORACLE_SHARD_MEASURED_SECONDS_PER_SCENARIO at $ORACLE_SHARD_MIN_PERCENT percent is $((ORACLE_SHARD_MEASURED_SECONDS_PER_SCENARIO * ORACLE_SHARD_MIN_PERCENT / 100)); the shard floor no longer derives from the measurement printed beside it;"
+	[ "$ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO" -ge 1 ] || bad="$bad ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO is not positive;"
 	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
 	[ "$DOC_NUMBER_MARGIN" -ge 0 ] || bad="$bad DOC_NUMBER_MARGIN is negative; a band cannot open downward;"
 	[ "$DOC_NUMBER_MARGIN" -lt "$DOC_NUMBER_CEILING" ] ||

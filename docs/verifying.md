@@ -231,7 +231,8 @@ one byte of the function.
 
 **`SKIPPED`, the third verdict, and the only one that means "not measured".**
 The oracle is most of the run's wall clock and its subject is `verify.sh`
-itself, the manifest and `scripts/`. When those files are byte for byte what
+itself, the manifest, `scripts/` and — since D41 — the lane's own decision
+scripts under `.github/lane/`. When those files are byte for byte what
 they were the last time the oracle passed here, `verify-oracle` records
 SKIPPED, naming the hash and the file set it covers, and the verdict line still
 says PASS only because every row that was not skipped passed. `./verify.sh
@@ -303,11 +304,15 @@ verdict-without-gomod
 vet-violation
 ```
 
-The rule is: a scenario names a path inside its copy of the tree that is not
-`verify.sh`, not `verify.manifest.sh` and not under `scripts/` — directly, or
-through a helper it calls. `TestStaleAnchorBoundNamesWhatTheOracleDerives`
+The rule is: a scenario names a path inside its copy of the tree that the
+oracle's own hash does not cover — directly, or through a helper it calls.
+Which paths those are is not restated here or in Go: the test runs
+`./verify.sh --oracle-hash`, which prints the covered set, and treats anything
+outside it as the product. `TestStaleAnchorBoundNamesWhatTheOracleDerives`
 performs that derivation and fails when it and this block differ, so the list
-cannot go stale the way the sentence it replaces did. Its BOUND, stated rather
+cannot go stale the way the sentence it replaces did. Fixtures a scenario
+writes for itself live outside the copy, in `$SCRATCH`, precisely so that a
+file with no product behind it does not enter this list. Its BOUND, stated rather
 than argued away: the derivation is textual, so a scenario reaching the product
 through a glob, a `find`, or a tool it runs inside the copy — with no path
 written down — is invisible to it, and `suite-tests-disabled` and
@@ -367,7 +372,29 @@ reader should look first when it stops being met: roughly half of each job is
 `verify.sh` and the other half is the checkout, the toolchain and the three
 packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of
 ten shards whose longest ran 11m34s (run 34204814646) — which is why it is not
-in this table and not on the way into `dev`.
+in this table.
+
+**Which pushes wait for it, since the required check is downstream of it.**
+`the arbiter` is the job `dev` is protected on, and it carries
+`needs: [the oracle's domain, the oracle verdict]`. On a push where the oracle
+is not asked for, that need is SKIPPED and costs nothing: the check concludes
+in the four minutes the table measures, which is the case D41 is about and the
+case nearly every push into `dev` is. On a push where the oracle IS asked for
+— the release branch, a dispatch, or a tree whose arbiter no green run has
+published — the required check does not conclude until the matrix has: run
+34208460326 was created at 09:09:45Z and `the arbiter` concluded at 09:25:47Z,
+sixteen minutes later, of which the arbiter's own work was four.
+
+**And it must.** The alternative is a required check that concludes green while
+the matrix that proves this arbiter is still running, which is a merge button
+lit by a run that has not finished checking. The pushes that wait are exactly
+the pushes that changed the checking machinery — a change to `verify.sh`, to
+the manifest, to `scripts/`, to `.github/lane/` — or that are going to the
+release branch, and D41 says in as many words that `main` and release may take
+longer. A push that touches ring code only never waits. If that ever stops
+being true — if ordinary branch work starts paying sixteen minutes — the thing
+to look at is what put the arbiter's own files in the diff, not this
+dependency.
 
 **The ceilings were re-derived on this image, by the method each states**, and
 that is a thing to do on the machine that runs them rather than a formality:
@@ -390,8 +417,25 @@ the other way round:
 **There is no path filter, and that is the design.** "The oracle's own domain
 changed" is one fact, and `verify.sh` already derives it: the file set its skip
 stamp hashes, which is `verify.sh` itself, `verify.manifest.sh` and everything
-under `scripts/`. `./verify.sh --oracle-hash` prints that set, its size and its
-hash and measures nothing; the lane asks, and keeps no list. A `paths:` filter
+under `scripts/` and `.github/lane/`. `./verify.sh --oracle-hash` prints that
+set, its size and its hash and measures nothing; the lane asks, and keeps no
+list.
+
+**Why `.github/lane/` is in that set, since it was not at first.** Every
+refusal deciding whether a run may skip the oracle lives in those scripts —
+the hash comparison, the row roster, the single verdict line, the shard
+account. Review MEASURED what that cost while they sat outside the domain: the
+hash comparison changed to `elif false` accepted a justification naming a run
+that had proved a DIFFERENT arbiter, and the tree stayed shellcheck-clean, kept
+its unit suite green, printed the same domain hash and skipped the oracle. The
+property was removable in silence and for free. Two things answer it and both
+are needed: the scripts are hashed, so editing one is a domain change and the
+oracle has to run; and six oracle scenarios drive them, so the oracle running
+is a verdict about them rather than a re-run. Each of the six asserts on the
+refusal's own DIAGNOSIS and not on an exit status — with a refusal deleted
+`verdict.sh` still exits non-zero in a copy, because the API read below it has
+no token, so a scenario reading the exit status alone would have watched the
+reviewer's mutant pass. A `paths:` filter
 in the workflow would be the same fact derived a second time, and the looser
 derivation would decide which pushes are checked — so `internal/publication`
 refuses a `paths:` or `paths-ignore:` key anywhere in a workflow here, and
@@ -537,7 +581,12 @@ reaches a repository secret in exactly two ways — the `secrets` context and th
 Refusing an identifier that merely contains those letters would make this a
 rule about letters. The escape, stated beside the claim: the automatic token
 also arrives as `github.token`, which carries no such word; that one is bounded
-by `permissions:`, which this lane sets to `contents: read`.
+by `permissions:`, which this lane sets to `contents: read` for the checkout
+and `actions: read` for the API reads the skip is built on — listing a hash's
+publication, and asking what the run and the job behind it concluded. Neither
+grant can write anything, and `actions: read` is named here rather than left
+implicit because the entire skip mechanism rests on it: without it the lookup
+fails, and a lookup that fails refuses the skip.
 
 The domain is the directory rather than the repository, and that is not an
 exemption for the rest of the tree — it is the shape of the rule. A rule has to

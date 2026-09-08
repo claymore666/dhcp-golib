@@ -1842,7 +1842,18 @@ jobs:
 // trigger. It is anchored on the key, at any indentation, because the depth it
 // legitimately appears at is inside an `on:` block, which is exactly where the
 // scan above walks past it.
-var pathFilterKey = regexp.MustCompile(`^\s*['"]?paths(-ignore)?['"]?:`)
+//
+// 2026-09-08, D41 round 2, from the review's deferred list. The key was
+// anchored on the START OF A LINE, and YAML has a second spelling GitHub
+// honours identically: a flow mapping, `on: {push: {paths: [verify.sh]}}`,
+// where the key follows a `{` or a `,` on a line that begins with something
+// else. A refusal that only sees one of two spellings of the same thing is a
+// refusal keyed on how it was typed. Both are matched now.
+//
+// The direction it errs in, stated: a `{paths:` inside a `run:` script would
+// be refused too. That is the safe direction for a refusal — it names a line
+// and a reason, and the line-anchored form already had it.
+var pathFilterKey = regexp.MustCompile(`(?:^|[{,])\s*['"]?paths(-ignore)?['"]?\s*:`)
 
 // pathFilterRefusals names every line of a workflow that filters the lane on a
 // typed path list.
@@ -1985,12 +1996,24 @@ jobs:
           path: verify-output.txt
       # paths: would be a second derivation, so there is none
 `
+	// The flow spelling. GitHub reads this exactly as the block form above,
+	// and until 2026-09-08 the refusal read nothing at all.
+	const filteredFlow = `
+name: verify
+on: {push: {branches: [main], paths: [verify.sh]}}
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+`
 	cases := []struct {
 		name     string
 		text     string
 		wantLine int
 	}{
 		{"a paths filter under push", filtered, 5},
+		{"a paths filter in a flow mapping", filteredFlow, 3},
 		{"a paths-ignore filter under push", filteredIgnore, 5},
 		{"a quoted paths filter", filteredQuoted, 5},
 		{"path: is another key and a commented filter is not one", notAFilter, 0},

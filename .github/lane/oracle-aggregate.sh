@@ -114,14 +114,21 @@ while [ "$i" -le "$shard_count" ]; do
 	grep -qE "^ORACLE SHARD $i/$shard_count PASS: " "$f" ||
 		err "shard $i printed no shard verdict of its own"
 
-	# The floor, scaled. ORACLE_MIN_SECONDS is derived in verify.manifest.sh
-	# from a measurement of the WHOLE roster; a shard owes its share of it.
-	floor=$((ORACLE_MIN_SECONDS * m_n / ${#MANIFEST_SCENARIOS[@]}))
+	# The floor, per member, from verify.manifest.sh's own SHARD measurement.
+	#
+	# 2026-09-08 round 2. This used to scale ORACLE_MIN_SECONDS — a wall clock
+	# of the WHOLE roster on a developer's box — down to a shard's share, which
+	# came to 3s for a shard of eight against shards that measured 169s to
+	# 661s. It could not fire; a fabricated `SHARD ELAPSED: 3` was accepted.
+	# MEASURED by review at 0998583. The constant it reads now is derived from
+	# the fastest per-scenario cost the shards themselves produced on the image
+	# they run on; the derivation is beside the number.
+	floor=$((ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO * m_n))
 	[ "$floor" -ge 1 ] || floor=1
 	case "$elapsed" in
 	'' | *[!0-9]*) err "shard $i recorded no elapsed time" ;;
 	*) [ "$elapsed" -ge "$floor" ] ||
-		err "shard $i answered in ${elapsed}s over $m_n scenario(s), under its ${floor}s share of the ${ORACLE_MIN_SECONDS}s floor in verify.manifest.sh; it reported the right account without doing the work" ;;
+		err "shard $i answered in ${elapsed}s over $m_n scenario(s), under the ${floor}s floor verify.manifest.sh derives for that many (${ORACLE_SHARD_MIN_SECONDS_PER_SCENARIO}s each); it reported the right account without doing the work" ;;
 	esac
 	i=$((i + 1))
 done

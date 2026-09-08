@@ -128,12 +128,29 @@ row_omitted() { # NAME
 #
 # The PATHS are hashed beside the bytes: a renamed script is a changed arbiter,
 # and a hash over contents alone cannot see a rename.
+#
+# 2026-09-08, round 2, and it is the correction of a real hole rather than an
+# extension: .github/lane/ was NOT in this set. Every refusal that decides
+# whether a hosted run may skip the oracle lives in those scripts, so removing
+# one changed no covered byte, left this hash where it was, and let the lane
+# answer "an arbiter this green has already proved" about an arbiter that had
+# just stopped checking. MEASURED by review at 0998583: with
+# .github/lane/verdict.sh's hash comparison disabled, the head's own
+# justification was accepted against a row carrying a different hash, and
+# `--oracle-hash` still printed the same digest. The lane's decisions are part
+# of the arbiter, so they are hashed with it.
+#
+# The ROOTS are derived here too, for the row that names them: a skip that
+# printed a hand-typed list of directories would be this same fact derived
+# twice, one file along.
 oracle_domain() {
 	ORACLE_COVERED="$( {
 		printf 'verify.sh\nverify.manifest.sh\n'
-		find scripts -type f -printf '%p\n' 2>/dev/null
+		find scripts .github/lane -type f -printf '%p\n' 2>/dev/null
 	} | LC_ALL=C sort -u)"
 	ORACLE_COVERED_N="$(printf '%s\n' "$ORACLE_COVERED" | grep -c . || true)"
+	ORACLE_ROOTS="$(printf '%s\n' "$ORACLE_COVERED" |
+		sed 's|/[^/]*$|/|' | LC_ALL=C sort -u | paste -sd, - | sed 's/,/, /g')"
 	ORACLE_HASH="$(printf '%s\n' "$ORACLE_COVERED" | while IFS= read -r f; do
 		if [ -r "$ROOT/$f" ]; then
 			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
@@ -1500,6 +1517,7 @@ if [ "$INNER" -eq 0 ]; then
 	oracle_domain
 	oracle_covered_n="$ORACLE_COVERED_N"
 	oracle_hash="$ORACLE_HASH"
+	oracle_roots="$ORACLE_ROOTS"
 	stamp_root=""
 	stamp_hash=""
 	stamp_scn=""
@@ -1513,7 +1531,7 @@ if [ "$INNER" -eq 0 ]; then
 		[ "$stamp_root" = "$ROOT" ] &&
 		[ "$stamp_hash" = "$oracle_hash" ] &&
 		[ "$stamp_scn" = "${#MANIFEST_SCENARIOS[@]}" ]; then
-		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — ${oracle_roots} — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
 	elif [ ! -x "$ROOT/scripts/oracle-contracts.sh" ]; then
 		# Before the oracle's wall clock, not after it: without this file every
 		# scenario reports and nothing compares the report to the contract, so

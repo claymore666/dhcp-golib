@@ -20,10 +20,13 @@
 package manifest
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -101,7 +104,7 @@ const (
 	// the verify-oracle row reported a contract mismatch
 	// naming the wrong test and the FLOOR itself observed nothing. Raise it in
 	// the same change that grows the population, every time.
-	minScenarios     = 79
+	minScenarios     = 85
 	minShellScripts  = 12
 	minDeclaredTests = 382
 	// The self-check row's probes and the refusals record() owes them. Pinned
@@ -152,7 +155,25 @@ var (
 // and what its exit status means — and such a scenario has no row of the
 // subject's table to read by construction. A fourth member that is not of that
 // kind is the one to refuse.
-const maxStaticContracts = 3
+//
+// 2026-09-08, hosted lane round 2: raised to 9 with six scenarios that drive
+// .github/lane/*.sh. THE KIND IS THE SAME and it is the kind the sentence
+// above names: a subject with no row in the arbiter's table. The lane's
+// decision scripts report to GitHub, not to verify.sh, so a scenario driving
+// one has nothing to read out of a table by construction — exactly as a
+// scenario about the oracle's own protocol has not.
+//
+// WHY THEY EXIST AT ALL, which is the part that makes this a widening and not
+// a drift: review MEASURED at 0998583 that every refusal deciding whether a
+// hosted run may skip the oracle could be deleted in silence. Nothing drove
+// those scripts. Six of them are driven now, each on its own diagnosis rather
+// than on an exit status.
+//
+// THE RULE THAT REFUSES THE TENTH: a static contract names a subject that has
+// no row in verify.sh's table. A scenario whose subject IS the arbiter and
+// which is static anyway is a scenario avoiding the cost of running it, and
+// that is what this cap and MANIFEST_STATIC_CONTRACTS exist to make countable.
+const maxStaticContracts = 9
 
 func readManifest(t *testing.T) string {
 	t.Helper()
@@ -801,17 +822,82 @@ const staleAnchorFence = "```stale-anchor-scenarios"
 var copyRootPath = regexp.MustCompile(`\$(?:d|1|2)/([A-Za-z0-9_./-]+)`)
 
 // hashedByTheStamp reports whether p is one of the arbiter files
-// .verify-oracle-stamp's hash covers. It is verify.sh's own definition of the
-// covered set, restated: verify.sh, verify.manifest.sh and everything under
-// scripts/. The stamp itself is neither — it is the cache, not a subject.
-func hashedByTheStamp(p string) bool {
-	return p == "verify.sh" || p == "verify.manifest.sh" ||
-		strings.HasPrefix(p, "scripts/") || p == ".verify-oracle-stamp"
+// .verify-oracle-stamp's hash covers.
+//
+// 2026-09-08. This used to RESTATE verify.sh's covered set in Go — "verify.sh,
+// verify.manifest.sh and everything under scripts/" — and the restatement went
+// wrong the moment the set grew: .github/lane/ joined it in this round and
+// this function said no. One fact derived twice, and the looser derivation
+// decides. It now ASKS, once per test run, the same way the lane asks:
+// `./verify.sh --oracle-hash` prints the set it hashes. The roots are reduced
+// from that answer so a file a scenario CREATES inside a covered directory is
+// still covered, which is what the prefix test gave and a bare set membership
+// would not.
+//
+// The stamp itself is in neither — it is the cache, not a subject — so it is
+// named here and nowhere else.
+var (
+	hashedRootsOnce  sync.Once
+	hashedRootsFiles map[string]bool
+	hashedRootsDirs  []string
+	hashedRootsErr   error
+)
+
+func hashedRoots() (map[string]bool, []string, error) {
+	hashedRootsOnce.Do(func() {
+		cmd := exec.Command("./verify.sh", "--oracle-hash")
+		cmd.Dir = "../.."
+		out, err := cmd.Output()
+		if err != nil {
+			hashedRootsErr = err
+			return
+		}
+		files := map[string]bool{}
+		dirs := map[string]bool{}
+		for _, ln := range strings.Split(string(out), "\n") {
+			p, ok := strings.CutPrefix(ln, "covers ")
+			if !ok {
+				continue
+			}
+			if i := strings.LastIndex(p, "/"); i >= 0 {
+				dirs[p[:i+1]] = true
+			} else {
+				files[p] = true
+			}
+		}
+		if len(files) == 0 && len(dirs) == 0 {
+			hashedRootsErr = errors.New("--oracle-hash named no covered file; an empty set agrees with every path being outside it")
+			return
+		}
+		hashedRootsFiles = files
+		for d := range dirs {
+			hashedRootsDirs = append(hashedRootsDirs, d)
+		}
+	})
+	return hashedRootsFiles, hashedRootsDirs, hashedRootsErr
+}
+
+func hashedByTheStamp(t *testing.T, p string) bool {
+	t.Helper()
+	files, dirs, err := hashedRoots()
+	if err != nil {
+		t.Fatalf("asking verify.sh for the oracle's domain: %v", err)
+	}
+	if p == ".verify-oracle-stamp" || files[p] {
+		return true
+	}
+	for _, d := range dirs {
+		if strings.HasPrefix(p, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // productPaths returns the paths outside the hashed set that fn names, following
 // the helpers it calls.
-func productPaths(fn string, bodies map[string]string, seen map[string]bool, out map[string]bool) {
+func productPaths(t *testing.T, fn string, bodies map[string]string, seen map[string]bool, out map[string]bool) {
+	t.Helper()
 	if seen[fn] {
 		return
 	}
@@ -822,7 +908,7 @@ func productPaths(fn string, bodies map[string]string, seen map[string]bool, out
 	}
 	code := shellComment.ReplaceAllString(body, "")
 	for _, m := range copyRootPath.FindAllStringSubmatch(code, -1) {
-		if !hashedByTheStamp(m[1]) {
+		if !hashedByTheStamp(t, m[1]) {
 			out[m[1]] = true
 		}
 	}
@@ -831,7 +917,7 @@ func productPaths(fn string, bodies map[string]string, seen map[string]bool, out
 			continue
 		}
 		if regexp.MustCompile(`(^|[^A-Za-z0-9_$])` + regexp.QuoteMeta(callee) + `([^A-Za-z0-9_(]|$)`).MatchString(code) {
-			productPaths(callee, bodies, seen, out)
+			productPaths(t, callee, bodies, seen, out)
 		}
 	}
 }
@@ -851,7 +937,7 @@ func TestStaleAnchorBoundNamesWhatTheOracleDerives(t *testing.T) {
 			continue
 		}
 		paths := map[string]bool{}
-		productPaths(fn, bodies, map[string]bool{}, paths)
+		productPaths(t, fn, bodies, map[string]bool{}, paths)
 		if len(paths) > 0 {
 			derived[strings.ReplaceAll(strings.TrimPrefix(fn, "sc_"), "_", "-")] = true
 		}
@@ -902,6 +988,109 @@ func TestStaleAnchorBoundNamesWhatTheOracleDerives(t *testing.T) {
 	for name := range stated {
 		if !derived[name] {
 			t.Errorf("%s lists %q as anchoring on the product and the oracle no longer does; a list that overstates the bound is a list nobody will believe", docPath, name)
+		}
+	}
+}
+
+// docNumberMarker pins the ONE place verify.manifest.sh's derivation paragraph
+// states the population it measured. A date and a number, in a fixed form, so
+// the claim can be read back instead of believed.
+var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED ([0-9]{4}-[0-9]{2}-[0-9]{2}): ([0-9]+)$`)
+
+// TestTheStatedPopulationIsWhatTheSweepCounts — one number, one derivation.
+//
+// 2026-09-08, D41 round 2. Review MEASURED the defect this answers: the
+// paragraph deriving DOC_NUMBER_CEILING ended with "RE-MEASURED …: 64"
+// directly above DOC_NUMBER_CEILING=69, over a population that was 69. The
+// measurement was the PREVIOUS round's, left standing when the round moved the
+// constant. With DOC_NUMBER_MARGIN=0 the band is an equality, so the
+// paragraph's own number would have reddened the row it justifies — and no
+// gate could see it, because prose beside machinery is a claim nobody reads.
+//
+// Three readings, one fact:
+//   - the marker, which is what the author says was measured;
+//   - the constant, which is what the row enforces;
+//   - what scripts/sweep-doc-numbers.sh --check COUNTS today, which is the
+//     population itself.
+//
+// The sweep is run, not parsed out of the manifest: this is the read-back, and
+// a comparison of two numbers that both came from the same file would be the
+// defect one level up. The date is required so a re-measurement is dated
+// rather than a digit quietly overwritten.
+//
+// BOUND: it says nothing about whether the population SHOULD be that size.
+// docNumberCeilingCap above is what holds it from growing.
+func TestTheStatedPopulationIsWhatTheSweepCounts(t *testing.T) {
+	src := readManifest(t)
+	m := docNumberMarker.FindAllStringSubmatch(src, -1)
+	if len(m) != 1 {
+		t.Fatalf("found %d DOC-NUMBER POPULATION MEASURED marker(s) in %s; the derivation states its measurement in exactly one place, and none or several is a number nobody can read back", len(m), manifestPath)
+	}
+	stated, err := strconv.Atoi(m[0][2])
+	if err != nil {
+		t.Fatalf("the marker's number %q does not parse: %v", m[0][2], err)
+	}
+	ceiling := number(t, src, "DOC_NUMBER_CEILING")
+	if stated != ceiling {
+		t.Errorf("the derivation says it measured %d on %s and DOC_NUMBER_CEILING is %d; with DOC_NUMBER_MARGIN=0 one of those two reddens the doc-numbers row, and the paragraph is the half nothing checked", stated, m[0][1], ceiling)
+	}
+
+	cmd := exec.Command("./scripts/sweep-doc-numbers.sh", "--check")
+	cmd.Dir = "../.."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scripts/sweep-doc-numbers.sh --check refused, so the stated population was not read back: %v\n%s", err, out)
+	}
+	counted := regexp.MustCompile(`doc-numbers: ([0-9]+) prose line`).FindSubmatch(out)
+	if counted == nil {
+		t.Fatalf("the sweep printed no count to read back:\n%s", out)
+	}
+	got, err := strconv.Atoi(string(counted[1]))
+	if err != nil {
+		t.Fatalf("the sweep's count %q does not parse: %v", counted[1], err)
+	}
+	if got != stated {
+		t.Errorf("the derivation says it measured %d on %s and the sweep counts %d today; re-measure and write the marker, do not move the constant alone", stated, m[0][1], got)
+	}
+}
+
+// ceilingBandEdges reads the band the ceiling-band scenario actually enforces
+// out of the scenario itself: the `[ "$v" -ge L ] && [ "$v" -le U ]` pair.
+var ceilingBandEdges = regexp.MustCompile(`\[ "\$v" -ge ([0-9]+) \] && \[ "\$v" -le ([0-9]+) \]`)
+
+// TestTheStatedCeilingBandIsTheOneTheOracleChecks — the same defect as the
+// doc-number marker above, one file over.
+//
+// 2026-09-08, D41 round 2, review finding 5. docs/gates.md said the
+// ceiling-band scenario "checks the declared value is inside 5..120" for a
+// round after the band had been re-derived to 13..102 — and the round that
+// moved it edited that very file, two hunks away. Nothing reconciled the two
+// spellings, because one was prose and one was a shell condition.
+//
+// So the pages quote it and this reads it back. The scenario is the authority:
+// it is the thing that refuses, and a page is a statement about it.
+//
+// BOUND: it checks that the edges the scenario enforces are SPELLED on each
+// page, not that the surrounding sentence is true. A page saying "13..102" for
+// an unrelated reason satisfies it. The failure it exists to catch is the one
+// that happened — a band moved on one side and not the other.
+func TestTheStatedCeilingBandIsTheOneTheOracleChecks(t *testing.T) {
+	src, err := os.ReadFile(oraclePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", oraclePath, err)
+	}
+	m := ceilingBandEdges.FindAllStringSubmatch(string(src), -1)
+	if len(m) != 1 {
+		t.Fatalf("found %d ceiling band condition(s) in %s; the band is enforced in one place, and none or several means this test is reading something other than the check", len(m), oraclePath)
+	}
+	band := m[0][1] + ".." + m[0][2]
+	for _, page := range []string{"../../docs/gates.md", "../../docs/verifying.md"} {
+		b, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatalf("reading %s: %v", page, err)
+		}
+		if !strings.Contains(string(b), band) {
+			t.Errorf("the ceiling-band scenario enforces %s and %s does not say so; the band moved on one side of the prose only", band, page)
 		}
 	}
 }
