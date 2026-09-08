@@ -125,14 +125,25 @@ type Params6 struct {
 	// gave back, one process boundary later. Machine6.declined says why that
 	// loop does not converge.
 	//
-	// A caller supplies what it remembered and reads back what the machine
-	// has declined since, through Machine6.Params(). The two are one set:
-	// New6 seeds the machine from this field and Params() answers out of the
-	// machine, so nothing has to keep two copies in step.
+	// IT IS AN INPUT AND NOT A READ-BACK. A caller supplies what it
+	// remembered; New6 seeds the machine from it and this field then stops
+	// moving, so Params() gives it back unchanged and a journal replayed
+	// against those parameters sees the machine the run started as. What the
+	// machine has declined SINCE is read with Machine6.Declined(), and the
+	// two are separate for the reason Params() states: one is what a journal
+	// replays against and the other is what the next process is seeded from.
 	//
-	// BOUND: an entry that is not a usable IPv6 address is kept and is
-	// inert. The only comparison it takes part in is against Hint, which
-	// validate refuses unless it is one.
+	// BOUND, TWO OF THEM.
+	//
+	// An entry that is not a usable IPv6 address is kept and is inert: the
+	// only comparison it takes part in is against Hint, which validate
+	// refuses unless it is one.
+	//
+	// And the set is DURABLE, so its size is the caller's bound rather than
+	// this machine's — a caller that writes Machine6.Declined() back into
+	// this field at every restart carries every distinct address the link has
+	// ever had answered for by another node. Machine6.declined's own bound
+	// says what that costs and why nothing here caps it.
 	Declined []netip.Addr
 
 	// ORO is the option codes the caller wants beyond the ones the machine

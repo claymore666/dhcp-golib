@@ -454,9 +454,16 @@ func TestADeclineUnderABoundLeaseLeavesAnUnrelatedHintAlone(t *testing.T) {
 // walking back into the address it gave back, one process boundary later, on
 // a link where the other node is still there.
 //
-// THE PARAMETERS ARE TAKEN FROM THE MACHINE AND NOT WRITTEN BY THIS TEST. A
-// case that set Declined by hand would pass against a Params() that never
-// reports what the machine declined, which is the defect.
+// THE SET IS TAKEN FROM THE MACHINE AND NOT WRITTEN BY THIS TEST. A case that
+// set Declined by hand would pass against a machine that never reports what it
+// declined, which is the defect.
+//
+// A RESTART IS TWO HALVES, and this case asserts both and their order. Params()
+// is what the run RAN WITH — the seed, so that a journal recorded by this run
+// replays against it — and Declined() is what the run ACCUMULATED. The caller
+// persists both and puts the second into the first's Declined on the way back
+// in. The first half alone is asserted here to be NOT ENOUGH, because that is
+// the whole reason the second accessor exists.
 func TestAResumedMachineDoesNotAskForAnAddressItDeclined(t *testing.T) {
 	p := testParams6()
 	p.Hint = addr6(hintedAddr)
@@ -468,17 +475,34 @@ func TestAResumedMachineDoesNotAskForAnAddressItDeclined(t *testing.T) {
 	}
 
 	saved := m.Params()
-	if !containsAddr(saved.Declined, addr6(hintedAddr)) {
-		t.Fatalf("Params() reports Declined=%v after a Decline of %s; a caller has nothing to persist", saved.Declined, hintedAddr)
+	if len(saved.Declined) != 0 {
+		t.Fatalf("Params() reports Declined=%v; it is the SEED this machine was configured with, "+
+			"and a run's own journal replays against it", saved.Declined)
+	}
+	run := m.Declined()
+	if !containsAddr(run, addr6(hintedAddr)) {
+		t.Fatalf("Declined() reports %v after a Decline of %s; a caller has nothing to persist", run, hintedAddr)
 	}
 
+	// The parameters WITHOUT the accumulated set are not a restart: this is
+	// the cost of the split, stated rather than discovered.
+	if _, half := solicit6(t, saved); solicitHintOf(t, half) != addr6(hintedAddr) {
+		t.Fatalf("a machine rebuilt from the parameters alone does not re-hint %s; "+
+			"then Declined() is carrying nothing and this case proves nothing", hintedAddr)
+	}
+
+	saved.Declined = run
 	next, first := solicit6(t, saved)
 	if got := solicitHintOf(t, first); got.IsValid() {
 		t.Fatalf("the machine rebuilt from the saved parameters asks for %v on its first Solicit, "+
 			"the address the previous run declined", got)
 	}
-	if got := next.Params().Declined; !containsAddr(got, addr6(hintedAddr)) {
+	if got := next.Declined(); !containsAddr(got, addr6(hintedAddr)) {
 		t.Fatalf("the rebuilt machine reports Declined=%v; the set must survive one more restart too", got)
+	}
+	if got := next.Params().Declined; !containsAddr(got, addr6(hintedAddr)) {
+		t.Fatalf("the rebuilt machine's Params() reports Declined=%v; the seed it was CONFIGURED with "+
+			"carried the address, so it must read back", got)
 	}
 }
 
@@ -491,6 +515,7 @@ func TestARestartWithNothingDeclinedStillHints(t *testing.T) {
 
 	m := bind6(t, p, hintedAddr)
 	saved := m.Params()
+	saved.Declined = m.Declined()
 	if len(saved.Declined) != 0 {
 		t.Fatalf("a machine that declined nothing reports Declined=%v", saved.Declined)
 	}
@@ -502,9 +527,9 @@ func TestARestartWithNothingDeclinedStillHints(t *testing.T) {
 
 // TestTheDeclinedSetHandedOutIsNotTheMachinesOwn is the aliasing control.
 //
-// Params() hands the set to a caller that is about to persist it, and a caller
-// that then sorted, trimmed or appended to that slice would be editing the set
-// the machine reads at its next Solicit.
+// Declined() hands the set to a caller that is about to persist it, and a
+// caller that then sorted, trimmed or appended to that slice would be editing
+// the set the machine reads at its next Solicit.
 func TestTheDeclinedSetHandedOutIsNotTheMachinesOwn(t *testing.T) {
 	p := testParams6()
 	p.Hint = addr6(hintedAddr)
@@ -513,9 +538,9 @@ func TestTheDeclinedSetHandedOutIsNotTheMachinesOwn(t *testing.T) {
 	offerAndReply(t, m, hintedAddr, 2)
 	declineOnce(t, m, hintedAddr, 4)
 
-	got := m.Params().Declined
+	got := m.Declined()
 	if len(got) != 1 {
-		t.Fatalf("Params() reports Declined=%v, want the one declined address", got)
+		t.Fatalf("Declined() reports %v, want the one declined address", got)
 	}
 	got[0] = addr6(substituteAll)
 
@@ -525,7 +550,77 @@ func TestTheDeclinedSetHandedOutIsNotTheMachinesOwn(t *testing.T) {
 		t.Fatalf("a clean DAD verdict left the machine in %s", s)
 	}
 	_ = acts
-	if again := m.Params().Declined; len(again) != 1 || again[0] != addr6(hintedAddr) {
-		t.Fatalf("the machine's set is %v after a caller wrote into the slice Params() returned; want the declined %s", again, hintedAddr)
+	if again := m.Declined(); len(again) != 1 || again[0] != addr6(hintedAddr) {
+		t.Fatalf("the machine's set is %v after a caller wrote into the slice Declined() returned; want the declined %s", again, hintedAddr)
+	}
+}
+
+// TestTheDeclinedSetSurvivesSeveralRebuilds is the DURABLE bound, stated as a
+// case rather than as a paragraph.
+//
+// Round 1 made the set outlive the process, and a set that outlives the
+// process needs a size argument that outlives it too. Machine6.declined's own
+// bound — "a machine can only decline what it was offered" — is an argument
+// about one process and stops being one the moment the caller writes the set
+// back. The durable bound is the one the field's comment now states: one entry
+// per DISTINCT address the link has ever had answered for by another node,
+// never trimmed, and the caller owns it.
+//
+// Both halves are here, because only the pair is a bound. FOUR CYCLES: three
+// distinct addresses and one repeat. The set must grow by exactly one for each
+// distinct address and NOT AT ALL for the repeat — a set that grew on the
+// repeat would be bounded by the number of Declines, which is unbounded on
+// exactly the link this field exists for (sixteen rounds in sixteen seconds,
+// run 34058213252).
+//
+// The caller here is the one the library documents: persist Params6, persist
+// Declined(), put the second into the first on the way back in.
+func TestTheDeclinedSetSurvivesSeveralRebuilds(t *testing.T) {
+	const third = "fd00:99::215"
+
+	p := testParams6()
+	p.Hint = addr6(hintedAddr)
+
+	for _, cycle := range []struct {
+		declines string
+		want     []string
+	}{
+		{hintedAddr, []string{hintedAddr}},
+		{substituteAll, []string{hintedAddr, substituteAll}},
+		// The repeat. A rotating pool hands the same squatted address back
+		// on a later run, and the set must not count it twice.
+		{substituteAll, []string{hintedAddr, substituteAll}},
+		{third, []string{hintedAddr, substituteAll, third}},
+	} {
+		t.Run("declines "+cycle.declines, func(t *testing.T) {
+			// The seed is what the previous cycle ended with, and it reads
+			// back out of Params() unchanged: that is the replay contract,
+			// checked once per cycle rather than assumed.
+			m, _ := solicit6(t, p)
+			if got := m.Params().Declined; len(got) != len(p.Declined) {
+				t.Fatalf("Params() reports Declined=%v, want the %d-entry seed %v", got, len(p.Declined), p.Declined)
+			}
+
+			offerAndReply(t, m, cycle.declines, 2)
+			declineOnce(t, m, cycle.declines, 4)
+
+			got := m.Declined()
+			if len(got) != len(cycle.want) {
+				t.Fatalf("after declining %s the set is %v, want %d entries %v",
+					cycle.declines, got, len(cycle.want), cycle.want)
+			}
+			for _, w := range cycle.want {
+				if !containsAddr(got, addr6(w)) {
+					t.Fatalf("the set is %v after declining %s; %s is missing", got, cycle.declines, w)
+				}
+			}
+			p.Declined = got
+		})
+	}
+
+	// The set the caller ends holding is the one the next process is seeded
+	// from, and nothing in the library trimmed it on the way through.
+	if len(p.Declined) != 3 {
+		t.Fatalf("four cycles over three distinct addresses left %v", p.Declined)
 	}
 }

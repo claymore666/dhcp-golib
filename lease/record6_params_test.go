@@ -14,17 +14,30 @@ import (
 )
 
 // v6ParamsRecord folds a created v6 record carrying p as its snapshot, which
-// is the write the caller makes once per manager instance.
-func v6ParamsRecord(t *testing.T, p proto.Params6) Record {
+// is the write the caller makes once per manager instance. The declined set is
+// the OTHER half a caller persists and it rides on the event beside the
+// parameters, never inside them — see Record.Declined6.
+func v6ParamsRecord(t *testing.T, p proto.Params6, declined ...netip.Addr) Record {
 	t.Helper()
 	rec, err := Fold(Record{}, RecordEvent{
 		ID: "rec-6", Seq: 1, Op: OpCreate, Scope: "net-a",
 		Family: FamilyV6, Identity: testIdentity6, Params6: &p,
+		Declined6: declined,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	return rec
+}
+
+// rebuiltFrom6 is the parameters a caller hands the NEXT client: the record's
+// snapshot with the record's declined set put back into it. The two are stored
+// apart so a run's own journal replays against its own snapshot, and this is
+// the one place they are joined again.
+func rebuiltFrom6(rec Record) proto.Params6 {
+	p := *rec.Params6
+	p.Declined = append([]netip.Addr(nil), rec.Declined6...)
+	return p
 }
 
 // TestAV6RecordCarriesTheParametersItsReplayNeeds is the v6 half of the
@@ -351,22 +364,29 @@ func TestADeclinedAddressReachesTheRecordAndTheClientRebuiltFromIt(t *testing.T)
 	if !ok {
 		t.Fatal("a v6 manager reports no v6 parameters")
 	}
-	if !slices.Contains(saved.Declined, declined) {
-		t.Fatalf("the manager reports Declined=%v after declining %s; a caller has nothing to persist", saved.Declined, test6Addr)
+	run, ok := r.mgr.Declined6()
+	if !ok {
+		t.Fatal("a v6 manager reports no declined set")
+	}
+	if !slices.Contains(run, declined) {
+		t.Fatalf("the manager reports Declined6()=%v after declining %s; a caller has nothing to persist", run, test6Addr)
+	}
+	if len(saved.Declined) != 0 {
+		t.Fatalf("Params6() reports Declined=%v; those are the parameters the run RAN WITH, and its own journal replays against them", saved.Declined)
 	}
 
-	rec := v6ParamsRecord(t, saved)
+	rec := v6ParamsRecord(t, saved, run...)
 	if rec.Params6 == nil {
 		t.Fatal("the record kept no v6 parameters")
 	}
-	if !slices.Contains(rec.Params6.Declined, declined) {
-		t.Fatalf("the record's snapshot reports Declined=%v; the set does not survive the write it exists for", rec.Params6.Declined)
+	if !slices.Contains(rec.Declined6, declined) {
+		t.Fatalf("the record reports Declined6=%v; the set does not survive the write it exists for", rec.Declined6)
 	}
 	if rec.Params6.Hint != declined {
 		t.Fatalf("the record's Hint is %v, want %s: the caller's preference is kept and it is the DECLINED set that overrides it", rec.Params6.Hint, test6Addr)
 	}
 
-	r2 := newRig6(t, *rec.Params6, answerNormally6(t))
+	r2 := newRig6(t, rebuiltFrom6(rec), answerNormally6(t))
 	defer func() { _ = r2.stop() }()
 	r2.waitSent(t, wire.MsgSolicit)
 	if got := solicitedAddrs(t, mustSolicit6(t, r2)); len(got) != 0 {
@@ -387,12 +407,16 @@ func TestARebuiltClientWithNothingDeclinedStillHints(t *testing.T) {
 	if !ok {
 		t.Fatal("a v6 manager reports no v6 parameters")
 	}
-	if len(saved.Declined) != 0 {
-		t.Fatalf("a client that declined nothing reports Declined=%v", saved.Declined)
+	run, ok := r.mgr.Declined6()
+	if !ok {
+		t.Fatal("a v6 manager reports no declined set")
+	}
+	if len(run) != 0 || len(saved.Declined) != 0 {
+		t.Fatalf("a client that declined nothing reports Declined6()=%v, Params6().Declined=%v", run, saved.Declined)
 	}
 
-	rec := v6ParamsRecord(t, saved)
-	r2 := newRig6(t, *rec.Params6, answerNormally6(t))
+	rec := v6ParamsRecord(t, saved, run...)
+	r2 := newRig6(t, rebuiltFrom6(rec), answerNormally6(t))
 	defer func() { _ = r2.stop() }()
 	r2.waitSent(t, wire.MsgSolicit)
 	got := solicitedAddrs(t, mustSolicit6(t, r2))
@@ -412,5 +436,171 @@ func TestTheV6SnapshotDoesNotAliasTheDeclinedSet(t *testing.T) {
 
 	if len(rec.Params6.Declined) != 1 || rec.Params6.Declined[0].String() != test6Addr {
 		t.Fatalf("the record's declined set is %v after the caller wrote into its own slice", rec.Params6.Declined)
+	}
+}
+
+// TestARunsOwnJournalReplaysAgainstItsOwnSnapshot is the case that says which
+// of the two contracts Record.Params6 holds, and it is here because round 1
+// made the record hold both of them at once.
+//
+// A record carries a parameter snapshot for exactly one reason (design §4.3):
+// proto.Replay6 rebuilds a Machine6 from it and re-runs the journal recorded
+// beside it, comparing states and rendered actions. That only works if the
+// snapshot is the parameters the run STARTED with. The declined set is the
+// opposite: it is what the run ENDED with, and a restart needs it.
+//
+// Round 1 put both in one field and the two disagree on precisely the run this
+// milestone is about. wire.Summary began naming the address a Solicit asks for,
+// so the recorded action of the first Solicit reads "ia-na(fd00:99::183)"; the
+// snapshot began carrying the address that run went on to decline, so a machine
+// rebuilt from it refuses the hint and renders "ia-na". MEASURED by review at
+// 067d5ee: the divergence is at entry 1, action 0. A run whose journal cannot
+// be replayed against its own snapshot has a durable log that stops meaning
+// anything at the restart it exists for — and the failure lands on the operator
+// with a duplicate address, which is the run most worth replaying.
+//
+// SO THE RECORD HOLDS THE REPLAY CONTRACT AND Declined6 HOLDS THE OTHER, and
+// this case asserts all three halves of that: the replay is clean, the set is
+// in the record, and a client rebuilt from the pair still does not re-hint. The
+// third is what stops the "fix" of simply dropping the set.
+func TestARunsOwnJournalReplaysAgainstItsOwnSnapshot(t *testing.T) {
+	declined := netip.MustParseAddr(test6Addr)
+
+	r := newRig6(t, hintedV6Params(), answerNormally6(t))
+	r.waitSent(t, wire.MsgSolicit)
+	if got := solicitedAddrs(t, mustSolicit6(t, r)); len(got) != 1 || got[0] != declined {
+		t.Fatalf("the first Solicit asked for %v, want the hinted %s; the fixture is not driving the case this test is about", got, test6Addr)
+	}
+	r.settleDAD(t, test6Addr, true)
+	r.settle(t)
+	_ = r.stop()
+
+	entries := r.mgr.Journal6()
+	if len(entries) == 0 {
+		t.Fatal("the journal is empty")
+	}
+	saved, ok := r.mgr.Params6()
+	if !ok {
+		t.Fatal("a v6 manager reports no v6 parameters")
+	}
+	run, ok := r.mgr.Declined6()
+	if !ok {
+		t.Fatal("a v6 manager reports no declined set")
+	}
+	if !slices.Contains(run, declined) {
+		t.Fatalf("this run declined %v, not %s; the fixture never reached the Decline", run, test6Addr)
+	}
+
+	// The premise: the journal DOES carry the hinted address in a rendered
+	// action, so a snapshot that refused the hint really would diverge. A
+	// renderer that stopped naming addresses would make this test vacuous.
+	hinted := false
+	for _, e := range entries {
+		for _, a := range e.Actions {
+			if strings.Contains(a, "SOLICIT") && strings.Contains(a, test6Addr) {
+				hinted = true
+			}
+		}
+	}
+	if !hinted {
+		t.Fatalf("no recorded Solicit action names %s; this case cannot detect what it is for", test6Addr)
+	}
+
+	rec := v6ParamsRecord(t, saved, run...)
+	if rec.Params6 == nil {
+		t.Fatal("the record kept no v6 parameters")
+	}
+
+	// One: the record's own journal against the record's own snapshot.
+	if _, err := proto.Replay6(*rec.Params6, entries); err != nil {
+		t.Fatalf("a run's own journal does not replay against its own snapshot: %v", err)
+	}
+
+	// Two: the set the restart needs is in the record, beside the snapshot.
+	if !slices.Contains(rec.Declined6, declined) {
+		t.Fatalf("the record reports Declined6=%v, want %s: dropping the set makes the replay clean and the restart wrong", rec.Declined6, test6Addr)
+	}
+
+	// Three: joined again, the pair is still a restart that does not walk
+	// back into the address the previous run gave back.
+	r2 := newRig6(t, rebuiltFrom6(rec), answerNormally6(t))
+	defer func() { _ = r2.stop() }()
+	r2.waitSent(t, wire.MsgSolicit)
+	if got := solicitedAddrs(t, mustSolicit6(t, r2)); len(got) != 0 {
+		t.Fatalf("the client rebuilt from the record's snapshot and its declined set asks for %v on its first Solicit", got)
+	}
+}
+
+// TestTheRecordsDeclinedSetIsNotAliased is the aliasing control for the field
+// the case above adds: an event's slice belongs to the caller, and a record
+// that kept it would say something different after the caller's next write.
+func TestTheRecordsDeclinedSetIsNotAliased(t *testing.T) {
+	mine := []netip.Addr{netip.MustParseAddr(test6Addr)}
+	rec := v6ParamsRecord(t, testParams6(), mine...)
+	mine[0] = netip.MustParseAddr("fd00:99::dead")
+
+	if len(rec.Declined6) != 1 || rec.Declined6[0].String() != test6Addr {
+		t.Fatalf("the record's declined set is %v after the caller wrote into its own slice", rec.Declined6)
+	}
+}
+
+// TestAServersSolMaxRTReachesTheManagersParameters is the observer the
+// params6 mirror owes.
+//
+// Params6 is what the machine RAN WITH, and the manager holds a copy taken
+// once at construction rather than deep-copying four slices and a Resume6 out
+// of the machine on every Step. That is only correct while SOL_MAX_RT and
+// INF_MAX_RT are the ONLY fields that move after New6 (§21.24, §21.25:
+// "MUST process an included SOL_MAX_RT option"), and the mirror carries them
+// across by copying two integers.
+//
+// So this case drives a server that sets both and asserts the manager's answer
+// changed. Without it the mirror is a copy that silently stops tracking, and
+// a caller persisting the parameters would write down a retransmission ceiling
+// the run never used — the one on the wire in a Solicit storm.
+//
+// THE BOUND IS NAMED IN THE FAILURE, because it is the thing this case cannot
+// see: a third mutable field added to Machine6 would need a line here and in
+// proto.Machine6.MaxRT, and nothing would redden if it did not get one.
+func TestAServersSolMaxRTReachesTheManagersParameters(t *testing.T) {
+	const (
+		sol = 900
+		inf = 1800
+	)
+	base := testParams6()
+	if base.SolMaxRT == sol*proto.Second || base.InfMaxRT == inf*proto.Second {
+		t.Fatalf("the defaults are already %s/%s; this case cannot see a change", base.SolMaxRT, base.InfMaxRT)
+	}
+
+	r := newRig6(t, base, func(req *wire.MessageV6, n int) []*wire.MessageV6 {
+		msgs := answerNormally6(t)(req, n)
+		for _, m := range msgs {
+			if m.Type == wire.MsgAdvertise {
+				m.Options = append(m.Options,
+					optV6(wire.OptV6SolMaxRTCode, u32(sol)),
+					optV6(wire.OptV6InfMaxRTCode, u32(inf)))
+			}
+		}
+		return msgs
+	})
+	r.acquire6(t)
+	defer func() { _ = r.stop() }()
+
+	got, ok := r.mgr.Params6()
+	if !ok {
+		t.Fatal("a v6 manager reports no v6 parameters")
+	}
+	if got.SolMaxRT != sol*proto.Second {
+		t.Errorf("the manager reports SOL_MAX_RT %s after a server set %ds; the mirror is not tracking "+
+			"proto.Machine6.MaxRT, and any third mutable field would fail the same way", got.SolMaxRT, sol)
+	}
+	if got.InfMaxRT != inf*proto.Second {
+		t.Errorf("the manager reports INF_MAX_RT %s after a server set %ds", got.InfMaxRT, inf)
+	}
+
+	// The preservation half: the mirror carries the two that move and nothing
+	// else drifted with them.
+	if got.IAID != base.IAID || !slices.Equal(got.DUID, base.DUID) {
+		t.Errorf("the manager reports IAID %d / DUID %x, want the configured %d / %x", got.IAID, got.DUID, base.IAID, base.DUID)
 	}
 }

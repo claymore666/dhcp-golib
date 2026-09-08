@@ -274,19 +274,33 @@ func (c *Client6) NDStats() NDStats { return c.nd.Stats() }
 // if it were removed.
 func (c *Client6) DADStats() DADStats { return c.dad.Stats() }
 
-// Params6 is the protocol parameters as they now stand, including every
-// address this client has declined.
+// Params6 is the protocol parameters this client RAN WITH: what it was
+// configured with, with SOL_MAX_RT and INF_MAX_RT as the servers have set them.
 //
-// IT IS WHAT A CALLER PERSISTS, and Params6.Declined is why: a client that
-// declined the address it was asked to prefer, and is then restarted from a
-// record built out of the parameters it was CONFIGURED with, asks for that
-// address again on its first Solicit. The set this returns is the difference
-// between a restart that recovers and one that resumes the loop.
+// IT IS HALF OF WHAT A CALLER PERSISTS, and Declined is the other half. This
+// one is what makes a saved journal replayable — proto.Replay6 rebuilds a
+// machine from it — so it must not carry what the run accumulated, or a run's
+// own journal stops replaying against a snapshot of its own parameters.
 //
 // It is a snapshot: the slices are the caller's own and the client runs on.
 func (c *Client6) Params6() proto.Params6 {
 	p, _ := c.mgr.Params6()
 	return p
+}
+
+// Declined is every address this client has sent a Decline for.
+//
+// IT IS THE HALF OF A PERSISTED CLIENT THAT MUST NOT BE DROPPED: a client that
+// declined the address it was asked to prefer, and is then restarted from
+// parameters alone, asks for that address again on its first Solicit — the
+// server offers it, the other node is still answering for it, and §18.2.10.1's
+// recovery walks back into the address it just gave back. A caller keeps this
+// beside the parameters and puts it into the next Params6.Declined.
+//
+// It is a snapshot: the slice is the caller's own and the client runs on.
+func (c *Client6) Declined() []netip.Addr {
+	d, _ := c.mgr.Declined6()
+	return d
 }
 
 // Journal returns the recorded v6 steps, for proto.Replay6.
