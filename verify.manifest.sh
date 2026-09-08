@@ -692,6 +692,23 @@ DOC_NUMBER_CEILING=73
 # raises the ceiling with its lines named, which is the ratchet the paragraph
 # above asks for, and docNumberMarginCap in internal/manifest holds this edge
 # from growing.
+#
+# THE MARGIN IS HEADROOM IN ONE DIRECTION AND THE ROW REFUSES IN BOTH, which
+# the paragraph above did not say and which a wording pass pays for. The band
+# is [marker, marker + margin]. A docs change that ADDS one bare-number line
+# stays green. A docs change that REMOVES one, or that reflows two of them onto
+# a single line, falls under the marker and is RED, so a wording pass still
+# costs a manifest edit in the falling direction. That is deliberate and it is
+# not an oversight: the lower edge is the whole reason this margin exists at
+# all, since a ceiling standing above its population IS an allowance, which is
+# what 66 against 64 bought on the previous head. Widening the band downward by
+# the margin would hand that allowance back, doubled. What the falling
+# direction costs is bounded and named: one line to the marker and one to the
+# ceiling, printed by scripts/sweep-doc-numbers.sh's own diagnosis as the pair
+# internal/manifest accepts. MEASURED 2026-09-08 in this round: deleting one
+# bare-number line from docs/design.md takes the population to 71 and the row
+# red, and the pair the diagnosis then prints, marker 71 with the ceiling at
+# 72, leaves the row green and internal/manifest green.
 DOC_NUMBER_MARGIN=1
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the

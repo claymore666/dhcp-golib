@@ -143,12 +143,12 @@ case "${1:-}" in
 		printf 'DOC NUMBERS: %d prose line(s) carry a bare number, over the ceiling of %d in verify.manifest.sh.\n' "$n" "$DOC_NUMBER_CEILING" >&2
 		printf 'A derived number no pattern here recognises is the shape this ceiling exists to catch. The whole population:\n' >&2
 		population >&2
-		printf 'Delete the number and name the instrument that prints it, or raise DOC_NUMBER_CEILING deliberately.\n' >&2
+		printf 'Delete the number and name the instrument that prints it. To accept the population instead, set the DOC-NUMBER POPULATION marker in verify.manifest.sh to %d and DOC_NUMBER_CEILING=%d, which is marker + margin %d: internal/manifest refuses any other pair.\n' "$n" "$((n + DOC_NUMBER_MARGIN))" "$DOC_NUMBER_MARGIN" >&2
 		exit 1
 	fi
 	if [ "$n" -lt "$((DOC_NUMBER_CEILING - DOC_NUMBER_MARGIN))" ]; then
 		printf 'DOC NUMBERS: %d prose line(s) carry a bare number against a ceiling of %d (margin %d) in verify.manifest.sh.\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN" >&2
-		printf 'The population fell and the ceiling did not: the difference is how many bare numbers may enter the prose with nothing red. Set DOC_NUMBER_CEILING=%d.\n' "$n" >&2
+		printf 'The population fell and the ceiling did not: the difference is how many bare numbers may enter the prose with nothing red. Set the DOC-NUMBER POPULATION marker in verify.manifest.sh to %d and DOC_NUMBER_CEILING=%d, which is marker + margin %d: internal/manifest refuses any other pair.\n' "$n" "$((n + DOC_NUMBER_MARGIN))" "$DOC_NUMBER_MARGIN" >&2
 		exit 1
 	fi
 	printf 'doc-numbers: %d prose line(s) carry a bare number (ceiling %d, margin %d); none is a shape round 9 removed\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN"

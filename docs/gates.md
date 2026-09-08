@@ -827,6 +827,15 @@ the review's own probe line are refused by name.
 number and adding another is invisible to it, exactly as the declared-test band
 is blind to a swap.
 
+**It is a band, and it refuses in both directions.** `DOC_NUMBER_CEILING` is the
+recorded population plus `DOC_NUMBER_MARGIN`, and the row refuses a population
+over the ceiling and a population under the marker
+[`verify.manifest.sh`](../verify.manifest.sh) records. The margin buys the one
+bare number an ordinary docs change adds. A change that removes one, or that
+reflows two number-carrying lines into a single line, falls under the marker and
+is red, and the diagnosis prints the marker and the ceiling that leave the row
+and the unit suite green.
+
 ### Naming the DEFECT as well as the row, added 2026-08-30 (round 13)
 
 Round 11's contracts pinned, per scenario, which row must go red. Round 12's
