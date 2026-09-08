@@ -1,0 +1,86 @@
+name: actionlint
+
+# Lint the workflows themselves, plus shellcheck over every `run:` block —
+# which is the half that matters here, because `.github/lane/` exists precisely
+# so that the lane's decisions sit in files shellcheck can lint, and the `run:`
+# blocks that remain are the wiring between them. Nothing else in this
+# repository reads a workflow for correctness: internal/publication asserts
+# PROPERTIES of the set (no fork-reachable machine of ours, no secret, no path
+# filter, no unguarded pipeline) and deliberately reads a stated subset of YAML
+# rather than the language.
+#
+# A workflow parse error does not fail loudly on GitHub. It produces a run with
+# no jobs, and a trigger that quietly stops firing looks exactly like a branch
+# nobody pushed to — an absent check reads as absent, never as red. That is the
+# failure this job exists for.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint the workflows
+    runs-on: ubuntu-24.04
+    # MEASURED at the head over three runs, longest 1m03s (see the record).
+    timeout-minutes: 10
+    steps:
+      - name: Check out the commit under lint
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Go, from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # PINNED, and the contrast with govulncheck's `@latest` next door is the
+      # argument rather than an inconsistency: a linter's job is to say the
+      # same thing about the same file tomorrow, so a new rule arriving on its
+      # own is a red push nobody asked for. A vulnerability database's job is
+      # the opposite. Bump this deliberately.
+      - name: Install the linter
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      # actionlint shells out to shellcheck for `run:` blocks, and that one is
+      # the image's rather than pinned here. The version is printed for the
+      # same reason the arbiter prints its core count: when this job reports
+      # something new about a file nobody edited, the first question is what
+      # moved underneath it.
+      - name: Which shellcheck this verdict rests on
+        run: shellcheck --version
+
+      - name: Lint every workflow
+        run: actionlint -color
+
+      # THE VACUITY ANSWER, and it is the reason this step exists rather than a
+      # flourish: `actionlint` over a directory it cannot find, or a build of
+      # it that stopped refusing anything, exits 0 and this job goes green over
+      # a workflow set nobody read. So the linter is driven, in the same job,
+      # against a workflow planted OUTSIDE the repository — an unknown webhook
+      # event, which is the class that produces a run with no jobs — and the
+      # job is red if the linter accepts it.
+      - name: The linter still refuses what this job exists to have refused
+        run: |
+          set -euo pipefail
+          plant="${RUNNER_TEMP}/actionlint-plant"
+          mkdir -p "$plant"
+          cat > "$plant/planted.yml" <<'PLANT'
+          name: planted
+          on:
+            pussh:
+          jobs:
+            j:
+              runs-on: ubuntu-24.04
+              steps:
+                - run: echo planted
+          PLANT
+          if actionlint "$plant/planted.yml"; then
+            echo "::error::actionlint accepted a workflow whose trigger is not an event GitHub honours; a linter with nothing to say passes this job over a set it did not read"
+            exit 1
+          fi
+          echo "the planted workflow was refused, which is what makes the row above a verdict"

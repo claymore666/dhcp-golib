@@ -1,0 +1,69 @@
+name: govulncheck
+
+# Reachable-vulnerability scan. This module requires nothing outside the
+# standard library, so what this scan is really about is the STANDARD LIBRARY:
+# the version of it a consumer of this library builds against, and whether any
+# advisory against it is reachable from code this module actually calls.
+#
+# THE SCAN HAS TEETH AND THEY WERE MEASURED, not assumed. On 2026-09-08 the
+# same command over this tree, with a go1.25.0 toolchain, reported
+# GO-2026-4602 ("FileInfo can escape from a Root in os", fixed in go1.25.8)
+# through internal/gates/scan calling filepath.WalkDir, and exited 3; with the
+# newest 1.25 toolchain it reports nothing and exits 0. The version scanned is
+# the one `setup-go` resolves from the `go` line in go.mod, which is the newest
+# patch of that minor — so a red here says the newest toolchain a consumer can
+# build this with has a reachable advisory, which is a thing to act on rather
+# than a thing to wait out.
+#
+# WHY THE SCANNER IS `@latest` WHILE EVERY ACTION IS PINNED BY SHA: an action
+# is wiring and a pinned one does what it did yesterday, which is what a pin is
+# for. A vulnerability scanner pinned to a version is a scanner that stops
+# learning — its whole value is knowing about an advisory published after the
+# pin was written. The cost is stated rather than hidden: a scanner release can
+# redden a push that changed nothing, and that direction is loud, cheap to
+# read, and the safe one for this particular check.
+#
+# BOUND, beside the claim: nothing here drives the scanner over a KNOWN
+# vulnerable tree on every run, so a govulncheck that silently stopped
+# reporting would look exactly like a clean scan. What is measured is the pair
+# above, on one day, by hand. A gate that plants a vulnerability would need a
+# vulnerable dependency to plant, and this module has no dependency to make
+# vulnerable.
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly, and it is the trigger that matters most here: an advisory
+    # publishes on its own schedule and this module can go a month without a
+    # commit. A scan that only runs on pushes learns nothing between them.
+    - cron: '41 6 * * 3'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan for reachable advisories
+    runs-on: ubuntu-24.04
+    # MEASURED at the head over three runs, longest 1m28s (see the record).
+    timeout-minutes: 10
+    steps:
+      - name: Check out the commit under scan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Go, from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install the scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Which toolchain this verdict is about
+        run: go version
+
+      - name: Scan every package in the module
+        run: govulncheck ./...
