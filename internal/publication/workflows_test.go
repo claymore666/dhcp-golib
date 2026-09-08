@@ -913,7 +913,6 @@ type githubFile struct {
 func githubFiles(t *testing.T) []githubFile {
 	t.Helper()
 	var out []githubFile
-	seen := map[string]bool{}
 	err := filepath.WalkDir(githubDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -929,36 +928,62 @@ func githubFiles(t *testing.T) []githubFile {
 		if err != nil {
 			return err
 		}
-		name := filepath.ToSlash(rel)
-		seen[name] = true
-		out = append(out, githubFile{name, b})
+		out = append(out, githubFile{filepath.ToSlash(rel), b})
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walking %s: %v", githubDir, err)
 	}
 
-	// The floor, and it is DERIVED rather than a number typed here: every
-	// workflow the other rows read has to be one of the files this walk
-	// read. A walk that visits nothing agrees with a rule over it exactly as
-	// loudly as a tree that carries the word nowhere.
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	for _, v := range walkFloor(out, workflowNames(t)) {
+		t.Error(v)
+	}
+	return out
+}
+
+// workflowNames is the workflow set by file name, which is the operand the
+// floor below compares the walk against.
+func workflowNames(t *testing.T) []string {
+	t.Helper()
 	entries, err := os.ReadDir(workflowDir)
 	if err != nil {
 		t.Fatalf("reading %s: %v", workflowDir, err)
 	}
+	var out []string
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
 			continue
 		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// walkFloor is the non-vacuity floor of every rule taken over .github/, and it
+// is a FUNCTION rather than two conditions inside the walk so that the cases
+// can drive it. A floor written inline is a condition with one possible
+// verdict: the tree never empties, so nothing ever sees it speak — measured,
+// as a survivor, in this round's mutation campaign.
+//
+// It is DERIVED rather than a number typed here, and it has two halves because
+// either alone is agreeable: a walk that read nothing at all, and a walk that
+// read something but missed a file the workflow rows do read.
+func walkFloor(files []githubFile, workflows []string) []string {
+	var out []string
+	if len(files) == 0 {
+		out = append(out, fmt.Sprintf("%s holds no file this walk could read; a rule over this directory would pass over an empty domain", githubDir))
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		seen[f.name] = true
+	}
+	for _, n := range workflows {
 		if !seen[path.Join("workflows", n)] {
-			t.Errorf("the walk of %s did not read workflows/%s, which the workflow rows do read; a walk that misses a file cannot say anything is absent from it", githubDir, n)
+			out = append(out, fmt.Sprintf("the walk of %s did not read workflows/%s, which the workflow rows do read; a walk that misses a file cannot say anything is absent from it", githubDir, n))
 		}
 	}
-	if len(out) == 0 {
-		t.Fatalf("%s holds no file; a rule over this directory would pass over an empty domain", githubDir)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
 }
 
@@ -2260,6 +2285,7 @@ func TestThePipelineRefusalSpeaksInBothDirections(t *testing.T) {
 		// the spelling could not tell from a guard. The first is the one
 		// review MEASURED against the real aggregation step.
 		{"the word pipefail in a comment is not a guard", "run: |\n  # pipefail is not needed here\n  a.sh | tee out.txt\n", true},
+		{"the guard SPELLED IN FULL in a comment is not a guard", "run: |\n  # set -o pipefail is not needed here, the left side cannot fail\n  a.sh | tee out.txt\n", true},
 		{"the word PIPESTATUS in a comment is not a guard", "run: |\n  # nobody reads PIPESTATUS here\n  a.sh | tee out.txt\n", true},
 		{"a guard written after the pipeline is not in force at it", "run: |\n  a.sh | tee out.txt\n  set -o pipefail\n", true},
 		{"set +o pipefail turns it off and is not a guard", "run: |\n  set +o pipefail\n  a.sh | tee out.txt\n", true},
@@ -2361,6 +2387,23 @@ func TestTheTextRefusalSpeaksInBothDirections(t *testing.T) {
 		}
 		if !strings.Contains(got[0], "NUL") {
 			t.Errorf("the refusal is %q; want it to name the NUL, which is what a maintainer looks for", got[0])
+		}
+	})
+
+	// The walk's floor, both directions. Every rule taken over .github/ rests
+	// on it, and over the tree it never speaks: a walk that read nothing, and
+	// a walk that read something while missing a workflow the other rows do
+	// read, are the two ways a clean verdict can mean nothing.
+	t.Run("the walk floor", func(t *testing.T) {
+		read := []githubFile{{"workflows/verify.yml", []byte("name: verify\n")}}
+		if v := walkFloor(read, []string{"verify.yml"}); len(v) != 0 {
+			t.Errorf("the floor refused a walk that read every workflow: %v", v)
+		}
+		if v := walkFloor(nil, nil); len(v) != 1 || !strings.Contains(v[0], "empty domain") {
+			t.Errorf("the floor said %v over a walk that read nothing; want one violation naming the empty domain", v)
+		}
+		if v := walkFloor(read, []string{"verify.yml", "codeql.yml"}); len(v) != 1 || !strings.Contains(v[0], "codeql.yml") {
+			t.Errorf("the floor said %v over a walk that missed a workflow; want one violation naming it", v)
 		}
 	})
 
@@ -2543,29 +2586,54 @@ func TestNoWorkflowGrantsAPermissionTheseChecksDoNotNeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading %s: %v", workflowDir, err)
 	}
+	refusals, read, pairs, err := permissionFindings(workflowDir, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range refusals {
+		t.Error(r)
+	}
+	if v := domainFloor("workflow", "permission", read, pairs); v != "" {
+		t.Fatal(v)
+	}
+}
+
+// permissionFindings applies the rule to a DIRECTORY, so the cases below can
+// apply it to one they built. It reports what it refused and the two counts
+// the floor is taken over.
+func permissionFindings(dir string, entries []fs.DirEntry) ([]string, int, int, error) {
+	var out []string
 	read, pairs := 0, 0
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(workflowDir, n))
+		b, err := os.ReadFile(filepath.Join(dir, n))
 		if err != nil {
-			t.Fatalf("reading %s: %v", n, err)
+			return nil, 0, 0, fmt.Errorf("reading %s: %w", n, err)
 		}
 		read++
 		if !rootPermissions.MatchString(string(b)) {
-			t.Errorf("%s declares no top-level `permissions:` key; a workflow that declares none is granted whatever this repository's default is, and a rule about grants cannot be written about a default that lives outside the tree", n)
+			out = append(out, fmt.Sprintf("%s declares no top-level `permissions:` key; a workflow that declares none is granted whatever this repository's default is, and a rule about grants cannot be written about a default that lives outside the tree", n))
 		}
 		refusals, p := permissionRefusals(n, string(b))
 		pairs += p
-		for _, r := range refusals {
-			t.Error(r)
-		}
+		out = append(out, refusals...)
 	}
-	if read == 0 || pairs == 0 {
-		t.Fatalf("read %d workflow(s) and %d permission(s); a scan over an empty domain agrees with everything", read, pairs)
+	return out, read, pairs, nil
+}
+
+// domainFloor is the sentence every scan in this file owes when its domain
+// turns out to be empty, written once and driven by cases. A universal is
+// satisfied by emptying its domain, and a floor that lives as a condition
+// inside the row it guards has one possible verdict — the tree never empties,
+// so nothing ever sees it speak.
+func domainFloor(unit, subject string, read, subjects int) string {
+	if read == 0 || subjects == 0 {
+		return fmt.Sprintf("read %d %s(s) and %d %s(s); a scan over an empty domain agrees with everything", read, unit, subjects, subject)
 	}
+	return ""
 }
 
 // TestThePermissionRefusalSpeaksInBothDirections — the row above is vacuous
@@ -2610,5 +2678,83 @@ func TestThePermissionRefusalSpeaksInBothDirections(t *testing.T) {
 	// fatal for the right reason and silent for the wrong one.
 	if _, pairs := permissionRefusals("case.yml", "permissions:\n  contents: read\n  actions: read\n"); pairs != 2 {
 		t.Errorf("the reader counted %d permission(s) over a block of two; the floor above rests on this count", pairs)
+	}
+
+	// THE SET ITSELF, because the arms above are two guards over one decision
+	// and the mutation campaign showed it: writing `id-token` into
+	// permittedScopes changes no verdict while the arm that names it stands, so
+	// the widening that matters most is the one the cases could not see. The
+	// membership is the rule; it is read here rather than left to whichever
+	// arm happens to fire first.
+	want := []string{"actions", "contents", "security-events"}
+	var got []string
+	for k := range permittedScopes {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("the permitted scopes are %v, want %v; a scope added to this set is a grant this repository's checks may make, and it is a decision to argue in docs/verifying.md rather than a map entry", got, want)
+	}
+
+	// The other floor's predicate, driven both ways. The row above demands a
+	// top-level `permissions:` key in every workflow and the tree gives it
+	// nothing to refuse, so the reading is exercised here.
+	for _, c := range []struct {
+		name  string
+		text  string
+		wantK bool
+	}{
+		{"a workflow that declares one", "name: verify\npermissions:\n  contents: read\n", true},
+		{"a workflow that declares none", "name: verify\non:\n  push:\n", false},
+		{"one declared only inside a job takes the default at the top", "jobs:\n  j:\n    permissions:\n      contents: read\n", false},
+	} {
+		if got := rootPermissions.MatchString(c.text); got != c.wantK {
+			t.Errorf("%s: read a top-level `permissions:` = %t, want %t", c.name, got, c.wantK)
+		}
+	}
+
+	// THE ROW ITSELF, over a directory this test builds, because the tree gives
+	// it nothing to find and a row applied only to a clean tree is a row nobody
+	// has seen speak. Three workflows: one that grants what these checks need,
+	// one that mints a credential, one that declares no grant at all.
+	dir := t.TempDir()
+	write := func(n, text string) {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(text), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", n, err)
+		}
+	}
+	write("good.yml", "name: good\non:\n  push:\npermissions:\n  contents: read\n")
+	write("oidc.yml", "name: oidc\non:\n  push:\npermissions:\n  contents: read\n  id-token: write\n")
+	write("silent.yml", "name: silent\non:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-24.04\n")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading the planted directory: %v", err)
+	}
+	refusals, read, pairs, err := permissionFindings(dir, entries)
+	if err != nil {
+		t.Fatalf("over the planted directory: %v", err)
+	}
+	if read != 3 || pairs != 3 {
+		t.Errorf("read %d workflow(s) and %d permission(s) out of the planted directory, want 3 and 3", read, pairs)
+	}
+	joined := strings.Join(refusals, "\n")
+	if len(refusals) != 2 || !strings.Contains(joined, "oidc.yml") || !strings.Contains(joined, "silent.yml") {
+		t.Errorf("the row refused %v over the planted directory; want exactly the OIDC grant and the workflow that declares none", refusals)
+	}
+
+	// The floor, both directions, over the same counts the row above hands it.
+	for _, c := range []struct {
+		name          string
+		read, subject int
+		wantFloor     bool
+	}{
+		{"a directory with no workflow in it", 0, 0, true},
+		{"workflows read, but no permission in any of them", 3, 0, true},
+		{"no workflow read, though a permission was counted", 0, 1, true},
+		{"the state this row is in over the tree", 4, 9, false},
+	} {
+		if got := domainFloor("workflow", "permission", c.read, c.subject); (got != "") != c.wantFloor {
+			t.Errorf("%s: floor = %q, want a floor = %t", c.name, got, c.wantFloor)
+		}
 	}
 }
