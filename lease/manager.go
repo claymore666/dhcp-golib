@@ -158,6 +158,11 @@ type Manager struct {
 	journal Journal
 	packets PacketRing
 
+	// params6 mirrors the v6 machine's configuration for Params6, updated
+	// under mu after every Step the way dad and router are: the machine
+	// itself belongs to Run's goroutine and cannot be read from a caller's.
+	params6 proto.Params6
+
 	// machine6 is the v6 machine, and it is non-nil exactly when machine is
 	// nil: one Manager runs one lease in one family. Every place that has to
 	// know which reads this field, so "which family is this" has one
@@ -530,6 +535,7 @@ func newManager6(cfg Config) (*Manager, error) {
 	mg := &Manager{
 		cfg:      cfg,
 		machine6: m,
+		params6:  m.Params(),
 		journal:  cfg.Journal,
 		journal6: cfg.Journal6,
 		packets:  cfg.Packets,
@@ -880,6 +886,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// would be one fact derived twice, in two places that can be
 			// edited apart.
 			mg.router = mg.machine6.Router()
+			mg.params6 = mg.machine6.Params()
 			mg.mu.Unlock()
 
 			mg.journal6.Append(proto.NewJournalEntry6(seq, now, rnd, e, from, to, acts))
@@ -1201,6 +1208,29 @@ func (mg *Manager) Router() proto.RouterObservation {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	return mg.router
+}
+
+// Params6 is the v6 machine's configuration as it now stands, and the second
+// value is false on a v4 manager.
+//
+// IT IS HERE FOR Params6.Declined, and that field is why this is not a getter
+// for a value the caller already has. A caller supplies SolMaxRT, the DUID and
+// a Hint; what comes back also carries every address the machine has sent a
+// Decline for, and a caller that persists this value — through
+// SnapshotParams6, into Record.Params6 — hands the machine it builds after a
+// restart the addresses this one found another node answering for. Without it
+// the restart re-hints the address it declined, which is the loop
+// Machine6.declined exists to stop, one process boundary later.
+//
+// The value is deep-copied on the way out, so a caller can keep it while the
+// manager runs on.
+func (mg *Manager) Params6() (proto.Params6, bool) {
+	if !mg.v6() {
+		return proto.Params6{}, false
+	}
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return SnapshotParams6(mg.params6), true
 }
 
 // Config is the stateless configuration this manager last received, on the v6

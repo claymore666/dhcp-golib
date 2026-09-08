@@ -1172,12 +1172,18 @@ func SnapshotParams(p proto.Params) proto.Params {
 // that aliased the caller's slices would say a configuration was sent that the
 // caller went on to change afterwards.
 //
-// The slices are the DUID, the Option Request list and the Resume, and the
-// Resume is the one that carries slices of its own — Clone is what reaches
-// them.
+// The slices are the DUID, the Option Request list, the declined set and the
+// Resume, and the Resume is the one that carries slices of its own — Clone is
+// what reaches them.
+//
+// Declined is the field this record exists to carry across a restart: a
+// machine that declined its hint is rebuilt from what was snapshotted here,
+// and a snapshot that aliased the machine's slice would say a different thing
+// after the next Decline than it said when the record was written.
 func SnapshotParams6(p proto.Params6) proto.Params6 {
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
+	p.Declined = append([]netip.Addr(nil), p.Declined...)
 	p.Resume = p.Resume.Clone()
 	return p
 }

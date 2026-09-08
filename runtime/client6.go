@@ -274,6 +274,21 @@ func (c *Client6) NDStats() NDStats { return c.nd.Stats() }
 // if it were removed.
 func (c *Client6) DADStats() DADStats { return c.dad.Stats() }
 
+// Params6 is the protocol parameters as they now stand, including every
+// address this client has declined.
+//
+// IT IS WHAT A CALLER PERSISTS, and Params6.Declined is why: a client that
+// declined the address it was asked to prefer, and is then restarted from a
+// record built out of the parameters it was CONFIGURED with, asks for that
+// address again on its first Solicit. The set this returns is the difference
+// between a restart that recovers and one that resumes the loop.
+//
+// It is a snapshot: the slices are the caller's own and the client runs on.
+func (c *Client6) Params6() proto.Params6 {
+	p, _ := c.mgr.Params6()
+	return p
+}
+
 // Journal returns the recorded v6 steps, for proto.Replay6.
 func (c *Client6) Journal() []proto.JournalEntry6 { return c.journal.Entries() }
 

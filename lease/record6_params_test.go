@@ -5,6 +5,7 @@ package lease
 import (
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -275,4 +276,141 @@ func TestARecordRefusesTheOtherFamilysParameterSnapshot(t *testing.T) {
 		refuses(t, Record{}, RecordEvent{ID: "rec-x", Seq: 1, Op: OpCreate, Scope: "net-a", CHAddr: testMAC, Params: &p4, Params6: &p6},
 			"a record runs one family")
 	})
+}
+
+// hintedV6Params is the fixture's parameters with the address the fake server
+// hands out asked for as a hint, which is the shape the plugin's persistent
+// client runs in (#213): the caller wants the endpoint to keep the address it
+// had.
+func hintedV6Params() proto.Params6 {
+	p := testParams6()
+	p.Hint = netip.MustParseAddr(test6Addr)
+	return p
+}
+
+// mustSolicit6 is the FIRST Solicit the fake server decoded, which is the one
+// a restart is judged on: a client that re-hints a declined address does it on
+// the message it sends before anything has answered.
+func mustSolicit6(t *testing.T, r *rig6) *wire.MessageV6 {
+	t.Helper()
+	msg := findSent6(r, wire.MsgSolicit)
+	if msg == nil {
+		t.Fatal("no Solicit left the host")
+	}
+	return msg
+}
+
+// solicitedAddrs is the addresses a Solicit asked for, read out of the bytes
+// the fake server decoded.
+func solicitedAddrs(t *testing.T, msg *wire.MessageV6) []netip.Addr {
+	t.Helper()
+	ias, err := msg.Options.IANAs()
+	if err != nil || len(ias) != 1 {
+		t.Fatalf("the Solicit's IA_NA: %v %v", ias, err)
+	}
+	as, err := ias[0].Options.Addrs()
+	if err != nil {
+		t.Fatalf("the Solicit's IA Address options: %v", err)
+	}
+	out := make([]netip.Addr, 0, len(as))
+	for _, a := range as {
+		out = append(out, a.Addr)
+	}
+	return out
+}
+
+// TestADeclinedAddressReachesTheRecordAndTheClientRebuiltFromIt is the whole
+// chain the restart runs through: decline, snapshot, record, rebuild, and the
+// first Solicit the rebuilt client sends.
+//
+// It is one test and not four because the joints are where it broke. The
+// declined set lived on proto.Machine6 and died with the process, while
+// Params6.Hint — the field a caller persists, and the field SnapshotParams6
+// copies into Record.Params6 — survived. A client that declined its hint and
+// came back from its own record asked for that address again on its first
+// message, on a link where the other node is still answering for it.
+//
+// EVERY VALUE COMES OUT OF THE PREVIOUS STAGE. The parameters are the
+// manager's, the record's are the fold's, and the rebuilt client is built from
+// the record's copy — a test that carried its own Params6 forward would pass
+// against a chain in which every stage dropped the field.
+func TestADeclinedAddressReachesTheRecordAndTheClientRebuiltFromIt(t *testing.T) {
+	declined := netip.MustParseAddr(test6Addr)
+
+	r := newRig6(t, hintedV6Params(), answerNormally6(t))
+	r.waitSent(t, wire.MsgSolicit)
+	first := mustSolicit6(t, r)
+	if got := solicitedAddrs(t, first); len(got) != 1 || got[0] != declined {
+		t.Fatalf("the first client's Solicit asked for %v, want the hinted %s; the fixture is not driving the case this test is about", got, test6Addr)
+	}
+	r.settleDAD(t, test6Addr, true)
+	r.settle(t)
+	_ = r.stop()
+
+	saved, ok := r.mgr.Params6()
+	if !ok {
+		t.Fatal("a v6 manager reports no v6 parameters")
+	}
+	if !slices.Contains(saved.Declined, declined) {
+		t.Fatalf("the manager reports Declined=%v after declining %s; a caller has nothing to persist", saved.Declined, test6Addr)
+	}
+
+	rec := v6ParamsRecord(t, saved)
+	if rec.Params6 == nil {
+		t.Fatal("the record kept no v6 parameters")
+	}
+	if !slices.Contains(rec.Params6.Declined, declined) {
+		t.Fatalf("the record's snapshot reports Declined=%v; the set does not survive the write it exists for", rec.Params6.Declined)
+	}
+	if rec.Params6.Hint != declined {
+		t.Fatalf("the record's Hint is %v, want %s: the caller's preference is kept and it is the DECLINED set that overrides it", rec.Params6.Hint, test6Addr)
+	}
+
+	r2 := newRig6(t, *rec.Params6, answerNormally6(t))
+	defer func() { _ = r2.stop() }()
+	r2.waitSent(t, wire.MsgSolicit)
+	if got := solicitedAddrs(t, mustSolicit6(t, r2)); len(got) != 0 {
+		t.Fatalf("the client rebuilt from the record asks for %v on its first Solicit, the address the previous run declined: "+
+			"the server offers it, the other node is still there, and the loop starts again one restart later", got)
+	}
+}
+
+// TestARebuiltClientWithNothingDeclinedStillHints is the preservation control
+// for the case above, and it is the reason the fix is a SET and not a cleared
+// Hint: the ordinary restart is the one where the hint comes back.
+func TestARebuiltClientWithNothingDeclinedStillHints(t *testing.T) {
+	r := newRig6(t, hintedV6Params(), answerNormally6(t))
+	r.acquire6(t)
+	_ = r.stop()
+
+	saved, ok := r.mgr.Params6()
+	if !ok {
+		t.Fatal("a v6 manager reports no v6 parameters")
+	}
+	if len(saved.Declined) != 0 {
+		t.Fatalf("a client that declined nothing reports Declined=%v", saved.Declined)
+	}
+
+	rec := v6ParamsRecord(t, saved)
+	r2 := newRig6(t, *rec.Params6, answerNormally6(t))
+	defer func() { _ = r2.stop() }()
+	r2.waitSent(t, wire.MsgSolicit)
+	got := solicitedAddrs(t, mustSolicit6(t, r2))
+	if len(got) != 1 || got[0] != netip.MustParseAddr(test6Addr) {
+		t.Fatalf("the rebuilt client asks for %v, want the caller's hint %s back (§18.2.1)", got, test6Addr)
+	}
+}
+
+// TestTheV6SnapshotDoesNotAliasTheDeclinedSet is the aliasing control for the
+// one field a caller reads out of a running manager and then keeps.
+func TestTheV6SnapshotDoesNotAliasTheDeclinedSet(t *testing.T) {
+	p := testParams6()
+	p.Declined = []netip.Addr{netip.MustParseAddr(test6Addr)}
+
+	rec := v6ParamsRecord(t, p)
+	p.Declined[0] = netip.MustParseAddr("fd00:99::dead")
+
+	if len(rec.Params6.Declined) != 1 || rec.Params6.Declined[0].String() != test6Addr {
+		t.Fatalf("the record's declined set is %v after the caller wrote into its own slice", rec.Params6.Declined)
+	}
 }

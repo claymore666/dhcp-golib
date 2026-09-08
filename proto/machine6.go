@@ -154,7 +154,15 @@ func New6(p Params6) (*Machine6, error) {
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
 	p.Resume = p.Resume.Clone()
-	return &Machine6{params: p, state: State6Stopped, resume: p.Resume}, nil
+	// The declined set lives on the machine and Params() answers out of
+	// there, so the field is emptied here rather than copied: two carriers of
+	// one set are two that can disagree, and the one a Solicit reads is the
+	// machine's.
+	seed := p.Declined
+	p.Declined = nil
+	m := &Machine6{params: p, state: State6Stopped, resume: p.Resume}
+	m.rememberDeclined(seed)
+	return m, nil
 }
 
 // State returns the current state.
@@ -165,12 +173,19 @@ func (m *Machine6) State() State6 { return m.state }
 func (m *Machine6) Lease() (Lease6, bool) { return m.lease, m.haveLse }
 
 // Params returns the machine's configuration, with SolMaxRT and InfMaxRT as
-// the servers on this link have last set them (§21.24, §21.25).
+// the servers on this link have last set them (§21.24, §21.25) and Declined
+// as this machine has filled it.
+//
+// Declined is the one field that comes back LARGER than it went in, and that
+// is what makes a snapshot of this value worth taking: a caller that persists
+// it across a restart hands the next machine the addresses this one found
+// another node answering for.
 func (m *Machine6) Params() Params6 {
 	p := m.params
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
 	p.Resume = p.Resume.Clone()
+	p.Declined = append([]netip.Addr(nil), m.declined...)
 	return p
 }
 
