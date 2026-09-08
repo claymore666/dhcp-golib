@@ -2036,3 +2036,151 @@ jobs:
 		})
 	}
 }
+
+// runBlock is one `run:` script lifted out of a workflow, with the line the
+// step starts on so a refusal can point at it.
+type runBlock struct {
+	line int
+	body string
+}
+
+// runBlocks returns every `run:` script in a workflow, block form and inline
+// form alike. It is textual, like every scan in this file, and the subset it
+// reads is stated: `run:` at any indentation, a block scalar (`|`, `|-`, `>`)
+// continuing while the indentation is deeper than the key's, or the rest of
+// the line otherwise.
+func runBlocks(text string) []runBlock {
+	var out []runBlock
+	lines := strings.Split(text, "\n")
+	key := regexp.MustCompile(`^(\s*)-?\s*run:\s*(.*)$`)
+	for i := 0; i < len(lines); i++ {
+		m := key.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		indent := len(m[1])
+		rest := strings.TrimSpace(m[2])
+		if rest != "" && !strings.HasPrefix(rest, "|") && !strings.HasPrefix(rest, ">") {
+			out = append(out, runBlock{i + 1, rest})
+			continue
+		}
+		var body []string
+		for j := i + 1; j < len(lines); j++ {
+			ln := lines[j]
+			if strings.TrimSpace(ln) == "" {
+				body = append(body, ln)
+				continue
+			}
+			if len(ln)-len(strings.TrimLeft(ln, " ")) <= indent {
+				break
+			}
+			body = append(body, ln)
+		}
+		out = append(out, runBlock{i + 1, strings.Join(body, "\n")})
+	}
+	return out
+}
+
+// pipelineLine matches a shell pipeline: a single `|` that is not `||`, and
+// not the YAML block indicator (those never reach here, having been consumed
+// as the key's value).
+var pipelineLine = regexp.MustCompile(`[^|]\|[^|]`)
+
+// TestAPipelineInAWorkflowDoesNotThrowAwayItsVERDICT
+//
+// 2026-09-08, D41, and it is a MEASURED defect rather than a precaution. Run
+// 34214582437: the aggregation step read eleven shard accounts, found five red
+// shards, printed `::error::the oracle matrix concluded 'failure'` and every
+// other refusal it owes, and exited 1 — into `| tee oracle-matrix.txt`. The
+// runner's shell is `bash -e`, which does not set pipefail, so the step's exit
+// status was tee's zero. The job concluded SUCCESS and published
+// `oracle-pass-<hash>`, which is the artefact a later run's skip rests on. The
+// refusal was intact end to end and the pipe threw the verdict away.
+//
+// The rule: a `run:` script that builds a pipeline must either `set -o
+// pipefail` or read `PIPESTATUS`. Both spellings are in this lane already and
+// both are correct; what is refused is neither.
+//
+// BOUNDS, because this is a textual scan over a stated subset:
+//   - It reads `|` as a pipeline wherever it is not `||`. A literal pipe
+//     inside a quoted string or a regex would be refused too. That direction
+//     names a line and a reason, and the fix — one `set -o pipefail` — is
+//     harmless where the pipeline was innocent.
+//   - It asks whether the guard is present in the same script, not whether it
+//     is in FORCE at the pipeline. A `set +o pipefail` after it would pass.
+//     What that leaves is deliberate: this refuses the silent omission, not a
+//     deliberate suppression, which is the shape the arbiter step uses
+//     (`set +e` around a pipeline whose PIPESTATUS it then reads).
+func TestAPipelineInAWorkflowDoesNotThrowAwayItsVERDICT(t *testing.T) {
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", workflowDir, err)
+	}
+	read, blocks := 0, 0
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(workflowDir, n))
+		if err != nil {
+			t.Fatalf("reading %s: %v", n, err)
+		}
+		read++
+		for _, rb := range runBlocks(string(b)) {
+			blocks++
+			for _, f := range unguardedPipelines(n, rb) {
+				t.Error(f)
+			}
+		}
+	}
+	if read == 0 || blocks == 0 {
+		t.Fatalf("read %d workflow(s) and %d run: block(s); a scan over an empty domain agrees with everything", read, blocks)
+	}
+}
+
+// unguardedPipelines is the rule, written once so the cases below drive the
+// same code the workflows are held to.
+func unguardedPipelines(name string, rb runBlock) []string {
+	var out []string
+	if strings.Contains(rb.body, "pipefail") || strings.Contains(rb.body, "PIPESTATUS") {
+		return nil
+	}
+	for i, ln := range strings.Split(rb.body, "\n") {
+		code := stripComment(ln)
+		if !pipelineLine.MatchString(code) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s: the run: block at line %d pipes at line %d, %q, and neither sets `set -o pipefail` nor reads PIPESTATUS; the step's exit status is the LAST command's, so a refusal on the left of the pipe is thrown away — measured on run 34214582437, where a red oracle matrix concluded success", name, rb.line, rb.line+1+i, strings.TrimSpace(ln)))
+	}
+	return out
+}
+
+// TestThePipelineRefusalSpeaksInBothDirections — the refusal above is vacuous
+// over the tree by design, so it is driven here.
+func TestThePipelineRefusalSpeaksInBothDirections(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		refuse bool
+	}{
+		{"a bare pipeline", "run: |\n  a.sh | tee out.txt\n", true},
+		{"guarded by pipefail", "run: |\n  set -o pipefail\n  a.sh | tee out.txt\n", false},
+		{"guarded by PIPESTATUS", "run: |\n  set +e\n  a.sh | tee out.txt\n  rc=\"${PIPESTATUS[0]}\"\n", false},
+		{"an or, not a pipe", "run: |\n  a.sh || true\n", false},
+		{"a pipe in a comment only", "run: |\n  # a.sh | tee out.txt\n  a.sh\n", false},
+		{"an inline run with a pipe", "run: a.sh | tee out.txt\n", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rbs := runBlocks(c.text)
+			if len(rbs) != 1 {
+				t.Fatalf("parsed %d run: block(s) out of the case, want 1: %#v", len(rbs), rbs)
+			}
+			got := unguardedPipelines("case.yml", rbs[0])
+			if (len(got) > 0) != c.refuse {
+				t.Errorf("refused = %t, want %t (%v) over %q", len(got) > 0, c.refuse, got, rbs[0].body)
+			}
+		})
+	}
+}

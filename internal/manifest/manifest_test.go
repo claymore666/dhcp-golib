@@ -1007,19 +1007,31 @@ var docNumberMarker = regexp.MustCompile(`(?m)^# DOC-NUMBER POPULATION MEASURED 
 // paragraph's own number would have reddened the row it justifies — and no
 // gate could see it, because prose beside machinery is a claim nobody reads.
 //
-// Three readings, one fact:
+// Three readings, one fact, and only two of them are made HERE:
 //   - the marker, which is what the author says was measured;
 //   - the constant, which is what the row enforces;
-//   - what scripts/sweep-doc-numbers.sh --check COUNTS today, which is the
-//     population itself.
+//   - what scripts/sweep-doc-numbers.sh counts, which is the population — and
+//     that comparison is the DOC-NUMBERS ROW's, made by the arbiter on every
+//     run, at DOC_NUMBER_MARGIN=0, where it is an equality. Marker equals
+//     constant equals population follows, and the number that was wrong is the
+//     one this test reads.
 //
-// The sweep is run, not parsed out of the manifest: this is the read-back, and
-// a comparison of two numbers that both came from the same file would be the
-// defect one level up. The date is required so a re-measurement is dated
-// rather than a digit quietly overwritten.
+// WHY THE SWEEP IS NOT RUN AGAIN HERE, which was tried and MEASURED wrong on
+// run 34214582437: re-running it inside the unit suite makes a second
+// doc-numbers row out of a test, and it reddens on exactly the trees the
+// SELF-DRIVE row plants a bare number into — which is a row in
+// SELF_DRIVE_SURVIVES, so the arbiter's own self-drive went red carrying
+// `unit-suite=FAIL (unplanted, went red)`, and five oracle shards with it. A
+// new observer may not redden a row another row's plant owns. The self-drive
+// preservation set is what caught it, working exactly as written.
+//
+// The date is required so a re-measurement is dated rather than a digit
+// quietly overwritten.
 //
 // BOUND: it says nothing about whether the population SHOULD be that size.
-// docNumberCeilingCap above is what holds it from growing.
+// docNumberCeilingCap above is what holds it from growing. It also rests on
+// DOC_NUMBER_MARGIN being zero for the transitive step, which is asserted
+// below rather than assumed.
 func TestTheStatedPopulationIsWhatTheSweepCounts(t *testing.T) {
 	src := readManifest(t)
 	m := docNumberMarker.FindAllStringSubmatch(src, -1)
@@ -1034,23 +1046,13 @@ func TestTheStatedPopulationIsWhatTheSweepCounts(t *testing.T) {
 	if stated != ceiling {
 		t.Errorf("the derivation says it measured %d on %s and DOC_NUMBER_CEILING is %d; with DOC_NUMBER_MARGIN=0 one of those two reddens the doc-numbers row, and the paragraph is the half nothing checked", stated, m[0][1], ceiling)
 	}
-
-	cmd := exec.Command("./scripts/sweep-doc-numbers.sh", "--check")
-	cmd.Dir = "../.."
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("scripts/sweep-doc-numbers.sh --check refused, so the stated population was not read back: %v\n%s", err, out)
-	}
-	counted := regexp.MustCompile(`doc-numbers: ([0-9]+) prose line`).FindSubmatch(out)
-	if counted == nil {
-		t.Fatalf("the sweep printed no count to read back:\n%s", out)
-	}
-	got, err := strconv.Atoi(string(counted[1]))
-	if err != nil {
-		t.Fatalf("the sweep's count %q does not parse: %v", counted[1], err)
-	}
-	if got != stated {
-		t.Errorf("the derivation says it measured %d on %s and the sweep counts %d today; re-measure and write the marker, do not move the constant alone", stated, m[0][1], got)
+	// The step the argument above rests on, read rather than assumed: at a
+	// margin of zero the doc-numbers row is an equality between the ceiling and
+	// the population, so pinning the marker to the ceiling pins it to the
+	// population. At any other margin the marker would bound the population
+	// instead of naming it, and this test would be saying less than it looks.
+	if margin := number(t, src, "DOC_NUMBER_MARGIN"); margin != 0 {
+		t.Errorf("DOC_NUMBER_MARGIN is %d, not 0; the doc-numbers row is then a band and the marker above no longer names the population — say what the marker means before widening it", margin)
 	}
 }
 

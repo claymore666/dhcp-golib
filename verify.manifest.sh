@@ -333,12 +333,15 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #   internal/publication/workflows_test.go (1)  TheForbiddenWordIsRefusedIn
 #     EverySpellingGitHubHonours
 #
-# D41 ROUND 2: 620 -> 622, and both are read-backs of a number that used to be
-# stated in prose and checked by nobody:
+# D41 ROUND 2: 620 -> 624. Two are read-backs of a number that used to be
+# stated in prose and checked by nobody, and two are the refusal that answers
+# the pipe which threw a verdict away on run 34214582437:
 #
 #   internal/manifest/manifest_test.go (2)  TheStatedPopulationIsWhatThe
 #     SweepCounts, TheStatedCeilingBandIsTheOneTheOracleChecks
-MIN_DECLARED_TESTS=622
+#   internal/publication/workflows_test.go (2)  APipelineInAWorkflowDoesNot
+#     ThrowAwayItsVERDICT, ThePipelineRefusalSpeaksInBothDirections
+MIN_DECLARED_TESTS=624
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

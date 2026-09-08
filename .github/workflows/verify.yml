@@ -168,8 +168,18 @@ jobs:
       # The matrix's own result is an OPERAND, not the verdict: a shard that
       # failed after writing its account would otherwise be aggregated away by
       # a file that looks complete.
+      #
+      # `set -o pipefail`, and it is not a style choice. MEASURED on run
+      # 34214582437: without it the step's exit status is tee's, so the
+      # aggregation refused five red shards, printed every ::error:: line it
+      # owes — and the JOB CONCLUDED SUCCESS and published this arbiter's
+      # oracle pass. The refusal was intact and the pipe threw it away. Any
+      # pipeline in a run: block here now either sets this or reads
+      # PIPESTATUS, and a test in internal/publication refuses one that does
+      # neither.
       - name: The shards, taken together, are the oracle or they are not
         run: |
+          set -o pipefail
           .github/lane/oracle-aggregate.sh shards \
             "${{ needs.domain.outputs.shard-count }}" \
             "${{ needs.oracle.result }}" | tee oracle-matrix.txt
@@ -260,6 +270,7 @@ jobs:
       # whether the load arrived during the measurement.
       - name: Record the machine this measurement was taken on
         run: |
+          set -o pipefail
           {
             echo "run:            ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}"
             echo "commit:         ${GITHUB_SHA}"
