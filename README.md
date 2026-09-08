@@ -11,6 +11,49 @@ DHCPv4 and DHCPv6, Linux, no dependencies outside the standard library. It
 shells out to no `dhcpcd` or `dhclient` — the protocol is in the process — and
 it needs no root.
 
+## What is there, and what is not
+
+| | DHCPv4 | DHCPv6 |
+|---|:---:|:---:|
+| Take a lease and keep it: renew at T1, rebind at T2, expire when nobody answers | yes | yes |
+| Give the lease back, and cope with a server that refuses it (DHCPNAK / Status Code) | yes | yes |
+| Check the address is free before announcing it, and decline a duplicate (RFC 5227 / RFC 4862) | yes | yes |
+| Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
+| A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
+| Report the address, the DNS servers and the search list | yes | yes |
+| Report the preferred and the valid lifetime as separate deadlines | — | yes |
+| Report the gateway, the static routes and the link MTU | yes | planned |
+| Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | — | yes |
+| Tell a managed link, a stateless link, a SLAAC-only link and a silent server apart | — | yes |
+| Form an address from a Router Advertisement prefix (SLAAC) | — | planned |
+| Prefix delegation (IA_PD) | — | planned |
+| Relay and Reconfigure messages | — | — |
+| Apply anything to the link: an address, a route, a resolver | — | — |
+
+**yes** — in the tree, with a test that drives it, against a real server or
+through the state machine. **planned** — named for v1.0.0 below, and not there
+yet. **—** — not done and not planned for v1.0.0; where the two columns differ
+it is because the protocol has no such thing.
+
+## Status and roadmap
+
+**IPv6 is not finished.** DHCPv6 takes a lease and keeps it, and the matrix
+says where it stops: the Router Advertisement is read for its two flags and
+nothing else is taken from it, no address is formed from a prefix, and there is
+no prefix delegation. The IPv4 column has no planned cell outstanding.
+
+**Pre-1.0 and the API is not stable.** It moves without a deprecation cycle,
+and there is no tagged release yet, so a consumer takes a commit. One consumer
+is being built on it; nothing that uses it has shipped.
+
+**v1.0.0 is when the planned cells are shipped.** They are the IPv6 half of the
+`docker-net-dhcp` plugin's `v2.2.0` milestone, which is where that work is
+tracked and where each of those rows has an issue. Until then the API may move
+under you.
+
+What works today, claim by claim with the test that drives each one, is
+`docs/design.md`.
+
 ## Usage
 
 ```
@@ -164,8 +207,8 @@ Stated because a bound nobody writes down is read as a guarantee.
   resolver written. The library reports; you configure.
 - **No address management.** It asks a server for a lease and reports what it
   got. It is a client, not an IPAM.
-- **No prefix delegation** (IA_PD), no DHCPv6 relay, and no SLAAC — the v6
-  client observes Router Advertisements and configures no prefix from them.
+- **No DHCPv6 relay.** A Relay-forward or a Relay-reply is refused by the
+  decoder rather than read: this is a client, not a relay agent.
 - **No DHCPINFORM.** An IPv4 caller that already has an address and wants only
   the parameters is not served. DHCPv6's Information-request is a different
   case and is sent: it is how a stateless link is served.
@@ -176,13 +219,6 @@ Stated because a bound nobody writes down is read as a guarantee.
 - **Linux only**, and IPv4 unicast renewal needs the peer's hardware address
   learned from a frame it sent — a unicast it cannot address is refused rather
   than broadcast anyway.
-
-## Status
-
-**Pre-1.0 and the API is not stable.** It moves without a deprecation cycle,
-and there is no tagged release yet, so a consumer takes a commit. One consumer
-is being built on it; nothing that uses it has shipped. What works today, and
-what does not, is `docs/design.md`.
 
 ## Testing
 
