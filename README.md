@@ -21,35 +21,38 @@ it needs no root.
 | Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
-| Report the preferred and the valid lifetime as separate deadlines | — | yes |
+| Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
 | Report the gateway, the static routes and the link MTU | yes | planned |
-| Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | — | yes |
-| Tell a managed link, a stateless link, a SLAAC-only link and a silent server apart | — | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | — | planned |
-| Prefix delegation (IA_PD) | — | planned |
-| Relay and Reconfigure messages | — | — |
-| Apply anything to the link: an address, a route, a resolver | — | — |
+| Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | by design | yes |
+| Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
+| Form an address from a Router Advertisement prefix (SLAAC) | n/a | planned |
+| Prefix delegation (IA_PD) | n/a | planned |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | by design | planned |
+| Act as a relay agent | by design | by design |
+| Apply anything to the link: an address, a route, a resolver | by design | by design |
 
-**yes** — in the tree, with a test that drives it, against a real server or
-through the state machine. **planned** — named for v1.0.0 below, and not there
-yet. **—** — not done and not planned for v1.0.0; where the two columns differ
-it is because the protocol has no such thing.
+**yes** — in the tree today, with a test that drives it, against a real server
+or through the state machine. **planned** — not there yet, and named for
+v1.0.0 below. **by design** — deliberately not done, and "What it does not do"
+says why. **n/a** — the protocol has no such thing.
 
 ## Status and roadmap
 
 **IPv6 is not finished.** DHCPv6 takes a lease and keeps it, and the matrix
 says where it stops: the Router Advertisement is read for its two flags and
-nothing else is taken from it, no address is formed from a prefix, and there is
-no prefix delegation. The IPv4 column has no planned cell outstanding.
+nothing else is taken from it, no address is formed from a prefix, there is no
+prefix delegation, and a server cannot reconfigure a client that already holds
+a lease. The DHCPv4 column has no `planned` row.
 
 **Pre-1.0 and the API is not stable.** It moves without a deprecation cycle,
 and there is no tagged release yet, so a consumer takes a commit. One consumer
 is being built on it; nothing that uses it has shipped.
 
-**v1.0.0 is when the planned cells are shipped.** They are the IPv6 half of the
-`docker-net-dhcp` plugin's `v2.2.0` milestone, which is where that work is
-tracked and where each of those rows has an issue. Until then the API may move
-under you.
+**v1.0.0 is when every `planned` row above is shipped — those rows, and
+nothing else.** They are this library's share of the IPv6 work on the
+`docker-net-dhcp` plugin's `v2.2.0` milestone; that milestone is wider than
+this matrix, and its other rows land in the plugin rather than here. A `by
+design` row does not become a `planned` one by waiting.
 
 What works today, claim by claim with the test that drives each one, is
 `docs/design.md`.
@@ -207,8 +210,13 @@ Stated because a bound nobody writes down is read as a guarantee.
   resolver written. The library reports; you configure.
 - **No address management.** It asks a server for a lease and reports what it
   got. It is a client, not an IPAM.
-- **No DHCPv6 relay.** A Relay-forward or a Relay-reply is refused by the
-  decoder rather than read: this is a client, not a relay agent.
+- **No relay agent.** This is a client: a DHCPv6 Relay-forward or a Relay-reply
+  is refused by the decoder rather than parsed, and nothing here forwards
+  another host's messages.
+- **No server-initiated reconfiguration on IPv4.** A message that arrives at a
+  bound client with no exchange in flight is discarded rather than acted on,
+  RFC 3203's DHCPFORCERENEW included. DHCPv6's Reconfigure is a different case
+  and is a `planned` row above.
 - **No DHCPINFORM.** An IPv4 caller that already has an address and wants only
   the parameters is not served. DHCPv6's Information-request is a different
   case and is sent: it is how a stateless link is served.
