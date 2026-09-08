@@ -840,9 +840,26 @@ func treeWorkflows(t *testing.T) ([]workflow, []unresolvedCall) {
 // fork's push is a push in the fork — so a lane triggered only by those runs
 // nothing on a fork's behalf.
 //
-// IT DOES NOT REFUSE `self-hosted`. The lane is self-hosted by decision (D36),
+// IT DOES NOT REFUSE `self-hosted`. The lane was self-hosted by decision (D36),
 // so a gate that refused the label would have been red the day it was written
 // and would have been deleted rather than obeyed.
+//
+// SINCE D41 (2026-09-08) THIS ROW IS VACUOUS OVER THIS TREE, and saying so is
+// the point of this paragraph. Every job in .github/workflows runs on
+// `ubuntu-24.04`; the standing runner stays registered and idle, and no
+// workflow names its label. So forkReachabilityFindings returns nothing here
+// for a reason that is a fact about today's tree rather than a property of the
+// check — which is the state a reader has to be told about, because a check
+// nobody can make speak is indistinguishable from a check that cannot.
+//
+// WHAT KEEPS IT FROM BEING A CHECK WITH ONE POSSIBLE VERDICT is that its
+// verdict is driven elsewhere and not here:
+// TestTheWorkflowScanRefusesTheShapesItExistsToRefuse and
+// TestAForkTriggerReachesTheWorkflowsItCalls put fork-reachable self-hosted
+// pairs, direct and inherited through a `uses:` edge, through the same
+// functions and demand the finding. This row is the application of that
+// machinery to the tree, and the day a job here needs a machine of ours it is
+// the only thing between that machine and a stranger's tree.
 func TestNoSelfHostedJobIsReachableFromAForkPullRequest(t *testing.T) {
 	for _, f := range forkReachabilityFindings(treeWorkflows(t)) {
 		t.Error(f)
@@ -1815,6 +1832,183 @@ jobs:
 			}
 			if via != c.wantVia {
 				t.Errorf("the finding names the workflow the trigger was inherited from = %t, want %t (%v)", via, c.wantVia, found)
+			}
+		})
+	}
+}
+
+// pathFilterKey matches GitHub's own way of writing a second list of the
+// oracle's domain into a workflow: `paths:` and `paths-ignore:` under a
+// trigger. It is anchored on the key, at any indentation, because the depth it
+// legitimately appears at is inside an `on:` block, which is exactly where the
+// scan above walks past it.
+var pathFilterKey = regexp.MustCompile(`^\s*['"]?paths(-ignore)?['"]?:`)
+
+// pathFilterRefusals names every line of a workflow that filters the lane on a
+// typed path list.
+func pathFilterRefusals(name, text string) []string {
+	var out []string
+	for i, ln := range strings.Split(text, "\n") {
+		if !pathFilterKey.MatchString(stripComment(ln)) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s:%d: read %q; refused: %s", name, i+1, strings.TrimSpace(ln), pathFilterReason))
+	}
+	return out
+}
+
+// pathFilterReason is the sentence, written once.
+const pathFilterReason = "a `paths:` or `paths-ignore:` filter is a second derivation of which files a check is about; verify.sh already derives the oracle's domain — the set its skip stamp hashes — and `./verify.sh --oracle-hash` is how the lane asks. Two derivations of one fact give two answers and the looser one decides which pushes are checked, so the second one is refused rather than kept in step by hand"
+
+// oracleDomainAsk is the question the lane is required to ask, and the flag
+// verify.sh is required to answer.
+const oracleDomainAsk = "--oracle-hash"
+
+// TestTheLaneDerivesTheOraclesDomainRatherThanTypingIt is D41's property 5 and
+// D35's property 1, made a data dependency instead of a paragraph.
+//
+// TWO ARMS, and neither is sufficient alone. The first refuses the mechanism a
+// second list would arrive through: GitHub's own `paths:` filter, which would
+// decide whether the oracle runs from a list nothing reconciles against
+// verify.sh. The second demands that the derivation the lane is supposed to
+// use is actually reachable — a lane that asked nothing and filtered nothing
+// would satisfy the first arm perfectly, which is the empty-domain defeat this
+// project has now met in five other checks.
+//
+// WHAT IT DOES NOT CLOSE, stated beside the claim: it reads that the lane asks
+// verify.sh and that verify.sh answers, not that the answer is used to decide
+// anything. The thing that closes THAT is the run itself — a push touching the
+// arbiter runs the matrix, a push that does not skips it — and the lane's own
+// refusal, which is that no skip is written without a run to rest on.
+func TestTheLaneDerivesTheOraclesDomainRatherThanTypingIt(t *testing.T) {
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", workflowDir, err)
+	}
+	read := 0
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || (!strings.HasSuffix(n, ".yml") && !strings.HasSuffix(n, ".yaml")) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(workflowDir, n))
+		if err != nil {
+			t.Fatalf("reading %s: %v", n, err)
+		}
+		read++
+		for _, r := range pathFilterRefusals(n, string(b)) {
+			t.Error(r)
+		}
+	}
+	if read == 0 {
+		t.Fatalf("%s holds no workflow; this rule would pass over an empty domain", workflowDir)
+	}
+
+	// The other direction. A rule that only refuses is satisfied by a lane
+	// that decides nothing.
+	for _, f := range []string{"../../.github/lane/domain.sh", "../../.github/lane/oracle-skip.sh"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v; the lane asks verify.sh for the oracle's domain, and a lane that does not ask is not covered by the arm above", f, err)
+		}
+		if !strings.Contains(string(b), oracleDomainAsk) {
+			t.Errorf("%s does not ask `./verify.sh %s`; something else there is deciding what the oracle's domain is, and nothing reconciles it against the set the stamp hashes", f, oracleDomainAsk)
+		}
+	}
+	arb, err := os.ReadFile("../../verify.sh")
+	if err != nil {
+		t.Fatalf("reading verify.sh: %v", err)
+	}
+	if !strings.Contains(string(arb), oracleDomainAsk) {
+		t.Errorf("verify.sh does not accept %s; the lane asks a question the arbiter no longer answers, and a lane that cannot ask would have to keep a list", oracleDomainAsk)
+	}
+}
+
+// TestThePathFilterRefusalIsRefusedInTheSpellingsGitHubHonours drives the
+// refusal above in both directions, because a rule nobody has seen speak is a
+// rule with one possible verdict — and this one is vacuous over the tree by
+// design, exactly like the fork-reachability row.
+func TestThePathFilterRefusalIsRefusedInTheSpellingsGitHubHonours(t *testing.T) {
+	const filtered = `
+name: verify
+on:
+  push:
+    paths:
+      - verify.sh
+      - scripts/**
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+`
+	const filteredIgnore = `
+name: verify
+on:
+  push:
+    paths-ignore:
+      - docs/**
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+`
+	const filteredQuoted = `
+name: verify
+on:
+  push:
+    "paths":
+      - verify.sh
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+`
+	// THE OTHER DIRECTION. `path:` is another key — actions/upload-artifact
+	// takes one on every job in this lane — and a rule that refused it would
+	// be a rule about letters. A commented-out filter is not a filter either:
+	// the scan strips comments here, unlike the forbidden word, because this
+	// rule is about what GitHub honours rather than about what is written.
+	const notAFilter = `
+name: verify
+on:
+  push:
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./verify.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          path: verify-output.txt
+      # paths: would be a second derivation, so there is none
+`
+	cases := []struct {
+		name     string
+		text     string
+		wantLine int
+	}{
+		{"a paths filter under push", filtered, 5},
+		{"a paths-ignore filter under push", filteredIgnore, 5},
+		{"a quoted paths filter", filteredQuoted, 5},
+		{"path: is another key and a commented filter is not one", notAFilter, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := pathFilterRefusals("verify.yml", c.text)
+			if c.wantLine == 0 {
+				if len(got) != 0 {
+					t.Fatalf("refused a file that filters nothing: %v", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("want exactly one refusal, got %d: %v", len(got), got)
+			}
+			if want := fmt.Sprintf("verify.yml:%d:", c.wantLine); !strings.HasPrefix(got[0], want) {
+				t.Errorf("the refusal must name the line: want a prefix of %q, got %q", want, got[0])
 			}
 		})
 	}

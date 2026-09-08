@@ -1,109 +1,227 @@
 name: verify
 
-# One job, and its verdict IS ./verify.sh's verdict. Nothing here decides
-# anything the arbiter has not already decided; the last step exists only to
-# refuse a green run in which the arbiter did not speak.
+# DECISION 2026-09-08 (D41). Every check on the way into `dev` finishes well
+# under five minutes; `main` and a release may take longer; there is no
+# nightly. So the lane is two lanes with one arbiter between them:
+#
+#   the arbiter        every row of ./verify.sh except the oracle, on a
+#                      GitHub-hosted machine, on every push. Its oracle row is
+#                      SKIPPED, and the skip is earned — see the job.
+#   the oracle matrix  ./scripts/test-verify.sh, cut into shards, one hosted
+#                      job each, and only where somebody pays for it: a push
+#                      to the release branch, a dispatch, or a push whose tree
+#                      reaches an arbiter no green run has published.
+#
+# THERE IS NO `paths:` FILTER HERE, deliberately. "The oracle's domain was
+# touched" is one fact, and verify.sh already derives it — the file set its
+# skip stamp hashes. A path list in this file would be that fact derived
+# twice, and the looser derivation would decide which pushes are checked. The
+# `domain` job asks ./verify.sh --oracle-hash instead.
+#
+# WHAT MUST STAY TRUE OF THE TRIGGERS: no `pull_request_target`, and no
+# `secret` of any kind. `push` and `workflow_dispatch` are not reachable from
+# a fork — a fork's push is a push in the fork — and internal/publication
+# refuses the pairing of a fork trigger with a runner that is not one of
+# GitHub's own. Since D41 no job here names a self-hosted label at all, so
+# that scan is vacuous over this file and says so in its own comment; it is
+# kept because it is a property of the SET, and the day a job needs a machine
+# of ours it is the only thing standing between that machine and a stranger's
+# tree.
+#
+# `pull_request` IS ABSENT AND THAT IS A CHOICE: `dev` is protected on the job
+# named `the arbiter`, a branch pushed to this repository runs it on `push`,
+# and the head of a pull request from a branch here is a commit that was
+# pushed. A pull request from a FORK would carry no check under this rule —
+# the maintainer pushes such a branch here to check it, which docs/verifying.md
+# states.
 on:
   push:
   workflow_dispatch:
 
+# `actions: read` is what the oracle skip is built on: the lane asks the API
+# whether a green aggregation job published this arbiter's hash. It reads runs,
+# jobs and artifact metadata, and writes none of them.
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  verify:
-    name: the arbiter
-    # DECISION 2026-09-06 (D36), and it is TEMPORARY. This lane ran on a
-    # GitHub-hosted two-core `ubuntu-24.04` for twelve runs and cost about 90
-    # minutes each. It now runs on a standing self-hosted runner labelled
-    # `dhcp-golib`, on the same many-core machine every ceiling and floor in
-    # verify.sh and verify.manifest.sh was derived on, where the same command
-    # takes about a seventh of that. The runner leaves that machine when a
-    # shared pool serves this repository; `runs-on` is then the only line that
-    # moves.
-    #
-    # WHAT MUST STAY TRUE WHILE THIS LINE NAMES A MACHINE OF OURS: no
-    # `pull_request` or `pull_request_target` trigger above. A fork's pull
-    # request proposes the fork's tree, and a self-hosted job reachable from
-    # one runs a stranger's code on that machine. `push` and
-    # `workflow_dispatch` are not reachable that way — a fork's push is a push
-    # in the fork. internal/publication fails the suite if the two ever meet
-    # in one workflow; docs/verifying.md, "In CI", says what a maintainer does
-    # with a contributor's branch instead.
-    #
-    # ONE runner means ONE job at a time and the rest queued. That is a
-    # scheduling property, not a bound: nothing here serialises anything, and
-    # `timeout-minutes` below counts execution, not the wait for a slot.
-    runs-on: [self-hosted, dhcp-golib]
-    # Twice the slowest measurement, which is the rule the hosted bound used
-    # too — it was 190, twice a 94-minute run on two cores. MEASURED on this
-    # machine, four numbers and the run each came from: `./verify.sh --oracle`
-    # takes 818s at 8c87caf and 823s at this branch's tree, both in a local
-    # copy; run 34063690907 measured the whole job from checkout to the last
-    # verdict step at 14m12s (the arbiter step itself 13m53s); run 34065275390,
-    # this branch's green, took 13m51s; and run 34067850871, the slowest of
-    # them, took 15m01s because a reviewer's own oracle had the box at the same
-    # time. Twice that slowest number is 30, exactly, and it is the whole
-    # margin. It is deliberately derived from the SHARED case, because the
-    # shared case is the one that actually happens on a machine people use.
-    #
-    # This bound has already fired once and it fired usefully: run
-    # 34063690907's arbiter was green and the JOB was cancelled at 30 minutes,
-    # because setup-go's cache-save post step never finished. See the note on
-    # that step below. A timeout that catches a step which cannot terminate is
-    # the timeout doing its job, not a number set too low.
-    #
-    # WHAT THIS BOUND DOES NOT COVER, said here because the number looks
-    # generous and is not: a job that waits for the single runner's slot is
-    # not consuming this budget, but a job sharing the machine with a
-    # reviewer's own `./verify.sh --oracle` IS. That case is measured rather
-    # than assumed — see docs/verifying.md, "In CI".
-    timeout-minutes: 30
+  domain:
+    name: the oracle's domain
+    runs-on: ubuntu-24.04
+    # A checkout, one `gh api` call and a hash. Ten times the measurement is
+    # still under a minute of work; this bound exists to end a job wedged on
+    # an API that never answers, not to time anything.
+    timeout-minutes: 5
+    outputs:
+      hash: ${{ steps.domain.outputs.hash }}
+      scenarios: ${{ steps.domain.outputs.scenarios }}
+      shard-count: ${{ steps.domain.outputs.shard-count }}
+      shards: ${{ steps.domain.outputs.shards }}
+      run-oracle: ${{ steps.domain.outputs.run-oracle }}
     steps:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # cache: false, and it is not an optimisation — it is the difference
-      # between a job that ends and one that does not. MEASURED, run
-      # 34063690907, the first job this runner ever ran: the arbiter passed in
-      # 13m53s and then setup-go's POST step tarred this user's GOMODCACHE and
-      # GOCACHE into a 16,585,222,854-byte archive over 2m53s and spent the
-      # next thirteen minutes reporting `Sent 0 of 16585222854 (0.0%), 0.0
-      # MBs/sec` until `timeout-minutes` cancelled the job. A repository's
-      # Actions cache holds ten gigabytes, so that archive could never have
-      # been stored; and a STANDING runner keeps both caches on disk between
-      # jobs anyway, under the same user, which is the whole thing the cache
-      # action exists to simulate for machines that do not.
+      # THE RULE OF PROPERTY 5, and it is here rather than in prose: a push to
+      # the release branch and a dispatch pay for the oracle whatever the tree
+      # says. Everything else is decided by the tree's own hash inside
+      # domain.sh, which is the third case — a push that reaches an arbiter no
+      # green run has published.
+      #
+      # SHARD SIZE 8, and the derivation is the argument rather than a table.
+      # The count is the roster divided by it, so a scenario added to
+      # verify.manifest.sh lands in a shard with nothing here edited.
+      - name: Decide whether this push pays for the oracle, and cut the matrix
+        id: domain
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LANE_ALWAYS: ${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && 'yes' || 'no' }}
+        run: .github/lane/domain.sh 8 "$LANE_ALWAYS"
+
+  oracle:
+    name: oracle shard ${{ matrix.shard }}
+    needs: domain
+    if: ${{ needs.domain.outputs.run-oracle == 'yes' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      # A shard is a share of the roster, not a sample of it. `fail-fast: true`
+      # would cancel the other shards on the first red one, and a cancelled
+      # shard leaves no account — which the aggregation then reads as a missing
+      # shard rather than as the failure it was. Every shard runs; the
+      # aggregation says what happened.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.domain.outputs.shards) }}
+    steps:
+      - name: Check out the commit under verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Go, from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # go.mod declares no dependency, so a module cache holds nothing this
+          # build needs; and the one time this lane saved a cache it tarred
+          # 16,585,222,854 bytes into a store that holds ten gigabytes and hung
+          # until the job timed out (run 34063690907).
+          cache: false
+
+      - name: Put this machine in the state the arbiter measures in
+        run: .github/lane/prepare.sh
+
+      # ORACLE_JOBS=1, and it is the point of sharding rather than a
+      # concession. Every ceiling in verify.manifest.sh is a WALL CLOCK derived
+      # with one copy of the suite running at a time; a shard that ran four
+      # copies of verify.sh at once would be measuring contention against a
+      # ceiling that was never derived under it, which is how the two-core
+      # hosted lane's fifteen red rows happened (run 33992151078). The
+      # parallelism lives ACROSS jobs, where it cannot perturb a wall clock.
+      - name: Run this shard of the oracle
+        env:
+          ORACLE_JOBS: 1
+        run: .github/lane/oracle-shard.sh "${{ matrix.shard }}/${{ needs.domain.outputs.shard-count }}" "shard-${{ matrix.shard }}.txt"
+
+      - name: Keep this shard's account whatever the verdict was
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shard-${{ matrix.shard }}.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  oracle-verdict:
+    # THE NAME IS AN INTERFACE. .github/lane/oracle-run-check.sh looks this job
+    # up by name to decide whether a skip may rest on a run, and spells it in
+    # one place; renaming it here without renaming it there is a lane where no
+    # skip is ever earned again — loudly, since the refusal names the job it
+    # could not find.
+    name: the oracle verdict
+    needs: [domain, oracle]
+    if: ${{ needs.domain.outputs.run-oracle == 'yes' && !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the commit under verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect every shard's account
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: oracle-shard-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shards
+
+      # The matrix's own result is an OPERAND, not the verdict: a shard that
+      # failed after writing its account would otherwise be aggregated away by
+      # a file that looks complete.
+      - name: The shards, taken together, are the oracle or they are not
+        run: |
+          .github/lane/oracle-aggregate.sh shards \
+            "${{ needs.domain.outputs.shard-count }}" \
+            "${{ needs.oracle.result }}" | tee oracle-matrix.txt
+
+      # THE PUBLICATION, and it is the whole of what a later run's skip rests
+      # on. It sits below the aggregation and below nothing else: this step
+      # runs only when the step above exited zero, so there is no name to look
+      # up for an arbiter whose oracle did not pass. The hash is in the NAME
+      # because the name is what a later run looks up — a file that had to be
+      # read to be trusted would be a file whose provenance is its own content.
+      #
+      # THE ESCAPE, beside the claim: the artefact expires after thirty days
+      # and the lookup demands an unexpired one, so an untouched arbiter is
+      # re-proved after thirty days rather than skipped forever. That is the
+      # fail-closed direction and it is deliberate.
+      - name: Publish that this arbiter's oracle passed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-pass-${{ needs.domain.outputs.hash }}
+          path: |
+            oracle-matrix.txt
+            shards
+          if-no-files-found: error
+          retention-days: 30
+
+  verify:
+    # THE REQUIRED CHECK. `dev` is protected on this job's name.
+    name: the arbiter
+    # `!cancelled()` and not `always()`: this job runs when the oracle was not
+    # asked for (its needs are then SKIPPED, which `success()` would refuse and
+    # a lane with no arbiter at all is not a lane), and it runs when the oracle
+    # was asked for and went RED — where it then fails loudly, because no run
+    # has published this arbiter and the skip cannot be earned. What it never
+    # does is disappear: an absent check is not a green check.
+    needs: [domain, oracle-verdict]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the commit under verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Go, from go.mod
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
 
-      # TWO STEPS WERE DELETED HERE ON 2026-09-06 AND THIS IS WHY, because the
-      # next reader will otherwise wonder what a runner is missing.
-      #
-      #   - `apt-get install dnsmasq-base iproute2 shellcheck` existed to put
-      #     the three binaries the arbiter shells out to on a fresh hosted
-      #     image. This runner has no sudo — it runs as an unprivileged user —
-      #     so the step could not work here; and it has nothing to do, because
-      #     the local arbiter runs on this machine before every push and would
-      #     fail its shellcheck, netns-suite or dnsmasq rows if any of them
-      #     were absent. The netns tests find dnsmasq on PATH or in the usual
-      #     sbin directories, which is where this machine keeps it.
-      #   - `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` existed
-      #     because the hosted image's AppArmor let an unprivileged user
-      #     namespace be created and then denied every capability inside it.
-      #     This kernel has no such knob at all — the sysctl does not exist —
-      #     and unprivileged user namespaces keep their capabilities, which
-      #     every netns-suite run on this machine has demonstrated since
-      #     2026-08-29. The facts step below records the namespace limit that
-      #     does exist, so an absence is visible rather than assumed.
-      #
-      # Neither deletion moves a bound and neither touches a test. If a future
-      # runner needs either step back, it needs it back with its own
-      # measurement, not with this comment.
+      - name: Put this machine in the state the arbiter measures in
+        run: .github/lane/prepare.sh
 
+      # Deliberately `uname -srm` and not `uname -a` or `uname -n`: this
+      # artefact is kept for thirty days, it is read by anyone who can read the
+      # run, and this repository does not put the name of a machine on the
+      # public record.
+      #
+      # THE LOAD FIGURE IS NEW, 2026-09-08, and it answers a carried review row
+      # rather than being decoration. Contention is a live cause of a red
+      # ceiling row — a co-tenant cost netns-suite 16 s of its 50 s margin on
+      # run 34067850871 — and no run recorded whether it was present, so the
+      # first red of that class reads as drift in the suite. It is printed
+      # BEFORE and AFTER the arbiter, because a figure taken once cannot say
+      # whether the load arrived during the measurement.
       - name: Record the machine this measurement was taken on
         run: |
           {
@@ -111,69 +229,43 @@ jobs:
             echo "commit:         ${GITHUB_SHA}"
             echo "kernel:         $(uname -srm)"
             echo "cores (nproc):  $(nproc)"
+            echo "memory (kB):    $(sed -n 's/^MemTotal: *//p' /proc/meminfo)"
+            echo "load before:    $(cut -d' ' -f1-3 /proc/loadavg)"
             echo "dnsmasq:        $( (command -v dnsmasq >/dev/null && dnsmasq --version || /usr/sbin/dnsmasq --version || true) | head -n 1)"
             echo "go:             $(go version)"
             echo "userns maxuser: $(cat /proc/sys/user/max_user_namespaces 2>&1 || true)"
             echo "shellcheck:     $( (shellcheck --version || true) | sed -n 's/^version: //p')"
           } | tee runner-facts.txt
 
-      # Deliberately `uname -srm` and not `uname -a` or `uname -n`: this
-      # artefact is kept for thirty days, it is read by anyone who can read the
-      # run, and this repository does not put the name of a machine on the
-      # public record. Nothing else here prints a host name or an address.
-
       # The unit-suite row is a WALL CLOCK against a ceiling, and that ceiling
-      # asks one question: has the suite drifted into waiting. A cold -race
-      # build is not waiting, and the ceiling was derived against a cache a
-      # developer has already warmed.
-      #
-      # RE-MEASURED on this machine 2026-09-06, since the number this step used
-      # to carry (67s cold) was a two-core hosted figure: this command takes 8s
-      # against an empty GOCACHE and 3s against the warm one, and the row it
-      # protects measures 20s against a 102s ceiling. So the step is nearly
-      # free and buys much less than it did — it is KEPT rather than deleted
-      # because the cache it relies on is not guaranteed: a standing runner
-      # warms it, and `setup-go` installing a different toolchain empties it
-      # again in one step, which is exactly the day the row would otherwise be
-      # timing a compile.
+      # asks one question: has the suite drifted into WAITING. A cold -race
+      # build is not waiting, and on a fresh hosted machine the build IS cold —
+      # which is exactly the case this step exists for, and the case the
+      # standing-runner lane had stopped having.
       - name: Compile the race build before anything is timed against a ceiling
         run: go test -race -count=1 -run '^$' ./... > /dev/null
 
-      # ALWAYS --oracle. The skip stamp is a per-clone local cache, and a
-      # standing runner CAN carry one from a previous job in principle — this
-      # flag is what makes that impossible to matter, and the last step refuses
-      # a SKIPPED oracle row outright.
-      #
-      # ORACLE_JOBS IS NOT SET, and that is the change D36 makes here. The
-      # hosted lane pinned it to 1 because two cores could not run two race
-      # suites inside the unit-suite ceiling. This is the machine that ceiling
-      # was derived on, so the lane runs the oracle at its own default — the
-      # same command, at the same job count, that a reviewer runs on this
-      # machine.
-      #
-      # MEASURED 2026-09-06 at 8c87caf, `./verify.sh --oracle` on this box with
-      # ORACLE_JOBS unset: the oracle's own row reported 675s over 77
-      # scenarios, the whole arbiter 818s, unit-suite 20s against its 102s
-      # ceiling and netns-suite 93s against its 140s. No copy came near a
-      # ceiling. The oracle's default is four jobs (scripts/test-verify.sh),
-      # which is also the figure ORACLE_MEASURED_SECONDS in verify.manifest.sh
-      # was taken at, so the floor, the lane and a reviewer's run all describe
-      # one job count.
-      #
-      # THE ESCAPE, stated beside the claim: "unset" means the value comes from
-      # the environment the runner's service was started in. That service
-      # declares none, so the default is what runs; an ORACLE_JOBS exported
-      # into that environment would silently change the lane's job count and
-      # nothing in this repository could see it.
-      - name: Run the arbiter — always with --oracle, never the cached skip
+      # EARN THE SKIP, or do not get one. This writes the local stamp only
+      # after the API says a green `the oracle verdict` job published this
+      # tree's arbiter hash; with no stamp, ./verify.sh below runs the whole
+      # oracle itself and this job hits its timeout instead of reporting a
+      # green it did not earn.
+      - name: Earn the oracle skip, or refuse to
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/lane/oracle-skip.sh "$PWD" oracle-justification.txt
+
+      - name: Run the arbiter
         run: |
           started="$(date +%s)"
           set +e
-          ./verify.sh --oracle 2>&1 | tee verify-output.txt
+          ./verify.sh 2>&1 | tee verify-output.txt
           rc="${PIPESTATUS[0]}"
           set -e
-          printf 'arbiter exit status: %d\narbiter wall clock: %ds\n' \
-            "$rc" "$(( $(date +%s) - started ))" | tee -a runner-facts.txt
+          printf 'arbiter exit status: %d\narbiter wall clock: %ds\nload after:     %s\n' \
+            "$rc" "$(( $(date +%s) - started ))" "$(cut -d' ' -f1-3 /proc/loadavg)" |
+            tee -a runner-facts.txt
           exit "$rc"
 
       - name: Keep the output whatever the verdict was
@@ -184,79 +276,14 @@ jobs:
           path: |
             verify-output.txt
             runner-facts.txt
+            oracle-justification.txt
           if-no-files-found: warn
           retention-days: 30
 
-      # The vacuity refusal. A job whose only operand is an exit status cannot
-      # tell an arbiter that passed from an arbiter that printed nothing, and
-      # cannot tell a full verdict from one taken over a shrunken row roster or
-      # over a SKIPPED oracle. So read the arbiter's own table, and take every
-      # name and count in it out of the manifest at run time rather than
-      # typing any of them here.
+      # The vacuity refusal, and it lives in .github/lane/verdict.sh rather
+      # than here for two reasons that are the same reason: the shellcheck row
+      # lints a script and cannot lint a `run:` block, and a scenario can drive
+      # a script and cannot drive a step.
       - name: The verdict must be the arbiter's own, over every declared row
         if: always()
-        run: |
-          out=verify-output.txt
-          if [ ! -s "$out" ]; then
-            echo "::error::the arbiter produced no output; a run that printed nothing is not a pass"
-            exit 1
-          fi
-
-          # shellcheck source=/dev/null
-          . ./verify.manifest.sh
-          n="$MANIFEST_ROWS_N"
-
-          # EVERY declared row, by name, and no row recording anything else.
-          #
-          # 2026-09-06, carried review row R2. This step used to read the row
-          # COUNT off the verdict line and nothing else, and its acceptance set
-          # was then far wider than the docs describe: a file holding only the
-          # oracle row and the verdict line passed it, and so did a green
-          # output with a `unit-suite FAIL` row appended after it. Reading the
-          # roster instead of the count also makes this an independent read —
-          # the count alone backstopped only a verify.sh that had stopped
-          # reconciling its own roster against the manifest.
-          bad=0
-          for r in "${MANIFEST_ROWS[@]}"; do
-            if ! grep -Eq "^${r} +PASS( |\$)" "$out"; then
-              echo "::error::the arbiter recorded no PASS for the declared row ${r}"
-              grep -E "^${r} +" "$out" || echo "there is no ${r} row in the output at all"
-              bad=1
-            fi
-            if grep -Eq "^${r} +(FAIL|SKIPPED)( |\$)" "$out"; then
-              echo "::error::the output carries a ${r} row that is not a PASS"
-              grep -E "^${r} +(FAIL|SKIPPED)( |\$)" "$out"
-              bad=1
-            fi
-          done
-          [ "$bad" -eq 0 ] || exit 1
-
-          # The oracle's own account, with the scenario count SOURCED from the
-          # manifest: a hand-typed `ORACLE PASS: 0 scenarios` row is an oracle
-          # that ran nothing and used to pass this step. The spelling comes
-          # from the manifest too, so the oracle, the arbiter and this job
-          # cannot drift apart (carried review row R1).
-          if ! grep -Eq "^verify-oracle +PASS +${MANIFEST_ORACLE_PASS_PREFIX} ${#MANIFEST_SCENARIOS[@]} scenarios" "$out"; then
-            echo "::error::the verify-oracle row does not carry the oracle's own account of ${#MANIFEST_SCENARIOS[@]} scenarios; the row printed below says which state this actually is — a SKIPPED oracle, an account over a different population, or a PASS whose detail is not the account"
-            grep -E '^verify-oracle' "$out" || echo "there is no verify-oracle row in the output at all"
-            exit 1
-          fi
-
-          if ! grep -Fxq "VERDICT: PASS ($n steps)" "$out"; then
-            echo "::error::the arbiter did not print VERDICT: PASS ($n steps), the row count verify.manifest.sh declares"
-            grep -E '^VERDICT:' "$out" || echo "there is no VERDICT line in the output at all"
-            grep -E '^[a-z-]+ +FAIL ' "$out" || true
-            exit 1
-          fi
-
-          # One run, one verdict. A green output with a second verdict line
-          # after it is not a green run, and the check above cannot see the
-          # second line.
-          verdicts="$(grep -cE '^VERDICT:' "$out" || true)"
-          if [ "$verdicts" -ne 1 ]; then
-            echo "::error::the output carries ${verdicts} VERDICT lines; one run states one verdict"
-            grep -E '^VERDICT:' "$out"
-            exit 1
-          fi
-
-          echo "the arbiter printed VERDICT: PASS ($n steps) and ran its own oracle over ${#MANIFEST_SCENARIOS[@]} scenarios."
+        run: .github/lane/verdict.sh verify-output.txt oracle-justification.txt
