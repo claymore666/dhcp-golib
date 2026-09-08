@@ -47,8 +47,9 @@ delegation. A server cannot reconfigure a client that already holds a lease.
 The DHCPv4 column has no `planned` row.
 
 The library is pre-1.0 and the API is not stable. It moves without a
-deprecation cycle. There is no tagged release yet, so a consumer takes a
-commit. One consumer is being built on it. Nothing that uses it has shipped.
+deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.
+The API still moves between tags. One consumer is being built on it. Nothing
+that uses it has shipped.
 
 v1.0.0 is when every `planned` row above is shipped. The scope of v1.0.0 is
 exactly those rows. They are this library's share of the IPv6 work on the
