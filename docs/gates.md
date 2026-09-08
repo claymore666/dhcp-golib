@@ -483,6 +483,18 @@ directions, refusing on an empty roster. Scenarios `row-deleted`, `row-added`.
   review named as its own remedy's bound. Scenarios `oracle-stub-total`,
   `oracle-stub-partial`, `oracle-names-fabricated`.
 
+  **When it runs, since D41.** Locally, on demand: `./verify.sh` skips the row
+  when this tree already produced an `ORACLE PASS:` at this arbiter's hash, and
+  `./verify.sh --oracle` runs it regardless. In CI it is a matrix of hosted
+  jobs over shards of the roster, and it runs on a push to the release branch,
+  on `workflow_dispatch`, and on any push whose tree reaches an arbiter no
+  green run has published — which is how "the oracle's own domain changed" is
+  asked, without a second list of paths anywhere. Every other push gets the
+  row SKIPPED, and the skip is red unless the lane can name the run it rests
+  on: a run id and the hash that run passed at, read back from the API rather
+  than carried in a file. `docs/verifying.md`, "In CI", carries the rule, the
+  refusals and the measurements.
+
   **The bound this bullet used to state is now closed, and it is what round 11
   was about.** It read: *"this counts DEFINITIONS, so a scenario body emptied
   of its assertions is defined, counted, and says nothing."* Review B14 did
