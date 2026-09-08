@@ -14,6 +14,11 @@
 #         ./verify.sh --light    also minus the unit suite and the netns row
 #                                (see MANIFEST_SCOPED_OUT_ROWS): a SCOPED run,
 #                                which says so in its verdict line
+#         ./verify.sh --oracle-hash
+#                                print the oracle's domain — its file count and
+#                                the hash the skip stamp is keyed on — and
+#                                measure nothing. The lane asks this question
+#                                instead of keeping a path list of its own.
 # Exit:   0 = PASS, 1 = FAIL. A step that cannot be measured is a FAIL, never
 #         a skip. SKIPPED is not that: it is one row, verify-oracle, declining
 #         to repeat a measurement whose subject has not changed, and it names
@@ -46,11 +51,13 @@ SELF="$ROOT/$(basename "$0")"
 INNER=0
 LIGHT=0
 FORCE_ORACLE=0
+PRINT_ORACLE_HASH=0
 for arg in "$@"; do
 	case "$arg" in
 	--inner) INNER=1 ;;
 	--light) LIGHT=1 ;;
 	--oracle) FORCE_ORACLE=1 ;;
+	--oracle-hash) PRINT_ORACLE_HASH=1 ;;
 	*)
 		echo "VERDICT: FAIL — unknown argument $arg; nothing was measured." >&2
 		exit 1
@@ -109,6 +116,43 @@ row_omitted() { # NAME
 	[ "$LIGHT" -eq 1 ] || return 1
 	in_list "$1" "${MANIFEST_SCOPED_OUT_ROWS[@]}"
 }
+
+# oracle_domain — the ARBITER's own file set and the hash the skip stamp is
+# keyed on, into ORACLE_COVERED, ORACLE_COVERED_N and ORACLE_HASH.
+#
+# It is a function and not two copies for the reason D41 made it one: the lane
+# has to ask which files the oracle is about, in order to decide whether it
+# must run the oracle at all, and a path list typed into a workflow is the same
+# fact derived twice — with the looser derivation deciding. The lane runs
+# `./verify.sh --oracle-hash` and reads this. Nothing else knows the set.
+#
+# The PATHS are hashed beside the bytes: a renamed script is a changed arbiter,
+# and a hash over contents alone cannot see a rename.
+oracle_domain() {
+	ORACLE_COVERED="$( {
+		printf 'verify.sh\nverify.manifest.sh\n'
+		find scripts -type f -printf '%p\n' 2>/dev/null
+	} | LC_ALL=C sort -u)"
+	ORACLE_COVERED_N="$(printf '%s\n' "$ORACLE_COVERED" | grep -c . || true)"
+	ORACLE_HASH="$(printf '%s\n' "$ORACLE_COVERED" | while IFS= read -r f; do
+		if [ -r "$ROOT/$f" ]; then
+			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
+		else
+			printf 'ABSENT  %s\n' "$f"
+		fi
+	done | sha256sum | cut -d' ' -f1)"
+}
+
+# --oracle-hash answers and stops. It is above every row on purpose: it must
+# cost nothing, and a question that measured something on the way would be a
+# run whose verdict nobody read.
+if [ "$PRINT_ORACLE_HASH" -eq 1 ]; then
+	oracle_domain
+	printf 'files %s\nhash %s\nscenarios %s\n' \
+		"$ORACLE_COVERED_N" "$ORACLE_HASH" "${#MANIFEST_SCENARIOS[@]}"
+	printf '%s\n' "$ORACLE_COVERED" | sed 's/^/covers /'
+	exit 0
+fi
 
 # The wall-clock ceiling on the unit suite, in seconds — T2's second
 # instrument, reading the clock where the identifier gate reads source.
@@ -829,10 +873,22 @@ shell_files() {
 }
 
 if command -v shellcheck >/dev/null 2>&1; then
-	shell_expected="$(printf '%s\n' "${SHELL_SCRIPTS[@]}" | sort | tr '\n' ' ')"
-	shell_found="$(shell_files | sort | tr '\n' ' ')"
+	shell_expected="$(printf '%s\n' "${SHELL_SCRIPTS[@]}" | LC_ALL=C sort)"
+	shell_found="$(shell_files | LC_ALL=C sort)"
 	if [ "$shell_expected" != "$shell_found" ]; then
-		record "shellcheck" FAIL "the linted list [$shell_expected] is not every shell script in the tree [$shell_found]"
+		# The DIFFERENCE, in both directions, and not the two whole lists.
+		#
+		# 2026-09-08, D41, and it is a measurement rather than a preference:
+		# the lane's seven scripts took the two-list form past the 240 bytes
+		# scripts/test-verify.sh records a diagnosis in, so the note stopped
+		# naming the script the scenario had planted and unlinted-script and
+		# unlinted-shebang-script both breached their contracts while the row
+		# was doing its job. A diagnosis whose usefulness falls as the tree
+		# grows is a diagnosis with a size limit nobody declared; this one
+		# names what a maintainer acts on and stays the same length.
+		shell_unlinted="$(LC_ALL=C comm -13 <(printf '%s\n' "$shell_expected") <(printf '%s\n' "$shell_found") | tr '\n' ' ' | sed 's/ $//')"
+		shell_absent="$(LC_ALL=C comm -23 <(printf '%s\n' "$shell_expected") <(printf '%s\n' "$shell_found") | tr '\n' ' ' | sed 's/ $//')"
+		record "shellcheck" FAIL "the linted list is not every shell script in the tree: in the tree and linted by nothing: [$shell_unlinted]; listed in verify.manifest.sh and not in the tree: [$shell_absent]"
 	else
 		linted=()
 		for sh in "${SHELL_SCRIPTS[@]}"; do linted+=("$ROOT/$sh"); done
@@ -1403,20 +1459,9 @@ fi
 # when the derivation and the quote disagree.
 if [ "$INNER" -eq 0 ]; then
 	ORACLE_STAMP="$ROOT/.verify-oracle-stamp"
-	oracle_covered="$( {
-		printf 'verify.sh\nverify.manifest.sh\n'
-		find scripts -type f -printf '%p\n' 2>/dev/null
-	} | LC_ALL=C sort -u)"
-	oracle_covered_n="$(printf '%s\n' "$oracle_covered" | grep -c . || true)"
-	# The PATHS are hashed beside the bytes: a renamed script is a changed
-	# arbiter, and a hash over contents alone cannot see a rename.
-	oracle_hash="$(printf '%s\n' "$oracle_covered" | while IFS= read -r f; do
-		if [ -r "$ROOT/$f" ]; then
-			printf '%s  %s\n' "$(sha256sum <"$ROOT/$f" | cut -d' ' -f1)" "$f"
-		else
-			printf 'ABSENT  %s\n' "$f"
-		fi
-	done | sha256sum | cut -d' ' -f1)"
+	oracle_domain
+	oracle_covered_n="$ORACLE_COVERED_N"
+	oracle_hash="$ORACLE_HASH"
 	stamp_root=""
 	stamp_hash=""
 	stamp_scn=""
@@ -1431,6 +1476,11 @@ if [ "$INNER" -eq 0 ]; then
 		[ "$stamp_hash" = "$oracle_hash" ] &&
 		[ "$stamp_scn" = "${#MANIFEST_SCENARIOS[@]}" ]; then
 		record "verify-oracle" SKIPPED "${oracle_covered_n} arbiter file(s) — verify.sh, verify.manifest.sh, scripts/ — hash ${oracle_hash:0:16}, which already produced ${MANIFEST_ORACLE_PASS_PREFIX} $stamp_scn scenarios in this tree; ./verify.sh --oracle runs it regardless" "$oracle_covered_n"
+	elif [ ! -x "$ROOT/scripts/oracle-contracts.sh" ]; then
+		# Before the oracle's wall clock, not after it: without this file every
+		# scenario reports and nothing compares the report to the contract, so
+		# the row would be an account of names. Scenario contract-check-deleted.
+		record "verify-oracle" FAIL "scripts/oracle-contracts.sh is missing or not executable; the scenarios would report and nothing would hold them to the contracts verify.manifest.sh declares"
 	elif [ -x "$ROOT/scripts/test-verify.sh" ]; then
 		orc_start=$(date +%s)
 		orc_rc=0
@@ -1440,75 +1490,33 @@ if [ "$INNER" -eq 0 ]; then
 		# prints it from: three files agreeing by coincidence was carried
 		# review row R1.
 		oracle_reported="$(printf '%s\n' "$orc_out" | sed -n "s/^${MANIFEST_ORACLE_PASS_PREFIX} \([0-9][0-9]*\) scenarios.*/\1/p" | tail -1)"
+		# ROUND 11, moved out by D41. Each scenario is held to what it must
+		# have OBSERVED, not to its name appearing in a line. The contract
+		# comes from the manifest, the observation from the oracle, and the
+		# comparison happens in a third file — scripts/oracle-contracts.sh —
+		# so it is in none of the three places an author would edit to make a
+		# scenario stop working. It moved out of this block because the lane
+		# runs the oracle as a matrix of shards that never reach this row, and
+		# a shard that counted names without checking contracts would be the
+		# round-11 defeat again, one machine along.
+		orc_file="$(mktemp)"
+		printf '%s\n' "$orc_out" >"$orc_file"
+		ctr_rc=0
+		ctr_out="$("$ROOT/scripts/oracle-contracts.sh" "$orc_file" 2>&1)" || ctr_rc=$?
+		rm -f "$orc_file"
 		accounted=0
 		unaccounted=""
 		breached=""
-		# ROUND 11. Each scenario is held to what it must have OBSERVED, not to
-		# its name appearing in a line. The contract comes from the manifest,
-		# the observation from the oracle, and the comparison happens here — so
-		# it is in none of the three places an author would edit to make a
-		# scenario stop working.
-		for contract in "${MANIFEST_SCENARIO_CONTRACTS[@]}"; do
-			IFS='|' read -r sc_name want_rc want_tok want_diag <<<"$contract"
-			if ! printf '%s\n' "$orc_out" | grep -qE "^[[:space:]]*RESULT $sc_name PASS obs="; then
-				unaccounted="$unaccounted $sc_name"
-				continue
-			fi
-			accounted=$((accounted + 1))
-			got="$(printf '%s\n' "$orc_out" | sed -n "s/^[[:space:]]*RESULT $sc_name PASS obs=//p" | tail -1)"
-			sc_ok=1
-			case "$want_rc" in
-			zero) printf '%s' ",$got," | grep -q ',rc:0,' || sc_ok=0 ;;
-			nonzero) printf '%s' ",$got," | grep -qE ',rc:[1-9][0-9]*,' || sc_ok=0 ;;
-			static) [ -n "$got" ] || sc_ok=0 ;;
-			*) sc_ok=0 ;;
-			esac
-			# Unconditional. The "-" escape this used to carry meant "demand no
-			# observation", which is one manifest entry away from the defeat
-			# this whole check answers.
-			printf '%s' ",$got," | grep -q ",$want_tok," || sc_ok=0
-			# ROUND 13, B15. The row's own ACCOUNT of what it found, not only
-			# that it went red. A scenario cut down to the lines producing its
-			# contracted observation, planting whatever reaches the same row,
-			# satisfied everything up to here — because a verdict names a row
-			# and nothing named the defect. The note is written by the arbiter,
-			# so the scenario cannot supply it by planting something else.
-			case "$want_tok" in
-			*:FAIL | *:PASS | *:ABSENT)
-				sc_row="${want_tok%%:*}"
-				# Every note recorded for that row, not the first: a scenario
-				# may run the subject more than once (oracle-is-invoked runs a
-				# stub and then the real thing), and the reading that carries
-				# the diagnosis is not always the first one.
-				sc_note="$(printf '%s' "$got" | tr ',' '\n' | sed -n "s/^why:$sc_row://p")"
-				printf '%s\n' "$sc_note" | grep -qF -- "$want_diag" || {
-					sc_ok=0
-					want_tok="$want_tok/$want_diag"
-				}
-				;;
-			esac
-			# The SCOPE the scenario ran at, against the manifest's
-			# declaration of the scope it is entitled to (item 2, 2026-09-05).
-			# The scope is set by the oracle's dispatcher from that same list
-			# and recorded by the run helpers; a body that scopes itself down
-			# to skip the row it exists to drive reports a scope the manifest
-			# does not declare for it, and is a breach here — beside the older
-			# and stronger refusal, which is that the row it scoped away then
-			# reads ABSENT and fails its own contract.
-			#
-			# static scenarios never run verify.sh, so there is no scope to
-			# observe; they are exempt by rc-class, not by name.
-			if [ "$want_rc" != static ]; then
-				want_scope=full
-				in_list "$sc_name" "${MANIFEST_LIGHT_SCENARIOS[@]}" && want_scope=light
-				printf '%s' ",$got," | grep -q ",scope:$want_scope," || {
-					sc_ok=0
-					want_tok="$want_tok/scope:$want_scope"
-				}
-			fi
-			[ "$sc_ok" -eq 1 ] || breached="$breached $sc_name(wants $want_rc,$want_tok; observed [$got])"
-		done
-		if [ "$orc_rc" -ne 0 ]; then
+		if [ "$ctr_rc" -eq 0 ]; then
+			accounted="$(printf '%s\n' "$ctr_out" | sed -n 's/^accounted\t//p')"
+			unaccounted="$(printf '%s\n' "$ctr_out" | sed -n 's/^unaccounted\t//p')"
+			breached="$(printf '%s\n' "$ctr_out" | sed -n 's/^breached\t//p')"
+		fi
+		if [ "$ctr_rc" -ne 0 ]; then
+			record "verify-oracle" FAIL "the contract check refused: $(printf '%s' "$ctr_out" | tr '\n' ' '); the oracle reported and nothing held its scenarios to verify.manifest.sh"
+			printf '\n--- verify-oracle: the contract check could not run ---\n' >&2
+			quote_block "$ctr_out" >&2
+		elif [ "$orc_rc" -ne 0 ]; then
 			# The breach list rides along rather than waiting its turn. Both
 			# statements are true at once, and MEASURED 2026-08-30 replaying
 			# B14: the oracle's own exit 1 arrived first and "exit 1" was the

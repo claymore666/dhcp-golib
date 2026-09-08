@@ -12,6 +12,9 @@
 #
 # Usage:  scripts/test-verify.sh              run every scenario
 #         scripts/test-verify.sh --scenario N run one (used by the parallel driver)
+#         scripts/test-verify.sh --shard I/N  run shard I of N, a round-robin
+#                                             share of MANIFEST_SCENARIOS; the
+#                                             lane's matrix runs these
 # Exit:   0 = every scenario behaved, 1 = at least one did not,
 #         2 = REFUSED, the oracle could not measure its own domain.
 #         A single --scenario run answers the same way for itself: 0 when it
@@ -46,6 +49,37 @@ MANIFEST="$ROOT/verify.manifest.sh"
 . "$MANIFEST"
 manifest_problem="$(manifest_check)" || refuse "$manifest_problem"
 SCENARIOS=("${MANIFEST_SCENARIOS[@]}")
+
+# --shard I/N — run a SHARE of the roster and report only about it.
+#
+# DECISION 2026-09-08 (D41). The lane runs the oracle as a matrix of hosted
+# jobs, one shard each, because one machine running all of it is an hour and a
+# half. The partition is cut from MANIFEST_SCENARIOS at run time, round-robin
+# by position, so it is derived from the roster in count AND membership: no
+# workflow types a scenario name, and a scenario added to the manifest lands in
+# a shard without anything else being edited.
+#
+# It is round-robin rather than contiguous because cost is not uniform: the
+# light scenarios and the full-scope ones are interleaved in the roster, so
+# every N-th member gives each shard a share of both.
+#
+# A shard that would run NOTHING is a refusal, not a fast pass: it is the
+# universal satisfied by emptying its domain, and it is what a shard count
+# above the population produces.
+SHARD_I=0
+SHARD_N=0
+if [ "${1:-}" = "--shard" ]; then
+	[ -n "${2:-}" ] || refuse "--shard needs a shard of the form I/N"
+	case "$2" in
+	[0-9]*/[0-9]*) ;;
+	*) refuse "'$2' is not a shard of the form I/N" ;;
+	esac
+	SHARD_I="${2%%/*}"
+	SHARD_N="${2##*/}"
+	[ "$SHARD_N" -ge 1 ] || refuse "a shard count of $SHARD_N is not a partition"
+	{ [ "$SHARD_I" -ge 1 ] && [ "$SHARD_I" -le "$SHARD_N" ]; } ||
+		refuse "shard $SHARD_I is outside 1..$SHARD_N"
+fi
 
 # copy_tree DEST — the subject, minus .git and minus the toolchain's caches.
 #
@@ -1736,6 +1770,27 @@ echo \"one more line, printed after the account and before the exit\""
 	esac
 }
 
+sc_contract_check_deleted() {
+	# D41 moved the contract loop out of verify.sh into a file of its own, and
+	# a check that lives in a separate file is the shape round 8 shipped a
+	# green run over: the row still ran, the thing it depended on was gone, and
+	# nothing said so. Delete it and the verify-oracle row must refuse BEFORE
+	# it spends the oracle's wall clock, because a report nothing is held to is
+	# an account of names.
+	local d="$1"
+	copy_tree "$d"
+	rm -f "$d/scripts/oracle-contracts.sh"
+	run_verify_from_parent "$d"
+	[ "$RC" -ne 0 ] || note "the contract check was deleted and the run passed"
+	[ "$(row verify-oracle)" = FAIL ] ||
+		note "an absent contract check did not fail the oracle row: $(row verify-oracle)"
+	# The second operand, and neither is reachable from the other's edit: the
+	# manifest still lists a shell script that is gone, so the linted-list
+	# cross-check sees the file leave even if the arm above were removed.
+	[ "$(row shellcheck)" = FAIL ] ||
+		note "the linted-list cross-check did not see the script leave: $(row shellcheck)"
+}
+
 # ------------------------------------------- the netns row (item 3, Q8) ----
 
 sc_netns_row_empty_domain() {
@@ -2429,22 +2484,43 @@ fi
 # in Go (internal/manifest), and a contract is satisfied only by a row verdict
 # the scenario actually OBSERVED. A comment cannot observe anything.
 
+# The set this invocation is answerable for: the whole roster, or one shard of
+# it. Everything below counts, names and reports over RUN_SET, so a shard's
+# account is about a shard and cannot be read as an account of the roster.
+RUN_SET=()
+if [ "$SHARD_N" -ne 0 ]; then
+	shard_idx=0
+	for s in "${SCENARIOS[@]}"; do
+		[ "$((shard_idx % SHARD_N))" -ne "$((SHARD_I - 1))" ] || RUN_SET+=("$s")
+		shard_idx=$((shard_idx + 1))
+	done
+	[ "${#RUN_SET[@]}" -gt 0 ] ||
+		refuse "shard $SHARD_I of $SHARD_N is empty over ${#SCENARIOS[@]} declared scenario(s); a job that runs nothing is a universal satisfied by emptying its domain, not a share of the work"
+	# The membership, printed so the aggregation can check the partition rather
+	# than recompute it: N shards that each cut their own share are N answers
+	# to one question, and the aggregation is the place that asks whether they
+	# add up to the roster.
+	printf 'SHARD %s/%s MEMBERS: %s\n' "$SHARD_I" "$SHARD_N" "${RUN_SET[*]}"
+else
+	RUN_SET=("${SCENARIOS[@]}")
+fi
+
 results="$(mktemp)"
 trap 'rm -f "$results"' EXIT
 
-printf '%s\n' "${SCENARIOS[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-verify.sh" --scenario {} >"$results" 2>&1 || true
+printf '%s\n' "${RUN_SET[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-verify.sh" --scenario {} >"$results" 2>&1 || true
 
 lines="$(grep -c '^RESULT ' "$results" || true)"
-if [ "$lines" != "${#SCENARIOS[@]}" ]; then
+if [ "$lines" != "${#RUN_SET[@]}" ]; then
 	sed 's/^/  /' "$results" >&2
 	missing=""
-	for s in "${SCENARIOS[@]}"; do
+	for s in "${RUN_SET[@]}"; do
 		grep -q "^RESULT $s " "$results" || missing="$missing $s"
 	done
 	# NAME them. The count alone is a true statement that sends the reader to
 	# a diff of two sorted lists; it cost one such diff to find the scenario
 	# whose anchor had gone stale.
-	refuse "collected $lines result line(s) for ${#SCENARIOS[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass. Silent:${missing:-" none by name — a duplicate or malformed RESULT line"}"
+	refuse "collected $lines result line(s) for ${#RUN_SET[@]} scenario(s); a scenario died without reporting, and a missing result is not a pass. Silent:${missing:-" none by name — a duplicate or malformed RESULT line"}"
 fi
 
 # The RESULT prefix is KEPT, not stripped. verify.sh requires one
@@ -2455,6 +2531,19 @@ sort -k2,2 "$results" | sed 's/^/  /'
 
 bad="$(grep -c '^RESULT [^ ]* FAIL' "$results" || true)"
 echo "---"
+# A SHARD NEVER PRINTS THE ACCOUNT LINE. MANIFEST_ORACLE_PASS_PREFIX is the
+# spelling verify.sh parses the scenario COUNT of a whole run out of, and a
+# shard has not run a whole roster; a shard that printed it would be an
+# eleven-scenario run claiming to be the oracle. Its own verdict names the
+# shard and the share.
+if [ "$SHARD_N" -ne 0 ]; then
+	if [ "$bad" -eq 0 ]; then
+		echo "ORACLE SHARD $SHARD_I/$SHARD_N PASS: ${#RUN_SET[@]} of ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
+		exit 0
+	fi
+	echo "ORACLE SHARD $SHARD_I/$SHARD_N FAIL: $bad of ${#RUN_SET[@]} scenarios did not behave"
+	exit 1
+fi
 if [ "$bad" -eq 0 ]; then
 	echo "$MANIFEST_ORACLE_PASS_PREFIX ${#SCENARIOS[@]} scenarios, every planted defect was detected by the row that owns it"
 	exit 0

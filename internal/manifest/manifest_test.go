@@ -101,8 +101,8 @@ const (
 	// the verify-oracle row reported a contract mismatch
 	// naming the wrong test and the FLOOR itself observed nothing. Raise it in
 	// the same change that grows the population, every time.
-	minScenarios     = 78
-	minShellScripts  = 4
+	minScenarios     = 79
+	minShellScripts  = 12
 	minDeclaredTests = 382
 	// The self-check row's probes and the refusals record() owes them. Pinned
 	// here for the reason the manifest declares them at all: the count must
@@ -119,6 +119,10 @@ const (
 	// A hard stop on the doc-numbers ceiling. It is deliberately not far above
 	// today's value: this is the number that must not be nudged.
 	docNumberCeilingCap = 95
+	// And a hard stop on the slack UNDER it. Same direction as
+	// maxDeclaredMarginCap and the same reason: the cheap way to make the
+	// doc-numbers row stop saying anything is to leave room under the ceiling.
+	docNumberMarginCap = 4
 )
 
 // The classes a scenario contract may declare, and the verdicts it may name.
@@ -254,6 +258,33 @@ func TestManifestFloorsAreNotBelowTheirPins(t *testing.T) {
 		}
 	}
 
+	// THE OTHER EDGE OF THE SCENARIO PIN, and the review row it closes.
+	//
+	// Everything above is a floor, and a floor is silent while the population
+	// grows away from it. This pin's own comment already carried the
+	// maintenance rule — "raise it in the same change that grows the
+	// population, every time" — and twice the rule was not followed and
+	// nothing said so: at M7c (75 against 77) and again at D36 (77 against
+	// 78), each time leaving manifest-scenario-removed unable to observe the
+	// floor it exists to drive. A rule written beside a number is not an
+	// observer of that number.
+	//
+	// So the distance is now CHECKED at zero rather than asked for. The
+	// contracts count rides along because manifest_check already holds it
+	// equal to the scenario count; naming both here means the diagnosis says
+	// which one moved.
+	for _, c := range []struct {
+		name string
+		got  int
+	}{
+		{"MANIFEST_SCENARIOS_N", number(t, src, "MANIFEST_SCENARIOS_N")},
+		{"MANIFEST_SCENARIO_CONTRACTS_N", number(t, src, "MANIFEST_SCENARIO_CONTRACTS_N")},
+	} {
+		if c.got > minScenarios {
+			t.Errorf("%s is %d against the %d pinned here; scenarios were ADDED — set minScenarios = %d, because a floor left behind its population has one possible verdict and this pin has been left behind twice", c.name, c.got, minScenarios, c.got)
+		}
+	}
+
 	// The one operand here whose danger is upward. Widening the band is the
 	// cheapest way to make the declared-test row stop saying anything, and it
 	// looks like maintenance while doing it.
@@ -273,6 +304,17 @@ func TestManifestFloorsAreNotBelowTheirPins(t *testing.T) {
 	// maintenance while doing it.
 	if c := number(t, src, "DOC_NUMBER_CEILING"); c < 1 || c > docNumberCeilingCap {
 		t.Errorf("DOC_NUMBER_CEILING is %d, outside 1..%d; the prose was allowed to grow rather than the number deleted", c, docNumberCeilingCap)
+	}
+
+	// The doc-numbers band's OTHER edge, and it is the same defect as the
+	// scenario pin's. A ceiling above the population is slack, and slack is
+	// the number of bare numbers that may enter the prose with nothing red:
+	// MEASURED 2026-09-08, 66 over a population of 64, so two could. The
+	// sweep refuses a population more than this far under the ceiling; the cap
+	// here is what stops the margin being widened instead of the ceiling
+	// earned down, exactly as maxDeclaredMarginCap does for the suite.
+	if m := number(t, src, "DOC_NUMBER_MARGIN"); m < 0 || m > docNumberMarginCap {
+		t.Errorf("DOC_NUMBER_MARGIN is %d, outside 0..%d; the band was widened rather than the ceiling lowered", m, docNumberMarginCap)
 	}
 }
 

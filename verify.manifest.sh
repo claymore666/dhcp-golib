@@ -143,13 +143,28 @@ MANIFEST_GATES_N=2
 
 # The shell scripts that must be linted. Cross-checked in both directions
 # against a filesystem walk (scenarios unlinted-script, unlinted-shebang-script).
+#
+# .github/lane/ ARRIVED 2026-09-08 WITH D41 and the reason it is shell rather
+# than YAML is this list. A `run:` block inside a workflow is linted by nothing
+# here and driven by nothing here; a script is linted by the row below and can
+# be run by a scenario. The lane's decisions — what a shard is, when a skip may
+# be earned, what makes a verdict vacuous — are therefore each a file, and the
+# workflow is the wiring between them.
 MANIFEST_SHELL_SCRIPTS=(
 	verify.sh
 	verify.manifest.sh
 	scripts/test-verify.sh
+	scripts/oracle-contracts.sh
 	scripts/sweep-doc-numbers.sh
+	.github/lane/domain.sh
+	.github/lane/oracle-aggregate.sh
+	.github/lane/oracle-run-check.sh
+	.github/lane/oracle-shard.sh
+	.github/lane/oracle-skip.sh
+	.github/lane/prepare.sh
+	.github/lane/verdict.sh
 )
-MANIFEST_SHELL_SCRIPTS_N=4
+MANIFEST_SHELL_SCRIPTS_N=12
 
 # The unit suite's declared-test population, stated rather than derived.
 #
@@ -317,7 +332,7 @@ MANIFEST_SHELL_SCRIPTS_N=4
 #
 #   internal/publication/workflows_test.go (1)  TheForbiddenWordIsRefusedIn
 #     EverySpellingGitHubHonours
-MIN_DECLARED_TESTS=618
+MIN_DECLARED_TESTS=620
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -467,13 +482,44 @@ SELF_DRIVE_SURVIVES_N=5
 # LATER THE SAME DAY, D36: both of those lines are gone — the lane no longer
 # pins ORACLE_JOBS and no longer quotes an image's facts — and the section's
 # numbers are now written in the "818s" form the sweep does not
-# count as bare. The population MEASURED after that rewrite is 64, two under
-# this number. The ceiling is deliberately NOT lowered to 64: it is a ceiling
-# and not an equality, the population FELL rather than the bound being earned
-# down, and pinning it to today's count would turn the next measurement
-# written into a doc into a red row rather than a decision. The slack is two
-# lines and it is named here so the next bump still has to justify itself.
-DOC_NUMBER_CEILING=66
+# count as bare. The population MEASURED after that rewrite was 64, two under
+# the number this line then carried, and the paragraph here argued the slack
+# was safe because a ceiling is not an equality.
+#
+# 2026-09-08, D41: that argument was wrong in the direction that matters, and
+# the review row it produced is what DOC_NUMBER_MARGIN below now answers. A
+# ceiling two above its population is not a ceiling, it is an allowance for two
+# bare numbers to arrive with nothing red — which is the whole thing this
+# number exists to refuse. Both edges now name the number to write, so a
+# population that FELL is a one-line edit here rather than a silent widening,
+# and a population that ROSE is the same one-line edit. RE-MEASURED after this
+# round's rewrite of "In CI": 64.
+DOC_NUMBER_CEILING=64
+
+# How far UNDER the ceiling the population may sit before the row refuses.
+#
+# 2026-09-08, D41, and it closes a review row measured on the previous head:
+# the ceiling stayed at 66 while the population fell to 64, so TWO bare
+# numbers could enter the prose with nothing red. A ceiling above its
+# population is not a ceiling, it is an allowance — and the paragraph above
+# says in as many words that the slack "is named here so the next bump still
+# has to justify itself", which is a rule written beside a number rather than
+# an observer of it. The band is the observer. It is the mirror of
+# MAX_DECLARED_MARGIN: that one caps how far a population may grow ABOVE its
+# floor, this one caps how far it may fall BELOW its ceiling, and both name
+# the number to write.
+#
+# ZERO, and the derivation is the same question MAX_DECLARED_MARGIN answers:
+# how many bare-number prose lines does any one oracle scenario add to, or
+# remove from, a copy whose doc-numbers row is meant to stay green. MEASURED
+# 2026-09-08 over the whole roster: none. The plant the self-drive row appends
+# to README.md — "22 of the 102 allowlisted identifiers" — is caught by the
+# PATTERN list above it and never reaches the count, so it moves no margin.
+#
+# BOUND, and it is the same one the ceiling already had: this is a size, not a
+# membership. Deleting one bare number and adding another is invisible to both
+# edges.
+DOC_NUMBER_MARGIN=0
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
 # 77 scenarios MANIFEST_SCENARIOS declared then: 623s, from the verify-oracle
@@ -567,6 +613,7 @@ MANIFEST_SCENARIOS=(
 	oracle-skip-refused-when-scripts-change
 	oracle-skip-needs-a-real-pass
 	oracle-account-not-last-line
+	contract-check-deleted
 	netns-row-empty-domain
 	netns-row-control
 	netns-row-partition-broken
@@ -579,7 +626,7 @@ MANIFEST_SCENARIOS=(
 	v6-fixture-mode-drift
 	v6-ra-absent
 )
-MANIFEST_SCENARIOS_N=78
+MANIFEST_SCENARIOS_N=79
 
 # The scenarios that run the subject at the LIGHT scope: --inner --light, which
 # is every row except the unit suite and the netns row (MANIFEST_SCOPED_OUT_ROWS).
@@ -650,12 +697,13 @@ MANIFEST_LIGHT_SCENARIOS=(
 	oracle-skip-refused-when-scripts-change
 	oracle-skip-needs-a-real-pass
 	oracle-account-not-last-line
+	contract-check-deleted
 	readme-usage-drifts-in-the-readme
 	readme-usage-drifts-in-the-example
 	oracle-scope-fabricated
 	self-check-skip-arm-deleted
 )
-MANIFEST_LIGHT_SCENARIOS_N=41
+MANIFEST_LIGHT_SCENARIOS_N=42
 
 # What each scenario must OBSERVE. One entry per scenario, same order.
 #
@@ -790,6 +838,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"oracle-skip-refused-when-scripts-change|zero|verify-oracle:PASS|oracle ran after scripts changed"
 	"oracle-skip-needs-a-real-pass|nonzero|verify-oracle:FAIL|its answer is not the account of a run"
 	"oracle-account-not-last-line|zero|verify-oracle:PASS|the account is not the last line this oracle printed"
+	"contract-check-deleted|nonzero|verify-oracle:FAIL|oracle contracts sh is missing or not executable"
 	"netns-row-empty-domain|nonzero|netns-suite:FAIL|the netns population is UNMEASURED"
 	"netns-row-control|zero|netns-suite:PASS|namespaced test s each reported its own verdict"
 	"netns-row-partition-broken|nonzero|netns-suite:FAIL|reported no verdict for"
@@ -802,7 +851,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	"v6-ra-absent|nonzero|netns-suite:FAIL|TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne"
 	"scenario-rc-follows-the-verdict|static|scenario-rc-fail:1|no row"
 )
-MANIFEST_SCENARIO_CONTRACTS_N=78
+MANIFEST_SCENARIO_CONTRACTS_N=79
 
 # The `static` exemption, enumerated. A scenario is static when it does not run
 # verify.sh at all, so it can read no row of the subject's table; both members
@@ -879,6 +928,9 @@ manifest_check() {
 		bad="$bad MAX_DECLARED_MARGIN is $MAX_DECLARED_MARGIN, outside 0..4; a wide band is a floor that has stopped saying anything;"
 	[ "$ORACLE_MIN_SECONDS" -ge 1 ] || bad="$bad ORACLE_MIN_SECONDS is not positive;"
 	[ "$DOC_NUMBER_CEILING" -ge 1 ] || bad="$bad DOC_NUMBER_CEILING is not positive;"
+	[ "$DOC_NUMBER_MARGIN" -ge 0 ] || bad="$bad DOC_NUMBER_MARGIN is negative; a band cannot open downward;"
+	[ "$DOC_NUMBER_MARGIN" -lt "$DOC_NUMBER_CEILING" ] ||
+		bad="$bad DOC_NUMBER_MARGIN is $DOC_NUMBER_MARGIN against a ceiling of $DOC_NUMBER_CEILING; a margin as wide as the ceiling is a row with one possible verdict;"
 	# The oracle's verdict token, held to what its three consumers need of it.
 	# Empty, and every anchored grep for it matches every line, which turns the
 	# CI job's oracle check and this arbiter's own parse into checks with one

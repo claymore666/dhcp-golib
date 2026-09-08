@@ -100,6 +100,12 @@ REINTRODUCED=(
 # another is invisible to it, exactly as MIN_DECLARED_TESTS's band is blind to
 # a swap. Raising the ceiling is a deliberate one-line edit in a file the Go
 # pin also reads, which is the property round 9 asked for.
+#
+# 2026-09-08, D41: it is a BAND, not a ceiling alone. DOC_NUMBER_MARGIN bounds
+# how far the population may fall under the ceiling, because the distance
+# between the two is exactly the number of bare numbers that may arrive with
+# nothing red — MEASURED at two on the previous head. Both edges name the
+# number to write; neither is satisfied by editing the other.
 # shellcheck source=../verify.manifest.sh
 . "$ROOT/verify.manifest.sh"
 
@@ -125,7 +131,12 @@ case "${1:-}" in
 		printf 'Delete the number and name the instrument that prints it, or raise DOC_NUMBER_CEILING deliberately.\n' >&2
 		exit 1
 	fi
-	printf 'doc-numbers: %d prose line(s) carry a bare number (ceiling %d); none is a shape round 9 removed\n' "$n" "$DOC_NUMBER_CEILING"
+	if [ "$n" -lt "$((DOC_NUMBER_CEILING - DOC_NUMBER_MARGIN))" ]; then
+		printf 'DOC NUMBERS: %d prose line(s) carry a bare number against a ceiling of %d (margin %d) in verify.manifest.sh.\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN" >&2
+		printf 'The population fell and the ceiling did not: the difference is how many bare numbers may enter the prose with nothing red. Set DOC_NUMBER_CEILING=%d.\n' "$n" >&2
+		exit 1
+	fi
+	printf 'doc-numbers: %d prose line(s) carry a bare number (ceiling %d, margin %d); none is a shape round 9 removed\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN"
 	;;
 "")
 	population
