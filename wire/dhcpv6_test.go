@@ -1068,3 +1068,68 @@ func TestASummaryOfAMalformedOptionIsStillALine(t *testing.T) {
 		})
 	}
 }
+
+// TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode is the third way
+// Summary is total, and the one that is not a check in summariseAddrs.
+//
+// The IA_NA here decodes: its fixed part is whole and its option area parses
+// as two options. The FIRST is a whole IA Address; the SECOND has a legal
+// option header and a body four bytes long, which is the shape a message cut
+// short and re-framed by a middlebox arrives in. Nothing in summariseAddrs
+// looks at that — OptionsV6.Addrs is ALL-OR-NOTHING, so the short one takes
+// the good one with it and the option renders as the bare code through the
+// empty-list arm.
+//
+// THE GOOD-ONLY CONTROL IS HALF THE CASE: without it, a renderer that had
+// stopped naming addresses at all would pass this. And if Addrs ever changes
+// to return the addresses it did decode alongside its error, the truncated
+// arm reddens here — which is the point of writing the behaviour down as a
+// case instead of as a check that can never fire.
+func TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode(t *testing.T) {
+	const good = "fd00:99::37"
+
+	whole, err := EncodeIAAddr(&IAAddr{Addr: netip.MustParseAddr(good), PreferredLifetime: 60, ValidLifetime: 120})
+	if err != nil {
+		t.Fatalf("EncodeIAAddr: %v", err)
+	}
+	short := []byte{1, 2, 3, 4}
+	if len(short) >= IAAddrFixedLen {
+		t.Fatalf("the second IA Address is %d bytes, which is not short of %d", len(short), IAAddrFixedLen)
+	}
+
+	goodOnly, err := EncodeIANA(&IANA{IAID: 7, Options: OptionsV6{
+		{Code: OptV6IAAddr, Data: whole},
+	}})
+	if err != nil {
+		t.Fatalf("EncodeIANA: %v", err)
+	}
+	truncated, err := EncodeIANA(&IANA{IAID: 7, Options: OptionsV6{
+		{Code: OptV6IAAddr, Data: whole},
+		{Code: OptV6IAAddr, Data: short},
+	}})
+	if err != nil {
+		t.Fatalf("EncodeIANA: %v", err)
+	}
+
+	// The premise: the IA_NA itself decodes, so the DecodeIANA check in
+	// summariseAddrs is NOT what answers here.
+	if _, err := DecodeIANA(truncated); err != nil {
+		t.Fatalf("DecodeIANA(truncated) = %v; this case is about an IA_NA that decodes", err)
+	}
+	if _, err := (&IANA{}).Options.Addrs(); err != nil {
+		t.Fatalf("Addrs on an empty options area: %v", err)
+	}
+
+	summary := func(ia []byte) string {
+		return (&MessageV6{Type: MsgAdvertise, XID: 0x00beef, Options: OptionsV6{
+			{Code: OptV6IANA, Data: ia},
+		}}).Summary()
+	}
+
+	if got, want := summary(goodOnly), "ADVERTISE xid=00beef ia-na("+good+")"; got != want {
+		t.Fatalf("Summary() = %q, want %q; the control must name the address it could read", got, want)
+	}
+	if got, want := summary(truncated), "ADVERTISE xid=00beef ia-na"; got != want {
+		t.Errorf("Summary() = %q, want %q; one undecodable IA Address discards the whole list", got, want)
+	}
+}

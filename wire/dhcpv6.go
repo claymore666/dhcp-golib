@@ -914,10 +914,17 @@ var AllDHCPRelayAgentsAndServers = netip.MustParseAddr("ff02::1:2")
 // and status codes are not here, because the line is read beside the entry's
 // own fields and a summary that repeats the message is not a summary.
 //
-// IT IS TOTAL. An IA_NA whose option area does not parse renders as the bare
-// code, exactly as before: this is called on whatever decoded, including by
-// the decoder's fuzz target, and a renderer that refused would be a journal
-// that stops at the message worth looking at.
+// IT IS TOTAL, AND EACH OF THE THREE WAYS IT IS TOTAL IS SOMEWHERE ELSE. An
+// option whose own body does not decode renders as the bare code, by the
+// DecodeIANA and DecodeIAAddr checks in summariseAddrs. An IA_NA whose body
+// decodes but whose option area is truncated mid-IA Address renders as the
+// bare code too, but NOT by a check of its own: OptionsV6.Addrs is
+// all-or-nothing, so a bad address discards the good ones with it and the
+// empty-list arm answers. An option code this does not know renders as the
+// bare code by that switch's default. So this is called on whatever decoded,
+// including by the decoder's fuzz target, and a renderer that refused would
+// be a journal that stops at the message worth looking at. The truncated
+// IA_NA is TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode.
 func (m *MessageV6) Summary() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s xid=%06x", m.Type, m.XID))
@@ -939,10 +946,17 @@ func summariseAddrs(o OptionV6) string {
 		if err != nil {
 			return ""
 		}
-		as, err := ia.Options.Addrs()
-		if err != nil {
-			return ""
-		}
+		// NO ERROR CHECK, DELIBERATELY. Addrs is all-or-nothing: it
+		// returns (nil, err) at the first IA Address that does not
+		// decode, so the error arm and the empty arm below render the
+		// identical bare code, and a check here reddens nothing.
+		// MEASURED by review at 067d5ee: dropping it left every case
+		// green, which is what a check that is not an observer looks
+		// like. Its absence is what
+		// TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode
+		// pins, and that case dies if Addrs ever starts returning the
+		// addresses it did decode alongside the error.
+		as, _ := ia.Options.Addrs()
 		for _, a := range as {
 			addrs = append(addrs, a.Addr)
 		}
