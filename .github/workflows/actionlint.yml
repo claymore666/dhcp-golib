@@ -24,7 +24,10 @@ jobs:
   lint:
     name: Lint the workflows
     runs-on: ubuntu-24.04
-    # MEASURED at the head over three runs, longest 1m03s (see the record).
+    # MEASURED at 2401a1a, this branch's first head, over both runs that head
+    # produced: push 34225532150 took 16s, pull_request 34225540913 took 20s.
+    # Two runs, not three - one push makes one of each. Ten minutes is the
+    # bound that ends a wedged job, not twice a measured worst case.
     timeout-minutes: 10
     steps:
       - name: Check out the commit under lint

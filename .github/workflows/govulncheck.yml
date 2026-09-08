@@ -45,7 +45,11 @@ jobs:
   scan:
     name: Scan for reachable advisories
     runs-on: ubuntu-24.04
-    # MEASURED at the head over three runs, longest 1m28s (see the record).
+    # MEASURED at 2401a1a, this branch's first head, over both runs that head
+    # produced: push 34225532129 took 23s, pull_request 34225540921 took 28s.
+    # Two runs, not three - one push makes one of each. Ten minutes is not
+    # twice a measured worst case; it is the bound that ends a job wedged on
+    # the vulnerability database, twenty times above the measurement.
     timeout-minutes: 10
     steps:
       - name: Check out the commit under scan

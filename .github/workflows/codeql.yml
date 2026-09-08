@@ -41,9 +41,15 @@ jobs:
   analyze:
     name: Analyze
     runs-on: ubuntu-24.04
-    # MEASURED at the head over three runs, longest 2m41s (see the record).
-    # Twice the longest, rounded up to the next whole five, which is the rule
-    # every timeout in this repository is derived by.
+    # MEASURED at 2401a1a, this branch's first head: run 34225540935, the go
+    # analysis 1m05s and the actions analysis 49s. That is the only CodeQL run
+    # at that head. The push trigger is limited to dev and main, so a topic
+    # branch produces the pull_request run alone and there is no three-run
+    # spread to quote yet. Ten minutes is therefore NOT twice a measured worst
+    # case, which is how verify.yml derives its budgets; it is the bound that
+    # ends a job wedged on a bundle download that never answers, an order of
+    # magnitude above what the scan takes. Re-derive it as twice the worst of
+    # three runs once dev has three.
     timeout-minutes: 10
     permissions:
       # The SARIF upload, and nothing else. `actions: read` is not here: the
