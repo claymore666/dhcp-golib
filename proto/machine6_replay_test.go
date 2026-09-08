@@ -3,6 +3,7 @@
 package proto
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -191,4 +192,60 @@ func TestReplay6StepsOverARing2Note(t *testing.T) {
 	if got.Steps != len(clean) {
 		t.Errorf("replayed %d of %d real entries", got.Steps, len(clean))
 	}
+}
+
+// TestReplay6TellsAHintedSolicitFromAnUnhintedOne is the property the v6
+// journal did not have, and it is the one that decides whether a replay can
+// see this milestone's own defect.
+//
+// A JournalEntry6's Actions are rendered strings. Until this round
+// wire.MessageV6.Summary listed option CODES only, so a Solicit asking for a
+// particular address and one asking for nothing rendered to the identical
+// line — "SOLICIT xid=1a2b3c client-id ia-na oro elapsed-time to ff02::1:2"
+// for both. Replay6 compares those strings, so the journal of a client that
+// re-hinted an address it had declined replayed CLEAN through a machine that
+// does not: the one difference between the defect and the fix was the one
+// thing the record could not show. MEASURED by review at d78c1eb.
+//
+// THE ONE VARIABLE IS THE DECLINED SET. The recording machine has declined
+// nothing and hints; the replaying machine is built from the same parameters
+// with that address already declined — the machine a restart produces. A
+// divergence here is the replay reporting "this recording was made by a client
+// that asked for an address this configuration will not ask for", which is
+// exactly what a support workflow is for.
+func TestReplay6TellsAHintedSolicitFromAnUnhintedOne(t *testing.T) {
+	p := testParams6()
+	p.Hint = addr6(dnsmasqLeasedAddr)
+
+	r := newRecord6(t, p)
+	r.step(at(0), 0, Simple(EvStart))
+	if _, acts := r.step(at(1), capXIDSolicit, TimerFired(Timer6Delay)); len(acts) == 0 {
+		t.Fatal("the recorded Solicit produced no actions")
+	}
+
+	t.Run("the same configuration replays clean", func(t *testing.T) {
+		if _, err := Replay6(p, r.entries); err != nil {
+			t.Fatalf("Replay6 with the recording machine's own parameters: %v", err)
+		}
+	})
+
+	t.Run("a machine that has declined the hint diverges", func(t *testing.T) {
+		restarted := p
+		restarted.Declined = []netip.Addr{addr6(dnsmasqLeasedAddr)}
+		_, err := Replay6(restarted, r.entries)
+		var d Divergence
+		if !asDivergence(err, &d) {
+			t.Fatalf("Replay6 = %v, want a Divergence: the recorded Solicit asked for %s and the replaying machine will not",
+				err, dnsmasqLeasedAddr)
+		}
+		if !strings.HasPrefix(d.Field, "action") {
+			t.Errorf("the divergence is on %q, want an action: the two machines differ in what their Solicit ASKS FOR", d.Field)
+		}
+		if !strings.Contains(d.Recorded, dnsmasqLeasedAddr) {
+			t.Errorf("the recorded action %q does not name the address it asked for, so the journal line cannot tell the two Solicits apart", d.Recorded)
+		}
+		if strings.Contains(d.Replayed, dnsmasqLeasedAddr) {
+			t.Errorf("the replayed action %q names the declined address", d.Replayed)
+		}
+	})
 }

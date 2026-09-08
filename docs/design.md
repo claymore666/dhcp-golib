@@ -135,10 +135,21 @@ list after the IPv4 one.
   that matters — a managed link whose server is present and answers nothing,
   which is not the same thing as a link without one. Each mode is asserted on
   two channels, dnsmasq's log and the Router Advertisement on the link.
-- **A duplicate address is declined and not asked for again.** A neighbour
-  answers for the offered address; the client Declines it, and the next Solicit
-  does not carry it as a hint
+- **A duplicate address is declined and not asked for again — nor after a
+  restart.** A neighbour answers for the offered address; the client Declines
+  it, and the next Solicit does not carry it as a hint
   (`TestADuplicateAddressOnTheLinkIsDeclined`, `TestADeclinedHintIsNotAskedForAgain`).
+  That holds on every path into the Decline, including the one the plugin pins
+  — a squatter that arrives after the address is already bound
+  (`TestAnAddressWithdrawnUnderABoundLeaseIsNotHintedAgain`). The declined set
+  is durable, so a resumed client does not ask for it either
+  (`TestADeclinedAddressReachesTheRecordAndTheClientRebuiltFromIt`), and it is
+  kept BESIDE the parameter snapshot rather than inside it: `Record.Params6` is
+  what the run ran with, so a run's own journal replays against its own record,
+  and `Record.Declined6` is what the run accumulated, which is what the next
+  process is seeded from
+  (`TestARunsOwnJournalReplaysAgainstItsOwnSnapshot`,
+  `TestTheDeclinedSetSurvivesSeveralRebuilds`).
 - **A restart that confirms instead of soliciting.** A client started with a
   binding from a previous run sends RFC 9915 §18.2.3's Confirm as its first
   message (`TestAResumedV6LeaseConfirmsAgainstRealDnsmasq`).

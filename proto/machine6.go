@@ -129,8 +129,26 @@ type Machine6 struct {
 	// is the intended direction. The opposite shape — a set that forgets, by
 	// age or by size — walks back into the loop this field exists to stop, on
 	// exactly the link where a node holds an address long enough to be
-	// forgotten. What bounds it in practice is the server's pool: a machine
-	// can only decline what it was offered.
+	// forgotten. Within one process what bounds it is the server's pool: a
+	// machine can only decline what it was offered.
+	//
+	// ACROSS PROCESSES THAT BOUND IS THE CALLER'S AND NOT THIS FIELD'S, and
+	// saying so is round 2 of this milestone. Params6.Declined seeds a new
+	// machine from what the last one ended with, so a caller that writes the
+	// set back at every restart carries a set whose size is the number of
+	// distinct addresses the LINK has ever handed this endpoint and had
+	// answered for by someone else — not the number one process saw. On a
+	// stable link that is zero or one and it never moves; on a link with a
+	// rotating pool and a persistent squatter it grows by one per distinct
+	// address, once each, because rememberDeclined deduplicates. Sixteen bytes
+	// an entry plus the slice, in the caller's own record.
+	//
+	// This library does not cap it, and the reason is the one above: a cap is
+	// a set that forgets, and the first thing it forgets is the address that
+	// has been declined most often. A caller who must cap it owns the record
+	// and can, knowing what it costs. TestTheDeclinedSetSurvivesSeveralRebuilds
+	// carries the set through four cycles and pins both halves — it grows once
+	// per distinct address and not at all for a repeat.
 	declined []netip.Addr
 
 	resume *Resume6
@@ -154,7 +172,19 @@ func New6(p Params6) (*Machine6, error) {
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
 	p.Resume = p.Resume.Clone()
-	return &Machine6{params: p, state: State6Stopped, resume: p.Resume}, nil
+	p.Declined = append([]netip.Addr(nil), p.Declined...)
+	// THE SEED IS KEPT AS WELL AS COPIED IN, and the two are deliberately
+	// different things rather than one field with two readers. p.Declined is
+	// what this machine was CONFIGURED with and never moves again; m.declined
+	// starts as its copy and grows with every Decline. Params() answers out of
+	// the first and Declined() out of the second, because the parameters a
+	// journal replays against are the ones the run started with and the set a
+	// restart is seeded from is the one it ended with. Round 1 of this
+	// milestone made Params() answer out of the second, and a run's own
+	// journal then stopped replaying against a snapshot of its own parameters.
+	m := &Machine6{params: p, state: State6Stopped, resume: p.Resume}
+	m.rememberDeclined(p.Declined)
+	return m, nil
 }
 
 // State returns the current state.
@@ -164,14 +194,63 @@ func (m *Machine6) State() State6 { return m.state }
 // detection is NOT held: see the pending field.
 func (m *Machine6) Lease() (Lease6, bool) { return m.lease, m.haveLse }
 
-// Params returns the machine's configuration, with SolMaxRT and InfMaxRT as
-// the servers on this link have last set them (§21.24, §21.25).
+// Params returns the configuration this machine RAN WITH: what the caller
+// supplied, with SolMaxRT and InfMaxRT as the servers on this link have last
+// set them (§21.24, §21.25).
+//
+// IT IS THE REPLAY ENTRY POINT AND IT DOES NOT GROW. Replay6 builds a fresh
+// machine from a Params6 and re-runs a journal against it, so the value that
+// makes a journal mean anything is the one the run STARTED from. Declined
+// comes back exactly as it went in — the addresses this run declined are read
+// with Declined(), and they belong to the NEXT run, not to this one's journal.
+//
+// That split is round 2 of this milestone and it is a correction: round 1 had
+// this method answer out of the machine's grown set, and a caller who
+// persisted the result beside the journal — which is what lease.Record is for
+// — got a record whose own journal diverged from its own parameters at the
+// first Solicit, because the recorded Solicit carried the hint and a machine
+// rebuilt with the address already declined will not send it.
+//
+// The two mutable scalars are the exception the split does not cover, and they
+// are older than it: a server that sends SOL_MAX_RT mid-run makes this value
+// disagree with the one the run started from, in a field that governs
+// retransmission timers. MaxRT() reads them on their own for the one caller
+// that mirrors them.
 func (m *Machine6) Params() Params6 {
 	p := m.params
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
 	p.Resume = p.Resume.Clone()
+	p.Declined = append([]netip.Addr(nil), p.Declined...)
 	return p
+}
+
+// Declined is every address this machine has sent a Decline for, seed
+// included, deep-copied.
+//
+// IT IS A SEPARATE METHOD FROM Params() BECAUSE IT ANSWERS A DIFFERENT
+// QUESTION. Params() is "what did this run start from", which is what replays
+// a journal; this is "what must the next run not ask for", which is what
+// survives a restart. A caller persisting a machine keeps both, in two fields:
+// lease.Record.Params6 and lease.Record.Declined6.
+//
+// BOUND: it never forgets, and neither does a caller that keeps writing it
+// back. See the bound on the declined field itself.
+func (m *Machine6) Declined() []netip.Addr {
+	return append([]netip.Addr(nil), m.declined...)
+}
+
+// MaxRT is §21.24's SOL_MAX_RT and §21.25's INF_MAX_RT as they now stand.
+//
+// They are the only two fields of Params6 a Step can change, and this reads
+// them without building a whole Params6 around them: lease.Manager mirrors the
+// machine's parameters for a caller on another goroutine, and refreshing that
+// mirror after every Step used to deep-copy four slices and a Resume6 to carry
+// two integers across. A third mutable field would have to be added here as
+// well as there, which is the bound this method carries: the mirror is only as
+// complete as this list.
+func (m *Machine6) MaxRT() (sol, inf Duration) {
+	return m.params.SolMaxRT, m.params.InfMaxRT
 }
 
 // Router returns what router discovery has observed on this link.

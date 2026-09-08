@@ -365,7 +365,48 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # The round's BLOCKING finding added no test: the permitted set became a set of
 # pairs rather than a set of names, and the value half is driven by six cases
 # inside ThePermissionRefusalSpeaksInBothDirections, which already existed.
-MIN_DECLARED_TESTS=632
+# M7f, THE v6 DEFECT ROUND: 632 -> 648, measured the same way (two testroster
+# runs, one over the base tree and one here). Sixteen added, in the seven files
+# that carry this round's observers:
+#
+#   proto/machine6_declinehint_test.go  (7)  AnAddressWithdrawnUnderABound
+#     LeaseIsNotHintedAgain, ADuplicateFoundUnderABoundLeaseIsNotHintedAgain,
+#     AnAddressWithdrawnWhileRenewingIsNotHintedAgain, ADeclineUnderABound
+#     LeaseLeavesAnUnrelatedHintAlone, AResumedMachineDoesNotAskForAnAddress
+#     ItDeclined, ARestartWithNothingDeclinedStillHints, TheDeclinedSetHanded
+#     OutIsNotTheMachinesOwn
+#   lease/record6_params_test.go        (3)  ADeclinedAddressReachesTheRecord
+#     AndTheClientRebuiltFromIt, ARebuiltClientWithNothingDeclinedStillHints,
+#     TheV6SnapshotDoesNotAliasTheDeclinedSet
+#   wire/dhcpv6_test.go                 (2)  ASummaryNamesTheAddressAMessage
+#     AsksFor, ASummaryOfAMalformedOptionIsStillALine
+#   proto/machine6_replay_test.go       (1)  Replay6TellsAHintedSolicitFrom
+#     AnUnhintedOne
+#   runtime/dnsmasq6_linux_test.go      (1)  AV6LinkLocalThatLostTheKernels
+#     DuplicateCheckIsRefusedAsFailed
+#   runtime/linklocal6_linux_test.go    (1)  TheLinkLocalWaitDoesNotNoticeAn
+#     InterfaceThatWentAway
+#   runtime/newfile_label_test.go       (1)  TheNewFileLabelRuleRefusesEvery
+#     WayPastIt
+#
+# One of them is a netns test, which is why the enumeration under
+# NETNS_CEILING_SECONDS in verify.sh is re-measured in the same round.
+#
+# M7f ROUND 2, THE FIX ROUND: 648 -> 653, measured the same way (one testroster
+# run over round 1's head and one here). Five added, in three files, and each
+# one is the observer a round-2 finding asked for:
+#
+#   lease/record6_params_test.go        (3)  ARunsOwnJournalReplaysAgainstIts
+#     OwnSnapshot, TheRecordsDeclinedSetIsNotAliased, AServersSolMaxRTReaches
+#     TheManagersParameters
+#   proto/machine6_declinehint_test.go  (1)  TheDeclinedSetSurvivesSeveral
+#     Rebuilds
+#   wire/dhcpv6_test.go                 (1)  ASummaryOfAnIANATruncatedAfterOne
+#     AddressIsTheBareCode
+#
+# None is a netns test, so the netns enumeration in verify.sh does not move in
+# this round and is not re-measured.
+MIN_DECLARED_TESTS=653
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

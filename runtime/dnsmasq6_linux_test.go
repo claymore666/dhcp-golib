@@ -277,9 +277,11 @@ func wireUpV6(t *testing.T) {
 
 // v6LinkMode is the state the CLIENT end of the fixture link comes up in.
 //
-// The server end is the same in all three: accept_dad off, one global address,
-// up. What varies is whether the client end has a usable link-local address
-// when it comes up, because that is what the two link-local proofs are about.
+// The server end keeps accept_dad off, one global address and up in all four.
+// What varies is whether the client end has a usable link-local address when it
+// comes up, because that is what the link-local proofs are about — and, in
+// v6LinkCollide alone, the server end gains a hardware address as well, because
+// a duplicate needs two holders and one of them has to be the neighbour.
 type v6LinkMode int
 
 const (
@@ -297,15 +299,56 @@ const (
 	// disable_ipv6 set, so the kernel forms no link-local for it at all and
 	// never will.
 	v6LinkNoIPv6
+	// v6LinkCollide puts the SAME link-local address on both ends of the veth
+	// and leaves the kernel's own duplicate check on at the client end, so the
+	// client's address really loses RFC 4862 section 5.4's procedure and the
+	// kernel really sets IFA_F_DADFAILED on it.
+	//
+	// HOW THE COLLISION IS BUILT, and why it is built out of the MAC rather
+	// than out of `ip -6 addr add`. Linux forms a link-local from the
+	// interface's hardware address by RFC 4291 Appendix A's modified EUI-64
+	// when addr_gen_mode is 0, so two interfaces with one MAC form one
+	// address. Both ends are given that MAC and that mode BEFORE they come up.
+	// The server end keeps accept_dad off, so its copy is valid the instant it
+	// exists and its kernel answers the Neighbor Solicitation the client's
+	// duplicate check sends; the client end keeps accept_dad on, so it sends
+	// that solicitation, hears itself answered, and marks its own address
+	// failed. Adding the address by hand instead would produce an address this
+	// library's caller never asked for; this one is the address the kernel
+	// would have picked anyway, in collision with a neighbour.
+	//
+	// accept_dad is 1 and not 2 at the client end deliberately: 2 makes the
+	// kernel disable IPv6 on the interface outright, which is the v6LinkNoIPv6
+	// shape wearing another name and loses the flag byte this mode exists to
+	// produce.
+	v6LinkCollide
 )
+
+// test6CollideMAC is the hardware address BOTH ends of the link wear in
+// v6LinkCollide mode. Locally administered, unicast, and fixed so that the
+// address the kernel forms from it is the same in every run and can be
+// predicted by the proof rather than only read back.
+const test6CollideMAC = "02:00:00:00:c0:11"
 
 // wireUpV6Link is wireUpV6 with the client end's state as a parameter.
 func wireUpV6Link(t *testing.T, mode v6LinkMode) {
 	t.Helper()
 	mustRun(t, "ip", "link", "add", test6ClientIf, "type", "veth", "peer", "name", test6ServerIf)
 	dad := map[string]string{test6ServerIf: "0", test6ClientIf: "0"}
-	if mode == v6LinkTentative {
+	if mode == v6LinkTentative || mode == v6LinkCollide {
 		dad[test6ClientIf] = "1"
+	}
+	if mode == v6LinkCollide {
+		// The mode is written before the MAC and both before the link comes
+		// up: addr_gen_mode is read when the kernel forms the address, and it
+		// forms it at the transition to up.
+		for _, ifName := range []string{test6ServerIf, test6ClientIf} {
+			p := "/proc/sys/net/ipv6/conf/" + ifName + "/addr_gen_mode"
+			if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+				t.Fatalf("writing %s: %v", p, err)
+			}
+			mustRun(t, "ip", "link", "set", ifName, "address", test6CollideMAC)
+		}
 	}
 	for ifName, v := range dad {
 		p := "/proc/sys/net/ipv6/conf/" + ifName + "/accept_dad"
@@ -355,18 +398,27 @@ const threadIfInet6Path = "/proc/thread-self/net/if_inet6"
 // and agree with itself.
 func clientLinkLocal(t *testing.T) (string, uint64, bool) {
 	t.Helper()
+	return linkLocalOf(t, test6ClientIf)
+}
+
+// linkLocalOf is clientLinkLocal with the interface as a parameter, for the one
+// proof that has to read BOTH ends of the link: a duplicate address needs a
+// second holder, and a proof that only ever looked at the client end could not
+// tell a collision from a kernel that failed the check for its own reasons.
+func linkLocalOf(t *testing.T, ifName string) (string, uint64, bool) {
+	t.Helper()
 	b, err := os.ReadFile(threadIfInet6Path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", threadIfInet6Path, err)
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 6 || f[5] != test6ClientIf || !strings.HasPrefix(f[0], "fe80") {
+		if len(f) != 6 || f[5] != ifName || !strings.HasPrefix(f[0], "fe80") {
 			continue
 		}
 		flags, err := strconv.ParseUint(f[4], 16, 32)
 		if err != nil {
-			t.Fatalf("the kernel printed %q as the flags of %s on %s", f[4], f[0], test6ClientIf)
+			t.Fatalf("the kernel printed %q as the flags of %s on %s", f[4], f[0], ifName)
 		}
 		return f[0], flags, true
 	}
@@ -2403,6 +2455,138 @@ func v6LinkLocalNeverArrives(t *testing.T) {
 		t.Errorf("the refusal came after %s, twice linkLocalWait (%s) or more: a bound that is not held is the 45-second timeout with extra steps", elapsed, linkLocalWait)
 	}
 	t.Logf("refused in %s: %v", elapsed.Round(time.Millisecond), err)
+}
+
+// awaitDuplicateVerdict blocks until the KERNEL has finished RFC 4862 section
+// 5.4's procedure on the client's link-local address, and returns the address
+// and the flag byte as they stood the moment it finished.
+//
+// IT SPINS, for the reason every wait in this file spins: gate T2 refuses a
+// sleep in a test, the kernel publishes this through a file rather than a
+// channel, and a wall-clock deadline would turn a loaded box into a failed
+// test. The loop terminates on EITHER outcome — the tentative bit clearing or
+// the failed bit appearing — and never on the one this proof wants, so a
+// fixture that produces no collision at all comes back with a settled address
+// and fails LOUDLY one line below instead of hanging until the child's own
+// -test.timeout. It costs up to the kernel's own duplicate-detection window,
+// which is RFC 4861 section 10's one-second random delay plus one RetransTimer.
+func awaitDuplicateVerdict(t *testing.T) (string, uint64) {
+	t.Helper()
+	for {
+		addr, flags, ok := clientLinkLocal(t)
+		if ok && (flags&ifaTentative == 0 || flags&ifaDADFailed != 0) {
+			return addr, flags
+		}
+		gosched.Gosched()
+	}
+}
+
+// TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed is the
+// flag byte a REAL duplicate produces, read out of a REAL netlink dump.
+//
+// WHY IT IS OWED. readLinkLocal decides between "tentative" and "failed
+// duplicate address detection" by testing IFA_F_DADFAILED first and
+// IFA_F_TENTATIVE second, and until this proof existed the only thing that
+// ever exercised the first arm was a table of dumps this repository writes
+// itself. A fabricated table is written by the same understanding it checks:
+// an earlier version of that table used 0x88 for a failed address — permanent
+// and failed, tentative CLEARED — and every arm of the parse agreed with it,
+// because the parse was reading a byte nobody had ever asked the kernel for.
+//
+// WHAT THE KERNEL ACTUALLY EMITS. Linux does not clear IFA_F_TENTATIVE when a
+// duplicate is found; addrconf_dad_stop leaves the address tentative and adds
+// IFA_F_DADFAILED to it, because an address that lost the check is not an
+// address that finished the check. MEASURED here, on a real collision on a
+// real link: 0xc8 — permanent, tentative AND failed, all three. So the two
+// arms are not mutually exclusive on any real input, the ORDER of the switch
+// is the whole behaviour, and a table that never produced both bits at once
+// could not see that.
+//
+// AND THE COLLISION IS BUILT, NOT ASSERTED. Both ends of the veth wear one
+// hardware address and Linux's default addr_gen_mode, so both form RFC 4291
+// Appendix A's same modified EUI-64 link-local; the server end holds it valid
+// and answers for it, the client end asks and is answered. The proof reads the
+// server end too, so "the client's address failed" is backed by the neighbour
+// that made it fail rather than by a kernel that refused for its own reasons.
+//
+// IT ALSO CHECKS THE DERIVATION AGAINST THE KERNEL, which is the one claim
+// InterfaceLinkLocal's own comment makes about a netns proof: the address the
+// kernel forms is compared with wire.LinkLocalFromMAC of the same MAC. That
+// comparison is what keeps "the kernel's address and the derived one agree on
+// an ordinary Linux host" from being an unexamined assertion.
+func TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6LinkLocalLosesTheDuplicateCheck(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6LinkLocalLosesTheDuplicateCheck(t *testing.T) {
+	wireUpV6Link(t, v6LinkCollide)
+
+	mac, err := net.ParseMAC(test6CollideMAC)
+	if err != nil {
+		t.Fatalf("test6CollideMAC %q does not parse: %v", test6CollideMAC, err)
+	}
+	derived, err := wire.LinkLocalFromMAC(mac)
+	if err != nil {
+		t.Fatalf("LinkLocalFromMAC(%s): %v", test6CollideMAC, err)
+	}
+	want := hex.EncodeToString(derived.AsSlice())
+
+	// THE NEIGHBOUR FIRST. The server end holds the address this proof is
+	// about, and holds it usable; without that there is nothing to collide
+	// with and the client's check would simply succeed.
+	srvAddr, srvFlags, ok := linkLocalOf(t, test6ServerIf)
+	if !ok {
+		t.Fatalf("the kernel lists no link-local for %s; the collision this proof needs has only one side", test6ServerIf)
+	}
+	if srvFlags&(ifaTentative|ifaDADFailed) != 0 {
+		t.Fatalf("%s holds %s with flags %#x, which is not a usable address: a neighbour that is itself tentative does not answer for the address and there is no collision", test6ServerIf, srvAddr, srvFlags)
+	}
+	if srvAddr != want {
+		t.Fatalf("%s holds %s and the modified EUI-64 of %s is %s: the two ends did not form one address, so nothing on this link is duplicated", test6ServerIf, srvAddr, test6CollideMAC, want)
+	}
+
+	addr, flags := awaitDuplicateVerdict(t)
+	if flags&ifaDADFailed == 0 {
+		t.Fatalf("the kernel settled %s on %s (flags %#x) although %s already held it: the fixture produced no duplicate and this proof would measure the tentative arm instead",
+			addr, test6ClientIf, flags, test6ServerIf)
+	}
+	if addr != want {
+		t.Fatalf("the address that failed on %s is %s and the modified EUI-64 of %s is %s; the kernel did not form the address this proof predicted",
+			test6ClientIf, addr, test6CollideMAC, want)
+	}
+	// THE BYTE ITSELF, asserted and not only logged. This is the fact a
+	// fabricated table got wrong, and it is not fatal here so that the
+	// behaviour under test below is still measured on whatever the kernel
+	// emitted.
+	if flags&ifaTentative == 0 {
+		t.Errorf("the kernel reports the failed %s with flags %#x, which does NOT carry IFA_F_TENTATIVE (%#x); this tree's fabricated dumps assume a real failure carries both bits and the order of readLinkLocal's two arms is only load-bearing if it does",
+			addr, flags, ifaTentative)
+	}
+	t.Logf("the kernel reports %s on %s with flags %#x after losing the duplicate check to %s", addr, test6ClientIf, flags, test6ServerIf)
+
+	// AND WHAT THE LIBRARY MAKES OF IT. readLinkLocal rather than
+	// InterfaceLinkLocal: the classification is the subject, the four-second
+	// wait around it is not, and this address will never become usable.
+	iface, err := net.InterfaceByName(test6ClientIf)
+	if err != nil {
+		t.Fatalf("InterfaceByName(%s): %v", test6ClientIf, err)
+	}
+	got, err := readLinkLocal(iface.Index, test6ClientIf)
+	if err == nil {
+		t.Fatalf("readLinkLocal returned %s for %s, an address the kernel has marked as having lost duplicate address detection: RFC 4862 section 5.4 forbids sending from it and the neighbour that owns it would answer for it",
+			got, test6ClientIf)
+	}
+	if !errors.Is(err, ErrNoLinkLocal) {
+		t.Fatalf("readLinkLocal failed with %v, which does not wrap ErrNoLinkLocal; a caller cannot tell this apart from a dump it could not take", err)
+	}
+	if !strings.Contains(err.Error(), "0 tentative, 1 failed") {
+		t.Errorf("the refusal is %q; the kernel's own byte for this address is %#x and it must be counted as one that FAILED the check, not as one still taking it — an address that is still tentative is worth waiting for and this one never will be",
+			err, flags)
+	}
 }
 
 // ------------------------------------------ two clients, one link --
