@@ -300,52 +300,62 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # loop. The whole list is one run again rather than the previous one with a
 # line inserted.
 #
-# MEASURED 2026-09-07 on the session box at the M7e head, exactly as this file
-# runs the row (-race -count=1 -v -timeout 180s, -run over the roster), taking
-# the OUTER (re-exec parent) figure per test. This is also the machine CI runs
-# on (D36), so this table and the CI row measure the same hardware:
+# AND AGAIN AT M7f: the roster is 34 with
+# TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed, which
+# drives a real duplicate-address collision on a real link so that the flag
+# byte readLinkLocal branches on is the kernel's and not a fabrication. One run
+# again, not a line inserted.
 #
-#   TestAClientOnALinkWithNoRouterStillAcquires                 3.24
-#   TestADeclinedHintIsNotAskedForAgain                         3.59
-#   TestADuplicateAddressOnTheLinkIsDeclined                    1.35
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne     3.06
-#   TestARefusedResumeRestartsAgainstRealDnsmasq                1.35
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq               1.29
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq               3.48
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                       1.24
-#   TestASquatterAfterBoundTakesSection24sPath                  2.47
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline     2.56
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline      2.38
-#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.22
-#   TestAV6ClientAcquiresFromRealDnsmasq                        2.29
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport      4.23
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased       2.07
-#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress     5.04
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress   3.10
-#   TestAV6ReleaseReachesRealDnsmasq                            4.58
-#   TestAcquiresFromRealDnsmasq                                 1.16
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq              1.26
-#   TestAnOffClientPutsNoARPOnTheWire                           4.16
-#   TestDeclineAndReleaseReachRealDnsmasq                       2.16
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease     4.26
-#   TestPacketTransportDropsWhenTheConsumerStalls               3.60
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress        1.30
-#   TestPacketTransportOnARealLink                              1.26
-#   TestRenewalAndNakReachRealDnsmasq                           7.18
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn                  1.15
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic         9.05
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr               1.60
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile             1.45
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                2.96
-#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn     1.16
+# MEASURED 2026-09-08 on the session box at this branch's head, exactly as this
+# file runs the row (-race -count=1 -v -timeout 180s, -run over the roster),
+# taking the OUTER (re-exec parent) figure per test. The lane itself now runs on
+# a GitHub-hosted image (D41) and the figures that bound the ceiling there are
+# at the end of this block; this table is the session box's, and the two are
+# compared there rather than mixed:
 #
-# The per-test figures sum to 93.25s against a 94.54s wall clock; the
+#   TestAClientOnALinkWithNoRouterStillAcquires                         3.26
+#   TestADeclinedHintIsNotAskedForAgain                                 3.53
+#   TestADuplicateAddressOnTheLinkIsDeclined                            1.47
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne             3.07
+#   TestARefusedResumeRestartsAgainstRealDnsmasq                        1.30
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq                       1.29
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                       3.64
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                               1.27
+#   TestASquatterAfterBoundTakesSection24sPath                          2.50
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline             2.50
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline              2.38
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.23
+#   TestAV6ClientAcquiresFromRealDnsmasq                                3.12
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport              4.14
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               2.23
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress             5.03
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress           2.88
+#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed   1.43
+#   TestAV6ReleaseReachesRealDnsmasq                                    3.87
+#   TestAcquiresFromRealDnsmasq                                         1.15
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                      1.28
+#   TestAnOffClientPutsNoARPOnTheWire                                   4.18
+#   TestDeclineAndReleaseReachRealDnsmasq                               2.16
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease             4.26
+#   TestPacketTransportDropsWhenTheConsumerStalls                       3.66
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress                1.28
+#   TestPacketTransportOnARealLink                                      1.29
+#   TestRenewalAndNakReachRealDnsmasq                                   7.16
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn                          1.18
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                 9.37
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                       1.59
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile                     1.45
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                        2.48
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn             1.15
+#
+# The per-test figures sum to 94.78s against a 97s wall clock; the
 # difference is the build, the race instrumentation and the re-exec, and it is
 # why the ceiling is set off the WALL figure. The wall has NOT moved past what
-# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s here over a roster one
-# test larger again. The new test costs 3.59s of it; the remaining 1.4s against
-# the previous run's 91.92s is draw-to-draw variation in tests that WAIT on real
-# DHCP, ARP and DAD intervals.
+# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s at M7e, 97s here over
+# a roster one test larger again. The new test costs 1.43s of it; the remaining
+# 1.1s against the previous run is draw-to-draw variation in tests that WAIT on
+# real DHCP, ARP and DAD intervals — the paragraph below measures how wide that
+# variation gets on one row.
 #
 # THE VARIANCE IS NOT UNIFORM ACROSS THE LIST, and one row carries most of it.
 # MEASURED 2026-09-07 while building this table: a first pass put
@@ -361,10 +371,12 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
 # WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum. Neither re-measurement moves it:
-# 93s at 8c87caf over a roster one test larger, and 94.54s at M7e over a roster
-# one larger again, are both at the 94s the number was derived on — so nothing
-# here is re-derived, only re-checked, twice.
+# derived half and the ceiling is the sum. No re-measurement has moved it:
+# 93s at 8c87caf over a roster one test larger, 94.54s at M7e over a roster one
+# larger again, and 97s at M7f over a roster one larger than that, are all at
+# the 94s the number was derived on — so nothing here is re-derived, only
+# re-checked, three times. At 97s the headroom is 43s, which still clears the
+# 32s floor the rule below asks.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
 # the largest round-on-round increase this row has just shown. This round's
