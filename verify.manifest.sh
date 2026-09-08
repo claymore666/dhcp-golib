@@ -406,7 +406,26 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #
 # None is a netns test, so the netns enumeration in verify.sh does not move in
 # this round and is not re-measured.
-MIN_DECLARED_TESTS=653
+#
+# THE DOCS ROUND, ROUND 2: 653 -> 654, measured the same way, one testroster
+# run over the base and one over this head, and the difference taken as a set
+# rather than as two numbers. One added, in one file, and it is the observer
+# the domain of the doc-numbers sweep did not have:
+#
+#   internal/manifest/manifest_test.go  (1)  TheStatedDomainIsTheOneTheSweep
+#     Reads
+#
+# It is not a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+#
+# ROUND 1 OF THIS ROUND LEFT IT AT 653 AND THAT IS THE FINDING. The band was
+# full: 654 declared against 653 plus a margin of 1, so every oracle scenario
+# that plants a test into its own copy reached 655 and failed the unit-suite
+# row it was not driving. Shard 2's ceiling-control and shard 1's
+# ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
+# the plant only exists inside the oracle.
+MIN_DECLARED_TESTS=654
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
