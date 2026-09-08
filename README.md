@@ -22,21 +22,27 @@ and it needs no root.
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
 | Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
-| Report the gateway, the static routes and the link MTU | yes | planned |
+| Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | n/a | planned |
-| Prefix delegation (IA_PD) | n/a | planned |
-| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | planned |
+| Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
+| Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
+| Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
+| Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/925) |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
 
 - **yes**: in the tree today, with a test that drives it, against a real
   server or through the state machine.
-- **planned**: not there yet. The roadmap below names it for v1.0.0.
+- **v1.0.0**: in the tree at v1.0.0. The roadmap below names the scope.
+- **planned**: intended. No release names it yet, and the linked issue holds
+  the plan.
 - **unsupported**: the protocol has it, this library deliberately does not.
   "Out of scope" gives the reason.
 - **n/a**: the protocol has no such thing.
+
+A mark that is a link points at the issue that holds the plan.
 
 ## Status and roadmap
 
@@ -44,14 +50,14 @@ IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its two flags, and nothing else
 is taken from it. No address is formed from a prefix. There is no prefix
 delegation. A server cannot reconfigure a client that already holds a lease.
-The DHCPv4 column has no `planned` row.
+Nothing on DHCPv4 is planned for a later release.
 
 The library is pre-1.0 and the API is not stable. It moves without a
 deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.
 The API still moves between tags. One consumer is being built on it. Nothing
 that uses it has shipped.
 
-v1.0.0 is when every `planned` row above is shipped. The scope of v1.0.0 is
+v1.0.0 is when every `v1.0.0` row above is shipped. The scope of v1.0.0 is
 exactly those rows. They are this library's share of the IPv6 work on the
 `docker-net-dhcp` plugin's `v2.2.0` milestone. That milestone is wider than
 this matrix, and its other rows land in the plugin.
@@ -219,7 +225,7 @@ The bounds below are written down so that nobody has to infer them.
   another host's messages.
 - No server-initiated reconfiguration on IPv4. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `planned` row above.
+  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `v1.0.0` row above.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.
