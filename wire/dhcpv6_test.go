@@ -981,3 +981,90 @@ func FuzzDecodeV6Message(f *testing.F) {
 		_ = m.Summary()
 	})
 }
+
+// TestASummaryNamesTheAddressAMessageAsksFor is what the v6 journal could not
+// say, and it is why this renderer names more than option codes.
+//
+// A Solicit that asks for a particular address and one that asks for nothing
+// carry the same option CODES — client-id, ia-na, oro, elapsed-time — so with
+// codes alone the two rendered to the identical line. proto.Replay6 compares
+// those rendered lines, so a journal recorded by a client that re-hinted an
+// address it had declined replayed clean through a machine that does not: the
+// one difference between the defect and the fix was the one thing the record
+// could not show. MEASURED by review at d78c1eb.
+//
+// THE TWO MESSAGES DIFFER IN ONE THING, the IA Address inside the IA_NA, so a
+// renderer that separated them on anything else would fail the equality below
+// rather than pass the inequality.
+func TestASummaryNamesTheAddressAMessageAsksFor(t *testing.T) {
+	const hinted = "fd00:99::213"
+
+	bare, err := EncodeIANA(&IANA{IAID: 7})
+	if err != nil {
+		t.Fatalf("EncodeIANA: %v", err)
+	}
+	addr, err := EncodeIAAddr(&IAAddr{Addr: netip.MustParseAddr(hinted)})
+	if err != nil {
+		t.Fatalf("EncodeIAAddr: %v", err)
+	}
+	withHint, err := EncodeIANA(&IANA{IAID: 7, Options: OptionsV6{{Code: OptV6IAAddr, Data: addr}}})
+	if err != nil {
+		t.Fatalf("EncodeIANA with a hint: %v", err)
+	}
+
+	solicit := func(ia []byte) *MessageV6 {
+		return &MessageV6{Type: MsgSolicit, XID: 0x1a2b3c, Options: OptionsV6{
+			{Code: OptV6ClientID, Data: []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6}},
+			{Code: OptV6IANA, Data: ia},
+			{Code: OptV6ElapsedTime, Data: []byte{0, 0}},
+		}}
+	}
+
+	without := solicit(bare).Summary()
+	with := solicit(withHint).Summary()
+	if without == with {
+		t.Fatalf("a Solicit that asks for %s and one that asks for nothing render identically: %q", hinted, without)
+	}
+	if !strings.Contains(with, hinted) {
+		t.Errorf("Summary() = %q, which does not name the address the message asks for", with)
+	}
+	if strings.Contains(without, hinted) {
+		t.Errorf("Summary() = %q for a message that asks for no address", without)
+	}
+	// The un-hinted line is still the old one, so nothing but the address
+	// moved: a renderer that reformatted every line would separate the two
+	// without saying anything about the address.
+	if want := "SOLICIT xid=1a2b3c client-id ia-na elapsed-time"; without != want {
+		t.Errorf("Summary() = %q, want %q", without, want)
+	}
+}
+
+// TestASummaryOfAMalformedOptionIsStillALine is the totality this renderer
+// owes: it is called on whatever decoded, including by FuzzDecodeV6Message,
+// and a journal that stops at the message worth looking at is worse than one
+// that renders it thinly.
+//
+// Both option areas here decode as options and refuse as an IA_NA and an IA
+// Address, which is the shape §16 leaves reachable: ring 0 keeps a message
+// whose option area is well formed and whose CONTENT is not.
+func TestASummaryOfAMalformedOptionIsStillALine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  OptionV6
+	}{
+		{"an IA_NA shorter than its fixed part", OptionV6{Code: OptV6IANA, Data: []byte{1, 2, 3}}},
+		{"an IA Address shorter than its fixed part", OptionV6{Code: OptV6IAAddr, Data: []byte{1, 2, 3}}},
+		{"an IA_NA whose options do not parse", OptionV6{Code: OptV6IANA, Data: append(make([]byte, IANAFixedLen), 0, 5, 0, 9)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MessageV6{Type: MsgSolicit, XID: 1, Options: OptionsV6{tc.opt}}
+			got := m.Summary()
+			if !strings.Contains(got, tc.opt.Code.String()) {
+				t.Errorf("Summary() = %q, which does not name the option it could not read", got)
+			}
+			if strings.Contains(got, "(") {
+				t.Errorf("Summary() = %q; an option that does not decode contributes no address list", got)
+			}
+		})
+	}
+}

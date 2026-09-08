@@ -898,12 +898,74 @@ const (
 var AllDHCPRelayAgentsAndServers = netip.MustParseAddr("ff02::1:2")
 
 // Summary renders a message for a journal line.
+//
+// THE ADDRESSES ARE NAMED AND NOT ONLY THE OPTION CODES, and that is what a
+// journal is for rather than a nicety. Option codes alone made a Solicit that
+// asks for a particular address and one that asks for nothing render to the
+// identical line — "SOLICIT xid=1a2b3c client-id ia-na oro elapsed-time" for
+// both — and proto.Replay6 compares these rendered actions. So a journal
+// recorded by a client that re-hinted an address it had declined replayed
+// clean through a machine that does not, and the one difference between the
+// defect and the fix was the one thing the record could not show. MEASURED by
+// review at d78c1eb.
+//
+// It stays a ONE-LINE rendering: the addresses an IA_NA carries and an IA
+// Address at the top level, in wire order, and nothing else. Lifetimes, IAIDs
+// and status codes are not here, because the line is read beside the entry's
+// own fields and a summary that repeats the message is not a summary.
+//
+// IT IS TOTAL. An IA_NA whose option area does not parse renders as the bare
+// code, exactly as before: this is called on whatever decoded, including by
+// the decoder's fuzz target, and a renderer that refused would be a journal
+// that stops at the message worth looking at.
 func (m *MessageV6) Summary() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("%s xid=%06x", m.Type, m.XID))
 	for _, o := range m.Options {
 		b.WriteString(" ")
 		b.WriteString(o.Code.String())
+		b.WriteString(summariseAddrs(o))
 	}
+	return b.String()
+}
+
+// summariseAddrs is the address list one option contributes to a Summary, in
+// parentheses, or the empty string.
+func summariseAddrs(o OptionV6) string {
+	var addrs []netip.Addr
+	switch o.Code {
+	case OptV6IANA:
+		ia, err := DecodeIANA(o.Data)
+		if err != nil {
+			return ""
+		}
+		as, err := ia.Options.Addrs()
+		if err != nil {
+			return ""
+		}
+		for _, a := range as {
+			addrs = append(addrs, a.Addr)
+		}
+	case OptV6IAAddr:
+		a, err := DecodeIAAddr(o.Data)
+		if err != nil {
+			return ""
+		}
+		addrs = append(addrs, a.Addr)
+	default:
+		return ""
+	}
+	if len(addrs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("(")
+	for i, a := range addrs {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(a.String())
+	}
+	b.WriteString(")")
 	return b.String()
 }
