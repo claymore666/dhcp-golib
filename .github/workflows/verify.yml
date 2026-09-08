@@ -85,7 +85,11 @@ jobs:
     needs: domain
     if: ${{ needs.domain.outputs.run-oracle == 'yes' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Twice the slowest shard measured. MEASURED on run 34204814646, ten shards
+    # of eight: 184s to 676s of scenario time, the job walls 207s to 694s, a
+    # mean of 53s per scenario and a worst shard of 84s per scenario. Twice 694
+    # is 1388s, and 25 minutes is the next whole five above it.
+    timeout-minutes: 25
     strategy:
       # A shard is a share of the roster, not a sample of it. `fail-fast: true`
       # would cancel the other shards on the first red one, and a cancelled
@@ -196,7 +200,21 @@ jobs:
     needs: [domain, oracle-verdict]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Twice the slowest measurement, which is the rule every timeout in this
+    # repository is derived by. MEASURED on this image: the whole job took 243s
+    # on run 34204814646, of which the arbiter itself was 198s; twice 243 is
+    # 486, and 10 minutes is the next whole minute above it. Re-derive it here,
+    # from three runs at the head, whenever the lane's machine changes.
+    timeout-minutes: 10
+    # AT THE JOB, not at the two steps that need it. Both the step that earns
+    # the skip and the step that re-checks it ask the API, and giving one of
+    # them the environment and not the other is not a hypothetical: run
+    # 34204814646 did exactly that, and the second read refused with `GH_REPO
+    # is unset` over a skip that was in fact honest. The refusal was correct
+    # and the wiring was not.
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out the commit under verification
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -251,9 +269,6 @@ jobs:
       # oracle itself and this job hits its timeout instead of reporting a
       # green it did not earn.
       - name: Earn the oracle skip, or refuse to
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: .github/lane/oracle-skip.sh "$PWD" oracle-justification.txt
 
       - name: Run the arbiter
