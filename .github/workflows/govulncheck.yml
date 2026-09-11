@@ -15,13 +15,33 @@ name: govulncheck
 # build this with has a reachable advisory, which is a thing to act on rather
 # than a thing to wait out.
 #
-# WHY THE SCANNER IS `@latest` WHILE EVERY ACTION IS PINNED BY SHA: an action
-# is wiring and a pinned one does what it did yesterday, which is what a pin is
-# for. A vulnerability scanner pinned to a version is a scanner that stops
-# learning — its whole value is knowing about an advisory published after the
-# pin was written. The cost is stated rather than hidden: a scanner release can
-# redden a push that changed nothing, and that direction is loud, cheap to
-# read, and the safe one for this particular check.
+# THE SCANNER IS PINNED, AND THE SENTENCE THAT USED TO STAND HERE WAS WRONG.
+# It said a pinned scanner is a scanner that stops learning, because its whole
+# value is knowing about an advisory published after the pin was written. That
+# is not how govulncheck is built. The advisory data lives behind `-db`,
+# default https://vuln.go.dev, and is fetched at scan time; the binary carries
+# analysis code, not advisories. MEASURED 2026-09-11: the v1.7.0 binary,
+# released 2026-08-13, reports GO-2026-6238, published 2026-08-18, against a
+# module that calls the affected symbol. A pin freezes the analysis, not the
+# data, so the reason for floating was paid for with nothing.
+#
+# WHAT FLOATING COST, measured: x/vuln v1.8.0 published 2026-09-08 and declares
+# `go 1.26.0`. setup-go resolves the `go 1.25` line in go.mod to 1.25.14, so
+# every run since died in `go install` with "requires go >= 1.26.0", and the
+# scan did not run at all. A floating scanner turned a check with teeth into a
+# red step on a schedule nobody here controls.
+#
+# v1.7.0 IS THE NEWEST x/vuln WHOSE `go` LINE THIS TOOLCHAIN SATISFIES: v1.3.0
+# through v1.7.0 all declare `go 1.25.0`, v1.8.0 is the first to want 1.26.0.
+# Raising the go line in go.mod would be the other way to take v1.8.0, and it
+# is not this workflow's to raise: that line says what a consumer of this
+# library must build with. The plugin repository pins its scanner the same way,
+# so one fact is derived one way in both places.
+#
+# WHAT THE PIN COSTS, beside the claim: analysis improvements, not coverage,
+# and it decays silently. Nothing goes red when a newer x/vuln appears that
+# this toolchain could build, because reddening this lane on a release schedule
+# is the failure being fixed. Re-read the pin when the go line in go.mod moves.
 #
 # BOUND, beside the claim: nothing here drives the scanner over a KNOWN
 # vulnerable tree on every run, so a govulncheck that silently stopped
@@ -63,8 +83,22 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # The guard before the install, not after it: a `go install` that
+      # refuses prints a toolchain error and no name, and this names both
+      # operands. It lives in a file rather than a `run:` block because a
+      # script is linted by the arbiter's shellcheck row and can drive
+      # itself; a step is neither.
+      # The self-test runs FIRST. A guard whose verdict is trusted before
+      # anything has shown it can still answer both ways is a guard with one
+      # possible verdict, and this one's whole job is to say no.
+      - name: The guard can still answer both ways
+        run: .github/lane/govulncheck-pin.sh --self-test
+
+      - name: The pin and this toolchain agree
+        run: .github/lane/govulncheck-pin.sh
+
       - name: Install the scanner
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Which toolchain this verdict is about
         run: go version
