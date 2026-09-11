@@ -398,7 +398,7 @@ func (s *NDSocket) deliver(frame []byte, hw net.HardwareAddr) {
 
 	if !s.isOwn(hw) {
 		select {
-		case s.inbound <- lease.NDInbound{Frame: append([]byte(nil), f.Body...)}:
+		case s.inbound <- lease.NDInbound{Frame: append([]byte(nil), f.Body...), Src: f.Src}:
 		default:
 			s.dropped.Add(1)
 		}

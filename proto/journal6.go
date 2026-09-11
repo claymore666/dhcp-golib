@@ -4,6 +4,7 @@ package proto
 
 import (
 	"fmt"
+	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/wire"
 )
@@ -29,6 +30,7 @@ type JournalEntry6 struct {
 
 	Raw    []byte
 	RA     []byte
+	RASrc  netip.Addr
 	DAD    DADOutcome
 	Timer  TimerID
 	Action ActionID
@@ -65,7 +67,7 @@ type JournalEntry6 struct {
 func NewJournalEntry6(seq uint64, now Instant, rnd uint64, ev Event, from, to State6, acts []Action) JournalEntry6 {
 	return JournalEntry6{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, DAD: ev.DAD,
+		Raw: ev.Raw, RA: ev.RARaw, RASrc: raSrcOf(ev), DAD: ev.DAD,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
@@ -74,7 +76,7 @@ func NewJournalEntry6(seq uint64, now Instant, rnd uint64, ev Event, from, to St
 // Event reconstructs the Step input this entry records, re-decoding a received
 // message through wire.DecodeV6.
 func (e JournalEntry6) Event() (Event, error) {
-	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason); done {
+	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.RASrc, e.DAD, e.Timer, e.Action, e.Reason); done {
 		return ev, err
 	}
 	msg, err := wire.DecodeV6(e.Raw)

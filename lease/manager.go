@@ -348,8 +348,28 @@ type Stats struct {
 
 	// RouterSolicitsSent counts RFC 4861 section 6.3.7's solicitations that
 	// left the host; RouterAdvertsSeen the advertisements that reached ring 1.
-	RouterSolicitsSent uint64
-	RouterAdvertsSeen  uint64
+	//
+	// RouterAdvertsRefused counts frames that WERE Router Advertisements — the
+	// ICMPv6 type octet says so — and would not decode. It is separate from
+	// NDIgnored, which holds every frame this ring dropped, because their
+	// difference is the diagnostic: a link with no router and a link whose
+	// router is advertising something this decoder refuses are the same number
+	// in NDIgnored alone, and only one of them is a router to go and fix.
+	//
+	// RouterAdvertOptionsIgnored counts OPTIONS, not frames: a recognised
+	// option refused by its own standard's validity rule while the rest of the
+	// advertisement was read. It rises on advertisements that are otherwise
+	// fine, which is why it is not folded into the refusal count.
+	//
+	// RouterTableEntriesDropped is ring 1's, mirrored here at each Step: an
+	// entry a full list in the router table would not take. Above zero it
+	// means the table's caps are in force, which on a quiet link means
+	// something is advertising more than a link has.
+	RouterSolicitsSent         uint64
+	RouterAdvertsSeen          uint64
+	RouterAdvertsRefused       uint64
+	RouterAdvertOptionsIgnored uint64
+	RouterTableEntriesDropped  uint64
 
 	// DADChecksStarted counts addresses handed to ring 3 for RFC 4862 section
 	// 5.4, and DADConflicts the ones that came back in use. Their difference
@@ -901,6 +921,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// would be one fact derived twice, in two places that can be
 			// edited apart.
 			mg.router = mg.machine6.Router()
+			mg.stats.RouterTableEntriesDropped = mg.machine6.RouterTableDrops()
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d
@@ -1317,6 +1338,14 @@ func (mg *Manager) emit(ctx context.Context, e Event) {
 		e.Router = mg.machine6.Router()
 		if e.Kind != Configured {
 			e.Config = mg.config
+		}
+		switch e.Kind {
+		case Acquired, Changed, Renewed:
+			// The three kinds that carry a lease. A Lost or a Failed carries
+			// an empty one, and filling a gateway and a resolver into a lease
+			// that has no address would describe a configuration the caller
+			// must not install.
+			e.Lease = withRouterAdvert(e.Lease, e.Router)
 		}
 	} else {
 		e.Family = FamilyV4

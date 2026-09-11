@@ -726,7 +726,7 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 	var out []string
 	for _, v := range o.All(OptV6DomainList) {
 		for i := 0; i < len(v); {
-			name, next, err := readNameUncompressed(v, i)
+			name, next, err := readNameUncompressed(v, i, "option 24")
 			if err != nil {
 				return nil, err
 			}
@@ -743,24 +743,33 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 // offset just past it. It has no jump budget and no pointer target resolution
 // because it refuses the pointer form outright, which is also why it cannot
 // loop.
-func readNameUncompressed(v []byte, off int) (string, int, error) {
+//
+// what NAMES THE BLOCK IN THE ERROR AND IS THE ONLY THING THAT VARIES. RFC
+// 8106 section 5.2's DNS Search List option carries the same encoding under
+// the same prohibition — "the domain names MUST NOT be encoded in the
+// compressed form described in Section 4.1.4 of [RFC1035]" — so the ICMPv6
+// codec reads its names with this function rather than with a second copy of
+// it. Two readers would be two answers to "is a pointer a name here", and the
+// one that said yes would be reached by whichever option was decoded by the
+// copy nobody attacked.
+func readNameUncompressed(v []byte, off int, what string) (string, int, error) {
 	var labels []string
 	for {
 		if off >= len(v) {
-			return "", 0, fmt.Errorf("%w: option 24 ends mid-name", ErrV6Name)
+			return "", 0, fmt.Errorf("%w: %s ends mid-name", ErrV6Name, what)
 		}
 		n := int(v[off])
 		switch {
 		case n == 0:
 			return strings.Join(labels, "."), off + 1, nil
 		case n&0xC0 == 0xC0:
-			return "", 0, fmt.Errorf("%w: option 24 carries an RFC 1035 section 4.1.4 compression pointer at offset %d, which RFC 9915 section 10 says MUST NOT be used",
-				ErrV6Name, off)
+			return "", 0, fmt.Errorf("%w: %s carries an RFC 1035 section 4.1.4 compression pointer at offset %d, which RFC 9915 section 10 says MUST NOT be used",
+				ErrV6Name, what, off)
 		case n&0xC0 != 0:
-			return "", 0, fmt.Errorf("%w: option 24 label length octet %#02x uses a reserved form", ErrV6Name, n)
+			return "", 0, fmt.Errorf("%w: %s label length octet %#02x uses a reserved form", ErrV6Name, what, n)
 		default:
 			if off+1+n > len(v) {
-				return "", 0, fmt.Errorf("%w: option 24 label of %d octet(s) runs past the block", ErrV6Name, n)
+				return "", 0, fmt.Errorf("%w: %s label of %d octet(s) runs past the block", ErrV6Name, what, n)
 			}
 			labels = append(labels, string(v[off+1:off+1+n]))
 			off += 1 + n

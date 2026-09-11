@@ -17,13 +17,37 @@ import (
 // address of the packet, which is the whole of what makes it a DAD probe.
 //
 // ONLY WHAT THE CLIENT READS. Router Advertisement decode (the M and O flags,
-// the router lifetime and the Prefix Information option), Neighbor
-// Advertisement decode (the target and the R/S/O flags), and encode for Router
-// Solicitation and the DAD Neighbor Solicitation. Redirect, MTU, Router
-// Renumbering and the rest are not decoded; §4.2's rule covers them: "Future
-// versions of this protocol may define new option types. Receivers MUST
-// silently ignore any options they do not recognize and continue processing the
-// message."
+// the router lifetime, and the five options a host configures itself from —
+// Prefix Information, MTU, Route Information, Recursive DNS Server and DNS
+// Search List), Neighbor Advertisement decode (the target and the R/S/O
+// flags), and encode for Router Solicitation and the DAD Neighbor
+// Solicitation. Redirect, Router Renumbering and the rest are not decoded;
+// §4.2's rule covers them: "Future versions of this protocol may define new
+// option types. Receivers MUST silently ignore any options they do not
+// recognize and continue processing the message."
+//
+// TWO REFUSAL LEVELS, AND WHICH ONE APPLIES IS THE OPTION'S OWN RFC's ANSWER.
+// §4.6's length rule is about the PACKET: "The value 0 is invalid. Nodes MUST
+// silently discard an ND packet that contains an option with length zero." An
+// option running past the end of the message is the same verdict for the same
+// reason — there is no next option to walk to. But a RECOGNISED option whose
+// declared length is legal and wrong for its own type is refused by itself,
+// because the standard that defines it says so in those words: RFC 8106 §5.3.1
+// "If the DNS options are valid, the host SHOULD copy the values of the
+// options into the DNS Repository and the Resolver Repository in order.
+// Otherwise, the host MUST discard the options.", RFC 4191 §2.3 "If the
+// Reserved (10) value is received, the Route Information Option MUST be
+// ignored." Such an option is skipped, its siblings decode, and
+// RouterAdvert.IgnoredOptions counts it.
+//
+// THE PREFIX INFORMATION OPTION IS ON THE OTHER SIDE OF THAT LINE and it is
+// the asymmetry to know about: a Prefix Information option of the wrong length
+// refuses the whole message. RFC 4861 §4.6.2 fixes its Length at 4 and neither
+// RFC 4861 nor RFC 4862 gives a per-option ignore for a wrong-length one —
+// §5.5.3's "silently ignore the Prefix Information option" arms are about the
+// option's CONTENT, not its size. It is the shipped behaviour of this decoder
+// and changing it would change what a client forms an address from, which is
+// L2's subject and not this file's.
 //
 // PREFIX DELEGATION IS OUT (D25), SO THE P FLAG IS IGNORED. RFC 9762 adds a P
 // flag to the Prefix Information option after L, A and R, and §9.1 amends RFC
@@ -46,11 +70,20 @@ const (
 // 58."
 const ICMPv6NextHeader = 58
 
-// The ND option types of RFC 4861 §4.6.
+// The ND option types of RFC 4861 §4.6, and the three IANA added later that a
+// host configures itself from.
 const (
 	NDOptSourceLinkAddr uint8 = 1
 	NDOptTargetLinkAddr uint8 = 2
 	NDOptPrefixInfo     uint8 = 3
+	// NDOptMTU is RFC 4861 §4.6.4.
+	NDOptMTU uint8 = 5
+	// NDOptRouteInfo is RFC 4191 §2.3's Route Information Option.
+	NDOptRouteInfo uint8 = 24
+	// NDOptRDNSS is RFC 8106 §5.1's Recursive DNS Server option.
+	NDOptRDNSS uint8 = 25
+	// NDOptDNSSL is RFC 8106 §5.2's DNS Search List option.
+	NDOptDNSSL uint8 = 31
 )
 
 // The fixed lengths of the four messages, in octets, measured from the type
@@ -64,6 +97,14 @@ const (
 	// as Length 4, and §4.6's Length is "The length of the option (including
 	// the type and length fields) in units of 8 octets."
 	pioLen = 32
+	// mtuOptLen is RFC 4861 §4.6.4's Length 1.
+	mtuOptLen = 8
+	// rioMaxUnits is RFC 4191 §2.3's largest Length, and rdnssMinUnits and
+	// dnsslMinUnits are RFC 8106 §5.3.1's two minima, in the same units.
+	rioMinUnits   = 1
+	rioMaxUnits   = 3
+	rdnssMinUnits = 3
+	dnsslMinUnits = 2
 )
 
 // The refusals.
@@ -247,6 +288,96 @@ func (p PrefixInfo) String() string {
 	return fmt.Sprintf("%s/%d [%s]", p.Prefix, p.PrefixLen, f)
 }
 
+// RoutePreference is RFC 4191 §2.3's Prf field: "2-bit signed integer. The
+// Route Preference indicates whether to prefer the router associated with this
+// prefix over others, when multiple identical prefixes (for different routers)
+// have been received."
+//
+// IT IS SIGNED AND IT IS KEPT SIGNED. The wire encoding is two's complement in
+// two bits — 01 high, 00 medium, 11 low — so the ordering the field exists for
+// is the ordering of the Go value, and a consumer that sorts by it needs no
+// table. The fourth encoding, 10, is not a preference: "If the Reserved (10)
+// value is received, the Route Information Option MUST be ignored."
+type RoutePreference int8
+
+// The three preferences RFC 4191 §2.1 defines.
+const (
+	RoutePrefLow    RoutePreference = -1
+	RoutePrefMedium RoutePreference = 0
+	RoutePrefHigh   RoutePreference = 1
+)
+
+func (p RoutePreference) String() string {
+	switch p {
+	case RoutePrefHigh:
+		return "high"
+	case RoutePrefMedium:
+		return "medium"
+	case RoutePrefLow:
+		return "low"
+	default:
+		return fmt.Sprintf("preference(%d)", int8(p))
+	}
+}
+
+// RouteInfo is a decoded Route Information option, RFC 4191 §2.3.
+type RouteInfo struct {
+	// Prefix is the advertised prefix, masked to its own length: §2.3's "The
+	// bits in the prefix after the prefix length (if any) are reserved and
+	// MUST be initialized to zero by the sender and ignored by the receiver."
+	Prefix netip.Prefix
+	Pref   RoutePreference
+	// Lifetime is "The length of time in seconds (relative to the time the
+	// packet is sent) that the prefix is valid for route determination. A
+	// value of all one bits (0xffffffff) represents infinity." Zero withdraws
+	// the route.
+	Lifetime uint32
+}
+
+func (r RouteInfo) String() string {
+	return fmt.Sprintf("%s pref=%s lifetime=%ds", r.Prefix, r.Pref, r.Lifetime)
+}
+
+// RDNSS is a decoded Recursive DNS Server option, RFC 8106 §5.1.
+//
+// THE LIFETIME BELONGS TO THE WHOLE OPTION AND THAT IS WHY THIS IS A STRUCT
+// AND NOT A FLAT LIST OF ADDRESSES. §5.1: "The RDNSS option contains one or
+// more IPv6 addresses of RDNSSes. All of the addresses share the same Lifetime
+// value. If it is desirable to have different Lifetime values, multiple RDNSS
+// options can be used." Flattening the addresses of every option into one
+// slice would lose which lifetime withdraws which address, and a withdrawal is
+// exactly what a zero lifetime is.
+type RDNSS struct {
+	// Lifetime is "The maximum time in seconds (relative to the time the
+	// packet is received) over which these RDNSS addresses MAY be used for
+	// name resolution. ... A value of all one bits (0xffffffff) represents
+	// infinity. A value of zero means that the RDNSS addresses MUST no longer
+	// be used."
+	Lifetime uint32
+	Addrs    []netip.Addr
+}
+
+func (r RDNSS) String() string {
+	return fmt.Sprintf("rdnss %v lifetime=%ds", r.Addrs, r.Lifetime)
+}
+
+// DNSSL is a decoded DNS Search List option, RFC 8106 §5.2.
+//
+// The names are spelled as this library spells every other search list — the
+// labels joined by dots and no trailing root label — because they end up in the
+// same field as DHCPv6 option 24's (RFC 3646 §4), and one list holding two
+// spellings of a domain is a resolver configuration nobody can read.
+type DNSSL struct {
+	// Lifetime has "the same semantics as the semantics for the RDNSS option",
+	// §5.2, so zero withdraws these names and 0xffffffff is infinity.
+	Lifetime uint32
+	Names    []string
+}
+
+func (d DNSSL) String() string {
+	return fmt.Sprintf("dnssl %v lifetime=%ds", d.Names, d.Lifetime)
+}
+
 // RouterAdvert is a decoded Router Advertisement, RFC 4861 §4.2 — only the
 // fields a DHCPv6 client reads.
 type RouterAdvert struct {
@@ -285,6 +416,45 @@ type RouterAdvert struct {
 
 	// Prefixes are the Prefix Information options, in wire order.
 	Prefixes []PrefixInfo
+
+	// Router is the advertising router's link-local address, RFC 4861
+	// §6.3.4's "On receipt of a valid Router Advertisement, a host extracts
+	// the source address of the packet".
+	//
+	// THE DECODER NEVER SETS IT AND CANNOT. It is the IPv6 header's source
+	// address, and this package decodes the ICMPv6 message, which does not
+	// carry it — the same boundary ErrICMPv6Validity's comment draws for
+	// §6.1.2's hop limit and link-local checks, read from the other side. The
+	// caller that read the frame fills it in, and it is on this struct rather
+	// than beside it because everything downstream keys the router's
+	// contribution on it: an advertisement whose Router is unset names no
+	// entry in any list, and there is no second value it could be taken from.
+	Router netip.Addr
+
+	// MTU is the last MTU option's value, RFC 4861 §4.6.4: "32-bit unsigned
+	// integer. The recommended MTU for the link." Zero means no usable option
+	// was present. §6.3.4's bounds on copying it ("so long as the value is
+	// greater than or equal to the minimum link MTU") are applied by the
+	// consumer, not here: this is what the router said.
+	MTU uint32
+
+	// Routes are the Route Information options, RFC 4191 §2.3, in wire order.
+	Routes []RouteInfo
+
+	// RDNSS and DNSSL are RFC 8106 §5.1's and §5.2's options, in wire order,
+	// one element per option so that each keeps its own lifetime.
+	RDNSS []RDNSS
+	DNSSL []DNSSL
+
+	// IgnoredOptions counts the RECOGNISED options this decoder refused by
+	// their own standard's rule and walked past. It does not count options of
+	// a type this decoder does not read: §4.6 tells a receiver to ignore those
+	// and an advertisement carrying one is not defective.
+	//
+	// It is a count and not a list because it exists to be a counter, and a
+	// list of reasons would be a second, unbounded thing to carry off a frame
+	// an attacker chooses the contents of.
+	IgnoredOptions int
 }
 
 func (r *RouterAdvert) String() string {
@@ -299,8 +469,26 @@ func (r *RouterAdvert) String() string {
 		f = "-"
 	}
 	s := fmt.Sprintf("RA [%s] lifetime=%ds", f, r.RouterLifetime)
+	if r.Router.IsValid() {
+		s = fmt.Sprintf("RA from %s [%s] lifetime=%ds", r.Router, f, r.RouterLifetime)
+	}
 	for _, p := range r.Prefixes {
 		s += " " + p.String()
+	}
+	if r.MTU != 0 {
+		s += fmt.Sprintf(" mtu=%d", r.MTU)
+	}
+	for _, rt := range r.Routes {
+		s += " " + rt.String()
+	}
+	for _, d := range r.RDNSS {
+		s += " " + d.String()
+	}
+	for _, d := range r.DNSSL {
+		s += " " + d.String()
+	}
+	if r.IgnoredOptions != 0 {
+		s += fmt.Sprintf(" ignored=%d", r.IgnoredOptions)
 	}
 	return s
 }
@@ -337,27 +525,183 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 		RetransTimer:   ube32(b[12:16]),
 	}
 	err := walkNDOptions(b[raFixedLen:], func(typ uint8, opt []byte) error {
-		if typ != NDOptPrefixInfo {
-			return nil
+		switch typ {
+		case NDOptPrefixInfo:
+			if len(opt) != pioLen {
+				return fmt.Errorf("%w: Prefix Information option is %d octet(s), RFC 4861 section 4.6.2 gives Length 4 (%d octets)",
+					ErrNDOption, len(opt), pioLen)
+			}
+			ra.Prefixes = append(ra.Prefixes, PrefixInfo{
+				PrefixLen:         opt[2],
+				OnLink:            opt[3]&pioFlagOnLink != 0,
+				Autonomous:        opt[3]&pioFlagAuto != 0,
+				ValidLifetime:     ube32(opt[4:8]),
+				PreferredLifetime: ube32(opt[8:12]),
+				Prefix:            netip.AddrFrom16([16]byte(opt[16:32])),
+			})
+		case NDOptMTU:
+			if len(opt) != mtuOptLen {
+				ra.IgnoredOptions++
+				return nil
+			}
+			// The LAST one wins, §6.3.4: "when received information for a
+			// specific parameter (e.g., Link MTU) ... differs from information
+			// received earlier, and the parameter/option can only have one
+			// value, the most recently received information is considered
+			// authoritative."
+			ra.MTU = ube32(opt[4:8])
+		case NDOptRouteInfo:
+			ri, ok := decodeRouteInfo(opt)
+			if !ok {
+				ra.IgnoredOptions++
+				return nil
+			}
+			ra.Routes = append(ra.Routes, ri)
+		case NDOptRDNSS:
+			r, ok := decodeRDNSS(opt)
+			if !ok {
+				ra.IgnoredOptions++
+				return nil
+			}
+			ra.RDNSS = append(ra.RDNSS, r)
+		case NDOptDNSSL:
+			d, ok := decodeDNSSL(opt)
+			if !ok {
+				ra.IgnoredOptions++
+				return nil
+			}
+			ra.DNSSL = append(ra.DNSSL, d)
 		}
-		if len(opt) != pioLen {
-			return fmt.Errorf("%w: Prefix Information option is %d octet(s), RFC 4861 section 4.6.2 gives Length 4 (%d octets)",
-				ErrNDOption, len(opt), pioLen)
-		}
-		ra.Prefixes = append(ra.Prefixes, PrefixInfo{
-			PrefixLen:         opt[2],
-			OnLink:            opt[3]&pioFlagOnLink != 0,
-			Autonomous:        opt[3]&pioFlagAuto != 0,
-			ValidLifetime:     ube32(opt[4:8]),
-			PreferredLifetime: ube32(opt[8:12]),
-			Prefix:            netip.AddrFrom16([16]byte(opt[16:32])),
-		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return ra, nil
+}
+
+// decodeRouteInfo reads one Route Information option, RFC 4191 §2.3, and
+// reports whether it is one §2.3 lets a receiver use.
+//
+// THE LENGTH AND THE PREFIX LENGTH CHECK EACH OTHER, which is the whole of the
+// option's own validity rule and is quoted here because reading either alone
+// accepts a prefix built from octets the sender did not send: "The Length field
+// is 1, 2, or 3 depending on the Prefix Length. If Prefix Length is greater
+// than 64, then Length must be 3. If Prefix Length is greater than 0, then
+// Length must be 2 or 3. If Prefix Length is zero, then Length must be 1, 2, or
+// 3." and "The number of leading bits in the Prefix that are valid. The value
+// ranges from 0 to 128."
+func decodeRouteInfo(opt []byte) (RouteInfo, bool) {
+	units := len(opt) / 8
+	if units < rioMinUnits || units > rioMaxUnits {
+		return RouteInfo{}, false
+	}
+	plen := int(opt[2])
+	switch {
+	case plen > 128:
+		return RouteInfo{}, false
+	case plen > 64 && units != 3:
+		return RouteInfo{}, false
+	case plen > 0 && units < 2:
+		return RouteInfo{}, false
+	}
+	pref, ok := decodeRoutePreference(opt[3])
+	if !ok {
+		return RouteInfo{}, false
+	}
+	// The prefix field is 0, 8 or 16 octets and the rest of the address is
+	// zero. Masked() then applies §2.3's "ignored by the receiver" to the bits
+	// past the prefix length, so two routers advertising the same prefix with
+	// different padding produce one entry rather than two.
+	var a [16]byte
+	copy(a[:], opt[8:])
+	pfx := netip.PrefixFrom(netip.AddrFrom16(a), plen)
+	if !pfx.IsValid() {
+		return RouteInfo{}, false
+	}
+	return RouteInfo{Prefix: pfx.Masked(), Pref: pref, Lifetime: ube32(opt[4:8])}, true
+}
+
+// decodeRoutePreference reads §2.3's two-bit signed Prf out of the octet it
+// shares with two reserved fields, "|Resvd|Prf|Resvd|", and refuses the
+// reserved encoding.
+func decodeRoutePreference(b uint8) (RoutePreference, bool) {
+	switch (b >> 3) & 0x3 {
+	case 0x0:
+		return RoutePrefMedium, true
+	case 0x1:
+		return RoutePrefHigh, true
+	case 0x3:
+		return RoutePrefLow, true
+	default:
+		// 0b10, §2.3: "If the Reserved (10) value is received, the Route
+		// Information Option MUST be ignored."
+		return RoutePrefMedium, false
+	}
+}
+
+// decodeRDNSS reads one Recursive DNS Server option, RFC 8106 §5.1, and
+// applies §5.3.1's validity rule: "the value of the Length field in the RDNSS
+// option is greater than or equal to the minimum value (3) and satisfies the
+// requirement that (Length - 1) % 2 == 0. ... Also, the validity of the RDNSS
+// option is checked with the "Addresses of IPv6 Recursive DNS Servers" field;
+// that is, the addresses should be unicast addresses."
+//
+// A LINK-LOCAL RESOLVER IS VALID AND IS KEPT. §5.1's note: "The addresses for
+// RDNSSes in the RDNSS option MAY be link-local addresses." What is refused is
+// an address that is not unicast at all — multicast, and the unspecified
+// address — because a resolver nobody can be is not one of the three §5.3.1
+// asks a host to keep.
+func decodeRDNSS(opt []byte) (RDNSS, bool) {
+	units := len(opt) / 8
+	if units < rdnssMinUnits || (units-1)%2 != 0 {
+		return RDNSS{}, false
+	}
+	out := RDNSS{Lifetime: ube32(opt[4:8])}
+	for i := 8; i+16 <= len(opt); i += 16 {
+		a := netip.AddrFrom16([16]byte(opt[i : i+16]))
+		if a.IsMulticast() || a.IsUnspecified() {
+			return RDNSS{}, false
+		}
+		out.Addrs = append(out.Addrs, a)
+	}
+	if len(out.Addrs) == 0 {
+		return RDNSS{}, false
+	}
+	return out, true
+}
+
+// decodeDNSSL reads one DNS Search List option, RFC 8106 §5.2, and applies
+// §5.3.1's "The value of the Length field in the DNSSL option is greater than
+// or equal to the minimum value (2)."
+//
+// THE PADDING IS WHAT MAKES THE LOOP'S SHAPE LOAD-BEARING. §5.2: "Because the
+// size of this field MUST be a multiple of 8 octets, for the minimum multiple
+// including the domain name representations, the remaining octets other than
+// the encoding parts of the domain name representations MUST be padded with
+// zeros." A zero octet is also the root label that ends a name, so the padding
+// reads as a run of empty names; they are consumed and dropped rather than
+// appended, which is why the list is the names and not the names plus however
+// many zeros the router needed to reach the boundary.
+func decodeDNSSL(opt []byte) (DNSSL, bool) {
+	if len(opt)/8 < dnsslMinUnits {
+		return DNSSL{}, false
+	}
+	out := DNSSL{Lifetime: ube32(opt[4:8])}
+	for i := 8; i < len(opt); {
+		name, next, err := readNameUncompressed(opt, i, "DNS Search List option")
+		if err != nil {
+			return DNSSL{}, false
+		}
+		i = next
+		if name != "" {
+			out.Names = append(out.Names, name)
+		}
+	}
+	if len(out.Names) == 0 {
+		return DNSSL{}, false
+	}
+	return out, true
 }
 
 // -------------------------------------------------- Neighbor Solicitation --

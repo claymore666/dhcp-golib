@@ -270,6 +270,13 @@ type Event struct {
 	// section 4.2: "no information is available via DHCPv6" — has not hit a
 	// bug, and this is the only thing that tells it which of the two
 	// happened.
+	//
+	// IT ALSO CARRIES WHAT THE ROUTERS ADVERTISED, and on a Lost, a Failed or
+	// a Configured it is the ONLY place that view appears: the gateway, the
+	// MTU, the advertised resolvers, the search domains and the more-specific
+	// routes are merged into Lease on the three kinds that carry a lease, and
+	// an event with no lease has nowhere to put them. See
+	// proto.RouterObservation for what it is a snapshot of and when.
 	Router proto.RouterObservation
 }
 
@@ -424,6 +431,83 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		out.Preferred = b.at(t)
 	}
 	return out
+}
+
+// withRouterAdvert merges what the routers on the link advertised into a v6
+// lease, RFC 4861 §6.3.4's union seen from the caller's side.
+//
+// THE LEASE IS THE SURFACE AND NOT A SECOND TYPE, which is D30 where a chassis
+// touches it: a caller that installs an address, sets a route, sets an MTU and
+// writes a resolver file reads the same five fields whichever family it asked
+// for. DHCPv6 has none of these five — there is no router option (RFC 9915 has
+// none), no MTU option and no link prefix — so for v6 they come from the
+// advertisement or from nowhere.
+//
+// WHAT DHCP SENT KEEPS ITS PLACE, STANDARD RFC 8106 §5.3.1: "The DNS options
+// from RAs and DHCP SHOULD be stored in the DNS Repository and Resolver
+// Repository so that information from DHCP appears there first and therefore
+// takes precedence. Thus, the DNS information from DHCP takes precedence over
+// that from RAs for DNS queries." So the advertised resolvers and search
+// domains are APPENDED to what the server sent, never substituted for it, and
+// a duplicate is not added twice. The same rule read for the single-valued
+// fields is why the gateway and the MTU are filled in only when the lease
+// carries none: there is nothing to take precedence over them today, and a
+// later option that does must win without this function being edited.
+func withRouterAdvert(l Lease, r proto.RouterObservation) Lease {
+	if !l.Gateway.IsValid() && len(r.Routers) > 0 {
+		l.Gateway = r.Routers[0]
+	}
+	if l.MTU == 0 && r.MTU != 0 {
+		l.MTU = int(r.MTU)
+	}
+	for _, a := range r.DNS {
+		if !containsAddr(l.DNS, a) {
+			l.DNS = append(l.DNS, a)
+		}
+	}
+	for _, n := range r.Search {
+		if !containsString(l.DomainSearch, n) {
+			l.DomainSearch = append(l.DomainSearch, n)
+		}
+	}
+	for _, rt := range r.Routes {
+		if !containsRoute(l.Routes, rt) {
+			l.Routes = append(l.Routes, rt)
+		}
+	}
+	return l
+}
+
+func containsAddr(in []netip.Addr, a netip.Addr) bool {
+	for _, v := range in {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(in []string, s string) bool {
+	for _, v := range in {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// containsRoute compares the DESTINATION and not the whole route: two routers
+// offering the same prefix are one destination with two next hops, and a
+// caller installs one route to a destination. The first one wins, and the list
+// arrives most-preferred first (RFC 4191 §2.3's Prf), so the one that wins is
+// the one the routers said to prefer.
+func containsRoute(in []wire.Route, r wire.Route) bool {
+	for _, v := range in {
+		if v.Dest == r.Dest {
+			return true
+		}
+	}
+	return false
 }
 
 // toConfig converts ring 1's stateless configuration into the outward one.
