@@ -536,6 +536,16 @@ about a module nobody has pushed to this month. It is also the one thing here
 that may go red without a commit having changed anything, which is the correct
 direction: the tree did not move, the world did.
 
+That direction has a wrong half, and it cost every run between 2026-09-08 and
+2026-09-11. The scanner was installed at `@latest`; a new x/vuln raised its own
+`go` requirement above the toolchain the `go` line in
+[`go.mod`](../go.mod) resolves to, and the install refused before the scan ran.
+Both versions are named by the guard that now stands in front of the install.
+The world moving reddened the check without reading the tree at all. The scanner
+is pinned now, and the advisory data is unaffected by that: `govulncheck` fetches
+it from `https://vuln.go.dev` at scan time rather than carrying it in the binary,
+so a pinned scanner still reports an advisory published after the pin.
+
 **What is driven, and what is not.** `actionlint` is driven in its own job
 against a workflow planted outside the repository, carrying a trigger that is not
 an event GitHub honours: a linter with nothing to say fails that job. It does not
@@ -543,7 +553,10 @@ pass it. `govulncheck` is not driven that way and cannot easily be, because this
 module has no dependency to make vulnerable. What stands behind it is a
 measurement, taken by hand when the workflow was written: the same command over
 the same tree reported a reachable standard-library advisory under an older
-toolchain and nothing under the newest one. The version it scans is the one
+toolchain and nothing under the newest one. The one part of that workflow that
+IS driven is the pin guard, which runs its own cases in the job beside the scan:
+the scanner version and the toolchain have to agree or the install refuses, and
+that agreement went unobserved until it broke. The version it scans is the one
 `setup-go` resolves from the `go` line in [`go.mod`](../go.mod), so a red there says the
 newest toolchain a consumer can build this library with has a reachable
 advisory.

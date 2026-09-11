@@ -157,6 +157,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	scripts/oracle-contracts.sh
 	scripts/sweep-doc-numbers.sh
 	.github/lane/domain.sh
+	.github/lane/govulncheck-pin.sh
 	.github/lane/oracle-aggregate.sh
 	.github/lane/oracle-run-check.sh
 	.github/lane/oracle-shard.sh
@@ -164,7 +165,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	.github/lane/prepare.sh
 	.github/lane/verdict.sh
 )
-MANIFEST_SHELL_SCRIPTS_N=12
+MANIFEST_SHELL_SCRIPTS_N=13
 
 # The unit suite's declared-test population, stated rather than derived.
 #
