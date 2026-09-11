@@ -353,8 +353,21 @@ type Dest struct {
 	//
 	// RFC 2131 section 4.4.4 unicasts the DHCPRELEASE to the server, and
 	// section 4.4.6's message identifies the binding by the address it is
-	// released from — Table 5 carries it in 'ciaddr'. A release sent from
-	// 0.0.0.0 is a datagram the server can neither route back nor match.
+	// released from — Table 5 carries it in 'ciaddr'.
+	//
+	// WHAT A 0.0.0.0 SOURCE COSTS IS THE PATH OUT, not the match. This
+	// sentence used to say the server could neither route back to such a
+	// datagram nor match it, and the second half is false: MEASURED against
+	// dnsmasq 2.91 while building lease.BuildRelease, the server matches the
+	// binding on 'ciaddr' plus the client-identifier and does not consult the
+	// source address at all — which is exactly what lets a host give a
+	// container's lease back from its own address. Nor is there anything to
+	// route back: section 4.4.6 says "the correct operation of DHCP does not
+	// depend on the transmission of DHCPRELEASE messages", and no server
+	// answers one. The source is here because ring 3 has to put SOME address
+	// in the IP header and nothing below this struct knows one, and because a
+	// datagram whose source the sending host does not own is what a
+	// reverse-path filter drops on the way out.
 	//
 	// Zero for a broadcast, where RFC 2131 section 4.1 requires the source to
 	// be 0.0.0.0 anyway.
