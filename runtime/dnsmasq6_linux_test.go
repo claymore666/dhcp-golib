@@ -1078,13 +1078,36 @@ func awaitV6(t *testing.T, c *Client6, kind lease.EventKind) lease.Event {
 // make this proof fail on that ordering; asserting its ABSENCE would fail on
 // the first one. The refusal itself is driven, deterministically and with the
 // pool as the subject, by TestAV6ClientIsToldTheServerRefused.
+//
+// WHAT THE REFUSAL SAYS ABOUT THE ROUTER IS READ HERE TOO, because this is the
+// event the advice on lease.Event.Router is written against. That advice sends
+// a caller to the LIVE observation, and the assertion here is the half of it
+// that holds on every ordering: whatever the refusals carried, the client that
+// has reached the stateless configuration reports a router with M clear and O
+// set. Each refusal's own copy is checked for the one thing it may never say
+// on this link — managed — and the ones carrying nothing are counted into the
+// log line.
+//
+// MEASURED 2026-09-11, four runs: every refusal here carried M=0 O=1, so on
+// this fixture the advertisement wins the race against the Solicit. That is
+// the reason the count is logged rather than asserted in either direction:
+// §18.2.1 gives the Solicit no wait for router discovery, so an event stamped
+// before the first advertisement carries the zero, and which of the two a run
+// produces is timing. The deterministic end of that fact is
+// TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen, one ring down,
+// where no advertisement arrives at all.
 func awaitV6PastTheAddressRefusal(t *testing.T, c *Client6) lease.Event {
 	t.Helper()
 	refused := 0
+	unseen := 0
 	for ev := range c.Events() {
 		t.Logf("client event: %s", ev)
 		if ev.Kind == lease.Configured {
-			t.Logf("the stateless link reported %d address refusal(s) before it was configured", refused)
+			t.Logf("the stateless link reported %d address refusal(s) before it was configured, %d of them carrying no router observation", refused, unseen)
+			obs := c.Router()
+			if !obs.Seen || obs.Managed || !obs.Other {
+				t.Fatalf("the configured client reports %s, want a router seen with M clear and O set: the live observation is what a caller asks when it has no address, and this link has a router", obs)
+			}
 			return ev
 		}
 		if ev.Kind == lease.Failed {
@@ -1092,6 +1115,12 @@ func awaitV6PastTheAddressRefusal(t *testing.T, c *Client6) lease.Event {
 			if ev.Reason != proto.ReasonNak || ev.Status != wire.StatusNoAddrsAvail {
 				t.Fatalf("the client failed while waiting for the stateless configuration: %s (reason %s, status %s, failure %d)",
 					ev, ev.Reason, ev.Status, refused)
+			}
+			if !ev.Router.Seen {
+				unseen++
+			}
+			if ev.Router.Seen && ev.Router.Managed {
+				t.Fatalf("refusal %d carries %s on a stateless link: the observation a caller reads must not say this link is managed", refused, ev.Router)
 			}
 		}
 	}

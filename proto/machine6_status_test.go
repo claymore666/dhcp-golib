@@ -762,3 +762,64 @@ func TestAFailedActionRendersTheCodeItCarries(t *testing.T) {
 		t.Errorf("a failure with no status names %s, which no server sent", wire.StatusSuccess)
 	}
 }
+
+// TestAnIAThatFailsForAnotherReasonStillHandsOverItsAddress is the other
+// direction of §18.2.10.1's selection rule, and without it the rule is only
+// observed where it fires.
+//
+// The sentence names TWO codes and not every failure: "The client uses the
+// addresses, delegated prefixes, and other information from any IAs that do
+// not contain a Status Code option with the NoAddrsAvail or NoPrefixAvail
+// status code." NoPrefixAvail is about an IA_PD, which this client does not
+// send, so NoAddrsAvail is the whole of the rule here — and an IA that says
+// something else and hands over a usable address has handed over a usable
+// address. A guard widened to "any code that is not Success" would throw it
+// away, report a refusal on an exchange that produced a lease, and nothing in
+// the suite would have noticed: every other row drives the code the rule
+// names.
+func TestAnIAThatFailsForAnotherReasonStillHandsOverItsAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code wire.StatusCode
+	}{
+		{
+			// §18.2.10 answers an UnspecFail at the MESSAGE level by leaving
+			// the schedule running; §21.4 scopes this one to the IA, where no
+			// sentence takes the address away.
+			name: "UnspecFail, which §18.2.10.1 does not name",
+			code: wire.StatusUnspecFail,
+		},
+		{
+			// IANA keeps allocating, and a client that treated every code it
+			// has no constant for as "no address here" would lose a lease to
+			// a status option it did not understand.
+			name: "a code IANA has not allocated yet",
+			code: wire.StatusCode(77),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := solicit6(t, testParams6())
+			m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+			s, acts := m.Step(at(3), 3, receivedV6(t, wire.MsgReply, uint32(capXIDRequest),
+				optClientID(capDUID), optServerID(testServerDUID),
+				optIANA(t, capIAID, 150, 240, []iaAddrSpec{{dnsmasqLeasedAddr, 300, 300}},
+					optStatus(tc.code))))
+
+			noRefusal(t, acts, "the IA said "+tc.code.String()+" and handed over a usable address")
+			if s != State6DAD {
+				t.Fatalf("the Reply left the machine in %s, want %s: the address the IA carried is not the one §18.2.10.1 takes away:%s", s, State6DAD, journalLines(acts))
+			}
+			s, acts = m.Step(at(4), 0, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), false))
+			if s != State6Bound {
+				t.Fatalf("the checked address left the machine in %s", s)
+			}
+			a, ok := find(acts, ActLeaseAcquired)
+			if !ok {
+				t.Fatalf("no lease was acquired from an IA whose code §18.2.10.1 does not name:%s", journalLines(acts))
+			}
+			if got, _ := a.Lease6.Addr(); got.String() != dnsmasqLeasedAddr {
+				t.Errorf("the acquired lease carries %s, want %s", got, dnsmasqLeasedAddr)
+			}
+		})
+	}
+}

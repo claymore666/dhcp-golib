@@ -450,7 +450,27 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # The runtime one IS a netns test, MEASURED with testroster -netns at 34 over
 # the base and 35 here, so the netns enumeration in verify.sh moves in this
 # round and is re-measured there as one run rather than patched with a line.
-MIN_DECLARED_TESTS=674
+#
+# #816 ROUND 2, THE REVIEW ROUND: 674 -> 676, measured the same way. Two added,
+# in two files, and each is an observer a round-2 finding asked for:
+#
+#   proto/machine6_status_test.go   (1)  AnIAThatFailsForAnotherReasonStill
+#     HandsOverItsAddress
+#   lease/manager6_test.go          (1)  TheRouterObservationOnARefusalIsWhat
+#     HadBeenSeenByThen
+#
+# The first is the PRESERVATION direction of §18.2.10.1: the rule was observed
+# only where it fires, so widening it to any failure code left the suite green.
+# The second pins what Event.Router carries on a refusal stamped before any
+# Router Advertisement has arrived, which is the ordering the advice beside
+# that field is written against.
+#
+# NEITHER IS A NETNS TEST, measured with testroster -netns at 35 on both sides
+# of this round, so the netns enumeration in verify.sh is not re-measured here.
+# NETNS_CEILING_SECONDS did move, 140 -> 160, and the derivation is in that
+# block: at 108s the old headroom sat exactly on its 32s floor, and this round
+# is the one the block named as having to move the number.
+MIN_DECLARED_TESTS=676
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -1032,7 +1052,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:140|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:160|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

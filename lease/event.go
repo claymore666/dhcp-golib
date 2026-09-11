@@ -288,7 +288,15 @@ type Event struct {
 	Status wire.StatusCode
 
 	// Router is the last Router Advertisement this client saw, on every v6
-	// event, and the zero value means it has seen none.
+	// event, and the zero value means it had seen none WHEN THIS EVENT WAS
+	// STAMPED.
+	//
+	// "WHEN THIS EVENT WAS STAMPED" IS THE WHOLE OF ITS USE. §18.2.1's
+	// Solicit goes out without waiting for router discovery, so an event
+	// stamped before the first advertisement arrives — a refusal early in the
+	// exchange, for one — carries the zero on a link that does have a router.
+	// A caller asking whether this link has one reads Manager.Router when it
+	// gives up, not the copy on an event it happens to be holding.
 	//
 	// It is a DIAGNOSTIC and never an instruction (design Q2). A caller whose
 	// own deadline ran out on a link whose router says M=0 and O=0 — RFC 4861

@@ -32,10 +32,23 @@
 // soliciting for as long as it is run, because RFC 9915 section 18.2.1 gives
 // the Solicit no retransmission bound.
 //
-// Event.Router is the other half of that question on a v6 link. A link whose
-// Router Advertisement says M=0 has no addresses to give out and has refused
-// nobody, so a caller classifying "why is there no address here" reads the
-// router observation beside the reason.
+// The router observation is the other half of that question on a v6 link: a
+// link whose Router Advertisement says M=0 has no addresses to give out and
+// has refused nobody. READ IT LIVE, FROM Manager.Router, AND NOT FROM THE
+// COPY ON THE EVENT IN HAND. Event.Router is a snapshot stamped when the event
+// was emitted, and RFC 9915 section 18.2.1's Solicit does not wait for router
+// discovery: an event from early in the exchange can carry the zero
+// observation, which renders as "no router advertisement seen" and reads
+// exactly like a link with no router on it.
+//
+// WHICH OF THE TWO A REFUSAL CARRIES IS TIMING AND NOT A FACT ABOUT THE LINK,
+// and both ends of that are driven.
+// TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen refuses before any
+// advertisement arrives and the refusal carries the zero; on the netns
+// stateless fixture, MEASURED over four runs on 2026-09-11, the advertisement
+// won the race every time and the refusals there carried M=0 O=1. So a caller
+// classifying "why is there no address here" asks Manager.Router at the point
+// its own deadline runs out, where the answer is the current one.
 //
 // # The ports
 //

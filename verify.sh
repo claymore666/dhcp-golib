@@ -383,29 +383,36 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # names here against internal/tools/testroster -netns, which is how it came to
 # be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
-# WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum. No re-measurement has moved it:
-# 93s at 8c87caf over a roster one test larger, 94.54s at M7e over a roster one
-# larger again, 97s at M7f over a roster one larger than that, and 108s at #816
-# over a roster one larger again ON A BOX UNDER LOAD 21, are all at the 94s the
-# number was derived on — so nothing here is re-derived, only re-checked, four
-# times. At 108s the headroom is 32s, which meets the 32s floor the rule below
-# asks exactly. THAT IS THE NUMBER TO WATCH: the next round that adds a netns
-# test, or the first idle re-measurement that does not come back under 100s,
-# is the one that has to move the ceiling rather than re-check it.
+# WHAT 160 IS: the measured 108s wall plus 52s of headroom. The headroom is the
+# derived half and the ceiling is the sum.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
-# the largest round-on-round increase this row has just shown. This round's
-# increase was 16s (78s at e173966, 94s when 140 was set; 94.54s at M7e is
-# inside the same figure), so the floor is 32s and 46s clears it.
+# the largest round-on-round increase this row has shown. That increase is
+# still the 16s this row showed when 140 was set (78s at e173966, 94s then;
+# 94.54s at M7e is inside the same figure), so the floor is 32s, and 52s
+# clears it with 1.25 rounds to spare.
 #
-# AT #816 THE MARGIN IS EXACTLY AT THAT FLOOR AND NOT ABOVE IT: 108s measured
-# under load 21 leaves 32s, against a floor of 22s derived from this round's
-# own 11s increase (97s at M7f to 108s here) and of 32s against the largest
-# increase the row has shown. It clears both, and it clears the second with
-# nothing to spare, which is why the measurement above states its load: the
-# figure that consumed the headroom is four other agents on this box, not this
-# round's one test.
+# WHY IT MOVED AT #816 RATHER THAN BEING RE-CHECKED AGAIN. 140 was 94s plus
+# 46s and was re-checked four times without moving: 93s at 8c87caf over a
+# roster one test larger, 94.54s at M7e over a roster one larger again, 97s at
+# M7f over a roster one larger than that, and 108s at #816 over a roster one
+# larger again ON A BOX UNDER LOAD 21. At 108s the headroom under 140 was 32s
+# — the floor exactly, not a second above it — and the paragraph that stood
+# here named the case that must move the number rather than re-check it: the
+# next round that adds a netns test. #816 is that round, and the margin it
+# consumed was not its own test. 3.27s of the 11s increase is
+# TestAV6ClientIsToldTheServerRefused; the rest is the load the table states.
+#
+# THE FIGURE THE NEW NUMBER IS DERIVED ON IS THE LOADED ONE, which is the
+# direction that keeps a ceiling honest. The same head measured 103s at load 13
+# to 16 on 2026-09-11, and 108s at load 21; 108 is the number above. An idle
+# re-measurement that comes back under 100s does not lower this ceiling — it is
+# the LOADED wall this row has to clear, because the lane shares its box.
+#
+# THAT IS STILL THE NUMBER TO WATCH, one round on: the next round that adds a
+# netns test, or the first measurement that does not come back under 128s
+# (160 minus the 32s floor), is the one that has to move 160 rather than
+# re-check it.
 #
 # An earlier version of this paragraph said the number was set so that the
 # headroom's RATIO to the measured row does not shrink round on round. That
@@ -448,14 +455,15 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # where the lane's machine is not this one; when the runner moves off this box
 # the two-measurement shape returns and this paragraph is owed a re-derivation.
 #
-# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 is
+# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 was
 # RE-CHECKED rather than re-derived. The lane runs on GitHub-hosted
 # `ubuntu-24.04`, `nproc` 4. Three runs at the head: 86s run 34204814646, 88s
 # run 34206597940, 87s run 34207096133. The rule is the one stated above — the
 # ceiling is the measured wall plus headroom, and the headroom must cover two
 # more rounds of the largest round-on-round increase this row has shown, a 32s
-# floor. 140 minus the slowest of the three is 52s of headroom, which clears
-# it, so nothing moves.
+# floor. 140 minus the slowest of the three was 52s of headroom, which cleared
+# it, so nothing moved then; against 160 the same three figures leave 72s, and
+# the hosted image is not the machine this ceiling is derived on anyway.
 #
 # And the two-measurement shape did return, with the reassurance it used to
 # carry: 88s on a four-core hosted image against 94.54s on a thirty-two-core
@@ -471,11 +479,11 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # 32 cores, against 0.3 idle): this row went 90s -> 106s, an 18 percent cost,
 # and passed. So "dominated by waits" is a statement about the row's SHAPE,
 # not a claim that load cannot move it — load moved it by sixteen seconds. The
-# margin that leaves is 34s: the lane would have to be a further third slower
-# than it was under one co-tenant before this row reddens. That margin is the
-# reason no ceiling moved this round, and it is a number to re-check, not a
-# guarantee, if the box ever carries two co-tenants at once.
-NETNS_CEILING_SECONDS=140
+# margin that left against 140 was 34s, and that margin was the reason no
+# ceiling moved in that round. The box has since carried more than one
+# co-tenant — #816's own table was measured under four — and the answer to it
+# is the number above: against 160 the same 106s leaves 54s.
+NETNS_CEILING_SECONDS=160
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 

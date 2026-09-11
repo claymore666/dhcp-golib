@@ -685,3 +685,78 @@ func TestTheCallerIsToldWhichCodeTheServerRefusedWith(t *testing.T) {
 		t.Errorf("stats = %+v, want NaksAccepted 1 and NaksSeen 0: a v6 refusal is not a decoded DHCPNAK", st)
 	}
 }
+
+// TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen pins the ordering
+// that decides what Event.Router can be used for.
+//
+// Event.Router is stamped from the machine's LIVE observation when the event
+// is emitted, and RFC 9915 §18.2.1 sends the Solicit without waiting for a
+// Router Advertisement ("The first Solicit message from the client on the
+// interface MUST be delayed by a random amount of time between 0 and
+// SOL_MAX_DELAY"; nothing there waits for router discovery). So the first
+// refusal on a link that HAS a router can carry the zero observation, which
+// renders as "no router advertisement seen" and reads exactly like a link
+// with no router on it.
+//
+// That is why the advice beside these fields sends a caller to the LIVE
+// observation — Manager.Router — and not to the copy on the refusal it is
+// holding. This drives both halves: the refusal carries nothing, and the same
+// client reports the router a moment later.
+func TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen(t *testing.T) {
+	refusing := func(req *wire.MessageV6, _ int) []*wire.MessageV6 {
+		if req.Type != wire.MsgSolicit {
+			return nil
+		}
+		return []*wire.MessageV6{{
+			Type: wire.MsgAdvertise, XID: req.XID,
+			Options: wire.OptionsV6{
+				optV6(wire.OptV6ClientID, test6DUID),
+				optV6(wire.OptV6ServerID, test6ServerDUID),
+				optV6(wire.OptV6StatusCode, wire.EncodeStatus(wire.Status{
+					Code:    wire.StatusNoAddrsAvail,
+					Message: "no addresses available",
+				})),
+			},
+		}}
+	}
+	r := newRig6(t, testParams6(), refusing)
+
+	r.journal.waitAppended(t, "the machine's Step on the Advertise",
+		func(e proto.JournalEntry6) bool { return e.Kind == proto.EvReceived })
+
+	ev := r.takeEvent(t)
+	if ev.Kind != Failed || ev.Reason != proto.ReasonNak {
+		t.Fatalf("the first event is %s, want a refusal (kind failed, reason nak)", ev)
+	}
+	if ev.Router.Seen {
+		t.Fatalf("the refusal carries %s although no Router Advertisement had arrived; the field is a snapshot of what ring 1 had seen, not a conclusion", ev.Router)
+	}
+
+	// THE SAME LINK, ONE ADVERTISEMENT LATER, AND THE NEXT REFUSAL CARRIES IT.
+	// The advertisement says M=1, so the client keeps soliciting and the
+	// server keeps refusing; firing the retransmission draws the second
+	// refusal, and its copy of the observation is the one taken after the
+	// advertisement. Both halves are needed: a field that always carried the
+	// zero would satisfy the first assertion on its own, and a field that
+	// carried a fabricated observation would satisfy the second.
+	r.nd.inject(raManagedOther)
+	r.journal.waitAppended(t, "the Router Advertisement",
+		func(e proto.JournalEntry6) bool { return e.Kind == proto.EvRouterAdvert })
+
+	obs := r.mgr.Router()
+	if !obs.Seen || !obs.Managed || !obs.Other {
+		t.Fatalf("after the advertisement the manager reports %s, want a router seen with M and O set: the live observation is what answers \"is there a router here\", and the refusal's copy did not", obs)
+	}
+
+	r.timers.fire(proto.Timer6Retransmit)
+	r.journal.waitAppended(t, "the machine's Step on the second Advertise",
+		func(e proto.JournalEntry6) bool { return e.Kind == proto.EvReceived })
+
+	ev = r.takeEvent(t)
+	if ev.Kind != Failed || ev.Reason != proto.ReasonNak {
+		t.Fatalf("the second event is %s, want the refusal the retransmission drew", ev)
+	}
+	if ev.Router != obs {
+		t.Fatalf("the second refusal carries %s while the manager reports %s: the field is the live observation at the moment the event was stamped, and a caller told otherwise is reading a fabrication", ev.Router, obs)
+	}
+}

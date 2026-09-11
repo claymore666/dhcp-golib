@@ -144,7 +144,14 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   verdict, and a status this library could not decode is never reported as one
   a server sent (`proto`'s `TestAReplyThatRefusesIsReportedWithTheServersOwnCode`,
   `TestAReplyThatSaysSuccessIsNotARefusal`,
-  `TestAMalformedStatusCodeIsNeverReportedAsARefusal`).
+  `TestAMalformedStatusCodeIsNeverReportedAsARefusal`). An IA that says
+  `NoAddrsAvail` hands over no address even when it carries one, and an IA that
+  says anything else hands over the address it carries
+  (`TestAnIAThatRefusesAndOffersGivesNoAddress`,
+  `TestAnIAThatFailsForAnotherReasonStillHandsOverItsAddress`). The router
+  observation on such an event is what had been seen when it was stamped, which
+  is why a caller classifying a link reads the live one
+  (`lease`'s `TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen`).
 - **A duplicate address is declined and not asked for again, across a restart
   too.** A neighbour answers for the offered address; the client Declines it,
   and the next Solicit does not carry it as a hint
