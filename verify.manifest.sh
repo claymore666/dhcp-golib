@@ -157,6 +157,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	scripts/oracle-contracts.sh
 	scripts/sweep-doc-numbers.sh
 	.github/lane/domain.sh
+	.github/lane/govulncheck-pin.sh
 	.github/lane/oracle-aggregate.sh
 	.github/lane/oracle-run-check.sh
 	.github/lane/oracle-shard.sh
@@ -164,7 +165,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	.github/lane/prepare.sh
 	.github/lane/verdict.sh
 )
-MANIFEST_SHELL_SCRIPTS_N=12
+MANIFEST_SHELL_SCRIPTS_N=13
 
 # The unit suite's declared-test population, stated rather than derived.
 #
@@ -426,6 +427,69 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
 #
+# THE GOVULNCHECK PIN ROUND: 654 -> 656, measured the same way, one testroster
+# run over the base and one over this head, the difference taken as a set. Two
+# added, in one file, and they are the observer the scan workflow did not have:
+# nothing outside that workflow ran the pin guard, so deleting both of its
+# steps left every check green.
+#
+#   internal/publication/govulncheck_test.go  (2)  TheScanWorkflowRunsThePin
+#     GuardBeforeItInstalls, ThePinGuardRowSpeaksInBothDirections
+#
+# Neither is a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+#
+# L4 OF THE v2.2.0 IPv6 BATCH, #816: 654 -> 674, measured the same way, one
+# testroster run over a clean worktree at the base and one over this head, the
+# difference taken as a SET and not as two numbers. Twenty added, none removed,
+# in three files:
+#
+#   proto/machine6_status_test.go  (18)  AReplyThatRefusesIsReportedWithThe
+#     ServersOwnCode, AReplyThatSaysSuccessIsNotARefusal, AReplyWithNoAddress
+#     AndNoStatusIsNotARefusal, AnAdvertiseThatRefusesIsReportedAndTheSchedule
+#     Stands, ARefusedRenewKeepsTheLeaseAndSaysWhy, ANoBindingRenewIsA
+#     RecoveryAndNotARefusal, NotOnLinkCostsTheLeaseAndIsCountedOnce,
+#     AMalformedStatusCodeIsNeverReportedAsARefusal, AStatusInsideAnIAAddress
+#     IsNotRead, AnIAThatRefusesAndOffersGivesNoAddress, ARefusedInformation
+#     RequestIsNotAConfiguration, ALaterFailureCarriesNoEarlierStatus,
+#     AV4NakCarriesNoStatusCode, EveryRefusingMessageIsReported, AMessageLevel
+#     RefusalBesideAUsableAddressIsNotARefusal, AnAdvertiseThatRefusesAndOffers
+#     IsNotSelected, AConfirmRefusedForThisLinkIsReported, AFailedAction
+#     RendersTheCodeItCarries
+#   lease/manager6_test.go          (1)  TheCallerIsToldWhichCodeTheServer
+#     RefusedWith
+#   runtime/dnsmasq6_linux_test.go  (1)  AV6ClientIsToldTheServerRefused
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 34 over
+# the base and 35 here, so the netns enumeration in verify.sh moves in this
+# round and is re-measured there as one run rather than patched with a line.
+#
+# #816 ROUND 2, THE REVIEW ROUND: 674 -> 676, measured the same way. Two added,
+# in two files, and each is an observer a round-2 finding asked for:
+#
+#   proto/machine6_status_test.go   (1)  AnIAThatFailsForAnotherReasonStill
+#     HandsOverItsAddress
+#   lease/manager6_test.go          (1)  TheRouterObservationOnARefusalIsWhat
+#     HadBeenSeenByThen
+#
+# The first is the PRESERVATION direction of §18.2.10.1: the rule was observed
+# only where it fires, so widening it to any failure code left the suite green.
+# The second pins what Event.Router carries on a refusal stamped before any
+# Router Advertisement has arrived, which is the ordering the advice beside
+# that field is written against.
+#
+# NEITHER IS A NETNS TEST, measured with testroster -netns at 35 on both sides
+# of this round, so the netns enumeration in verify.sh is not re-measured here.
+# NETNS_CEILING_SECONDS did move, 140 -> 160, and the derivation is in that
+# block: at 108s the old headroom sat exactly on its 32s floor, and this round
+# is the one the block named as having to move the number.
+#
+# THE BACK-MERGE OF THE PIN ROUND INTO #816: the two rounds above are disjoint
+# — different files, no test renamed or removed in either — so the merge
+# product carries both, 656 + 22 and 674 + 2 reaching the same number. It is
+# MEASURED on the merge product and not added up: one testroster run here.
+
 # THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 700, measured the same way,
 # one testroster run over the base and one over this head, differenced as a set.
 # Forty-six added, in five files. The eight at the end of the wire, proto and
@@ -487,7 +551,13 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # testroster -netns at 34 over the base and 35 here. The netns roster is
 # derived rather than declared, so nothing else has to be written down for it,
 # but NETNS_CEILING_SECONDS is a number the round must re-measure.
-MIN_DECLARED_TESTS=700
+#
+# THE BACK-MERGE OF THE PIN ROUND AND #816 INTO #814: the three rounds above
+# are disjoint — different files, and no test renamed or removed in any of
+# them — so the merge product carries all of them. The number below is
+# MEASURED on the merge product with one testroster run and NOT added up from
+# the three sides, which is the arithmetic that would hide a collision.
+MIN_DECLARED_TESTS=724
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -1069,7 +1139,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:140|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:160|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

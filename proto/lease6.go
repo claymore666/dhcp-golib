@@ -366,6 +366,16 @@ func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []s
 	if !res.found {
 		return Lease6{}, notes, wire.StatusSuccess, false
 	}
+	if res.status == wire.StatusNoAddrsAvail && len(res.addrs) > 0 {
+		// §18.2.10.1: "The client uses the addresses, delegated prefixes, and
+		// other information from any IAs that do not contain a Status Code
+		// option with the NoAddrsAvail or NoPrefixAvail status code." An IA
+		// that says it has none has nothing to give, whatever else is inside
+		// it — and a client that read the address anyway would report a
+		// refusal and bind an address in the same Step.
+		notes = append(notes, fmt.Sprintf("the IA_NA says NoAddrsAvail and carries %d address(es): they are not ours to use (§18.2.10.1)", len(res.addrs)))
+		res.addrs = nil
+	}
 	l.T1, l.T2, l.Addrs = res.t1, res.t2, res.addrs
 	if dns, err := m.Options.DNSServers(); err != nil {
 		notes = append(notes, "DNS Recursive Name Server option: "+err.Error())

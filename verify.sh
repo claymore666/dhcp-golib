@@ -306,56 +306,69 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # byte readLinkLocal branches on is the kernel's and not a fabrication. One run
 # again, not a line inserted.
 #
-# MEASURED 2026-09-08 on the session box at this branch's head, exactly as this
+# AND AGAIN AT #816: the roster is 35 with TestAV6ClientIsToldTheServerRefused,
+# which gives dnsmasq a pool of one address, takes it with a first client and
+# reads what the second one is told. One run again, not a line inserted.
+#
+# MEASURED 2026-09-11 on the session box at this branch's head, exactly as this
 # file runs the row (-race -count=1 -v -timeout 180s, -run over the roster),
 # taking the OUTER (re-exec parent) figure per test. The lane itself now runs on
 # a GitHub-hosted image (D41) and the figures that bound the ceiling there are
 # at the end of this block; this table is the session box's, and the two are
-# compared there rather than mixed:
+# compared there rather than mixed.
 #
-#   TestAClientOnALinkWithNoRouterStillAcquires                         3.26
-#   TestADeclinedHintIsNotAskedForAgain                                 3.53
-#   TestADuplicateAddressOnTheLinkIsDeclined                            1.47
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne             3.07
-#   TestARefusedResumeRestartsAgainstRealDnsmasq                        1.30
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq                       1.29
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                       3.64
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                               1.27
-#   TestASquatterAfterBoundTakesSection24sPath                          2.50
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline             2.50
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline              2.38
-#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.23
-#   TestAV6ClientAcquiresFromRealDnsmasq                                3.12
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport              4.14
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               2.23
+# THE LOAD IS PART OF THE MEASUREMENT AND IS STATED: the one-minute load average
+# was 20.7 at the start of this run and 21.0 at the end, four other agents
+# building and testing on the same box. So every figure below is an UPPER bound
+# on an idle box's, which is the direction that keeps the ceiling honest: the
+# row was measured against the worst conditions it has been measured in, and
+# still cleared the number. A figure here is not comparable test-by-test with
+# the 2026-09-08 table above it for the same reason.
+#
+#   TestAClientOnALinkWithNoRouterStillAcquires                         3.83
+#   TestADeclinedHintIsNotAskedForAgain                                 3.00
+#   TestADuplicateAddressOnTheLinkIsDeclined                            1.66
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne             2.86
+#   TestARefusedResumeRestartsAgainstRealDnsmasq                        1.44
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq                       1.38
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                       4.47
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                               1.28
+#   TestASquatterAfterBoundTakesSection24sPath                          2.55
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline             2.59
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline              2.46
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.31
+#   TestAV6ClientAcquiresFromRealDnsmasq                                3.27
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport              4.22
+#   TestAV6ClientIsToldTheServerRefused                                 3.27
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               1.94
 #   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress             5.03
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress           2.88
-#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed   1.43
-#   TestAV6ReleaseReachesRealDnsmasq                                    3.87
-#   TestAcquiresFromRealDnsmasq                                         1.15
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                      1.28
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress           2.54
+#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed   2.06
+#   TestAV6ReleaseReachesRealDnsmasq                                    5.47
+#   TestAcquiresFromRealDnsmasq                                         1.22
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                      1.37
 #   TestAnOffClientPutsNoARPOnTheWire                                   4.18
-#   TestDeclineAndReleaseReachRealDnsmasq                               2.16
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease             4.26
-#   TestPacketTransportDropsWhenTheConsumerStalls                       3.66
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress                1.28
-#   TestPacketTransportOnARealLink                                      1.29
-#   TestRenewalAndNakReachRealDnsmasq                                   7.16
+#   TestDeclineAndReleaseReachRealDnsmasq                               2.23
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease             4.33
+#   TestPacketTransportDropsWhenTheConsumerStalls                       5.14
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress                1.31
+#   TestPacketTransportOnARealLink                                      1.30
+#   TestRenewalAndNakReachRealDnsmasq                                   7.25
 #   TestTheClientKeepsTheNamespaceItWasBuiltIn                          1.18
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                 9.37
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                       1.59
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile                     1.45
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                        2.48
-#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn             1.15
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                 9.56
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                       1.65
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile                     1.61
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                        3.17
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn             1.21
 #
-# The per-test figures sum to 94.78s against a 97s wall clock; the
+# The per-test figures sum to 104.34s against a 108s wall clock; the
 # difference is the build, the race instrumentation and the re-exec, and it is
 # why the ceiling is set off the WALL figure. The wall has NOT moved past what
-# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s at M7e, 97s here over
-# a roster one test larger again. The new test costs 1.43s of it; the remaining
-# 1.1s against the previous run is draw-to-draw variation in tests that WAIT on
-# real DHCP, ARP and DAD intervals — the paragraph below measures how wide that
-# variation gets on one row.
+# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s at M7e, 97s at M7f,
+# and 108s here over a roster one test larger again and a box under load 21.
+# The new test costs 3.27s of it; the other 8s against the previous run is that
+# load, spread over tests that WAIT on real DHCP, ARP and DAD intervals — the
+# paragraph below measures how wide that variation gets on one row.
 #
 # THE VARIANCE IS NOT UNIFORM ACROSS THE LIST, and one row carries most of it.
 # MEASURED 2026-09-07 while building this table: a first pass put
@@ -370,18 +383,36 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # names here against internal/tools/testroster -netns, which is how it came to
 # be short by one for a whole milestone. Stated as a bound, not fixed here.
 #
-# WHAT 140 IS: the measured 94s wall plus 46s of headroom. The headroom is the
-# derived half and the ceiling is the sum. No re-measurement has moved it:
-# 93s at 8c87caf over a roster one test larger, 94.54s at M7e over a roster one
-# larger again, and 97s at M7f over a roster one larger than that, are all at
-# the 94s the number was derived on — so nothing here is re-derived, only
-# re-checked, three times. At 97s the headroom is 43s, which still clears the
-# 32s floor the rule below asks.
+# WHAT 160 IS: the measured 108s wall plus 52s of headroom. The headroom is the
+# derived half and the ceiling is the sum.
 #
 # The rule the headroom answers to: it must cover at least TWO more rounds of
-# the largest round-on-round increase this row has just shown. This round's
-# increase was 16s (78s at e173966, 94s when 140 was set; 94.54s at M7e is
-# inside the same figure), so the floor is 32s and 46s clears it.
+# the largest round-on-round increase this row has shown. That increase is
+# still the 16s this row showed when 140 was set (78s at e173966, 94s then;
+# 94.54s at M7e is inside the same figure), so the floor is 32s, and 52s
+# clears it with 1.25 rounds to spare.
+#
+# WHY IT MOVED AT #816 RATHER THAN BEING RE-CHECKED AGAIN. 140 was 94s plus
+# 46s and was re-checked four times without moving: 93s at 8c87caf over a
+# roster one test larger, 94.54s at M7e over a roster one larger again, 97s at
+# M7f over a roster one larger than that, and 108s at #816 over a roster one
+# larger again ON A BOX UNDER LOAD 21. At 108s the headroom under 140 was 32s
+# — the floor exactly, not a second above it — and the paragraph that stood
+# here named the case that must move the number rather than re-check it: the
+# next round that adds a netns test. #816 is that round, and the margin it
+# consumed was not its own test. 3.27s of the 11s increase is
+# TestAV6ClientIsToldTheServerRefused; the rest is the load the table states.
+#
+# THE FIGURE THE NEW NUMBER IS DERIVED ON IS THE LOADED ONE, which is the
+# direction that keeps a ceiling honest. The same head measured 103s at load 13
+# to 16 on 2026-09-11, and 108s at load 21; 108 is the number above. An idle
+# re-measurement that comes back under 100s does not lower this ceiling — it is
+# the LOADED wall this row has to clear, because the lane shares its box.
+#
+# THAT IS STILL THE NUMBER TO WATCH, one round on: the next round that adds a
+# netns test, or the first measurement that does not come back under 128s
+# (160 minus the 32s floor), is the one that has to move 160 rather than
+# re-check it.
 #
 # An earlier version of this paragraph said the number was set so that the
 # headroom's RATIO to the measured row does not shrink round on round. That
@@ -424,14 +455,15 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # where the lane's machine is not this one; when the runner moves off this box
 # the two-measurement shape returns and this paragraph is owed a re-derivation.
 #
-# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 is
+# 2026-09-08, D41: the runner moved, so that debt is paid here, and 140 was
 # RE-CHECKED rather than re-derived. The lane runs on GitHub-hosted
 # `ubuntu-24.04`, `nproc` 4. Three runs at the head: 86s run 34204814646, 88s
 # run 34206597940, 87s run 34207096133. The rule is the one stated above — the
 # ceiling is the measured wall plus headroom, and the headroom must cover two
 # more rounds of the largest round-on-round increase this row has shown, a 32s
-# floor. 140 minus the slowest of the three is 52s of headroom, which clears
-# it, so nothing moves.
+# floor. 140 minus the slowest of the three was 52s of headroom, which cleared
+# it, so nothing moved then; against 160 the same three figures leave 72s, and
+# the hosted image is not the machine this ceiling is derived on anyway.
 #
 # And the two-measurement shape did return, with the reassurance it used to
 # carry: 88s on a four-core hosted image against 94.54s on a thirty-two-core
@@ -447,11 +479,11 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # 32 cores, against 0.3 idle): this row went 90s -> 106s, an 18 percent cost,
 # and passed. So "dominated by waits" is a statement about the row's SHAPE,
 # not a claim that load cannot move it — load moved it by sixteen seconds. The
-# margin that leaves is 34s: the lane would have to be a further third slower
-# than it was under one co-tenant before this row reddens. That margin is the
-# reason no ceiling moved this round, and it is a number to re-check, not a
-# guarantee, if the box ever carries two co-tenants at once.
-NETNS_CEILING_SECONDS=140
+# margin that left against 140 was 34s, and that margin was the reason no
+# ceiling moved in that round. The box has since carried more than one
+# co-tenant — #816's own table was measured under four — and the answer to it
+# is the number above: against 160 the same 106s leaves 54s.
+NETNS_CEILING_SECONDS=160
 NETNS_TIMEOUT_SECONDS=180
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 

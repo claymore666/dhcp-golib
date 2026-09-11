@@ -262,8 +262,41 @@ type Event struct {
 	// whose address family disagreed with its address.
 	Family Family
 
+	// Status is the DHCPv6 status code the server refused this client with, on
+	// Failed with proto.ReasonNak and nowhere else.
+	//
+	// IT IS WHAT SEPARATES "THE SERVER REFUSED US" FROM "NOBODY ANSWERED",
+	// which a caller cannot otherwise tell apart: both end with no address.
+	// RFC 9915 §18.2.10, on the client's side of it: "The client MAY choose to
+	// report any status code or message from the Status Code option in the
+	// Reply message." This field is that report, typed, so the caller branches
+	// on a value rather than on Note's words.
+	//
+	// The zero is wire.StatusSuccess and means no status code refused this
+	// client — §21.13 makes absent and Success one verdict, and neither
+	// refuses anybody. Every v4 Failed carries the zero: RFC 2131's refusal is
+	// a DHCPNAK message and has no code to carry. proto.Action.Status states
+	// the rest, including why wire.StatusMalformed never appears here.
+	//
+	// IT IS A LIVE FIELD AND IS NOT DURABLE. The rebuilt record after a
+	// restart knows a refusal happened (RecordCounters.Naks) and not which
+	// code it carried, and that is deliberate: the consumer of the code is a
+	// caller deciding what to do with THIS exchange — the plugin's endpoint
+	// setup, which is running when the event arrives — while the consumer of
+	// the record is the next process, which has no refused exchange in front
+	// of it any more. A code in the record would be a number nobody acts on.
+	Status wire.StatusCode
+
 	// Router is the last Router Advertisement this client saw, on every v6
-	// event, and the zero value means it has seen none.
+	// event, and the zero value means it had seen none WHEN THIS EVENT WAS
+	// STAMPED.
+	//
+	// "WHEN THIS EVENT WAS STAMPED" IS THE WHOLE OF ITS USE. §18.2.1's
+	// Solicit goes out without waiting for router discovery, so an event
+	// stamped before the first advertisement arrives — a refusal early in the
+	// exchange, for one — carries the zero on a link that does have a router.
+	// A caller asking whether this link has one reads Manager.Router when it
+	// gives up, not the copy on an event it happens to be holding.
 	//
 	// It is a DIAGNOSTIC and never an instruction (design Q2). A caller whose
 	// own deadline ran out on a link whose router says M=0 and O=0 — RFC 4861
