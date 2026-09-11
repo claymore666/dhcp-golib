@@ -25,7 +25,7 @@ and it needs no root.
 | Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
-| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers and the search list | n/a | [v0.2.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
+| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers and the search list | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
 | Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
@@ -36,7 +36,6 @@ and it needs no root.
 
 - **yes**: in the tree today, with a test that drives it, against a real
   server or through the state machine.
-- **v0.2.0**: in the tree, tagged at the next release rather than the last.
 - **v1.0.0**: in the tree at v1.0.0. The roadmap below names the scope.
 - **planned**: intended. No release names it yet, and the linked issue holds
   the plan.

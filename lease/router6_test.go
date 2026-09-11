@@ -354,3 +354,85 @@ func TestTheAdvertisedViewNeverWritesIntoTheLeaseItWasGiven(t *testing.T) {
 		t.Errorf("the lease passed in grew: %v / %v / %v", held.DomainSearch, held.DNS, held.Routes)
 	}
 }
+
+// raWithRouterLifetime is a bare advertisement — M and O clear, no options at
+// all — from a router that says it is a default router for the given number of
+// seconds. RFC 4861 §4.2's Router Lifetime is the two octets after the flags.
+func raWithRouterLifetime(secs uint16) []byte {
+	return []byte{
+		134, 0, 0, 0,
+		64, 0x00, byte(secs >> 8), byte(secs),
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+	}
+}
+
+// awaitRouterIs blocks until the manager's view names the given router. It
+// reads the manager rather than the journal on purpose: waitAppended consumes
+// a shared channel, so using it as a barrier throws away whatever was queued
+// behind the entry waited for.
+func awaitRouterIs(t *testing.T, r *rig6, addr string) proto.RouterObservation {
+	t.Helper()
+	for {
+		if obs := r.mgr.Router(); obs.Router.String() == addr {
+			return obs
+		}
+		runtime.Gosched()
+	}
+}
+
+// TestTheRouterViewOnTheLeaseIsAsOfTheLastStep drives the bound that both
+// surfaces state in prose, because a bound nothing drives is a sentence.
+//
+// THE MIDDLE ARM ASSERTS THE STALE ANSWER, DELIBERATELY. This client arms no
+// timer for a router's expiry — that is the L1/L2 line, and #821's chassis half
+// is where it closes — so the table is pruned from the now each Step is handed
+// and from nothing else. A caller that reads Lease() long after the last Step
+// is told what the last Step left behind. Asserting it here is what stops the
+// window from being discovered by a caller instead.
+//
+// THE THIRD ARM IS WHAT MAKES THE SECOND MEAN ANYTHING. Without it the test
+// has one possible verdict and would pass just as well against a table whose
+// entries never expire at all: the next Step, here a second router's
+// advertisement, drops the entry the first arm put in and the gateway moves.
+func TestTheRouterViewOnTheLeaseIsAsOfTheLastStep(t *testing.T) {
+	const (
+		shortLifetime = 30
+		otherRouter   = "fe80::dcba"
+	)
+
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.acquire6(t)
+
+	r.nd.injectFrom(raWithRouterLifetime(shortLifetime), raRouter)
+	awaitRouterIs(t, r, raRouter)
+
+	// Inside the lifetime: the router is a default router because it is one.
+	r.clock.advance(proto.Duration(shortLifetime-1) * proto.Second)
+	l, held := r.mgr.Lease()
+	if !held {
+		t.Fatal("the manager holds no lease")
+	}
+	if l.Gateway.String() != raRouter {
+		t.Fatalf("one second before its lifetime ran out the lease names gateway %q, want %s", l.Gateway, raRouter)
+	}
+
+	// Past the lifetime, with no Step of any kind in between.
+	r.clock.advance(2 * proto.Second)
+	l, _ = r.mgr.Lease()
+	if l.Gateway.String() != raRouter {
+		t.Errorf("the lease names gateway %q after the lifetime ran out; the view is a snapshot as of the last Step, not as of the read, and nothing stepped", l.Gateway)
+	}
+
+	// The next Step corrects it. The second advertisement is stepped at a now
+	// past the first router's lifetime, and observe prunes before it inserts.
+	r.nd.injectFrom(raWithRouterLifetime(1800), otherRouter)
+	obs := awaitRouterIs(t, r, otherRouter)
+	if len(obs.Routers) != 1 || obs.Routers[0].String() != otherRouter {
+		t.Fatalf("the default router list is %v after the next Step, want only %s", obs.Routers, otherRouter)
+	}
+	l, _ = r.mgr.Lease()
+	if l.Gateway.String() != otherRouter {
+		t.Errorf("the lease names gateway %q after a Step past the first router's lifetime, want %s", l.Gateway, otherRouter)
+	}
+}

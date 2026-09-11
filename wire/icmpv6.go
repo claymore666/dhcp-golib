@@ -49,6 +49,15 @@ import (
 // and changing it would change what a client forms an address from, which is
 // L2's subject and not this file's.
 //
+// WHAT THAT COSTS, STATED RATHER THAN LEFT TO BE FOUND: the M and O flags die
+// with the message. They are in the header, before any option, and they are
+// the fields a caller reads to tell a managed link from a stateless one — so a
+// router whose Prefix Information option this decoder refuses reads exactly
+// like a link with no router on it, and a caller waiting for M to decide
+// whether to run DHCPv6 waits forever. That is the same confusion the refusal
+// counters were added to end one level up, and it is why the asymmetry is an
+// open row rather than a settled one.
+//
 // PREFIX DELEGATION IS OUT (D25), SO THE P FLAG IS IGNORED. RFC 9762 adds a P
 // flag to the Prefix Information option after L, A and R, and §9.1 amends RFC
 // 4861 §4.2's note to read "If the M, O, or P (RFC 9762) flags are not set,

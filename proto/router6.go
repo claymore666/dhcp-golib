@@ -38,10 +38,21 @@ import (
 // router would drop them with it.
 //
 // THERE IS NO TIMER HERE AND THAT IS DELIBERATE FOR L1. Expiry is applied from
-// the now every Step is handed, so the table is correct whenever it is read and
-// nothing is scheduled: no action, no event, no wake-up of a client that is
-// otherwise quiet. What that costs is stated where a caller can see it —
-// RouterObservation's doc — and closing it is the chassis's half of #821.
+// the now every Step is handed, and from nothing else: nothing is scheduled, so
+// there is no action, no event and no wake-up of a client that is otherwise
+// quiet.
+//
+// WHICH MEANS THE TABLE IS CORRECT AS OF THE LAST Step AND NOT AS OF THE READ.
+// Every read of it — Machine6.Router, and through that lease.Manager.Lease —
+// is a read of what the last Step left behind, so an entry whose lifetime ran
+// out while the machine took no Step is still reported, and the report is
+// corrected by the next Step rather than by a wake-up. On a link with a router
+// that is advertising, the next advertisement is the next Step; on a link that
+// has gone quiet, the stale window is as long as the caller's own silence. The
+// bound is stated at both surfaces a caller can reach — RouterObservation's doc
+// and Manager.Lease's — and driven by
+// lease.TestTheRouterViewOnTheLeaseIsAsOfTheLastStep. Closing it needs a timer
+// and an event, which is the chassis's half of #821.
 
 // The caps, and the RFC floor each one may not fall below.
 //
@@ -56,10 +67,22 @@ import (
 // 8106 §5.3.1 "the ability to store a total of at least three RDNSS addresses
 // (or DNSSL domain names) from the multiple sources is RECOMMENDED".
 //
-// A FULL LIST REFUSES THE NEW ENTRY RATHER THAN EVICTING AN OLD ONE. Both
-// policies lose to a router flood — that is what RA-Guard and SEND are for, and
-// neither is this library's — but only one of them loses the router the client
-// has been using all along. The refusals are counted; see routerTable.dropped.
+// A FULL LIST REFUSES THE NEW ENTRY RATHER THAN EVICTING AN OLD ONE, so what a
+// full table holds is what it heard FIRST. Both policies lose to a router
+// flood — that is what RA-Guard and SEND are for, and neither is this
+// library's — and which one loses the router the client has been using all
+// along is decided by the join order, not by the policy: a client already on
+// the link has its own router in the table before the flood starts, and a
+// client joining a link that is already flooding does not.
+//
+// THE PRICE IS PAID BY A LINK WITH NO ATTACKER ON IT TOO. The table is pruned
+// of what has EXPIRED, not of what has gone quiet, so routers that advertised
+// a long lifetime and then vanished hold their seats for as long as they said
+// — up to §6.2.1's 9000 seconds — and a full table of those refuses a router
+// that is real and advertising now. Driven both ways:
+// TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut and
+// TestAnExpiredEntryMakesRoomForANewOne. The refusals are counted; see
+// routerTable.dropped.
 const (
 	maxRouters      = 8
 	maxRouterDNS    = 8

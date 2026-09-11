@@ -462,8 +462,13 @@ func TestTheTableIsBoundedAndSaysSoWhenItRefuses(t *testing.T) {
 	case len(afterOne.Routes) != maxRouterRoutes:
 		t.Fatalf("%d routes, want the cap %d", len(afterOne.Routes), maxRouterRoutes)
 	}
-	// What survives is what arrived first, which is the client's own working
-	// router on a link an attacker joined later.
+	// What survives is what arrived FIRST, and the join order is what decides
+	// whether that is the router the client wants: on a link the client was
+	// already on, its own router is in the table before the flood starts; on a
+	// link that was already flooding when the client joined, the flood is what
+	// arrived first and the real router is the entry refused. Neither policy
+	// wins that link — RA-Guard and SEND are what do, and neither is this
+	// library's — so what is asserted here is the order, not a defence.
 	if afterOne.Routers[0] != netip.MustParseAddr("fe80::1") {
 		t.Errorf("the first router heard is not the first one held: %v", addrTexts(afterOne.Routers))
 	}
@@ -622,5 +627,46 @@ func TestAReplayedAdvertisementKeepsTheRouterItCameFrom(t *testing.T) {
 	}
 	if !equalStrings(routesOf(replayed.Routes), []string{"2001:db8:1::/48 via fe80::1", "2001:db8:2::/48 via fe80::2"}) {
 		t.Errorf("the replayed routes are %v", routesOf(replayed.Routes))
+	}
+}
+
+// TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut is the cost of the
+// refuse-the-new policy, driven rather than left for a caller to find.
+//
+// THE PRUNE REMOVES WHAT HAS EXPIRED, NOT WHAT HAS GONE QUIET. A router that
+// advertised the sending rules' maximum of 9000 seconds and then vanished holds
+// its seat for two and a half hours, and a table full of those refuses a router
+// that is real and is advertising now. It is the same bound from the other
+// side as TestAnExpiredEntryMakesRoomForANewOne: room is made by time running
+// out and by nothing else.
+func TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut(t *testing.T) {
+	var tab routerTable
+	for i := range maxRouters {
+		tab.observe(at(0), advert(fmt.Sprintf("fe80::%x", i+1), 9000))
+	}
+	dropped := tab.dropped
+
+	// Every one of the eight has been silent since, and every one of them is
+	// still inside the lifetime it advertised.
+	tab.observe(at(8000), advert("fe80::ffff", 1800))
+	obs := observation(t, &tab, at(8001))
+	if len(obs.Routers) != maxRouters {
+		t.Fatalf("%d default routers, want the cap %d", len(obs.Routers), maxRouters)
+	}
+	for _, a := range obs.Routers {
+		if a.String() == "fe80::ffff" {
+			t.Fatalf("the ninth router was taken: %v", addrTexts(obs.Routers))
+		}
+	}
+	if tab.dropped <= dropped {
+		t.Error("the router the table refused was not counted")
+	}
+
+	// Past their lifetimes it is taken, which is what says the refusal above
+	// was the cap and not the address.
+	tab.observe(at(9001), advert("fe80::ffff", 1800))
+	after := observation(t, &tab, at(9002))
+	if want := []string{"fe80::ffff"}; !equalStrings(addrTexts(after.Routers), want) {
+		t.Errorf("default routers %v once every seat expired, want %v", addrTexts(after.Routers), want)
 	}
 }

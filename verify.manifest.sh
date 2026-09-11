@@ -426,9 +426,9 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
 #
-# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 688, measured the same way,
+# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 692, measured the same way,
 # one testroster run over the base and one over this head, differenced as a set.
-# Thirty-four added, in four files:
+# Thirty-eight added, in four files:
 #
 #   wire/icmpv6_options_test.go        (14)  TheMTUOptionIsReadFromItsOwnOffset,
 #     AnMTUOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot,
@@ -444,7 +444,7 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     TheDecoderDoesNotSetTheRouterAddress,
 #     TheDnsmasqShapedAdvertisementDecodesEveryOption,
 #     ADecodedAdvertisementKeepsNothingOfItsInputBuffer
-#   proto/router6_test.go              (15)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
+#   proto/router6_test.go              (16)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
 #     TheSamePrefixFromTwoRoutersIsTwoRoutes,
 #     TheRoutesAreOrderedMostPreferredFirst,
 #     AZeroLifetimeWithdrawsTheEntryItNames,
@@ -456,21 +456,25 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     TheTableCapsHoldAtLeastWhatTheStandardsRequire,
 #     TheTableIsBoundedAndSaysSoWhenItRefuses,
 #     AnExpiredEntryMakesRoomForANewOne,
+#     ARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut,
 #     TheObservationHoldsNoSliceOfTheAdvertisement,
 #     TheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement,
 #     AReplayedAdvertisementKeepsTheRouterItCameFrom
-#   lease/router6_test.go               (4)  TheAddressTheSocketReadIsTheRouter
+#   lease/router6_test.go               (7)  TheAddressTheSocketReadIsTheRouter
 #     TheTableKeysOn, ABrokenAdvertisementIsNotTheSameAsNoAdvertisement,
 #     AnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot,
-#     TheV6LeaseCarriesWhatTheRouterAdvertised
+#     TheV6LeaseCarriesWhatTheRouterAdvertised,
+#     TheAdvertisedViewFillsOnlyWhatTheLeaseDoesNotHave,
+#     TheAdvertisedViewNeverWritesIntoTheLeaseItWasGiven,
+#     TheRouterViewOnTheLeaseIsAsOfTheLastStep
 #   runtime/dnsmasq6_linux_test.go      (1)  TheOptionsARealRouterAdvertises
 #     ReachTheCaller
 #
-# ONE OF THE THIRTY-FOUR IS A NETNS TEST, the last one, MEASURED with
+# ONE OF THE THIRTY-EIGHT IS A NETNS TEST, the last one, MEASURED with
 # testroster -netns at 34 over the base and 35 here. The netns roster is
 # derived rather than declared, so nothing else has to be written down for it,
 # but NETNS_CEILING_SECONDS is a number the round must re-measure.
-MIN_DECLARED_TESTS=688
+MIN_DECLARED_TESTS=692
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

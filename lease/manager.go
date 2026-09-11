@@ -639,6 +639,14 @@ func (mg *Manager) Events() <-chan Event { return mg.events }
 // view changes. Reading it here is how a caller that already holds a lease
 // sees the gateway, the MTU, the routes and the resolvers the router has
 // since advertised.
+//
+// THE ADVERTISED HALF IS AS OF THE LAST Step, NOT AS OF THIS CALL. The router
+// table is pruned from the now each Step is handed and this client arms no
+// timer for an entry's expiry, so a lifetime that ran out while the machine
+// was quiet is still reported here and is corrected by the next Step. The DHCP
+// half of the lease is not affected: its own deadlines are fields on the
+// returned value, which a caller compares against its own clock. See
+// proto.RouterObservation's doc for the size of the window.
 func (mg *Manager) Lease() (Lease, bool) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
