@@ -556,7 +556,12 @@ the same tree reported a reachable standard-library advisory under an older
 toolchain and nothing under the newest one. The one part of that workflow that
 IS driven is the pin guard, which runs its own cases in the job beside the scan:
 the scanner version and the toolchain have to agree or the install refuses, and
-that agreement went unobserved until it broke. The version it scans is the one
+that agreement went unobserved until it broke. That the job still RUNS the
+guard, and runs it before the install, is held by
+`TestTheScanWorkflowRunsThePinGuardBeforeItInstalls` in the unit suite, whose
+own verdict is driven by `TestThePinGuardRowSpeaksInBothDirections`. A lint
+list is not an execution: the guard was named by the shellcheck domain and by
+nothing else, so deleting both steps from the workflow left every check green. The version it scans is the one
 `setup-go` resolves from the `go` line in [`go.mod`](../go.mod), so a red there says the
 newest toolchain a consumer can build this library with has a reachable
 advisory.

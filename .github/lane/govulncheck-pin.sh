@@ -34,8 +34,22 @@ WORKFLOW="${PIN_WORKFLOW:-.github/workflows/govulncheck.yml}"
 refuse()  { printf '::error title=govulncheck pin::%s\n' "$*" >&2; exit 1; }
 unread()  { printf '::error title=govulncheck pin::%s\n' "$*" >&2; exit 2; }
 
+# A version this comparison can read at all: dotted integers, nothing else.
+# `go env GOVERSION` says `go1.26rc1` on a release candidate and
+# `devel go1.27-abc` on a development toolchain, and `[ 26rc1 -gt 25 ]` is not
+# false, it is an ERROR: two lines on stderr and a non-zero status that an
+# `if` reads as "no", which is ACCEPT. An unreadable version is a thing this
+# guard cannot tell, so it says so and exits 2 instead of waving it through.
+sane_version() {
+	case "$1" in
+		'' | *[!0-9.]* | *..* | .* | *.) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
 # A > B over dotted fields, numerically, missing fields read as 0. String
-# comparison gets 1.25.14 versus 1.25.9 wrong and that is the live pair.
+# comparison gets 1.25.14 versus 1.25.9 wrong and that is the live pair. Both
+# operands are sane_version by the time they reach here.
 newer_than() {
 	local -a a b
 	local i x y
@@ -88,27 +102,105 @@ if [ "${1:-}" = "--self-test" ]; then
 		printf 'FAIL  no fixture directory, so the unpinned case was not driven\n'
 		exit 1
 	fi
-	printf '        run: go install golang.org/x/vuln/cmd/govulncheck@latest\n' >"$fixdir/govulncheck.yml"
+	#
+	# The fixture carries a COMMENT naming a version above an unpinned
+	# `run:`. That is the shape that defeated the first draft, which took the
+	# first `govulncheck@...` anywhere in the file: it read the comment,
+	# reported a healthy pin, and the job installed `@latest`.
+	{
+		printf '      # was: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0\n'
+		printf '        run: go install golang.org/x/vuln/cmd/govulncheck@latest\n'
+	} >"$fixdir/govulncheck.yml"
 	verdict=0
 	PIN_WORKFLOW="$fixdir/govulncheck.yml" PIN_GOVERSION=go1.25.14 "$0" >/dev/null 2>&1 || verdict=$?
-	if [ "$verdict" = 1 ]; then printf 'ok    an unpinned scanner is refused\n'
-	else printf 'FAIL  an unpinned scanner exited %s, wanted 1\n' "$verdict"; failed=1; fi
+	if [ "$verdict" = 1 ]; then printf 'ok    an unpinned run: is refused under a comment naming a version\n'
+	else printf 'FAIL  an unpinned run: under a comment exited %s, wanted 1\n' "$verdict"; failed=1; fi
+
+	# A comment is not an install: a file whose ONLY occurrence is commented
+	# out installs nothing, and nothing scanning is a refusal too.
+	printf '      # run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0\n' >"$fixdir/govulncheck.yml"
+	verdict=0
+	PIN_WORKFLOW="$fixdir/govulncheck.yml" PIN_GOVERSION=go1.25.14 "$0" >/dev/null 2>&1 || verdict=$?
+	if [ "$verdict" = 1 ]; then printf 'ok    a commented-out install scans nothing and is refused\n'
+	else printf 'FAIL  a commented-out install exited %s, wanted 1\n' "$verdict"; failed=1; fi
+
+	# Two real installs at two versions are two answers to one question.
+	{
+		printf '        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0\n'
+		printf '        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0\n'
+	} >"$fixdir/govulncheck.yml"
+	verdict=0
+	PIN_WORKFLOW="$fixdir/govulncheck.yml" PIN_GOVERSION=go1.25.14 "$0" >/dev/null 2>&1 || verdict=$?
+	if [ "$verdict" = 1 ]; then printf 'ok    two pins at two versions are refused\n'
+	else printf 'FAIL  two pins exited %s, wanted 1\n' "$verdict"; failed=1; fi
+
+	# A block scalar is a shape this reader cannot follow, and a shape it
+	# cannot follow must not read as absence.
+	printf '        run: |\n          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0\n' >"$fixdir/govulncheck.yml"
+	verdict=0
+	PIN_WORKFLOW="$fixdir/govulncheck.yml" PIN_GOVERSION=go1.25.14 "$0" >/dev/null 2>&1 || verdict=$?
+	if [ "$verdict" = 2 ]; then printf 'ok    a block-scalar run: is refused as unreadable\n'
+	else printf 'FAIL  a block-scalar run: exited %s, wanted 2\n' "$verdict"; failed=1; fi
 	rm -rf -- "$fixdir"
+
+	# A toolchain this comparison cannot read is a refusal and NOT an accept.
+	# `[ 26rc1 -gt 25 ]` errors, an `if` reads the error as "no", and "no"
+	# here means "the pin is fine".
+	# `go` alone strips to the empty string, which is the no-toolchain path;
+	# an EMPTY PIN_GOVERSION is not driven here because it means "not
+	# injected" and falls back to the real `go env GOVERSION`.
+	for bad in go1.26rc1 "devel go1.27-abc" go1.25.x go; do
+		verdict=0
+		PIN_REQUIRES=1.27.0 PIN_GOVERSION="$bad" "$0" >/dev/null 2>&1 || verdict=$?
+		if [ "$verdict" = 2 ]; then printf "ok    a toolchain reading '%s' is refused, not accepted\n" "$bad"
+		else printf "FAIL  a toolchain reading '%s' exited %s, wanted 2\n" "$bad" "$verdict"; failed=1; fi
+	done
+
+	# And the same on the other operand.
+	verdict=0
+	PIN_REQUIRES=1.26rc1 PIN_GOVERSION=go1.25.14 "$0" >/dev/null 2>&1 || verdict=$?
+	if [ "$verdict" = 2 ]; then printf 'ok    an unreadable go requirement is refused, not accepted\n'
+	else printf 'FAIL  an unreadable go requirement exited %s, wanted 2\n' "$verdict"; failed=1; fi
+
 	exit "$failed"
 fi
 
 [ -r "$WORKFLOW" ] || unread "cannot read $WORKFLOW, so there is no pin to check"
 
-pin="$(sed -n 's|.*golang.org/x/vuln/cmd/govulncheck@\([^ ]*\).*|\1|p' "$WORKFLOW" | head -n 1)"
-case "$pin" in
-	v[0-9]*) ;;
-	'')      refuse "$WORKFLOW installs no govulncheck, so nothing scans this module" ;;
-	*)       refuse "the scanner is installed at '@$pin' in $WORKFLOW; an unpinned scanner is what broke this lane, so pin a version" ;;
+# WHAT IS READ IS THE COMMAND, NOT THE FIRST MATCHING TEXT. This used to take
+# the first `govulncheck@...` anywhere in the file, and a comment above the
+# install naming the old version answered for a `run:` line that had been
+# changed to `@latest`: the guard reported the pin in the comment and the job
+# installed whatever `@latest` resolved to. So: `run:` lines only, inline
+# comments cut, every occurrence read and not just the first, and a block
+# scalar refused rather than read past, because this reader cannot follow one
+# and a shape it cannot follow must not look like absence.
+if grep -qE '^[[:space:]]*-?[[:space:]]*run:[[:space:]]*[|>]' "$WORKFLOW"; then
+	unread "$WORKFLOW has a block-scalar 'run:', which this reader does not follow; write the install as a single-line run:"
+fi
+pins="$(sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*run:[[:space:]]*//p' "$WORKFLOW" |
+	sed 's/[[:space:]]#.*$//' |
+	sed -n 's|.*golang\.org/x/vuln/cmd/govulncheck@\([^[:space:]]*\).*|\1|p')"
+
+[ -n "$pins" ] || refuse "no 'run:' in $WORKFLOW installs govulncheck, so nothing scans this module"
+
+for pin in $pins; do
+	case "$pin" in
+		v[0-9]*) ;;
+		*) refuse "$WORKFLOW installs the scanner at '@$pin'; an unpinned scanner is what broke this lane, so pin a version" ;;
+	esac
+done
+distinct="$(printf '%s\n' $pins | LC_ALL=C sort -u | tr '\n' ' ')"
+pin="${distinct%% *}"
+case "$distinct" in
+	*' '*' '*) refuse "$WORKFLOW installs the scanner at more than one version ($distinct); two pins are two answers to one question" ;;
 esac
 
 have="${PIN_GOVERSION:-$(go env GOVERSION)}"
 have="${have#go}"
 [ -n "$have" ] || unread "this job has no Go toolchain to compare the pin against"
+sane_version "$have" ||
+	unread "this job's Go version reads '$have', which is not dotted integers; a release-candidate or development toolchain cannot be compared against a module's go line, so this guard cannot tell"
 
 # The requirement comes out of the module's own go.mod and NOT out of
 # `go list -m -f '{{.GoVersion}}'`. MEASURED: under a go1.25 toolchain that
@@ -126,10 +218,8 @@ else
 	need="$(sed -n 's/^go[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' "$gomod" | head -n 1)"
 fi
 
-case "$need" in
-	[0-9]*.[0-9]*) ;;
-	*) unread "golang.org/x/vuln@$pin declares no readable go line, so nothing says which toolchain it needs" ;;
-esac
+sane_version "$need" ||
+	unread "golang.org/x/vuln@$pin declares its go requirement as '$need', which is not dotted integers, so nothing here says which toolchain it needs"
 
 if newer_than "$need" "$have"; then
 	refuse "golang.org/x/vuln@$pin needs Go $need and this job has $have, so 'go install' will refuse and the module will not be scanned; pin the newest x/vuln whose go line is $have or lower, or raise the go line in go.mod"
