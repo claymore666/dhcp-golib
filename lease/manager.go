@@ -281,6 +281,24 @@ type Stats struct {
 	// server outside Params.Servers is invisible in either number alone, and
 	// on a LAN with two DHCP servers it is the number that explains the
 	// behaviour.
+	//
+	// THEY COUNT TWO DIFFERENT POPULATIONS ON THE v6 PATH, and NaksAccepted is
+	// the larger one. A DHCPv6 server refuses with RFC 9915 §21.13's Status
+	// Code option inside an ordinary Advertise or Reply, not with a message of
+	// its own, so there is no v6 message this manager can count on the wire:
+	// NaksSeen stays at zero on a v6 client while NaksAccepted counts every
+	// refusal ring 1 reported. The code that was sent is on the Failed event
+	// (Event.Status); these two say how often, not which.
+	//
+	// AND "HOW OFTEN" COUNTS MESSAGES, NOT ENDPOINTS, on both families. One
+	// DHCPNAK is one NaksAccepted and so is one refusing Advertise, and
+	// nothing bounds how many of either a server may send: RFC 9915 §18.2.1
+	// puts no retransmission limit on the Solicit, so a server with nothing
+	// to give refuses every retransmission and every refusal is counted.
+	// A caller asking "was this endpoint refused" reads whether a
+	// Failed{ReasonNak} arrived at all; only a caller asking "how much is
+	// this server refusing" reads the number.
+	// proto's TestEveryRefusingMessageIsReported drives that population.
 	NaksSeen     uint64
 	NaksAccepted uint64
 
@@ -1122,7 +1140,7 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 					}
 				}
 			})
-			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})
+			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note, Status: a.Status})
 
 		case proto.ActJournal:
 			// Already in the journal entry's Actions. Nothing else to do —

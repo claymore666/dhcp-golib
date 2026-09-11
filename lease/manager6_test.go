@@ -630,3 +630,58 @@ func TestAResumedV6LeaseKeepsTheResolverItRemembered(t *testing.T) {
 		t.Fatalf("the resumed lease carries search %v, want the remembered %q", ev.Lease.DomainSearch, test6Search)
 	}
 }
+
+// TestTheCallerIsToldWhichCodeTheServerRefusedWith is ring 2's half of the
+// refusal: ring 1 stamps the server's Status Code on the action, and this
+// asserts the code SURVIVES the crossing into the caller's Event, beside the
+// reason and the counter that reason keys.
+//
+// THE OBSERVER IS THE FIELD, not the note. A manager that formats the code
+// into the note's prose and drops Event.Status passes every text assertion in
+// this suite and still leaves the caller parsing English to tell
+// NoAddrsAvail from NotOnLink. Mutant M8 is exactly that manager.
+//
+// The Advertise carries the refusal at MESSAGE level, which is where dnsmasq
+// 2.91 puts it when it cannot answer a Solicit; RFC 9915 §18.3.9's MUST puts
+// it inside the IA_NA, and proto's suite drives both placements.
+func TestTheCallerIsToldWhichCodeTheServerRefusedWith(t *testing.T) {
+	refusing := func(req *wire.MessageV6, _ int) []*wire.MessageV6 {
+		if req.Type != wire.MsgSolicit {
+			return nil
+		}
+		return []*wire.MessageV6{{
+			Type: wire.MsgAdvertise, XID: req.XID,
+			Options: wire.OptionsV6{
+				optV6(wire.OptV6ClientID, test6DUID),
+				optV6(wire.OptV6ServerID, test6ServerDUID),
+				optV6(wire.OptV6StatusCode, wire.EncodeStatus(wire.Status{
+					Code:    wire.StatusNoAddrsAvail,
+					Message: "no addresses available",
+				})),
+			},
+		}}
+	}
+	r := newRig6(t, testParams6(), refusing)
+
+	// THE BARRIER IS THE MACHINE'S STEP ON THE RECEIVED MESSAGE, keyed on the
+	// event kind rather than on anything this change writes: a barrier that
+	// waited for the refusal's own journal line would be satisfied by the
+	// same code it is here to observe. takeEvent settles for the drain.
+	r.journal.waitAppended(t, "the machine's Step on the Advertise",
+		func(e proto.JournalEntry6) bool { return e.Kind == proto.EvReceived })
+
+	ev := r.takeEvent(t)
+	if ev.Kind != Failed || ev.Reason != proto.ReasonNak {
+		t.Fatalf("the first event is %s, want a refusal (kind failed, reason nak)", ev)
+	}
+	if ev.Status != wire.StatusNoAddrsAvail {
+		t.Errorf("the refusal carries status %s, want %s: RFC 9915 §21.13 \"NoAddrsAvail: The server has no addresses available to assign to the IA(s).\"",
+			ev.Status, wire.StatusNoAddrsAvail)
+	}
+	if !strings.Contains(ev.Note, "no addresses available") {
+		t.Errorf("the note %q does not carry the server's own text, which is the only diagnosis a user reads", ev.Note)
+	}
+	if st := r.mgr.Stats(); st.NaksAccepted != 1 || st.NaksSeen != 0 {
+		t.Errorf("stats = %+v, want NaksAccepted 1 and NaksSeen 0: a v6 refusal is not a decoded DHCPNAK", st)
+	}
+}

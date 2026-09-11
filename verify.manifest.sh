@@ -425,7 +425,32 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # row it was not driving. Shard 2's ceiling-control and shard 1's
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
-MIN_DECLARED_TESTS=654
+#
+# L4 OF THE v2.2.0 IPv6 BATCH, #816: 654 -> 674, measured the same way, one
+# testroster run over a clean worktree at the base and one over this head, the
+# difference taken as a SET and not as two numbers. Twenty added, none removed,
+# in three files:
+#
+#   proto/machine6_status_test.go  (18)  AReplyThatRefusesIsReportedWithThe
+#     ServersOwnCode, AReplyThatSaysSuccessIsNotARefusal, AReplyWithNoAddress
+#     AndNoStatusIsNotARefusal, AnAdvertiseThatRefusesIsReportedAndTheSchedule
+#     Stands, ARefusedRenewKeepsTheLeaseAndSaysWhy, ANoBindingRenewIsA
+#     RecoveryAndNotARefusal, NotOnLinkCostsTheLeaseAndIsCountedOnce,
+#     AMalformedStatusCodeIsNeverReportedAsARefusal, AStatusInsideAnIAAddress
+#     IsNotRead, AnIAThatRefusesAndOffersGivesNoAddress, ARefusedInformation
+#     RequestIsNotAConfiguration, ALaterFailureCarriesNoEarlierStatus,
+#     AV4NakCarriesNoStatusCode, EveryRefusingMessageIsReported, AMessageLevel
+#     RefusalBesideAUsableAddressIsNotARefusal, AnAdvertiseThatRefusesAndOffers
+#     IsNotSelected, AConfirmRefusedForThisLinkIsReported, AFailedAction
+#     RendersTheCodeItCarries
+#   lease/manager6_test.go          (1)  TheCallerIsToldWhichCodeTheServer
+#     RefusedWith
+#   runtime/dnsmasq6_linux_test.go  (1)  AV6ClientIsToldTheServerRefused
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 34 over
+# the base and 35 here, so the netns enumeration in verify.sh moves in this
+# round and is re-measured there as one run rather than patched with a line.
+MIN_DECLARED_TESTS=674
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

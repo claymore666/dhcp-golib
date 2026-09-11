@@ -76,6 +76,11 @@ const (
 	test6RangeHi  = "fd00:99::1ff"
 	test6LeaseSec = 300
 
+	// test6OnlyAddr is the whole pool in v6Exhausted mode: one address, inside
+	// the same prefix as the ordinary range and outside it, so a client that
+	// was answered from the wrong fixture is visible in the address itself.
+	test6OnlyAddr = "fd00:99::1ff0"
+
 	// test6RAInterval is dnsmasq's --ra-param advertisement interval, in
 	// seconds, and test6RALifetime the Router Lifetime the advertisement
 	// carries. RFC 4861 section 6.2.1 requires MaxRtrAdvInterval to be no
@@ -180,7 +185,7 @@ type v6Mode struct {
 	serves bool
 }
 
-// The five modes, and every one of them is reachable from a real network.
+// The six modes, and every one of them is reachable from a real network.
 //
 // v6Managed is a container link on a managed network — the shape this library
 // exists for. v6Stateless is RFC 9915 section 18.2.6's link: addresses come
@@ -190,7 +195,9 @@ type v6Mode struct {
 // with a DHCPv6 server and no router, which is where interlock 1 must NOT
 // wait. v6ManagedSilent is the one that separates "there is no server" from
 // "the server is there and is not answering us", and it is the reason the
-// router observation is published at all.
+// router observation is published at all. v6Exhausted is the server that is
+// there, is answering, and has nothing left to give, which is the third thing
+// those two are told apart from (#816).
 var (
 	v6Managed = v6Mode{
 		name:       "managed",
@@ -235,6 +242,18 @@ var (
 		absent:     []string{"DHCPv6 stateless on", "IPv6 router advertisement enabled"},
 		advertises: false,
 		serves:     true,
+	}
+	// v6Exhausted is v6Managed with a pool of ONE address, so that a second
+	// client on the same link is refused with an address in the range and none
+	// of it free. It is the only mode here whose answer depends on what
+	// another client already took.
+	v6Exhausted = v6Mode{
+		name:       "exhausted",
+		args:       []string{"--dhcp-range=" + test6OnlyAddr + "," + test6OnlyAddr + ",64," + fmt.Sprint(test6LeaseSec), "--enable-ra"},
+		ready:      "DHCPv6, IP range " + test6OnlyAddr,
+		absent:     []string{"DHCPv6 stateless on"},
+		advertises: true, managed: true, other: true, autonomous: false,
+		serves: true,
 	}
 	v6ManagedSilent = v6Mode{
 		name: "managed-silent",
@@ -425,7 +444,7 @@ func linkLocalOf(t *testing.T, ifName string) (string, uint64, bool) {
 	return "", 0, false
 }
 
-// startDnsmasq6 starts the server in one of the five modes and waits for that
+// startDnsmasq6 starts the server in one of the six modes and waits for that
 // mode's own readiness line.
 //
 // It is a second function beside startDnsmasqCfg rather than a flag on it. The
@@ -529,13 +548,13 @@ func modeServesDHCPv6(args []string) bool {
 }
 
 // TestTheFixtureReadsItsOwnDnsmasqArguments drives modeServesDHCPv6 over the
-// five modes and over the mis-spelling that made this column necessary.
+// six modes and over the mis-spelling that made this column necessary.
 //
 // The derivation is fixture code, so nothing else in this package can fail
 // when it is wrong: a derivation that always returned the declared value would
 // make the check above pass for every mode, including the broken one.
 func TestTheFixtureReadsItsOwnDnsmasqArguments(t *testing.T) {
-	for _, m := range []v6Mode{v6Managed, v6Stateless, v6SLAAC, v6NoRA, v6ManagedSilent} {
+	for _, m := range []v6Mode{v6Managed, v6Stateless, v6SLAAC, v6NoRA, v6ManagedSilent, v6Exhausted} {
 		if got := modeServesDHCPv6(m.args); got != m.serves {
 			t.Errorf("mode %s: modeServesDHCPv6 = %t, the mode declares %t", m.name, got, m.serves)
 		}
@@ -801,7 +820,7 @@ func (w *txWatch) readFrom(buf []byte) (int, syscall.Sockaddr, error) {
 // It closes both traps at once. Trap 1 — the whole test was green because no
 // advertisement arrived — is closed by requiring one on BOTH channels for
 // every mode that has one. Trap 2 — the fixture was in a different mode — is
-// closed by checking the flags, and the flags are what the five modes actually
+// closed by checking the flags, and the flags are what the six modes actually
 // differ by: managed says M=1 O=1 with no autonomous prefix, stateless says
 // M=0 O=1 WITH one, and SLAAC-only says neither flag.
 //
@@ -1029,6 +1048,54 @@ func awaitV6(t *testing.T, c *Client6, kind lease.EventKind) lease.Event {
 		}
 	}
 	t.Fatalf("the event stream ended before a %s event", kind)
+	return lease.Event{}
+}
+
+// awaitV6PastTheAddressRefusal is awaitV6 for lease.Configured on the one link
+// whose server refuses the address before it hands over the configuration.
+//
+// A STATELESS dnsmasq ANSWERS THE SOLICIT WITH "no addresses available", which
+// the caller comment above already measures, and since #816 that answer is an
+// EVENT rather than only a journal line: Failed{ReasonNak} carrying
+// wire.StatusNoAddrsAvail. It is true and it is not this link failing — the
+// address was never on offer here — so the proof steps over refusals of that
+// exact shape and over nothing else. A refusal carrying any other status, and
+// any failure for any other reason, is fatal.
+//
+// THE TOLERANCE IS A SHAPE AND NOT A COUNT, which is a correction and not a
+// weakening. An earlier version allowed exactly one, and one is a property of
+// how fast this fixture's router advertisement arrives rather than of the
+// protocol: §18.2.1 puts no retransmission limit on the Solicit, so until the
+// advertisement reaches the client and moves it to the Information-request,
+// every retransmission draws another refusing Advertise and every one of them
+// is reported. A count would make this proof fail on a slow advertisement it
+// does not control. What it still refuses is any OTHER event, which is the
+// property the test is here for.
+//
+// IT IS TOLERATED RATHER THAN ASSERTED because the Solicit and the router
+// advertisement cross the other way too: a client that reads the advertisement
+// first never solicits again and is never refused. Asserting the refusal would
+// make this proof fail on that ordering; asserting its ABSENCE would fail on
+// the first one. The refusal itself is driven, deterministically and with the
+// pool as the subject, by TestAV6ClientIsToldTheServerRefused.
+func awaitV6PastTheAddressRefusal(t *testing.T, c *Client6) lease.Event {
+	t.Helper()
+	refused := 0
+	for ev := range c.Events() {
+		t.Logf("client event: %s", ev)
+		if ev.Kind == lease.Configured {
+			t.Logf("the stateless link reported %d address refusal(s) before it was configured", refused)
+			return ev
+		}
+		if ev.Kind == lease.Failed {
+			refused++
+			if ev.Reason != proto.ReasonNak || ev.Status != wire.StatusNoAddrsAvail {
+				t.Fatalf("the client failed while waiting for the stateless configuration: %s (reason %s, status %s, failure %d)",
+					ev, ev.Reason, ev.Status, refused)
+			}
+		}
+	}
+	t.Fatalf("the event stream ended before a configured event")
 	return lease.Event{}
 }
 
@@ -1302,7 +1369,7 @@ func v6StatelessAgainstDnsmasq(t *testing.T) {
 		t.Fatalf("the stateless fixture set M: %s", ra)
 	}
 
-	ev := awaitV6(t, c, lease.Configured)
+	ev := awaitV6PastTheAddressRefusal(t, c)
 	if ev.Lease.Addr.IsValid() {
 		t.Errorf("the Configured event carries the address %s; section 18.2.6's exchange has none", ev.Lease.Addr)
 	}
@@ -2743,4 +2810,121 @@ func awaitTransportReads(t *testing.T, c *Client6, n uint64) TransportStatsV6 {
 		}
 		gosched.Gosched()
 	}
+}
+
+// TestAV6ClientIsToldTheServerRefused is #816's library half against a real
+// server: a pool with one address in it, one client holding that address, and
+// a second client that gets an answer rather than silence.
+//
+// WHAT THE PROOF IS ABOUT IS THE DIFFERENCE BETWEEN TWO SILENCES. Before this,
+// a client that was refused and a client nobody answered produced the same
+// thing at this boundary — nothing at all — and the caller's own deadline was
+// the only event either of them ever generated. The refusal is now an event
+// carrying the server's own code, and the server's log is the outside evidence
+// that the code came from the server rather than from this library's opinion
+// of the silence.
+//
+// dnsmasq 2.91 puts that code at the MESSAGE level on a Solicit it cannot
+// answer, and not in the IA_NA where RFC 9915 section 18.3.9 puts it
+// (src/rfc3315.c, the DHCP6SOLICIT arm: the IA is dropped from the Advertise
+// with save_counter and the status is added to the message). Both placements
+// are driven at ring 1; this is the one a real server sends.
+func TestAV6ClientIsToldTheServerRefused(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6RefusedByDnsmasq(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+func v6RefusedByDnsmasq(t *testing.T) {
+	wireUpV6(t)
+	srv := startDnsmasq6(t, v6Exhausted)
+	watch := newRAWatch(t, test6ClientIf)
+
+	first, _ := newV6Client(t)
+	stopFirst := runV6Client(t, first)
+	defer stopFirst()
+
+	assertMode(t, srv, watch, v6Exhausted)
+
+	// The pool is emptied by a client taking the one address in it, not by a
+	// fixture asserting that it is empty.
+	held := awaitV6(t, first, lease.Acquired)
+	if got := held.Lease.Addr.Addr().String(); got != test6OnlyAddr {
+		t.Fatalf("the first client took %s; the pool is the single address %s", got, test6OnlyAddr)
+	}
+	srv.waitFor(t, "DHCPREPLY("+test6ServerIf+") "+test6OnlyAddr)
+
+	// The second client, on its own hardware address over the same wire, so it
+	// is a different DUID asking for a different binding.
+	mustRun(t, "ip", "link", "add", test6ClientIf2, "link", test6ClientIf, "type", "macvlan", "mode", "bridge")
+	p := "/proc/sys/net/ipv6/conf/" + test6ClientIf2 + "/accept_dad"
+	if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", p, err)
+	}
+	mustRun(t, "ip", "link", "set", test6ClientIf2, "up")
+
+	second, _, err := newV6ClientErr(test6ClientIf2)
+	if err != nil {
+		t.Fatalf("building the second client on %s: %v", test6ClientIf2, err)
+	}
+	stopSecond := runV6Client(t, second)
+	defer stopSecond()
+
+	ev := awaitV6Refusal(t, second)
+	if ev.Reason != proto.ReasonNak {
+		t.Errorf("the refusal says %s, want %s: a server that answers and says no is refusing, not absent", ev.Reason, proto.ReasonNak)
+	}
+	if ev.Status != wire.StatusNoAddrsAvail {
+		t.Errorf("the refusal carries the status %s, want %s (RFC 9915 section 21.13: \"The server has no addresses available to assign to the IA(s).\")", ev.Status, wire.StatusNoAddrsAvail)
+	}
+	if !strings.Contains(ev.Note, wire.StatusNoAddrsAvail.String()) {
+		t.Errorf("the note %q does not name the code; it is what an operator reads", ev.Note)
+	}
+
+	// THE SERVER'S OWN ACCOUNT, which is what makes this a refusal rather than
+	// this library's reading of one. dnsmasq logs the sentence it put in the
+	// status message beside the message it sent.
+	srv.waitFor(t, "no addresses available")
+
+	if _, ok := second.Lease(); ok {
+		t.Error("the refused client holds a lease")
+	}
+	if st := second.Stats(); st.NaksAccepted == 0 || st.AcquireFailures == 0 {
+		t.Errorf("the refused client counted %d refusal(s) and %d acquisition failure(s): %+v", st.NaksAccepted, st.AcquireFailures, st)
+	}
+	if st := second.DADStats(); st.Started != 0 {
+		t.Errorf("the refused client checked %d address(es) for duplicates; it was given none", st.Started)
+	}
+
+	// The preservation control on the same link and the same server: the
+	// client that HAS the address is untouched by the other one's refusal.
+	if l, ok := first.Lease(); !ok || l.Addr.Addr().String() != test6OnlyAddr {
+		t.Errorf("the first client's lease is %v (held=%v) after the second was refused", l.Addr, ok)
+	}
+	if st := first.Stats(); st.NaksAccepted != 0 {
+		t.Errorf("the client that holds the address counted %d refusal(s): %+v", st.NaksAccepted, st)
+	}
+}
+
+// awaitV6Refusal blocks for the first refusal and fails on anything that says
+// the client got somewhere instead.
+//
+// NO DURATION, for awaitV6's reason: a client that is never refused hangs until
+// the child's own -test.timeout, which prints the goroutine dump and dnsmasq's
+// log beside it, rather than reporting a slow box as a broken client.
+func awaitV6Refusal(t *testing.T, c *Client6) lease.Event {
+	t.Helper()
+	for ev := range c.Events() {
+		t.Logf("client event: %s", ev)
+		switch ev.Kind {
+		case lease.Failed:
+			return ev
+		case lease.Acquired, lease.Configured:
+			t.Fatalf("the client was %s on a link whose only address is held by another client: %s", ev.Kind, ev)
+		}
+	}
+	t.Fatalf("the event stream ended before any event")
+	return lease.Event{}
 }

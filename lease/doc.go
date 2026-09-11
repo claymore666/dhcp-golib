@@ -21,6 +21,22 @@
 //     process. Ring 2 owns the conversion and it is the only place the two
 //     meet.
 //
+// # A refusal is an event, not a silence
+//
+// A caller that gets no address wants to know which of two things happened,
+// and Event answers it in two fields rather than in Note's words. Failed with
+// Reason ReasonNak is a server that ANSWERED and said no — RFC 2131's DHCPNAK,
+// or RFC 9915 section 21.13's Status Code option, whose code is then in
+// Event.Status. Nobody answering at all is ReasonNoServer on the v4 path and,
+// on the v6 path, is still the caller's own deadline: this library keeps
+// soliciting for as long as it is run, because RFC 9915 section 18.2.1 gives
+// the Solicit no retransmission bound.
+//
+// Event.Router is the other half of that question on a v6 link. A link whose
+// Router Advertisement says M=0 has no addresses to give out and has refused
+// nobody, so a caller classifying "why is there no address here" reads the
+// router observation beside the reason.
+//
 // # The ports
 //
 // Every effect is an interface declared here and implemented in ring 3. That
