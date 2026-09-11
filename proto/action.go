@@ -650,8 +650,10 @@ type RouterObservation struct {
 	Prefixes []wire.PrefixInfo
 
 	// Routers is RFC 4861 §6.3.4's Default Router List: every router whose
-	// advertised Router Lifetime has not run out, in the order they were first
-	// heard. A caller that wants one gateway takes the first.
+	// advertised Router Lifetime has not run out, ordered by RFC 4191 §2.2's
+	// Default Router Preference, most preferred first, with the order they
+	// were first heard as the tie-break between equals. A caller that wants
+	// one gateway takes the first.
 	Routers []netip.Addr
 
 	// MTU is the link MTU the most recent MTU option offered, zero if none was

@@ -380,14 +380,19 @@ type Stats struct {
 	// fine, which is why it is not folded into the refusal count.
 	//
 	// RouterTableEntriesDropped is ring 1's, mirrored here at each Step: an
-	// entry a full list in the router table would not take. Above zero it
-	// means the table's caps are in force, which on a quiet link means
-	// something is advertising more than a link has.
+	// arrival a full list in the router table would not take.
+	// RouterTableEntriesEvicted is its pair, an entry a full list threw out to
+	// take an arrival, which is what RFC 8106 §6.2 (d) asks of the resolver
+	// and search lists. They are two counters because they ask for different
+	// next steps, and either above zero means the table's caps are in force,
+	// which on a quiet link means something is advertising more than a link
+	// has.
 	RouterSolicitsSent         uint64
 	RouterAdvertsSeen          uint64
 	RouterAdvertsRefused       uint64
 	RouterAdvertOptionsIgnored uint64
 	RouterTableEntriesDropped  uint64
+	RouterTableEntriesEvicted  uint64
 
 	// DADChecksStarted counts addresses handed to ring 3 for RFC 4862 section
 	// 5.4, and DADConflicts the ones that came back in use. Their difference
@@ -960,6 +965,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// edited apart.
 			mg.router = mg.machine6.Router()
 			mg.stats.RouterTableEntriesDropped = mg.machine6.RouterTableDrops()
+			mg.stats.RouterTableEntriesEvicted = mg.machine6.RouterTableEvictions()
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d

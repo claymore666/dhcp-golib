@@ -492,11 +492,13 @@ MANIFEST_SHELL_SCRIPTS_N=13
 
 # THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 700, measured the same way,
 # one testroster run over the base and one over this head, differenced as a set.
-# Forty-six added, in five files. The eight at the end of the wire, proto and
-# lease lists are round 2's: the three duplicate guards in the router/DHCP
+# Forty-nine added, in five files. The eight in the middle of the wire, proto
+# and lease lists are round 2's: the three duplicate guards in the router/DHCP
 # merge, RFC 4191 section 2.2's Default Router Preference, the withdrawal that
 # has to free its slot, and row D-9's Prefix Information option moving from the
-# packet rule to the option rule.
+# packet rule to the option rule. The three at the end of the proto list are
+# round 3's: the search list's own withdrawal, a full list evicting the entry
+# that expires first, and a router that changes the preference it advertises.
 #
 #   wire/icmpv6_options_test.go        (14)  TheMTUOptionIsReadFromItsOwnOffset,
 #     AnMTUOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot,
@@ -515,7 +517,7 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #   wire/icmpv6_test.go                 (2)  APrefixInformationOptionOfThe
 #     WrongLengthIsIgnoredAndItsSiblingsAreNot,
 #     TheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules
-#   proto/router6_test.go              (18)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
+#   proto/router6_test.go              (21)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
 #     TheSamePrefixFromTwoRoutersIsTwoRoutes,
 #     TheRoutesAreOrderedMostPreferredFirst,
 #     AZeroLifetimeWithdrawsTheEntryItNames,
@@ -532,7 +534,10 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     TheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement,
 #     AReplayedAdvertisementKeepsTheRouterItCameFrom,
 #     AWithdrawnResolverFreesItsSlotInTheSameAdvertisement,
-#     TheDefaultRouterListIsOrderedByTheAdvertisedPreference
+#     TheDefaultRouterListIsOrderedByTheAdvertisedPreference,
+#     AWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement,
+#     AFullListEvictsTheEntryThatExpiresFirst,
+#     ARouterThatChangesItsPreferenceMovesInTheDefaultRouterList
 #   lease/router6_test.go              (11)  TheAddressTheSocketReadIsTheRouter
 #     TheTableKeysOn, ABrokenAdvertisementIsNotTheSameAsNoAdvertisement,
 #     AnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot,
@@ -547,7 +552,7 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #   runtime/dnsmasq6_linux_test.go      (1)  TheOptionsARealRouterAdvertises
 #     ReachTheCaller
 #
-# ONE OF THE FORTY-SIX IS A NETNS TEST, the last one, MEASURED with
+# ONE OF THE FORTY-NINE IS A NETNS TEST, the last one, MEASURED with
 # testroster -netns at 35 over this round's base and 36 on the merge product.
 # The netns roster is derived rather than declared, so nothing else has to be
 # written down for it, and NETNS_CEILING_SECONDS was re-measured rather than
@@ -559,8 +564,9 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # are disjoint — different files, and no test renamed or removed in any of
 # them — so the merge product carries all of them. The number below is
 # MEASURED on the merge product with one testroster run and NOT added up from
-# the three sides, which is the arithmetic that would hide a collision.
-MIN_DECLARED_TESTS=724
+# the three sides, which is the arithmetic that would hide a collision. Round
+# three re-measured it the same way after adding the three tests named above.
+MIN_DECLARED_TESTS=727
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

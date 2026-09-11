@@ -67,13 +67,30 @@ import (
 // 8106 §5.3.1 "the ability to store a total of at least three RDNSS addresses
 // (or DNSSL domain names) from the multiple sources is RECOMMENDED".
 //
-// A FULL LIST REFUSES THE NEW ENTRY RATHER THAN EVICTING AN OLD ONE, so what a
-// full table holds is what it heard FIRST. Both policies lose to a router
-// flood — that is what RA-Guard and SEND are for, and neither is this
-// library's — and which one loses the router the client has been using all
-// along is decided by the join order, not by the policy: a client already on
-// the link has its own router in the table before the flood starts, and a
-// client joining a link that is already flooding does not.
+// A FULL LIST IS TWO POLICIES, AND WHICH ONE APPLIES IS DECIDED BY WHETHER A
+// STANDARD SAYS. RFC 8106 §6.2 step (d) speaks to a full DNS Server List: "In
+// the case where the data structure for the DNS Server List is full of RDNSS
+// entries (that is, has more RDNSSes than the sufficient number discussed in
+// Section 5.3.1), delete from the DNS Server List the entry with the shortest
+// Expiration-time (i.e., the entry that will expire first)", and §6.3 says the
+// DNSSL option is processed the same way, so the resolver list and the search
+// list EVICT, and which entry goes is settled by evictShortest. Nothing in RFC
+// 4861 or RFC 4191 says what a full Default Router
+// List or a full route table does — §6.3.4's sentence above is about how many
+// a host must be able to store and not about what it does when it will not
+// store another — so those two REFUSE, and the boundary is that this library
+// does not extend one standard's rule over a list another standard owns.
+//
+// THE TWO LOSE DIFFERENTLY. A refusal holds what it heard FIRST, so a flood
+// that was already running when this client joined the link keeps the real
+// router out for as long as it keeps the table full. An eviction holds what
+// expires LAST, so a flood displaces the real resolver, and the real resolver
+// comes back on its router's next advertisement. Neither is a defence — that
+// is what RA-Guard and SEND are for, and neither is this library's — and on a
+// link with no flood on it the two differ only in which entry is lost when
+// more arrive than fit. They are counted apart, because "an entry was lost"
+// with no cause beside it does not say which of the two a reader is looking
+// at.
 //
 // THE PRICE IS PAID BY A LINK WITH NO ATTACKER ON IT TOO. The table is pruned
 // of what has EXPIRED, not of what has gone quiet, so routers that advertised
@@ -81,8 +98,8 @@ import (
 // — up to §6.2.1's 9000 seconds — and a full table of those refuses a router
 // that is real and advertising now. Driven both ways:
 // TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut and
-// TestAnExpiredEntryMakesRoomForANewOne. The refusals are counted; see
-// routerTable.dropped.
+// TestAnExpiredEntryMakesRoomForANewOne. The refusals and the evictions are
+// counted separately; see routerTable.refused and routerTable.evicted.
 const (
 	maxRouters      = 8
 	maxRouterDNS    = 8
@@ -152,6 +169,60 @@ func routerLifetimeUntil(now Instant, secs uint16) timedEntry {
 	return timedEntry{until: now.Add(Duration(secs) * Second)}
 }
 
+// expiresBefore orders two deadlines, with no deadline last.
+//
+// AN ENTRY THAT NEVER EXPIRES IS NEVER THE ONE THAT EXPIRES FIRST. The zero
+// value of timedEntry.until belongs to the forever case as much as to an
+// entry whose deadline has passed, so a comparison on until alone would make
+// the one entry a router said to keep forever the first one evicted.
+func expiresBefore(a, b timedEntry) bool {
+	if a.forever {
+		return false
+	}
+	if b.forever {
+		return true
+	}
+	return a.until < b.until
+}
+
+// evictShortest is RFC 8106 §6.2 step (d) applied to a full list: "delete from
+// the DNS Server List the entry with the shortest Expiration-time (i.e., the
+// entry that will expire first)". It is written once and called from both
+// lists because §6.3 makes it one rule: "The processing of DNSSL option(s) is
+// the same as the processing of RDNSS option(s) as described in Section 6.2."
+//
+// IT IS NOT A COMPARISON WITH THE ENTRY THAT IS ARRIVING. The text deletes the
+// entry that will expire first and registers the new one whatever lifetime the
+// new one carries, so an arrival with a second to live displaces an entry with
+// an hour. That is the rule as written, and the alternative — taking the
+// arrival only when it outlives the entry it would replace — is a rule this
+// library would be inventing.
+//
+// THE TIE IS THIS LIBRARY'S TO DECIDE AND IT GOES TO THE ENTRY HEARD LAST.
+// §6.2 (d) orders entries by Expiration-time and says nothing about two that
+// share one, which is not a corner: every entry a single advertisement carries
+// with one lifetime shares a deadline, and a list of entries advertised
+// 0xffffffff shares the absence of one. On a tie the newest entry goes, so a
+// link's own resolvers keep their seats and a flood of equals costs one seat
+// in total. Evicting the oldest instead would empty the list of everything it
+// had before the flood, entry by entry, which is the outcome the caps comment
+// says the eviction policy avoids. Driven by
+// TestAFullListOfEqualsEvictsTheOneHeardLast.
+func evictShortest[T any](in []T, key func(T) (timedEntry, int)) []T {
+	idx := 0
+	for i := range in {
+		li, si := key(in[i])
+		lb, sb := key(in[idx])
+		if expiresBefore(lb, li) {
+			continue
+		}
+		if expiresBefore(li, lb) || si > sb {
+			idx = i
+		}
+	}
+	return append(in[:idx], in[idx+1:]...)
+}
+
 func (e timedEntry) live(now Instant) bool { return e.forever || now.Before(e.until) }
 
 type routerEntry struct {
@@ -207,8 +278,18 @@ type routerTable struct {
 	// in use before the first Router Advertisement was received."
 	mtu uint32
 
-	// dropped counts entries a full list refused. It only ever rises.
-	dropped uint64
+	// refused counts arrivals a full list would not take, evicted the entries
+	// a full list threw out to take one. Both only ever rise.
+	//
+	// THEY ARE TWO FACTS AND NOT ONE NUMBER. An operator reading one total
+	// cannot tell which of the two happened, and the two ask for different
+	// next steps: a refusal says this client is holding what it heard first
+	// and something newer could not get in, an eviction says something held
+	// was thrown out for an arrival. It is the same split as the refused
+	// advertisement and the ignored option one ring up, and it is the reason
+	// the withdrawal tests can assert a cause instead of a total.
+	refused uint64
+	evicted uint64
 
 	seq int
 }
@@ -272,7 +353,7 @@ func (t *routerTable) observeRouterLifetime(now Instant, ra *wire.RouterAdvert) 
 		return
 	}
 	if len(t.routers) >= maxRouters {
-		t.dropped++
+		t.refused++
 		return
 	}
 	t.seq++
@@ -290,7 +371,7 @@ func (t *routerTable) observeMTU(ra *wire.RouterAdvert) {
 		return
 	}
 	if ra.MTU < minLinkMTU || ra.MTU > maxReportableMTU {
-		t.dropped++
+		t.refused++
 		return
 	}
 	t.mtu = ra.MTU
@@ -304,7 +385,8 @@ func (t *routerTable) observeMTU(ra *wire.RouterAdvert) {
 // of the Lifetime field of the RDNSS option or DNSSL option plus the current
 // time. Whenever a new RDNSS option with the same address ... is received on
 // the same interface as a previous RDNSS option ..., this field is updated to
-// have a new Expiration-time." (§6.1)
+// have a new Expiration-time." (§6.1) A full list is step (d)'s case and is
+// handled by evictShortest.
 func (t *routerTable) observeRDNSS(now Instant, r wire.RDNSS) {
 	for _, a := range r.Addrs {
 		idx := -1
@@ -325,17 +407,25 @@ func (t *routerTable) observeRDNSS(now Instant, r wire.RDNSS) {
 			continue
 		}
 		if len(t.dns) >= maxRouterDNS {
-			t.dropped++
-			continue
+			t.dns = evictShortest(t.dns, func(e dnsEntry) (timedEntry, int) { return e.life, e.seq })
+			t.evicted++
 		}
 		t.seq++
 		t.dns = append(t.dns, dnsEntry{addr: a, life: entryUntil(now, r.Lifetime), seq: t.seq})
 	}
 }
 
-// observeDNSSL is the same three rules for the search list, §5.2: the DNSSL
+// observeDNSSL is the same rules for the search list. §5.2: the DNSSL
 // "Lifetime value has the same semantics as the semantics for the RDNSS
-// option".
+// option". §6.3: "The processing of DNSSL option(s) is the same as the
+// processing of RDNSS option(s) as described in Section 6.2."
+//
+// IT IS THE SAME SHAPE AS observeRDNSS AND THAT IS A HAZARD, because a
+// difference between the two is invisible unless a test drives the search list
+// through the case it appears in. The withdrawal is driven by
+// TestAWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement and the full
+// list by TestAFullListEvictsTheEntryThatExpiresFirst, each one the twin of
+// the resolver test beside it.
 func (t *routerTable) observeDNSSL(now Instant, d wire.DNSSL) {
 	for _, n := range d.Names {
 		idx := -1
@@ -356,8 +446,8 @@ func (t *routerTable) observeDNSSL(now Instant, d wire.DNSSL) {
 			continue
 		}
 		if len(t.search) >= maxRouterSearch {
-			t.dropped++
-			continue
+			t.search = evictShortest(t.search, func(e searchEntry) (timedEntry, int) { return e.life, e.seq })
+			t.evicted++
 		}
 		t.seq++
 		t.search = append(t.search, searchEntry{name: n, life: entryUntil(now, d.Lifetime), seq: t.seq})
@@ -394,7 +484,7 @@ func (t *routerTable) observeRoute(now Instant, via netip.Addr, ri wire.RouteInf
 		return
 	}
 	if len(t.routes) >= maxRouterRoutes {
-		t.dropped++
+		t.refused++
 		return
 	}
 	t.seq++

@@ -693,6 +693,7 @@ type WireCounters struct {
 	RouterAdvertsRefused       uint64 `json:"router_adverts_refused,omitempty"`
 	RouterAdvertOptionsIgnored uint64 `json:"router_advert_options_ignored,omitempty"`
 	RouterTableEntriesDropped  uint64 `json:"router_table_entries_dropped,omitempty"`
+	RouterTableEntriesEvicted  uint64 `json:"router_table_entries_evicted,omitempty"`
 	DADChecksStarted           uint64 `json:"dad_checks_started,omitempty"`
 	DADConflicts               uint64 `json:"dad_conflicts,omitempty"`
 }
