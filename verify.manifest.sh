@@ -426,9 +426,13 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
 #
-# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 692, measured the same way,
+# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 700, measured the same way,
 # one testroster run over the base and one over this head, differenced as a set.
-# Thirty-eight added, in four files:
+# Forty-six added, in five files. The eight at the end of the wire, proto and
+# lease lists are round 2's: the three duplicate guards in the router/DHCP
+# merge, RFC 4191 section 2.2's Default Router Preference, the withdrawal that
+# has to free its slot, and row D-9's Prefix Information option moving from the
+# packet rule to the option rule.
 #
 #   wire/icmpv6_options_test.go        (14)  TheMTUOptionIsReadFromItsOwnOffset,
 #     AnMTUOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot,
@@ -444,7 +448,10 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     TheDecoderDoesNotSetTheRouterAddress,
 #     TheDnsmasqShapedAdvertisementDecodesEveryOption,
 #     ADecodedAdvertisementKeepsNothingOfItsInputBuffer
-#   proto/router6_test.go              (16)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
+#   wire/icmpv6_test.go                 (2)  APrefixInformationOptionOfThe
+#     WrongLengthIsIgnoredAndItsSiblingsAreNot,
+#     TheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules
+#   proto/router6_test.go              (18)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
 #     TheSamePrefixFromTwoRoutersIsTwoRoutes,
 #     TheRoutesAreOrderedMostPreferredFirst,
 #     AZeroLifetimeWithdrawsTheEntryItNames,
@@ -459,22 +466,28 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #     ARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut,
 #     TheObservationHoldsNoSliceOfTheAdvertisement,
 #     TheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement,
-#     AReplayedAdvertisementKeepsTheRouterItCameFrom
-#   lease/router6_test.go               (7)  TheAddressTheSocketReadIsTheRouter
+#     AReplayedAdvertisementKeepsTheRouterItCameFrom,
+#     AWithdrawnResolverFreesItsSlotInTheSameAdvertisement,
+#     TheDefaultRouterListIsOrderedByTheAdvertisedPreference
+#   lease/router6_test.go              (11)  TheAddressTheSocketReadIsTheRouter
 #     TheTableKeysOn, ABrokenAdvertisementIsNotTheSameAsNoAdvertisement,
 #     AnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot,
 #     TheV6LeaseCarriesWhatTheRouterAdvertised,
 #     TheAdvertisedViewFillsOnlyWhatTheLeaseDoesNotHave,
 #     TheAdvertisedViewNeverWritesIntoTheLeaseItWasGiven,
-#     TheRouterViewOnTheLeaseIsAsOfTheLastStep
+#     TheRouterViewOnTheLeaseIsAsOfTheLastStep,
+#     OneMalformedPrefixDoesNotHideTheRouterThatSentIt,
+#     WhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst,
+#     ARouteBothSourcesCarryIsNotAddedTwice,
+#     TheLeaseNamesTheRouterThatAdvertisedTheHigherPreference
 #   runtime/dnsmasq6_linux_test.go      (1)  TheOptionsARealRouterAdvertises
 #     ReachTheCaller
 #
-# ONE OF THE THIRTY-EIGHT IS A NETNS TEST, the last one, MEASURED with
+# ONE OF THE FORTY-SIX IS A NETNS TEST, the last one, MEASURED with
 # testroster -netns at 34 over the base and 35 here. The netns roster is
 # derived rather than declared, so nothing else has to be written down for it,
 # but NETNS_CEILING_SECONDS is a number the round must re-measure.
-MIN_DECLARED_TESTS=692
+MIN_DECLARED_TESTS=700
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

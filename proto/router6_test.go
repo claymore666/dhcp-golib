@@ -670,3 +670,134 @@ func TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut(t *testing.T) {
 		t.Errorf("default routers %v once every seat expired, want %v", addrTexts(after.Routers), want)
 	}
 }
+
+// TestAWithdrawnResolverFreesItsSlotInTheSameAdvertisement is the observer the
+// round-1 read found missing, and the case it is built for is the only one in
+// which the property is visible.
+//
+// A ZERO LIFETIME MUST REMOVE THE ENTRY, NOT EXPIRE IT. RFC 8106 §6.2 step (b)
+// says "delete the corresponding RDNSS entry from both the DNS Server List and
+// the Resolver Repository", and setting the entry's deadline to now instead
+// reads the same everywhere except HERE: with the list at its cap, a
+// withdrawal and a new resolver in ONE advertisement are processed before any
+// prune runs, so an entry that is merely dead still holds its slot and the new
+// resolver is refused. The earlier observer could not see this — it asserted
+// against a mutant that refreshed to a REAL lifetime, which is dead on arrival
+// and pruned before the view is filled.
+func TestAWithdrawnResolverFreesItsSlotInTheSameAdvertisement(t *testing.T) {
+	var tab routerTable
+	full := advert("fe80::1", 1800)
+	for i := range maxRouterDNS {
+		full.RDNSS = append(full.RDNSS, wire.RDNSS{
+			Lifetime: 600,
+			Addrs:    []netip.Addr{netip.MustParseAddr(fmt.Sprintf("fd00::%x", i+1))},
+		})
+	}
+	tab.observe(at(0), full)
+	if obs := observation(t, &tab, at(1)); len(obs.DNS) != maxRouterDNS {
+		t.Fatalf("%d resolver(s) before the withdrawal, want the cap %d", len(obs.DNS), maxRouterDNS)
+	}
+	dropped := tab.dropped
+
+	// One advertisement: withdraw fd00::1, offer fd00::ff. The withdrawal is
+	// first, which is the order §6.2 walks the options in.
+	swap := advert("fe80::1", 1800)
+	swap.RDNSS = []wire.RDNSS{
+		{Lifetime: 0, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}},
+		{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::ff")}},
+	}
+	tab.observe(at(2), swap)
+
+	obs := observation(t, &tab, at(3))
+	got := addrTexts(obs.DNS)
+	if len(got) != maxRouterDNS {
+		t.Errorf("%d resolver(s) after one swapped for another, want the cap %d: %v", len(got), maxRouterDNS, got)
+	}
+	var haveNew, haveOld bool
+	for _, a := range got {
+		switch a {
+		case "fd00::ff":
+			haveNew = true
+		case "fd00::1":
+			haveOld = true
+		}
+	}
+	if !haveNew {
+		t.Errorf("the resolver offered beside the withdrawal never arrived: %v", got)
+	}
+	if haveOld {
+		t.Errorf("the withdrawn resolver is still held: %v", got)
+	}
+	if tab.dropped != dropped {
+		t.Errorf("the drop counter moved by %d; the withdrawal freed a slot and nothing should have been refused", tab.dropped-dropped)
+	}
+}
+
+// TestTheDefaultRouterListIsOrderedByTheAdvertisedPreference is RFC 4191 §2.2,
+// which was decoded nowhere before this round while §2.3's route preference
+// was decoded and sorted on.
+//
+// THE GATEWAY IS THE FIRST ENTRY, so arrival order was the whole of the
+// answer: a backup router that booted first took the gateway away from the one
+// that advertises High, for as long as both were up. §3.5 is what decides it
+// for a host with a Default Router List and no reachability information of its
+// own: "it primarily prefers reachable routers over non-reachable routers and
+// secondarily uses the router preference values. If the host has no
+// information about the router's reachability, then the host assumes the
+// router is reachable."
+func TestTheDefaultRouterListIsOrderedByTheAdvertisedPreference(t *testing.T) {
+	withPref := func(from string, life uint16, p wire.RoutePreference) *wire.RouterAdvert {
+		ra := advert(from, life)
+		ra.Preference = p
+		return ra
+	}
+
+	t.Run("the backup arrives first and does not keep the gateway", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::b", 1800, wire.RoutePrefMedium))
+		tab.observe(at(1), withPref("fe80::a", 1800, wire.RoutePrefHigh))
+		want := []string{"fe80::a", "fe80::b"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: High outranks Medium whichever was heard first", got, want)
+		}
+	})
+
+	t.Run("low sorts below medium", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::10", 1800, wire.RoutePrefLow))
+		tab.observe(at(1), withPref("fe80::20", 1800, wire.RoutePrefMedium))
+		want := []string{"fe80::20", "fe80::10"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v", got, want)
+		}
+	})
+
+	t.Run("equal preference keeps arrival order", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::1", 1800, wire.RoutePrefHigh))
+		tab.observe(at(1), withPref("fe80::2", 1800, wire.RoutePrefHigh))
+		want := []string{"fe80::1", "fe80::2"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: §6.3.4's arrival order is the tie-break", got, want)
+		}
+	})
+
+	// §2.2's own ignore rule, at the ring that stores it: a router that
+	// withdraws itself may not leave a preference behind for the next
+	// advertisement that does not carry one.
+	t.Run("a withdrawal does not leave its preference behind", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::a", 1800, wire.RoutePrefHigh))
+		tab.observe(at(1), withPref("fe80::b", 1800, wire.RoutePrefMedium))
+		tab.observe(at(2), withPref("fe80::a", 0, wire.RoutePrefMedium))
+		if got := addrTexts(observation(t, &tab, at(3)).Routers); !equalStrings(got, []string{"fe80::b"}) {
+			t.Fatalf("default routers %v after fe80::a withdrew, want only fe80::b", got)
+		}
+		// It comes back at Medium, which is what it now advertises.
+		tab.observe(at(4), withPref("fe80::a", 1800, wire.RoutePrefMedium))
+		want := []string{"fe80::b", "fe80::a"}
+		if got := addrTexts(observation(t, &tab, at(5)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: the returning router carries the preference it sent this time", got, want)
+		}
+	})
+}

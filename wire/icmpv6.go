@@ -21,10 +21,14 @@ import (
 // Prefix Information, MTU, Route Information, Recursive DNS Server and DNS
 // Search List), Neighbor Advertisement decode (the target and the R/S/O
 // flags), and encode for Router Solicitation and the DAD Neighbor
-// Solicitation. Redirect, Router Renumbering and the rest are not decoded;
-// §4.2's rule covers them: "Future versions of this protocol may define new
-// option types. Receivers MUST silently ignore any options they do not
-// recognize and continue processing the message."
+// Solicitation. Redirect (§4.5), Router Renumbering (RFC 2894) and the rest
+// are not decoded, and NO RFC RULE IS CLAIMED FOR THAT — an earlier version of
+// this comment cited §4.2's ignore rule, which is about unrecognised OPTIONS
+// and says nothing about message types; RFC 4861 states no receiver rule for a
+// message type a node does not implement. It is this package's scope and
+// nothing more, and it is not a silent drop either: every decoder here refuses
+// a type it was not asked for with ErrICMPv6Type, so a caller handed a Redirect
+// is told which type it got rather than given a zero value.
 //
 // TWO REFUSAL LEVELS, AND WHICH ONE APPLIES IS THE OPTION'S OWN RFC's ANSWER.
 // §4.6's length rule is about the PACKET: "The value 0 is invalid. Nodes MUST
@@ -40,23 +44,41 @@ import (
 // ignored." Such an option is skipped, its siblings decode, and
 // RouterAdvert.IgnoredOptions counts it.
 //
-// THE PREFIX INFORMATION OPTION IS ON THE OTHER SIDE OF THAT LINE and it is
-// the asymmetry to know about: a Prefix Information option of the wrong length
-// refuses the whole message. RFC 4861 §4.6.2 fixes its Length at 4 and neither
-// RFC 4861 nor RFC 4862 gives a per-option ignore for a wrong-length one —
-// §5.5.3's "silently ignore the Prefix Information option" arms are about the
-// option's CONTENT, not its size. It is the shipped behaviour of this decoder
-// and changing it would change what a client forms an address from, which is
-// L2's subject and not this file's.
+// THE PREFIX INFORMATION OPTION IS ON THE SAME SIDE OF THAT LINE, and the
+// reason is a measurement and not a MUST. RFC 4861 §4.6.2 fixes its Length at
+// 4, and neither RFC 4861 nor RFC 4862 says what to do with one that is
+// neither 4 nor zero — §5.5.3's "silently ignore the Prefix Information
+// option" arms are about the option's CONTENT, not its size. The ignore rule
+// that looks like it decides this DOES NOT, and it is worth saying which way
+// it cuts: §9 is "all nodes MUST silently ignore any options they do not
+// recognize in received ND packets and continue processing the packet. All
+// options specified in this document MUST be recognized." The Prefix
+// Information option is specified in that document, at §4.6.2, so it is a
+// MUST-recognize option and it is NOT in the class that rule governs. (The
+// same two sentences appear as a shorter pair under "Possible options" in
+// §4.1 through §4.4; neither copy is in §4.6, and an earlier version of this
+// comment cited it there.)
 //
-// WHAT THAT COSTS, STATED RATHER THAN LEFT TO BE FOUND: the M and O flags die
-// with the message. They are in the header, before any option, and they are
-// the fields a caller reads to tell a managed link from a stateless one — so a
-// router whose Prefix Information option this decoder refuses reads exactly
-// like a link with no router on it, and a caller waiting for M to decide
-// whether to run DHCPv6 waits forever. That is the same confusion the refusal
-// counters were added to end one level up, and it is why the asymmetry is an
-// open row rather than a settled one.
+// SO THE CHOICE IS THIS DECODER'S, MADE ON WHAT THE OTHER VERDICT COST, and
+// NOTHING IN EITHER RFC IS OFFERED FOR IT. §9's "A node MUST NOT ignore valid
+// options just because the ND message contains unrecognized ones" was quoted
+// here for one round and does not reach this frame either: its antecedent is a
+// message that CONTAINS unrecognised options, and this one contains a
+// recognised option with an illegal length. The measurement below is the whole
+// of the argument, which is enough, because nothing is being overridden — the
+// standards do not answer this and a decoder still has to do something.
+//
+// WHAT IT COST, MEASURED: the M and O flags are in the HEADER, before any
+// option. Refusing the message throws them away with it, so a router
+// advertising one malformed prefix read exactly like a link with no router on
+// it — and on the address-formation row stacked on this one, a client in SLAAC
+// mode then waited out its whole discovery window for a fatal verdict on a
+// link that had a router, a valid prefix and a resolver in the very same
+// frame. One bad option is now one counted option, and the router, its other
+// prefixes and its other options survive it. Driven by
+// TestAPrefixInformationOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot
+// here and by lease.TestOneMalformedPrefixDoesNotHideTheRouterThatSentIt one
+// ring up.
 //
 // PREFIX DELEGATION IS OUT (D25), SO THE P FLAG IS IGNORED. RFC 9762 adds a P
 // flag to the Prefix Information option after L, A and R, and §9.1 amends RFC
@@ -418,6 +440,22 @@ type RouterAdvert struct {
 	// is not a default router."
 	RouterLifetime uint16
 
+	// Preference is RFC 4191 §2.2's Default Router Preference, the two bits
+	// after M and O in the same octet: "Prf (Default Router Preference) 2-bit
+	// signed integer. Indicates whether to prefer this router over other
+	// default routers. If the Router Lifetime is zero, the preference value
+	// MUST be set to (00) by the sender and MUST be ignored by the receiver.
+	// If the Reserved (10) value is received, the receiver MUST treat the
+	// value as if it were (00)."
+	//
+	// BOTH "MUST be ignored" ARMS ARE APPLIED HERE AND NOT LEFT TO THE READER,
+	// so this field is RoutePrefMedium — §2.1's (00), the default — whenever
+	// the standard says the sender's bits do not count. A receiver that read
+	// the raw bits would let a router that is going away (Lifetime zero) carry
+	// a High preference into a table that is about to drop it, and would let
+	// the one encoding §2.1 says MUST NOT be sent mean something.
+	Preference RoutePreference
+
 	// ReachableTime and RetransTimer are in MILLISECONDS (§4.2), not seconds
 	// like every other duration in this file. Zero means unspecified.
 	ReachableTime uint32
@@ -530,6 +568,7 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 		Managed:        b[5]&raFlagManaged != 0,
 		Other:          b[5]&raFlagOther != 0,
 		RouterLifetime: ube16(b[6:8]),
+		Preference:     decodeRouterPreference(b[5], ube16(b[6:8])),
 		ReachableTime:  ube32(b[8:12]),
 		RetransTimer:   ube32(b[12:16]),
 	}
@@ -537,8 +576,8 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 		switch typ {
 		case NDOptPrefixInfo:
 			if len(opt) != pioLen {
-				return fmt.Errorf("%w: Prefix Information option is %d octet(s), RFC 4861 section 4.6.2 gives Length 4 (%d octets)",
-					ErrNDOption, len(opt), pioLen)
+				ra.IgnoredOptions++
+				return nil
 			}
 			ra.Prefixes = append(ra.Prefixes, PrefixInfo{
 				PrefixLen:         opt[2],
@@ -629,6 +668,28 @@ func decodeRouteInfo(opt []byte) (RouteInfo, bool) {
 		return RouteInfo{}, false
 	}
 	return RouteInfo{Prefix: pfx.Masked(), Pref: pref, Lifetime: ube32(opt[4:8])}, true
+}
+
+// decodeRouterPreference reads RFC 4191 §2.2's Default Router Preference out of
+// the flags octet, "|M|O|H|Prf|Resvd|", and applies both of §2.2's ignore rules
+// rather than reporting what the sender wrote.
+//
+// IT SHARES ITS TWO BITS WITH §2.3's ROUTE PREFERENCE AND NOT ITS VERDICT. The
+// route option refuses the Reserved encoding and the whole option with it,
+// because §2.3 says "If the Reserved (10) value is received, the Route
+// Information Option MUST be ignored." — there is a thing to ignore. Here
+// there is not: the preference is a field of a message whose other fields are
+// fine, and §2.2 says what to do instead, "the receiver MUST treat the value
+// as if it were (00)". Two sentences, two verdicts, one bit layout.
+func decodeRouterPreference(flags uint8, lifetime uint16) RoutePreference {
+	if lifetime == 0 {
+		return RoutePrefMedium
+	}
+	pref, ok := decodeRoutePreference(flags)
+	if !ok {
+		return RoutePrefMedium
+	}
+	return pref
 }
 
 // decodeRoutePreference reads §2.3's two-bit signed Prf out of the octet it

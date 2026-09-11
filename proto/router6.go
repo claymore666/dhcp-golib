@@ -161,7 +161,13 @@ type routerEntry struct {
 	// held; it is not a default router.
 	deflt   timedEntry
 	isDeflt bool
-	seq     int
+	// pref is RFC 4191 §2.2's Default Router Preference, and it is written
+	// only on the arms where the Router Lifetime is non-zero. §2.2 says the
+	// value "MUST be ignored by the receiver" when the lifetime is zero, and
+	// the decoder already returns Medium for that case; not writing it here is
+	// how the rule stays derived in ONE place instead of two that can differ.
+	pref wire.RoutePreference
+	seq  int
 }
 
 type dnsEntry struct {
@@ -262,6 +268,7 @@ func (t *routerTable) observeRouterLifetime(now Instant, ra *wire.RouterAdvert) 
 		}
 		t.routers[i].isDeflt = true
 		t.routers[i].deflt = routerLifetimeUntil(now, ra.RouterLifetime)
+		t.routers[i].pref = ra.Preference
 		return
 	}
 	if len(t.routers) >= maxRouters {
@@ -273,6 +280,7 @@ func (t *routerTable) observeRouterLifetime(now Instant, ra *wire.RouterAdvert) 
 	if ra.RouterLifetime != 0 {
 		e.isDeflt = true
 		e.deflt = routerLifetimeUntil(now, ra.RouterLifetime)
+		e.pref = ra.Preference
 	}
 	t.routers = append(t.routers, e)
 }
@@ -457,11 +465,35 @@ func (t *routerTable) holdsSomethingOf(addr netip.Addr) bool {
 // fill writes the table's live view into an observation.
 func (t *routerTable) fill(now Instant, out *RouterObservation) {
 	t.prune(now)
-	out.Routers = nil
+	// THE DEFAULT ROUTER LIST IS ORDERED BY RFC 4191 §2.2's PREFERENCE, which
+	// is the only thing that preference is for and the reason a caller may
+	// take the first entry and stop reading. §3.2, for a type B host doing
+	// next-hop determination against its Default Router List: "it primarily
+	// prefers reachable routers over
+	// non-reachable routers and secondarily uses the router preference values.
+	// If the host has no information about the router's reachability, then the
+	// host assumes the router is reachable." This library runs no Neighbor
+	// Unreachability Detection and so has no information about any router's
+	// reachability — by that sentence every router here is assumed reachable,
+	// the first clause decides nothing, and the preference decides everything.
+	// Arrival order breaks the tie, so two routers at the same preference come
+	// back in the order §6.3.4 heard them and the result does not depend on
+	// the sort being stable by accident.
+	deflts := make([]routerEntry, 0, len(t.routers))
 	for _, r := range t.routers {
 		if r.isDeflt {
-			out.Routers = append(out.Routers, r.addr)
+			deflts = append(deflts, r)
 		}
+	}
+	sort.SliceStable(deflts, func(i, j int) bool {
+		if deflts[i].pref != deflts[j].pref {
+			return deflts[i].pref > deflts[j].pref
+		}
+		return deflts[i].seq < deflts[j].seq
+	})
+	out.Routers = nil
+	for _, r := range deflts {
+		out.Routers = append(out.Routers, r.addr)
 	}
 	out.MTU = t.mtu
 	out.DNS = nil

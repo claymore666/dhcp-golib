@@ -5,6 +5,7 @@ package lease
 import (
 	"net/netip"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -175,6 +176,23 @@ func TestAnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot(t *testing.T) {
 	}
 }
 
+// awaitRAStep blocks until the machine has finished with the nth Router
+// Advertisement injected into the port, whatever it decided: either Step
+// recorded it in the journal, or the port refused the frame before Step ever
+// saw it. It returns the manager's router view as of that moment.
+//
+// IT IS KEYED ON THE EVENT AND NOT ON THE ANSWER, which is the whole point. A
+// barrier that spins until the view says what the test expects turns every
+// mutant that changes the view into a HANG, and a hang is a third verdict: the
+// mutation harness banks it as a refusal rather than as a kill, so the property
+// reads as unobserved when it is observed. MEASURED on this file: the "the
+// router's source address is not stamped on the advertisement" mutant failed
+// three tests at 0.00s and then held the package to its timeout on a fourth.
+//
+// THE REFUSAL COUNTER IS THE SECOND EXIT because a frame this library discards
+// never reaches Step and so is never journalled; without it a barrier waiting
+// on the journal hangs on exactly the mutants that refuse more than they should
+// — which is the previous version of the Prefix Information rule, row D-9.
 // awaitRouterSeen spins until the manager has STEPPED an advertisement.
 //
 // IT DOES NOT READ THE JOURNAL, and that is the whole reason it exists. The
@@ -185,14 +203,28 @@ func TestAnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot(t *testing.T) {
 // advertisement's journal entry and then hung for its whole timeout in
 // waitDADRequested, because the entry naming the request had already been read
 // and discarded by that wait.
-func awaitRouterSeen(t *testing.T, r *rig6) proto.RouterObservation {
+func awaitRAStep(t *testing.T, r *rig6, nth int) proto.RouterObservation {
 	t.Helper()
 	for {
-		if obs := r.mgr.Router(); obs.Seen {
-			return obs
+		if raSteps(r.journal)+int(r.mgr.Stats().RouterAdvertsRefused) >= nth {
+			return r.mgr.Router()
 		}
 		runtime.Gosched()
 	}
+}
+
+// raSteps counts the Router Advertisements the journal has recorded. It reads
+// Entries rather than waitAppended because that consumes a shared buffered
+// channel, so using it as a barrier throws away whatever was queued behind the
+// entry waited for.
+func raSteps(j *journalRecorder6) int {
+	n := 0
+	for _, e := range j.Entries() {
+		if e.Kind == proto.EvRouterAdvert {
+			n++
+		}
+	}
+	return n
 }
 
 // TestTheV6LeaseCarriesWhatTheRouterAdvertised is the surface #814 asks for:
@@ -217,7 +249,7 @@ func TestTheV6LeaseCarriesWhatTheRouterAdvertised(t *testing.T) {
 	}
 
 	r.nd.injectFrom(raWithEveryOption(), raRouter)
-	awaitRouterSeen(t, r)
+	awaitRAStep(t, r, 1)
 
 	l, held := r.mgr.Lease()
 	if !held {
@@ -367,18 +399,17 @@ func raWithRouterLifetime(secs uint16) []byte {
 	}
 }
 
-// awaitRouterIs blocks until the manager's view names the given router. It
-// reads the manager rather than the journal on purpose: waitAppended consumes
-// a shared channel, so using it as a barrier throws away whatever was queued
-// behind the entry waited for.
-func awaitRouterIs(t *testing.T, r *rig6, addr string) proto.RouterObservation {
+// awaitRouterIs waits for the nth advertisement to be disposed of and then
+// asserts which router the table keyed on. The wait and the assertion are
+// separate for the reason awaitRAStep states: waiting UNTIL the answer is the
+// expected one cannot fail, it can only hang.
+func awaitRouterIs(t *testing.T, r *rig6, nth int, addr string) proto.RouterObservation {
 	t.Helper()
-	for {
-		if obs := r.mgr.Router(); obs.Router.String() == addr {
-			return obs
-		}
-		runtime.Gosched()
+	obs := awaitRAStep(t, r, nth)
+	if obs.Router.String() != addr {
+		t.Fatalf("after advertisement %d the table's router is %q, want %s", nth, obs.Router, addr)
 	}
+	return obs
 }
 
 // TestTheRouterViewOnTheLeaseIsAsOfTheLastStep drives the bound that both
@@ -405,7 +436,7 @@ func TestTheRouterViewOnTheLeaseIsAsOfTheLastStep(t *testing.T) {
 	r.acquire6(t)
 
 	r.nd.injectFrom(raWithRouterLifetime(shortLifetime), raRouter)
-	awaitRouterIs(t, r, raRouter)
+	awaitRouterIs(t, r, 1, raRouter)
 
 	// Inside the lifetime: the router is a default router because it is one.
 	r.clock.advance(proto.Duration(shortLifetime-1) * proto.Second)
@@ -427,7 +458,7 @@ func TestTheRouterViewOnTheLeaseIsAsOfTheLastStep(t *testing.T) {
 	// The next Step corrects it. The second advertisement is stepped at a now
 	// past the first router's lifetime, and observe prunes before it inserts.
 	r.nd.injectFrom(raWithRouterLifetime(1800), otherRouter)
-	obs := awaitRouterIs(t, r, otherRouter)
+	obs := awaitRouterIs(t, r, 2, otherRouter)
 	if len(obs.Routers) != 1 || obs.Routers[0].String() != otherRouter {
 		t.Fatalf("the default router list is %v after the next Step, want only %s", obs.Routers, otherRouter)
 	}
@@ -435,4 +466,280 @@ func TestTheRouterViewOnTheLeaseIsAsOfTheLastStep(t *testing.T) {
 	if l.Gateway.String() != otherRouter {
 		t.Errorf("the lease names gateway %q after a Step past the first router's lifetime, want %s", l.Gateway, otherRouter)
 	}
+}
+
+// raWithAMalformedPrefixBesideAGoodOne is the frame the address-formation row
+// met on a real link: M and O set, a usable prefix, a second Prefix
+// Information option whose Length is 3 where RFC 4861 §4.6.2 gives 4, and a
+// resolver behind it.
+func raWithAMalformedPrefixBesideAGoodOne() []byte {
+	out := []byte{
+		134, 0, 0, 0,
+		64, 0xC0, 0x07, 0x08,
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+	}
+	good := make([]byte, 32)
+	good[0], good[1], good[2], good[3] = 3, 4, 64, 0xC0 // L and A
+	good[7] = 0x3C                                      // valid lifetime 60
+	good[11] = 0x1E                                     // preferred lifetime 30
+	copy(good[16:32], netip.MustParseAddr(raGoodPrefixAddr).AsSlice())
+	out = append(out, good...)
+
+	bad := make([]byte, 24)
+	bad[0], bad[1], bad[2] = 3, 3, 64
+	out = append(out, bad...)
+
+	rdnss := make([]byte, 24)
+	rdnss[0], rdnss[1] = 25, 3
+	rdnss[6], rdnss[7] = 0x02, 0x58
+	copy(rdnss[8:], netip.MustParseAddr(raResolver).AsSlice())
+	return append(out, rdnss...)
+}
+
+const raGoodPrefixAddr = "2001:db8:1::"
+
+// TestOneMalformedPrefixDoesNotHideTheRouterThatSentIt is row D-9 closed at the
+// ring where it was costing something.
+//
+// THE OLD VERDICT WAS THE WHOLE MESSAGE. A Prefix Information option of the
+// wrong length refused the frame, so this advertisement — a router with a
+// lifetime, a usable prefix, M, O and a resolver — reached the caller as
+// nothing at all, which is the same answer a link with no router on it gives.
+// MEASURED one row up: an endpoint in SLAAC mode then waited out its whole
+// discovery window and failed, on a link that was advertising the prefix it
+// needed. What is asserted here is everything except the bad option: the
+// router is in the table, the good prefix is on the observation, the resolver
+// reaches the lease, the frame is NOT counted as refused, and exactly one
+// option is counted as ignored.
+func TestOneMalformedPrefixDoesNotHideTheRouterThatSentIt(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.acquire6(t)
+	before := r.mgr.Stats()
+
+	r.nd.injectFrom(raWithAMalformedPrefixBesideAGoodOne(), raRouter)
+	obs := awaitRAStep(t, r, 1)
+
+	if !obs.Managed || !obs.Other {
+		t.Errorf("M=%t O=%t: the flags are in the header, and one bad option took them", obs.Managed, obs.Other)
+	}
+	if len(obs.Routers) != 1 || obs.Routers[0].String() != raRouter {
+		t.Errorf("the default router list is %v, want the router that sent the frame", obs.Routers)
+	}
+	if len(obs.Prefixes) != 1 {
+		t.Fatalf("%d prefix(es) on the observation, want the one that is well formed: %v", len(obs.Prefixes), obs.Prefixes)
+	}
+	if obs.Prefixes[0].Prefix.String() != raGoodPrefixAddr || obs.Prefixes[0].PrefixLen != 64 {
+		t.Errorf("the surviving prefix is %s, want %s/64", obs.Prefixes[0], raGoodPrefixAddr)
+	}
+	if len(obs.DNS) != 1 || obs.DNS[0].String() != raResolver {
+		t.Errorf("the resolver behind the bad option is %v", obs.DNS)
+	}
+
+	l, held := r.mgr.Lease()
+	if !held {
+		t.Fatal("the manager holds no lease")
+	}
+	if l.Gateway.String() != raRouter {
+		t.Errorf("the lease names gateway %q, want %s", l.Gateway, raRouter)
+	}
+	if len(l.DNS) != 2 || l.DNS[1].String() != raResolver {
+		t.Errorf("the lease carries DNS %v, want DHCP's first and the advertisement's after it", l.DNS)
+	}
+
+	after := r.mgr.Stats()
+	if got := after.RouterAdvertsRefused - before.RouterAdvertsRefused; got != 0 {
+		t.Errorf("RouterAdvertsRefused moved by %d; one bad option is not a bad message", got)
+	}
+	if got := after.RouterAdvertOptionsIgnored - before.RouterAdvertOptionsIgnored; got != 1 {
+		t.Errorf("RouterAdvertOptionsIgnored moved by %d, want exactly the one option that was refused", got)
+	}
+	if got := after.RouterAdvertsSeen - before.RouterAdvertsSeen; got != 1 {
+		t.Errorf("RouterAdvertsSeen moved by %d, want 1", got)
+	}
+}
+
+// raFromTheSameBoxAsTheServer is the link the round-1 read named: the DHCPv6
+// server and the router are one box, so the resolver and the search domain it
+// hands out over DHCP are the same two values it advertises over ND. It also
+// carries one of its own of each, so a merge that dropped the whole list would
+// be visible as well as one that duplicated it.
+func raFromTheSameBoxAsTheServer() []byte {
+	out := []byte{
+		134, 0, 0, 0,
+		64, 0xC0, 0x07, 0x08,
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+	}
+	// RFC 8106 §5.1: one option, two addresses — the server's own and a
+	// second the advertisement alone carries.
+	rdnss := make([]byte, 40)
+	rdnss[0], rdnss[1] = 25, 5
+	rdnss[6], rdnss[7] = 0x02, 0x58
+	copy(rdnss[8:24], netip.MustParseAddr(test6DNS).AsSlice())
+	copy(rdnss[24:40], netip.MustParseAddr(raResolver).AsSlice())
+	out = append(out, rdnss...)
+
+	// RFC 8106 §5.2: "fixture.invalid" and "ra.invalid" in label form, padded
+	// to the option length.
+	dnssl := make([]byte, 40)
+	dnssl[0], dnssl[1] = 31, 5
+	dnssl[6], dnssl[7] = 0x02, 0x58
+	n := 8
+	for _, name := range []string{test6Search, raSearch} {
+		for _, label := range strings.Split(name, ".") {
+			dnssl[n] = byte(len(label))
+			n++
+			n += copy(dnssl[n:], label)
+		}
+		n++ // the root label, already zero
+	}
+	return append(out, dnssl...)
+}
+
+// TestWhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst is the guard the
+// round-1 read found unobserved: every fixture until now picked advertisement
+// values OUTSIDE the DHCP fixture's ranges, so nothing overlapped and the
+// three duplicate checks in withRouterAdvert could each be deleted with the
+// suite still green.
+//
+// THE OVERLAP IS THE NORMAL CASE AND NOT THE EXOTIC ONE. A home gateway is the
+// DHCPv6 server and the router, and it hands out its own address as the
+// resolver on both protocols; a lease that carried it twice would have a
+// caller write it twice into resolv.conf. RFC 8106 §5.3.1 decides the ORDER
+// and this decides the COUNT: "the DNS information from DHCP takes precedence
+// over that from RAs", so DHCP's copy is the one that keeps its place and the
+// advertisement's duplicate is the one that is not added.
+func TestWhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	acquired := r.acquire6(t)
+	if len(acquired.Lease.DNS) != 1 || acquired.Lease.DNS[0].String() != test6DNS {
+		t.Fatalf("the acquired lease carries DNS %v; the fixture sends exactly %s", acquired.Lease.DNS, test6DNS)
+	}
+	if len(acquired.Lease.DomainSearch) != 1 || acquired.Lease.DomainSearch[0] != test6Search {
+		t.Fatalf("the acquired lease carries the search list %v", acquired.Lease.DomainSearch)
+	}
+
+	r.nd.injectFrom(raFromTheSameBoxAsTheServer(), raRouter)
+	obs := awaitRAStep(t, r, 1)
+	if len(obs.DNS) != 2 || len(obs.Search) != 2 {
+		t.Fatalf("the advertisement decoded as %v / %v, want two of each", obs.DNS, obs.Search)
+	}
+
+	l, held := r.mgr.Lease()
+	if !held {
+		t.Fatal("the manager holds no lease")
+	}
+	wantDNS := []string{test6DNS, raResolver}
+	if got := addrStrings(l.DNS); !equalStringSlices(got, wantDNS) {
+		t.Errorf("the lease carries DNS %v, want %v: the resolver both protocols sent appears once, DHCP's copy first", got, wantDNS)
+	}
+	wantSearch := []string{test6Search, raSearch}
+	if !equalStringSlices(l.DomainSearch, wantSearch) {
+		t.Errorf("the lease carries the search list %v, want %v", l.DomainSearch, wantSearch)
+	}
+
+	// Read it twice: the merge runs per read, so a guard that only held the
+	// first time would show here.
+	again, _ := r.mgr.Lease()
+	if got := addrStrings(again.DNS); !equalStringSlices(got, wantDNS) {
+		t.Errorf("a second read of the lease carries DNS %v, want %v", got, wantDNS)
+	}
+}
+
+// TestARouteBothSourcesCarryIsNotAddedTwice is the third of the three guards.
+// It is driven at withRouterAdvert and not through the rig because DHCPv6 has
+// no route option at all (RFC 9915 defines none), so a v6 lease that already
+// carries a route is one from a source this library does not have yet — and a
+// guard whose case cannot be built on this link is exactly the guard that
+// rots.
+func TestARouteBothSourcesCarryIsNotAddedTwice(t *testing.T) {
+	shared := wire.Route{
+		Dest:   netip.MustParsePrefix(raPrefix),
+		Router: netip.MustParseAddr(raRouter),
+	}
+	other := wire.Route{
+		Dest:   netip.MustParsePrefix("2001:db8:dead::/48"),
+		Router: netip.MustParseAddr(raRouter),
+	}
+	held := Lease{Routes: []wire.Route{shared}}
+	obs := proto.RouterObservation{
+		Seen:   true,
+		Router: netip.MustParseAddr(raRouter),
+		Routes: []wire.Route{shared, other},
+	}
+
+	got := withRouterAdvert(held, obs)
+	if len(got.Routes) != 2 {
+		t.Fatalf("the lease carries %d route(s), want 2: the shared one once and the new one: %v", len(got.Routes), got.Routes)
+	}
+	if got.Routes[0] != shared {
+		t.Errorf("the first route is %v, want the one the lease already had", got.Routes[0])
+	}
+	if got.Routes[1] != other {
+		t.Errorf("the second route is %v, want %v", got.Routes[1], other)
+	}
+}
+
+// TestTheLeaseNamesTheRouterThatAdvertisedTheHigherPreference is RFC 4191
+// §2.2 seen from the caller: Lease.Gateway is the first entry of the default
+// router list, so before this round the gateway was whichever router was heard
+// first and a backup that booted first kept it.
+func TestTheLeaseNamesTheRouterThatAdvertisedTheHigherPreference(t *testing.T) {
+	const (
+		backup = "fe80::b"
+		real6  = "fe80::a"
+	)
+	// Two advertisements differing only in the preference bits of the flags
+	// octet: 0x00 is §2.1's Medium, 0x08 its High.
+	ra := func(prf byte) []byte {
+		return []byte{
+			134, 0, 0, 0,
+			64, prf, 0x07, 0x08,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+		}
+	}
+
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.acquire6(t)
+
+	r.nd.injectFrom(ra(0x00), backup)
+	awaitRouterIs(t, r, 1, backup)
+	l, _ := r.mgr.Lease()
+	if l.Gateway.String() != backup {
+		t.Fatalf("the lease names gateway %q with only the backup heard, want %s", l.Gateway, backup)
+	}
+
+	r.nd.injectFrom(ra(0x08), real6)
+	awaitRouterIs(t, r, 2, real6)
+
+	l, _ = r.mgr.Lease()
+	if l.Gateway.String() != real6 {
+		t.Errorf("the lease names gateway %q, want %s: High outranks Medium and the backup was only heard first", l.Gateway, real6)
+	}
+	obs := r.mgr.Router()
+	if len(obs.Routers) != 2 || obs.Routers[0].String() != real6 || obs.Routers[1].String() != backup {
+		t.Errorf("the default router list is %v, want the High one first and the Medium one still in it", obs.Routers)
+	}
+}
+
+func addrStrings(in []netip.Addr) []string {
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		out = append(out, a.String())
+	}
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

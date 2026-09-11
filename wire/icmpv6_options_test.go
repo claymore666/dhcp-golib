@@ -484,9 +484,10 @@ func TestAnOptionLengthOfZeroOrAnOverrunDiscardsTheWholePacket(t *testing.T) {
 }
 
 // TestAnUnrecognisedOptionIsNotCountedAsIgnored separates the two silences.
-// RFC 4861 section 4.6: "Future versions of this protocol may define new option
-// types. Receivers MUST silently ignore any options they do not recognize and
-// continue processing the message." An advertisement carrying one is not
+// RFC 4861 section 4.2, under the Router Advertisement's own Possible options:
+// "Future versions of this protocol may define new option types. Receivers
+// MUST silently ignore any options they do not recognize and continue
+// processing the message." An advertisement carrying one is not
 // defective, and a counter that says it is would rise on every link with a
 // router newer than this decoder.
 func TestAnUnrecognisedOptionIsNotCountedAsIgnored(t *testing.T) {
