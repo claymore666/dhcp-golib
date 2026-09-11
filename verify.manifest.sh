@@ -440,11 +440,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and 34 here, so the netns enumeration in verify.sh does not move and is not
 # re-measured.
 #
-# L5, #925 (DHCPv6 Reconfigure): 656 -> 701, measured the same way — one
+# L5, #925 (DHCPv6 Reconfigure): 656 -> 702, measured the same way — one
 # testroster run over the base and one over this head, the difference taken as
-# a set. Forty-five added, in four files, none removed:
+# a set. Forty-six added, in four files, none removed:
 #
-#   wire/dhcpv6_reconfigure_test.go     (12) TheReconfigureMessageOptionReads
+#   wire/dhcpv6_reconfigure_test.go     (13) TheReconfigureMessageOptionReads
 #     AllThreeMsgTypes, TheReconfigureMessageOptionRefusesEveryOtherMsgType,
 #     TheReconfigureAcceptOptionIsZeroLength, TheAuthenticationOptionRoundTrips,
 #     TheAuthenticationOptionRefusesWhatIsNotRKAP,
@@ -452,7 +452,8 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     RKAPVerifyCoversTheWholeMessage, RKAPVerifyReadsTheOctetsThatArrived,
 #     RKAPVerifyRefusesAKeyThatIsNotOneHundredAndTwentyEightBits,
 #     RKAPVerifyRefusesAMessageWithNoAuthenticationOption,
-#     RKAPVerifyRefusesASecondAuthenticationOption
+#     RKAPVerifyRefusesASecondAuthenticationOption,
+#     RKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets
 #   wire/hmacmd5_test.go                (7)  MD5MatchesRFC1321sOwnVectors,
 #     HMACMD5MatchesRFC2202sOwnVectors,
 #     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
@@ -488,7 +489,7 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # The last two ARE netns tests, so the netns enumeration in verify.sh moves in
 # this round and is re-measured there — MEASURED with testroster -netns at 34
 # over the base and 36 here.
-MIN_DECLARED_TESTS=701
+MIN_DECLARED_TESTS=702
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

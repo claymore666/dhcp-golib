@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -291,6 +292,37 @@ func TestRKAPVerifyCoversTheWholeMessage(t *testing.T) {
 			raw[tc.at] ^= 0xff
 			if err := RKAPVerify(raw, rkapKey); !errors.Is(err, ErrRKAPDigest) {
 				t.Fatalf("flipping octet %d is accepted: %v", tc.at, err)
+			}
+		})
+	}
+}
+
+// TestRKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets is the WIDTH of the
+// comparison, which every other negative case leaves unobserved.
+//
+// Each of them perturbs the message or the key, and either of those changes the
+// whole computed digest, so a forgery differs from the genuine value in its
+// first octet as surely as in its last and a comparison that read only a prefix
+// would still refuse it. A digest field is the one input an attacker can shape
+// octet by octet while the expected value stays put — it is not hashed, §20.4.3
+// zeroes it before the HMAC — so this is the case that says all sixteen octets
+// are read.
+//
+// Sixteen subcases, one flipped octet each, because a prefix compare, a suffix
+// compare and a compare that skips one position are three different defects and
+// a single flip catches only one of them. MEASURED: with the comparison cut to
+// the first eight octets, subcases 8 through 15 are the ones that go red.
+func TestRKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets(t *testing.T) {
+	base := reconfigureFixture(t, rkapKey, 1, RKAPValueLen, OptionsV6{reconfMsgOption(MsgRenew)})
+	if err := RKAPVerify(base, rkapKey); err != nil {
+		t.Fatalf("the control is refused: %v", err)
+	}
+	for i := range RKAPValueLen {
+		t.Run(fmt.Sprintf("octet %d of the digest", i), func(t *testing.T) {
+			raw := append([]byte(nil), base...)
+			raw[len(raw)-RKAPValueLen+i] ^= 0xff
+			if err := RKAPVerify(raw, rkapKey); !errors.Is(err, ErrRKAPDigest) {
+				t.Fatalf("a digest that agrees with the genuine one everywhere but octet %d is accepted: %v", i, err)
 			}
 		})
 	}
