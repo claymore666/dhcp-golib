@@ -587,6 +587,12 @@ func (m *Machine6) stepConfirming6(now Instant, rnd uint64, ev Event, out *actio
 			// message, the client performs DHCP server discovery as described
 			// in Section 18."
 			out.journal(m, "Reply to the Confirm says NotOnLink: the remembered addresses are not on this link, restarting discovery (§18.2.10.3)")
+			// THE SAME REFUSAL AS THE REQUEST AND RENEW ARMS, for the same
+			// reason: a server answered and said no. This arm reached the
+			// caller as a silent restart while the two below reported, which
+			// would have made "was this endpoint refused" depend on which
+			// message the refusal answered.
+			out.refused(m, st.Code, "the server refused the remembered address for this link: "+st.String())
 			m.resume = nil
 			m.restartDiscovery(now, rnd, out)
 			return
@@ -639,6 +645,24 @@ func (m *Machine6) stepInfoRequesting6(now Instant, rnd uint64, ev Event, out *a
 			return
 		}
 		m.applyMaxRT(msg, out)
+		st, _, err := msg.Options.Status()
+		if err != nil {
+			out.journal(m, "Reply to the Information-request carries a malformed Status Code option: ignored, the exchange continues")
+			return
+		}
+		if code := refusalCode(st.Code); code != wire.StatusSuccess {
+			// §18.2.10 extracts the Status Code from a Reply "in response to a
+			// Solicit (with a Rapid Commit option), Request, Confirm, Renew,
+			// Rebind, or Information-request message" — this exchange is one
+			// of the six, and it is the only one where there is no address to
+			// be missing. Without this the caller is told it is configured
+			// when the server declined to configure it, which is #816's
+			// stateless row. The exchange stands, exactly as the UnspecFail
+			// arm of a Reply to a Request does.
+			out.journal(m, fmt.Sprintf("Reply to the Information-request says %s: no configuration was given (§18.2.10)", code))
+			out.refused(m, code, "the server refused the Information-request: "+st.String())
+			return
+		}
 		m.takeConfig(now, msg, out)
 	case EvTimerFired:
 		switch ev.Timer {
@@ -1249,6 +1273,42 @@ func (m *Machine6) applyMaxRT(msg *wire.MessageV6, out *actions) {
 
 // ------------------------------------------------------------- selecting --
 
+// refusalCode is the code a server refused this exchange with, taken from the
+// places it can sit in order of precedence, or wire.StatusSuccess when the
+// server refused nothing.
+//
+// TWO VALUES MEAN "NO REFUSAL" AND BOTH ARE DROPPED HERE, which is the whole
+// reason this is one function rather than a comparison at each call site.
+// wire.StatusSuccess is §21.13's own verdict for an absent option — "If the
+// Status Code option does not appear in a message in which the option could
+// appear, the status of the message is assumed to be Success" — and
+// wire.StatusMalformed is this library's sentinel for an option it could not
+// decode, which no server sent and which must never be reported as though one
+// had. Every decode error is journalled where it is found; this decides only
+// what the caller is told a server said.
+//
+// The IA-scoped code takes precedence over the message-scoped one where a call
+// site passes both: §21.4 gives the inner option the narrower subject — "The
+// status of any operations involving this IA_NA is indicated in a Status Code
+// option" — and it is the address the caller is missing.
+//
+// THAT ORDER DECIDES ONE CALL SITE AND NOT THE FAMILY. The only caller that
+// passes both is takeReply's no-address arm, which is reached AFTER the
+// UnspecFail and NotOnLink arms have returned; so a Reply whose message level
+// says UnspecFail and whose IA_NA says NoAddrsAvail is reported as UnspecFail,
+// by the switch above this function and not by the order here. That is §18.2.10
+// deciding it: UnspecFail is the server stating it could not process the
+// message at all, which is the larger of the two subjects.
+func refusalCode(codes ...wire.StatusCode) wire.StatusCode {
+	for _, c := range codes {
+		if c == wire.StatusSuccess || c == wire.StatusMalformed {
+			continue
+		}
+		return c
+	}
+	return wire.StatusSuccess
+}
+
 // takeAdvertise applies §18.2.9 to one Advertise.
 func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, out *actions) {
 	m.applyMaxRT(msg, out)
@@ -1265,12 +1325,36 @@ func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, o
 	}
 	if st.Code != wire.StatusSuccess {
 		out.journal(m, fmt.Sprintf("Advertise says %s: ignored for selection, its SOL_MAX_RT was applied (§18.2.9)", st.Code))
+		// IGNORING IT AND REPORTING IT ARE TWO DECISIONS. §18.2.9 ignores any
+		// non-Success Advertise for selection, whatever the code; the report
+		// goes out only for a code a server can have sent, which is what
+		// refusalCode decides. The one value they part company over is this
+		// library's own malformed sentinel arriving as a literal from the
+		// wire: still ignored, never reported as something a server said.
+		if code := refusalCode(st.Code); code != wire.StatusSuccess {
+			out.refused(m, code, "the server answered the Solicit and offered nothing: "+st.String())
+		}
 		return
 	}
 
 	res, notes := readIA(msg.Options, m.params.IAID)
 	for _, n := range notes {
 		out.journal(m, n)
+	}
+	if code := refusalCode(res.status); code != wire.StatusSuccess {
+		// §18.3.9 is where a server that has nothing puts the refusal: "If the
+		// server will not assign any addresses to an IA_NA in subsequent
+		// Request messages from the client, the server MUST include the IA
+		// option in the Advertise message with no addresses in that IA and a
+		// Status Code option (see Section 21.13) encapsulated in the IA option
+		// containing status code NoAddrsAvail."
+		//
+		// The message level is read first because that is where dnsmasq puts
+		// it, and both are read because the MUST above is the one a conforming
+		// server follows.
+		out.journal(m, fmt.Sprintf("the IA_NA in the Advertise says %s: ignored for selection (§18.3.9)", code))
+		out.refused(m, code, "the server answered the Solicit and offered nothing for our IA_NA: "+code.String())
+		return
 	}
 	if len(res.addrs) == 0 {
 		// §18.2.9: "The client MUST ignore any Advertise message that contains
@@ -1383,6 +1467,7 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// that limit, and the §14.1 bucket in ring 2 is the other half; so the
 		// Reply is noted and nothing else changes.
 		out.journal(m, "Reply says UnspecFail: the retransmission schedule continues unchanged (§18.2.10)")
+		out.refused(m, st.Code, "the server answered and refused the exchange: "+st.String())
 		return
 	case wire.StatusNotOnLink:
 		// §18.2.10.1: "If the client receives a NotOnLink status from the
@@ -1408,6 +1493,10 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 			m.loseLease(out, ReasonNak)
 		}
 		out.journal(m, "Reply says NotOnLink: restarting discovery (§18.2.10.1)")
+		// After the loss and before the restart, which is v4's order for a
+		// DHCPNAK (D30): a caller tears the interface down when it sees the
+		// loss, and the fold counts the refusal at this event alone.
+		out.refused(m, st.Code, "the server refused the address for this link: "+st.String())
 		m.restartDiscovery(now, rnd, out)
 		return
 	}
@@ -1429,6 +1518,14 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 	if !ok {
 		if iaStatus == wire.StatusNoAddrsAvail {
 			out.journal(m, "the IA_NA says NoAddrsAvail: this server has nothing for us (§18.2.10.1)")
+		}
+		// THE REFUSAL IS REPORTED HERE AND NOWHERE EARLIER, because this is
+		// where it is known that the exchange produced no address for us. A
+		// server that states a failure and hands over a usable lease anyway
+		// has not refused this client, and a refusal event beside an Acquired
+		// would give the caller a refusal counter on a working endpoint.
+		if code := refusalCode(iaStatus, st.Code); code != wire.StatusSuccess {
+			out.refused(m, code, "the server answered and offered no address: "+code.String())
 		}
 		// §18.2.10.1: "If the Reply message contains any IAs but the client
 		// finds no usable addresses and/or delegated prefixes in any of these

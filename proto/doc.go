@@ -21,7 +21,7 @@
 // discard rule is applied, and a message that fails RKAP authentication or
 // repeats a §20.3 replay detection value is dropped with a journal line.
 //
-// Three things this does NOT do, stated here because a default that is on
+// Four things this does NOT do, stated here because a default that is on
 // makes all of them reachable:
 //
 // No reconfigure key survives a restart. The key lives in the Machine6 and in
@@ -44,6 +44,18 @@
 // transport that hands up other nodes' datagrams will have their Reconfigure
 // messages obeyed, provided they are signed with this client's reconfigure
 // key.
+//
+// A refused Information-request holds the Reconfigure window open. §18.2.11
+// ignores further Reconfigure messages "until the exchange it started
+// completes", and an Information-request the server answers with a non-Success
+// Status Code is an exchange that has not completed: the client keeps
+// retransmitting it, so this package keeps ignoring Reconfigure messages. A
+// client with a lease escapes when T1 or T2 fires, because the renewal takes
+// precedence over the detour. A STATELESS client has neither timer, so a
+// server that refuses every Information-request leaves it deaf to Reconfigure
+// until something else moves it. The alternative — treating the first refusal
+// as the end of the exchange — would have this library declare an exchange
+// over while it is still sending it.
 //
 // §18.2.4's conditional MUST is UNIMPLEMENTED. "A client MUST also initiate a
 // Renew/Reply message exchange before time T1 if the client's link-local

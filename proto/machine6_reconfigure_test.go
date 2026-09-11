@@ -250,6 +250,107 @@ func TestAReconfigureNamingInformationRequestKeepsTheLease(t *testing.T) {
 	}
 }
 
+// TestAReconfiguresInformationRequestRefusedKeepsTheDetourOpen is the arm where
+// #816 and #925 meet, and a clean textual merge does not answer it: #816 added
+// an early return for a Reply to an Information-request that carries a
+// non-Success Status Code, and that return is BEFORE takeConfig, which is where
+// this branch ends the Reconfigure detour.
+//
+// So the question is what becomes of the detour when the server refuses the
+// exchange the Reconfigure asked for, and the answer this test pins is that the
+// detour STAYS OPEN. §18.2.11 keys the ignore window on the exchange and not on
+// the first Reply — "the client ignores any Reconfigure messages it receives
+// until the exchange it started completes" — and a refused Information-request
+// is an exchange that has not completed: #816's own comment says "The exchange
+// stands", the retransmission timer is still armed and the client is still in
+// INFO-REQUESTING6. Ending the detour here would be this library deciding the
+// exchange was over while it is still sending it.
+//
+// WHAT THAT COSTS, AND WHY IT IS BOUNDED FOR A CLIENT WITH A LEASE: a server
+// that refuses forever leaves this client ignoring Reconfigure messages
+// forever. The lease is not at risk, because T1 and T2 fire underneath the
+// detour and take precedence, and the last two steps here drive that; a
+// STATELESS client has neither timer, and for it the window has no end. That
+// bound is stated in proto/doc.go beside the other three.
+func TestAReconfiguresInformationRequestRefusedKeepsTheDetourOpen(t *testing.T) {
+	// refused drives a bound client into the detour and has the server refuse
+	// the Information-request, returning the machine and the exchange's
+	// message so each subtest can carry on from the same place.
+	refused := func(t *testing.T) (*Machine6, *wire.MessageV6) {
+		t.Helper()
+		m := bindWithKey6(t, testParams6(), dnsmasqLeasedAddr, testReconfKey)
+		s, acts := m.Step(at(10), 7, goodReconfigure(t, wire.MsgInformationRequest, 1))
+		if s != State6InfoRequesting {
+			t.Fatalf("the Reconfigure left the machine in %s, want %s%s", s, State6InfoRequesting, journalLines(acts))
+		}
+		inf := mustSendV6(t, acts, wire.MsgInformationRequest)
+
+		s, acts = m.Step(at(11), 0, receivedV6(t, wire.MsgReply, inf.XID,
+			optClientID(capDUID), optServerID(testServerDUID),
+			optStatus(wire.StatusUnspecFail)))
+		if r := oneRefusal(t, acts); r.Status != wire.StatusUnspecFail {
+			t.Errorf("the refusal carries %s, want %s", r.Status, wire.StatusUnspecFail)
+		}
+		if _, ok := find(acts, ActConfigured); ok {
+			t.Error("a refused Information-request was reported as a configuration")
+		}
+		if s != State6InfoRequesting {
+			t.Fatalf("the refusal left the machine in %s, want the exchange still running%s", s, journalLines(acts))
+		}
+		if l, ok := m.Lease(); !ok || len(l.Addrs) == 0 {
+			t.Fatalf("the lease was dropped by a refused stateless exchange: %v %v", l, ok)
+		}
+		return m, inf
+	}
+
+	// THE WINDOW IS STILL CLOSED, which is only observable through what it
+	// refuses: a second, well-formed, correctly signed Reconfigure with a
+	// higher replay detection value, naming Renew.
+	t.Run("a second Reconfigure still waits", func(t *testing.T) {
+		m, _ := refused(t)
+		s, acts := m.Step(at(12), 7, goodReconfigure(t, wire.MsgRenew, 2))
+		if s != State6InfoRequesting {
+			t.Fatalf("a second Reconfigure during the refused exchange left the machine in %s, want %s%s", s, State6InfoRequesting, journalLines(acts))
+		}
+		for _, a := range acts {
+			if a.Kind == ActSendV6 && a.MsgV6 != nil && a.MsgV6.Type == wire.MsgRenew {
+				t.Fatalf("the second Reconfigure was obeyed while the exchange it must wait for is still running (§18.2.11)%s", journalLines(acts))
+			}
+		}
+	})
+
+	// AND THE WAY BACK IS NOT LOST. The refusal must leave the detour intact,
+	// not merely un-ended: a server that refuses once and answers the
+	// retransmission still owes this client its return to BOUND6, and the
+	// Reconfigure window closes there and nowhere else.
+	t.Run("the retransmitted exchange still returns to BOUND6", func(t *testing.T) {
+		m, inf := refused(t)
+		s, acts := m.Step(at(13), 0, receivedV6(t, wire.MsgReply, inf.XID,
+			optClientID(capDUID), optServerID(testServerDUID),
+			optU32(wire.OptV6InfoRefresh, 3600)))
+		if s != State6Bound {
+			t.Fatalf("the Reply that finally succeeded left the machine in %s, want %s%s", s, State6Bound, journalLines(acts))
+		}
+		s, acts = m.Step(at(14), 7, goodReconfigure(t, wire.MsgRenew, 2))
+		if s != State6Renewing {
+			t.Fatalf("a Reconfigure after the exchange completed left the machine in %s, want %s%s", s, State6Renewing, journalLines(acts))
+		}
+		mustSendV6(t, acts, wire.MsgRenew)
+	})
+
+	// AND THE LEASE IS NOT HOSTAGE TO A SERVER THAT NEVER ANSWERS. T1 fires
+	// underneath the detour and takes precedence, which is the escape a client
+	// with a lease has and a stateless one does not.
+	t.Run("T1 escapes the refused detour", func(t *testing.T) {
+		m, _ := refused(t)
+		s, acts := m.Step(at(20), 0, TimerFired(Timer6Renew))
+		if s != State6Renewing {
+			t.Fatalf("T1 during the refused detour left the machine in %s, want %s%s", s, State6Renewing, journalLines(acts))
+		}
+		mustSendV6(t, acts, wire.MsgRenew)
+	})
+}
+
 // TestTheLeaseOutranksAReconfiguresInformationRequest drives the window the
 // test above opens: T1 falls due while the machine is in the detour.
 //

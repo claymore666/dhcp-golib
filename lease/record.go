@@ -1051,6 +1051,12 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 			// ReasonNak; counting both would report one refusal as two.
 			// Failed is the event the manager's own contract says reports the
 			// NAK counters.
+			//
+			// A REFUSAL AND NOT A MESSAGE TYPE: the v6 half of this number is
+			// a server that answered with RFC 9915 §21.13's Status Code option
+			// (Event.Status says which code), and the NotOnLink arm that costs
+			// a held lease produces the same Lost-then-Failed pair a DHCPNAK
+			// does, so the rule above is what keeps it at one there too.
 			rec.Counters.Naks++
 		case proto.ReasonNoServer:
 			rec.Counters.Timeouts++
