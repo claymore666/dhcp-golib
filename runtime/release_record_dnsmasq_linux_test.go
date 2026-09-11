@@ -109,7 +109,22 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 
 	// ---------------------------------------------- the lease to be released --
 	released, releasedMAC := relAcquire(t, iface.HardwareAddr, relClientID)
-	t.Logf("the lease to be released: %s, acquired with option 61 %x", released.Addr.Addr(), relClientID)
+
+	// OBSERVER 4'S PREMISE, READ FROM THE SERVER RATHER THAN ASSUMED. dnsmasq
+	// 2.91's lease_find_by_client tries the client identifier first and then
+	// falls back to the hardware address, and the fallback is taken for any
+	// stored lease that HAS NO client identifier. The wrong-identity release
+	// below carries this client's hardware address, so if dnsmasq had kept
+	// this binding without a client identifier the fallback would match it and
+	// the release would be acted on for the wrong reason. What dnsmasq wrote
+	// in column five is what says it did not.
+	stored := relWaitLease(t, srv.leasefile, released.Addr.Addr())
+	if want := hexColons(relClientID); stored.clientID != want {
+		t.Fatalf("dnsmasq stored %s under client identifier %q, want %q; a release carrying the wrong option 61 would then match this binding on the hardware address and observer 4 would be measuring nothing",
+			released.Addr.Addr(), stored.clientID, want)
+	}
+	t.Logf("the lease to be released: %s, held by dnsmasq under client identifier %s",
+		released.Addr.Addr(), stored.clientID)
 
 	// ------------------------------------------------- the negative control --
 	control, _ := relAcquire(t, relControlMAC, nil)
@@ -141,10 +156,7 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	}
 	srv.waitCount(t, "DHCPRELEASE("+testServerIf+")", before+1,
 		"dnsmasq logs a DHCPRELEASE before it decides whether it knows the binding")
-	if !relHolds(t, srv.leasefile, addr) {
-		t.Fatalf("dnsmasq dropped %s for a release carrying the wrong option 61; this fixture cannot tell a matched release from an unmatched one.\nLog:\n%s",
-			addr, strings.Join(srv.lines(), "\n"))
-	}
+	relWaitHolds(t, srv.leasefile, addr)
 	t.Logf("the wrong-identity release left %s in place, as it must", addr)
 
 	// ----------------------------------------- observers 1 and 2, default port --
@@ -181,10 +193,7 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	t.Logf("a release from source port 34567 closed %s", addr2)
 
 	// -------------------------------------------------------- observer 3, last --
-	if !relHolds(t, srv.leasefile, control.Addr.Addr()) {
-		t.Fatalf("the control lease %s is gone as well: this fixture is measuring something other than the release.\nLog:\n%s",
-			control.Addr.Addr(), strings.Join(srv.lines(), "\n"))
-	}
+	relWaitHolds(t, srv.leasefile, control.Addr.Addr())
 
 	// -------------------------------------- ReleaseConfig.Interface is applied --
 	// A device name that does not exist must FAIL. It is the only way to tell
@@ -245,9 +254,9 @@ func relAcquire(t *testing.T, chaddr net.HardwareAddr, clientID []byte) (lease.L
 	return ev.Lease, chaddr
 }
 
-// relHolds reports whether dnsmasq's lease file currently names addr. One
-// read, no waiting: it answers "is it still there", and a state that is
-// already true has nothing to wait for.
+// relHolds reports whether dnsmasq's lease file currently names addr, as one
+// read. Every caller that wants "it is still there" goes through relWaitHolds
+// instead, and the reason is in that function.
 func relHolds(t *testing.T, path string, addr netip.Addr) bool {
 	t.Helper()
 	got, err := parseDnsmasqLeases(path)
@@ -273,6 +282,51 @@ func relHolds(t *testing.T, path string, addr netip.Addr) bool {
 func relWaitGone(t *testing.T, path string, addr netip.Addr) {
 	t.Helper()
 	for relHolds(t, path, addr) {
+		goruntime.Gosched()
+	}
+}
+
+// relWaitHolds spins until dnsmasq's lease file names addr.
+//
+// A SINGLE READ OF THAT FILE CANNOT SAY "still there", and this is the
+// measurement: dnsmasq 2.91's lease_update_file rewinds the stream, calls
+// ftruncate(fd, 0), writes every lease through buffered stdio and only then
+// flushes and fsyncs. Between the truncate and the flush the file on disk is
+// empty or holds a prefix of itself, so a reader can find a lease missing that
+// nothing touched. MEASURED as two red runs in twelve, both of them here, on
+// 2026-09-12.
+//
+// Waiting for presence is sound where waiting for a value would not be:
+// dnsmasq never puts back a binding it has removed, and the client that took
+// this lease was stopped before the release under test. So an address seen
+// after the rewrite settles was never released, and an address that really was
+// released never appears. A release that wrongly closed this lease therefore
+// ends in the child's own timeout, with the goroutine dump and the dnsmasq log
+// printed beside it, which is the bound relWaitGone carries for the same
+// reason.
+func relWaitHolds(t *testing.T, path string, addr netip.Addr) {
+	t.Helper()
+	for !relHolds(t, path, addr) {
+		goruntime.Gosched()
+	}
+}
+
+// relWaitLease spins until dnsmasq's lease file names addr and returns the
+// line, for relWaitHolds's reason and one more: it puts the file write in
+// front of whatever the caller does next, so a lease that is missing later
+// cannot be one that was never written.
+func relWaitLease(t *testing.T, path string, addr netip.Addr) dnsmasqLease {
+	t.Helper()
+	for {
+		got, err := parseDnsmasqLeases(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, l := range got {
+			if l.addr == addr {
+				return l
+			}
+		}
 		goruntime.Gosched()
 	}
 }
@@ -328,7 +382,16 @@ func v6ReleaseByRecordAgainstDnsmasq(t *testing.T) {
 		t.Fatalf("DUIDLL: %v", err)
 	}
 	addr := ev.Lease.Addr.Addr()
-	t.Logf("the v6 lease to be released: %s, iaid %#x", addr, ev.Lease.IAID)
+
+	// The v4 half reads column five here to check observer 4's premise. RFC
+	// 9915 section 11 leaves a DUID opaque and dnsmasq has no second key to
+	// fall back to on the v6 side, so the read here is for the other half of
+	// that call: it puts dnsmasq's lease-file write in front of the Release
+	// below, and a lease missing afterwards is then one that was removed
+	// rather than one that was never written.
+	stored := relWaitLease(t, srv.leasefile, addr)
+	t.Logf("the v6 lease to be released: %s, iaid %#x, held by dnsmasq under %s",
+		addr, ev.Lease.IAID, stored.clientID)
 
 	// ------------------------------------------------- the negative control --
 	second, err := newV6ClientAs(test6ClientIf, relControlMAC6)
@@ -365,10 +428,7 @@ func v6ReleaseByRecordAgainstDnsmasq(t *testing.T) {
 	}
 	srv.waitCount(t, "DHCPRELEASE("+test6ServerIf+")", before+1,
 		"dnsmasq logs a DHCPRELEASE before it decides whether it knows the binding")
-	if !relHolds(t, srv.leasefile, addr) {
-		t.Fatalf("dnsmasq dropped %s for a Release carrying another client's DUID; this fixture cannot tell a matched Release from an unmatched one.\nLog:\n%s",
-			addr, strings.Join(srv.lines(), "\n"))
-	}
+	relWaitHolds(t, srv.leasefile, addr)
 	t.Logf("the wrong-DUID Release left %s in place, as it must", addr)
 
 	// ----------------------------------------------------- observers 1 and 2 --
@@ -381,10 +441,7 @@ func v6ReleaseByRecordAgainstDnsmasq(t *testing.T) {
 	t.Logf("dnsmasq closed %s on a Release sourced from %s, which never held it", addr, relHostLLA6)
 
 	// -------------------------------------------------------- observer 3, last --
-	if !relHolds(t, srv.leasefile, control) {
-		t.Fatalf("the control lease %s is gone as well: this fixture is measuring something other than the Release.\nLog:\n%s",
-			control, strings.Join(srv.lines(), "\n"))
-	}
+	relWaitHolds(t, srv.leasefile, control)
 
 	// ------------------------------------ section 18.2.7's MUST NOT, refused --
 	// The forbidden shape, driven against the real transport so that the

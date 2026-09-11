@@ -425,7 +425,14 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # row it was not driving. Shard 2's ceiling-control and shard 1's
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
-MIN_DECLARED_TESTS=654
+#
+# RAISED TO 672 by the release-by-record work (#962): eighteen test
+# functions were added, ten reading the built datagram's octets in lease,
+# six reading the sender's refusals in runtime, and two running a release
+# against the dnsmasq fixture in each family. Measured with
+# `go run ./internal/tools/testroster .`, which is the same population the
+# unit-suite row counts.
+MIN_DECLARED_TESTS=672
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

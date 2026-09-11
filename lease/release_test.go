@@ -399,24 +399,36 @@ func TestAV6ReleaseUsesTheLowTwentyFourBitsOfTheTransactionID(t *testing.T) {
 	}
 }
 
-// TestABuiltReleaseDoesNotAliasTheRecord drives the shape where the caller
-// reuses or rewrites the slices it handed in — a record read from a journal
-// into a shared buffer, an identity appended to. A datagram that aliases them
-// changes after it was built and before it is sent.
-func TestABuiltReleaseDoesNotAliasTheRecord(t *testing.T) {
-	rec := relRecord4()
-	before, _ := mustBuild(t, rec, 7)
+// TestBuildingAReleaseDoesNotWriteThroughTheRecord holds the one direction a
+// build can damage its caller. Record is taken by value and its Identity,
+// CHAddr and ServerDUID are slices, so the caller keeps every octet the
+// builder can reach.
+//
+// It replaced a test that rewrote the record after the build and compared two
+// datagrams. That could not fail: MEASURED in wire/codec.go and
+// wire/dhcpv6.go, both encoders copy into a buffer they allocate, so a payload
+// cannot alias an option's Data and the defensive copies this package used to
+// make were unobservable. They are gone with the assertion that never ran.
+func TestBuildingAReleaseDoesNotWriteThroughTheRecord(t *testing.T) {
+	for _, mk := range []func() Record{relRecord4, relRecord6} {
+		rec := mk()
+		id := append([]byte(nil), rec.Identity...)
+		ch := append([]byte(nil), rec.CHAddr...)
+		duid := append([]byte(nil), rec.Lease.ServerDUID...)
 
-	for i := range rec.Identity {
-		rec.Identity[i] ^= 0xFF
-	}
-	for i := range rec.CHAddr {
-		rec.CHAddr[i] ^= 0xFF
-	}
+		if _, _, err := BuildRelease(rec, 7); err != nil {
+			t.Fatalf("BuildRelease: %v", err)
+		}
 
-	after, _ := mustBuild(t, relRecord4(), 7)
-	if !bytes.Equal(before, after) {
-		t.Errorf("the built datagram moved when the caller rewrote the record's slices:\nbefore % x\nafter  % x", before, after)
+		if !bytes.Equal(id, rec.Identity) {
+			t.Errorf("the build rewrote the record's identity: % x became % x", id, rec.Identity)
+		}
+		if !bytes.Equal(ch, rec.CHAddr) {
+			t.Errorf("the build rewrote the record's chaddr: % x became % x", ch, rec.CHAddr)
+		}
+		if !bytes.Equal(duid, rec.Lease.ServerDUID) {
+			t.Errorf("the build rewrote the record's server DUID: % x became % x", duid, rec.Lease.ServerDUID)
+		}
 	}
 }
 
@@ -438,12 +450,32 @@ func TestARecordThatCannotNameItsBindingIsRefused(t *testing.T) {
 		{"a record that never bound", func() Record { return Record{} }, ErrReleaseFamily},
 		{"v4 with no address", func() Record { r := relRecord4(); r.Lease.Addr = netip.Prefix{}; return r }, ErrReleaseNoAddr},
 		{"v4 with no server", func() Record { r := relRecord4(); r.Lease.ServerID = netip.Addr{}; return r }, ErrReleaseNoServer},
+		{"v4 holding the unspecified address", func() Record {
+			r := relRecord4()
+			r.Lease.Addr = netip.MustParsePrefix("0.0.0.0/32")
+			return r
+		}, ErrReleaseNoAddr},
+		{"v4 whose server is the unspecified address", func() Record {
+			r := relRecord4()
+			r.Lease.ServerID = netip.IPv4Unspecified()
+			return r
+		}, ErrReleaseNoServer},
 		{"v4 holding a v6 address", func() Record {
 			r := relRecord4()
 			r.Lease.Addr = netip.MustParsePrefix(relAddr6 + "/128")
 			return r
 		}, ErrReleaseNoAddr},
 		{"v6 with no address", func() Record { r := relRecord6(); r.Lease.Addr = netip.Prefix{}; return r }, ErrReleaseNoAddr},
+		{"v6 holding the unspecified address", func() Record {
+			r := relRecord6()
+			r.Lease.Addr = netip.MustParsePrefix("::/128")
+			return r
+		}, ErrReleaseNoAddr},
+		{"v6 holding a v4-mapped address", func() Record {
+			r := relRecord6()
+			r.Lease.Addr = netip.PrefixFrom(netip.AddrFrom16(netip.MustParseAddr(relAddr4).As16()), 128)
+			return r
+		}, ErrReleaseNoAddr},
 		{"v6 with no server DUID", func() Record { r := relRecord6(); r.Lease.ServerDUID = nil; return r }, ErrReleaseNoServer},
 		{"v6 with no identity", func() Record { r := relRecord6(); r.Identity = nil; return r }, ErrReleaseNoIdentity},
 		{"v6 with an identity that is only an IAID", func() Record {

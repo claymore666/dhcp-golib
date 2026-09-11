@@ -127,7 +127,7 @@ func buildRelease4(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 		Op:      wire.BootRequest,
 		HType:   wire.HTypeEthernet,
 		XID:     xid,
-		CHAddr:  append([]byte(nil), rec.CHAddr...),
+		CHAddr:  rec.CHAddr,
 		Options: wire.Options{},
 	}
 	msg.SetType(wire.MsgRelease)
@@ -157,7 +157,7 @@ func buildRelease4(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	// anyway, which is why no fixture can catch it and the encoded bytes are
 	// the only observer there is.
 	if len(rec.Identity) > 0 {
-		msg.Options[wire.OptClientID] = append([]byte(nil), rec.Identity...)
+		msg.Options[wire.OptClientID] = rec.Identity
 	}
 
 	payload, err := wire.Encode(msg)
@@ -234,8 +234,8 @@ func buildRelease6(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 			// IAID as sent, concatenated; the IAID belongs in the IA_NA above
 			// and a Client Identifier carrying both is a DUID no server has
 			// ever seen.
-			{Code: wire.OptV6ClientID, Data: append([]byte(nil), duid...)},
-			{Code: wire.OptV6ServerID, Data: append([]byte(nil), rec.Lease.ServerDUID...)},
+			{Code: wire.OptV6ClientID, Data: duid},
+			{Code: wire.OptV6ServerID, Data: rec.Lease.ServerDUID},
 			{Code: wire.OptV6IANA, Data: iana},
 			// §21.9's elapsed time, "how long the client has been trying to
 			// complete the current DHCP message exchange". This exchange

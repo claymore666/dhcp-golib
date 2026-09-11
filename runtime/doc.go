@@ -15,6 +15,12 @@
 // namespace going away. Those live here, which is
 // why this ring is tested against a real dnsmasq on a real veth pair.
 //
+// SendRelease is the one entry point here that needs no client, no machine and
+// no namespace. It takes a lease.Record and the source address to send from,
+// writes one datagram, reads no reply and returns every error it meets. It is
+// for a host giving back the lease of a container that has already been
+// removed.
+//
 // Linux only in substance — CLOCK_BOOTTIME and AF_PACKET. The build-tagged
 // fallbacks keep the package compiling elsewhere and say what they cannot do
 // rather than pretending.

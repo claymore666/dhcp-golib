@@ -21,6 +21,16 @@
 //     process. Ring 2 owns the conversion and it is the only place the two
 //     meet.
 //
+// # Giving a lease back with no client left
+//
+// BuildRelease is the second release path and it takes a Record. The managed
+// path in ring 1 releases a lease it still holds, from a client that is still
+// bound, on the link the lease was taken on. BuildRelease covers the other
+// case: the container is gone, the link went with it, and the record is all
+// that is left. It renders one datagram and the address to send it to, and it
+// knows nothing about the source address. runtime.SendRelease is the caller
+// facing half and takes the source from its caller.
+//
 // # The ports
 //
 // Every effect is an interface declared here and implemented in ring 3. That
