@@ -630,9 +630,21 @@ func (mg *Manager) v6() bool { return mg.machine6 != nil }
 func (mg *Manager) Events() <-chan Event { return mg.events }
 
 // Lease returns a snapshot of the held lease.
+//
+// ON v6 IT CARRIES WHAT THE ROUTER ADVERTISED, exactly as an event's lease
+// does, and it is the reason this is not a bare field read. The two arrive on
+// two protocols with no ordering between them: an advertisement that lands
+// after the Reply cannot retroactively appear in an event that has already
+// been emitted, and this library emits no event of its own when the router's
+// view changes. Reading it here is how a caller that already holds a lease
+// sees the gateway, the MTU, the routes and the resolvers the router has
+// since advertised.
 func (mg *Manager) Lease() (Lease, bool) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
+	if mg.held && mg.v6() {
+		return withRouterAdvert(mg.lease, mg.router), true
+	}
 	return mg.lease, mg.held
 }
 

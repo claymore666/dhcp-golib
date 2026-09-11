@@ -25,6 +25,7 @@ and it needs no root.
 | Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
+| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers and the search list | n/a | [v0.2.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
 | Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
@@ -35,6 +36,7 @@ and it needs no root.
 
 - **yes**: in the tree today, with a test that drives it, against a real
   server or through the state machine.
+- **v0.2.0**: in the tree, tagged at the next release rather than the last.
 - **v1.0.0**: in the tree at v1.0.0. The roadmap below names the scope.
 - **planned**: intended. No release names it yet, and the linked issue holds
   the plan.
@@ -47,10 +49,11 @@ A mark that is a link points at the issue that holds the plan.
 ## Status and roadmap
 
 IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
-it stops. The Router Advertisement is read for its two flags, and nothing else
-is taken from it. No address is formed from a prefix. There is no prefix
-delegation. A server cannot reconfigure a client that already holds a lease.
-Nothing on DHCPv4 is planned for a later release.
+it stops. The Router Advertisement is read for its flags and for the options
+it carries, and every one of those is reported and none of it is applied. No
+address is formed from a prefix. There is no prefix delegation. A server
+cannot reconfigure a client that already holds a lease. Nothing on DHCPv4 is
+planned for a later release.
 
 The library is pre-1.0 and the API is not stable. It moves without a
 deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.

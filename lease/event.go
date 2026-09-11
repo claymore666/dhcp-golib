@@ -453,6 +453,13 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 // fields is why the gateway and the MTU are filled in only when the lease
 // carries none: there is nothing to take precedence over them today, and a
 // later option that does must win without this function being edited.
+//
+// EVERY LIST IS COPIED BEFORE IT IS APPENDED TO. The Lease passed in is a
+// value, but its slices are not: appending to one whose backing array has room
+// writes into the array the CALLER still holds, which is the manager's own
+// stored lease. This function is called once per event and once per Lease()
+// read, so the same held lease would grow a resolver every time anybody looked
+// at it.
 func withRouterAdvert(l Lease, r proto.RouterObservation) Lease {
 	if !l.Gateway.IsValid() && len(r.Routers) > 0 {
 		l.Gateway = r.Routers[0]
@@ -462,17 +469,17 @@ func withRouterAdvert(l Lease, r proto.RouterObservation) Lease {
 	}
 	for _, a := range r.DNS {
 		if !containsAddr(l.DNS, a) {
-			l.DNS = append(l.DNS, a)
+			l.DNS = append(append([]netip.Addr(nil), l.DNS...), a)
 		}
 	}
 	for _, n := range r.Search {
 		if !containsString(l.DomainSearch, n) {
-			l.DomainSearch = append(l.DomainSearch, n)
+			l.DomainSearch = append(append([]string(nil), l.DomainSearch...), n)
 		}
 	}
 	for _, rt := range r.Routes {
 		if !containsRoute(l.Routes, rt) {
-			l.Routes = append(l.Routes, rt)
+			l.Routes = append(append([]wire.Route(nil), l.Routes...), rt)
 		}
 	}
 	return l

@@ -27,4 +27,15 @@
 // is what lets the whole acquisition path be table-tested with no root, no
 // namespace and no network — the fake implementations in this package's tests
 // are the same shape as the real ones.
+//
+// # Two protocols, one lease
+//
+// On IPv6 the configuration arrives on two protocols at once, and the lease a
+// caller reads carries both. DHCPv6 has no gateway and no MTU at all; those
+// come from the Router Advertisement, along with resolvers and a search list
+// that DHCPv6 may also have sent. Where both sent the same kind of thing the
+// DHCP entries keep their places and the advertisement's are appended after
+// them, RFC 8106 section 5.3.1: "the DNS information from DHCP takes
+// precedence over that from RAs". Nothing is applied to the link here either;
+// a lease is a report.
 package lease

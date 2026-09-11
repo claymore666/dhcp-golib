@@ -197,6 +197,12 @@ func (t *routerTable) observe(now Instant, ra *wire.RouterAdvert) bool {
 	if ra == nil || !ra.Router.IsValid() {
 		return false
 	}
+	// PRUNED BEFORE ANYTHING IS ADDED, because the caps below bound what the
+	// table HOLDS and not how many advertisements a link may send. A table
+	// still carrying eight routers that all timed out would refuse the ninth
+	// that replaced them, which is a link that can never recover from its
+	// routers being renumbered.
+	t.prune(now)
 	t.observeRouterLifetime(now, ra)
 	t.observeMTU(ra)
 	for _, r := range ra.RDNSS {

@@ -151,9 +151,21 @@ func (n *fakeND) sentPackets() []wire.ICMPv6Packet {
 
 // inject pushes one frame at the manager. The channel is unbuffered, so the
 // push completes only once the manager has taken it.
+//
+// IT NAMES NO SOURCE, which is the socket that lost the address rather than a
+// frame that had none: NDInbound.Src travels beside the frame because it is
+// not in it. injectFrom is the shape the real port produces.
 func (n *fakeND) inject(frame []byte) {
 	select {
 	case n.in <- NDInbound{Frame: frame}:
+	case <-n.closed:
+	}
+}
+
+// injectFrom pushes one frame carrying the address the socket read it from.
+func (n *fakeND) injectFrom(frame []byte, src string) {
+	select {
+	case n.in <- NDInbound{Frame: frame, Src: netip.MustParseAddr(src)}:
 	case <-n.closed:
 	}
 }
