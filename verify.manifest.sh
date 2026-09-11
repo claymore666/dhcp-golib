@@ -548,9 +548,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     ReachTheCaller
 #
 # ONE OF THE FORTY-SIX IS A NETNS TEST, the last one, MEASURED with
-# testroster -netns at 34 over the base and 35 here. The netns roster is
-# derived rather than declared, so nothing else has to be written down for it,
-# but NETNS_CEILING_SECONDS is a number the round must re-measure.
+# testroster -netns at 35 over this round's base and 36 on the merge product.
+# The netns roster is derived rather than declared, so nothing else has to be
+# written down for it, and NETNS_CEILING_SECONDS was re-measured rather than
+# assumed: the netns row's wall time on the merge product left more headroom
+# than the floor that block derives, so the ceiling does not move. The figure
+# is in the round's record.
 #
 # THE BACK-MERGE OF THE PIN ROUND AND #816 INTO #814: the three rounds above
 # are disjoint — different files, and no test renamed or removed in any of
