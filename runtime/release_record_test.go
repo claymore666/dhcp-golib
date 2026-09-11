@@ -100,6 +100,18 @@ func TestARefusedReleaseReachesTheTransportZeroTimes(t *testing.T) {
 		want error
 	}{
 		{"no source address", relRec4(), ReleaseConfig{Rand: NewEntropySeeded(1)}, ErrReleaseNoSource},
+		{"the unspecified v4 source", relRec4(),
+			ReleaseConfig{Source: netip.IPv4Unspecified(), Rand: NewEntropySeeded(1)},
+			ErrReleaseNoSource},
+		{"the unspecified v6 source", relRec6(),
+			ReleaseConfig{Source: netip.IPv6Unspecified(), Interface: relIface, Rand: NewEntropySeeded(1)},
+			ErrReleaseNoSource},
+		{"a v4-mapped source for a v6 record", relRec6(),
+			ReleaseConfig{Source: netip.AddrFrom16(netip.MustParseAddr(relHostSrc4).As16()), Interface: relIface, Rand: NewEntropySeeded(1)},
+			ErrReleaseSourceFamily},
+		{"the released v6 address wearing a zone", relRec6(),
+			ReleaseConfig{Source: netip.MustParseAddr(relAddr6).WithZone(relIface), Interface: relIface, Rand: NewEntropySeeded(1)},
+			ErrReleaseSourceIsReleased},
 		{"a v6 source for a v4 record", relRec4(),
 			ReleaseConfig{Source: netip.MustParseAddr(relHostSrc6), Interface: relIface, Rand: NewEntropySeeded(1)},
 			ErrReleaseSourceFamily},

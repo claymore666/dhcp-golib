@@ -20,6 +20,10 @@ import (
 // A device that does not exist is an error here rather than a silent fallback,
 // which is also the only way to tell this option apart from one that is
 // accepted and ignored.
+//
+// SO_BINDTODEVICE needs CAP_NET_RAW. An unprivileged caller gets the error
+// from this function rather than an unbound socket, so the choice of link is
+// never made silently by the route table when the caller asked for one.
 func bindToDevice(iface string) func(network, address string, c syscall.RawConn) error {
 	return func(_, _ string, c syscall.RawConn) error {
 		var opErr error

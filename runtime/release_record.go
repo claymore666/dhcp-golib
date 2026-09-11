@@ -29,7 +29,15 @@ type ReleaseConfig struct {
 	// route table prefers.
 	Interface string
 
-	// Source is the address the datagram comes from. Required.
+	// Source is the address the datagram comes from. Required, and the
+	// unspecified address is not a value for it: binding the wildcard hands
+	// the choice to the route table, which is the default this field exists
+	// to remove.
+	//
+	// IT MUST BE AN ADDRESS THE HOST REALLY HOLDS ON THE SENDING LINK. The
+	// socket is bound to it, so one the host does not hold fails at the bind
+	// and comes back as an error. A parent the host has no address on leaves
+	// nothing to pass, and this path cannot be used there.
 	//
 	// It is the caller's and this package never picks it. For v6 it MUST NOT
 	// be the address being released — RFC 9915 section 18.2.7: "The client
@@ -58,9 +66,12 @@ type ReleaseConfig struct {
 
 // The refusals SendRelease returns before it opens a socket.
 var (
-	// ErrReleaseNoSource is a ReleaseConfig with no source address. There is
-	// no default: see ReleaseConfig.
-	ErrReleaseNoSource = errors.New("runtime: ReleaseConfig.Source is required")
+	// ErrReleaseNoSource is a ReleaseConfig with no source address, or with
+	// the unspecified one, which is the same thing wearing a value: a socket
+	// bound to 0.0.0.0 or :: lets the route table pick, and what it picks on
+	// a host that still carries the released address is the address being
+	// released. There is no default: see ReleaseConfig.
+	ErrReleaseNoSource = errors.New("runtime: ReleaseConfig.Source is required and cannot be the unspecified address")
 
 	// ErrReleaseSourceFamily is a source address in the other family from the
 	// record's.
@@ -113,7 +124,7 @@ func SendRelease(rec lease.Record, cfg ReleaseConfig) error {
 type releaseSender func(src, dst netip.AddrPort, iface string, payload []byte) error
 
 func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) error {
-	if !cfg.Source.IsValid() {
+	if !cfg.Source.IsValid() || cfg.Source.IsUnspecified() {
 		return ErrReleaseNoSource
 	}
 
@@ -131,7 +142,7 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		return err
 	}
 
-	if cfg.Source.Is4() != dst.Addr().Is4() {
+	if (cfg.Source.Is4() || cfg.Source.Is4In6()) != dst.Addr().Is4() {
 		return fmt.Errorf("%w: %s", ErrReleaseSourceFamily, cfg.Source)
 	}
 	port := cfg.SourcePort
@@ -146,7 +157,7 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		if port == 0 {
 			port = ClientPort6
 		}
-		if cfg.Source == rec.Lease.Addr.Addr() {
+		if cfg.Source.WithZone("") == rec.Lease.Addr.Addr().WithZone("") {
 			return fmt.Errorf("%w: %s", ErrReleaseSourceIsReleased, cfg.Source)
 		}
 	}
@@ -193,9 +204,13 @@ func sendOneDatagram(src, dst netip.AddrPort, iface string, payload []byte) erro
 	if err != nil {
 		return fmt.Errorf("runtime: sending the release to %s: %w", ra, err)
 	}
-	// A short write on a datagram socket is a truncated DHCP message, which a
-	// server discards without a word. It is checked because the alternative is
-	// the caller being told the address was given back.
+	// UNREACHABLE ON THIS SOCKET, and kept anyway. A connected datagram socket
+	// writes the whole message or returns an error, so nothing in this package
+	// can drive this branch and no test claims to. io.Writer's contract is the
+	// reason it is here: a short write would be a truncated DHCP message, a
+	// server discards one without a word, and the caller would be told the
+	// address was given back. It is named as an unobserved line rather than
+	// counted as a tested one.
 	if n != len(payload) {
 		return fmt.Errorf("runtime: the release to %s went out as %d of %d octets", ra, n, len(payload))
 	}

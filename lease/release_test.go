@@ -455,6 +455,12 @@ func TestARecordThatCannotNameItsBindingIsRefused(t *testing.T) {
 			r.Lease.Addr = netip.MustParsePrefix("0.0.0.0/32")
 			return r
 		}, ErrReleaseNoAddr},
+		{"v4 with neither a client identifier nor a chaddr", func() Record {
+			r := relRecord4()
+			r.Identity = nil
+			r.CHAddr = nil
+			return r
+		}, ErrReleaseNoIdentity},
 		{"v4 whose server is the unspecified address", func() Record {
 			r := relRecord4()
 			r.Lease.ServerID = netip.IPv4Unspecified()

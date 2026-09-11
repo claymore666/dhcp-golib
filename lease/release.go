@@ -49,6 +49,11 @@ import (
 // BOUND: this renders the DHCP payload and the destination. It does not build
 // an IP or UDP header, does not resolve anything and does not know what the
 // source will be.
+//
+// BOUND: it reads the record's binding and not the record's phase. Whether the
+// lease is still held, has expired, or has been taken over by something else
+// is the caller's question, and a record that was re-bound renders the address
+// it holds now. Nothing here decides that a release is due.
 func BuildRelease(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	switch rec.Family {
 	case FamilyV4:
@@ -87,11 +92,20 @@ var (
 	// MUST on the v6 side.
 	ErrReleaseNoServer = errors.New("lease: the record names no server to release to")
 
-	// ErrReleaseNoIdentity is a v6 record whose identity is too short to carry
-	// a DUID and an IAID. RFC 9915 section 18.2.7: "The client MUST include a
-	// Client Identifier option (see Section 21.2) to identify itself to the
-	// server."
-	ErrReleaseNoIdentity = errors.New("lease: the v6 record carries no DUID and IAID to identify the binding")
+	// ErrReleaseNoIdentity is a record that cannot name its client.
+	//
+	// On v6 that is an identity too short to carry a DUID and an IAID. RFC
+	// 9915 section 18.2.7: "The client MUST include a Client Identifier option
+	// (see Section 21.2) to identify itself to the server."
+	//
+	// On v4 it is a record with NEITHER a client identifier NOR a chaddr. RFC
+	// 2131 section 3.1(6): "The client identifies the lease to be released
+	// with its 'client identifier', or 'chaddr' and network address in the
+	// DHCPRELEASE message." The sentence offers two terms and a record with
+	// neither has no way to name the binding, so the datagram would go out
+	// with a zero chaddr, an hlen of zero and no option 61, and the caller
+	// would be told the address was given back.
+	ErrReleaseNoIdentity = errors.New("lease: the record carries nothing that identifies the binding")
 
 	// ErrReleaseIAIDMismatch is a v6 record whose two IAIDs disagree.
 	//
@@ -121,6 +135,10 @@ func buildRelease4(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	sid := rec.Lease.ServerID
 	if !sid.Is4() || sid.IsUnspecified() {
 		return nil, netip.AddrPort{}, fmt.Errorf("%w: option 54 is %s", ErrReleaseNoServer, sid)
+	}
+
+	if len(rec.Identity) == 0 && len(rec.CHAddr) == 0 {
+		return nil, netip.AddrPort{}, fmt.Errorf("%w: no client identifier and no chaddr", ErrReleaseNoIdentity)
 	}
 
 	msg := &wire.Message{
