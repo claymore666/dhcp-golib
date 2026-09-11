@@ -425,7 +425,7 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # row it was not driving. Shard 2's ceiling-control and shard 1's
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
-MIN_DECLARED_TESTS=654
+MIN_DECLARED_TESTS=673
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

@@ -15,6 +15,13 @@
 // namespace going away. Those live here, which is
 // why this ring is tested against a real dnsmasq on a real veth pair.
 //
+// WHAT A CALLER CAN CHANGE WHILE A CLIENT RUNS: the name in option 12, through
+// Client.SetHostname. It is the one piece of configuration that arrives after
+// the interface already needs a lease — a container's name, read from an API
+// once the link exists — and the client sends it to the server at once rather
+// than holding it until T1. Everything else is set in ClientConfig and stays
+// put, because proto.Params is the value an offline replay is built from.
+//
 // Linux only in substance — CLOCK_BOOTTIME and AF_PACKET. The build-tagged
 // fallbacks keep the package compiling elsewhere and say what they cannot do
 // rather than pretending.
