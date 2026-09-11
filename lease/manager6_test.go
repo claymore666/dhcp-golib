@@ -377,6 +377,29 @@ func TestAV6ManagerRefusesTheWrongPorts(t *testing.T) {
 			func(c *Config) { c.Resume6 = &Lease{Addr: netip.MustParsePrefix("192.168.99.5/24")} },
 			ErrResume6NoAddr,
 		},
+		// The LIST is checked with the same rule as the single address. It is
+		// filled by the caller from its own store, so it is caller input and
+		// not a value this library produced.
+		{
+			"a v4 address in the v6 resume list",
+			func(c *Config) {
+				c.Resume6 = &Lease{
+					Addr:  netip.MustParsePrefix("fd00:99::5/128"),
+					Addrs: []Addr6{{Addr: netip.MustParsePrefix("192.168.99.5/32")}},
+				}
+			},
+			ErrResume6NoAddr,
+		},
+		{
+			"the unspecified address in the v6 resume list",
+			func(c *Config) {
+				c.Resume6 = &Lease{
+					Addr:  netip.MustParsePrefix("fd00:99::5/128"),
+					Addrs: []Addr6{{Addr: netip.MustParsePrefix("::/128")}},
+				}
+			},
+			ErrResume6NoAddr,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base()

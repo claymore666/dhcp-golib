@@ -207,6 +207,43 @@ type Params6 struct {
 	// counterpart and exists for R2's reason: a machine whose every send
 	// fails otherwise sits in SELECTING forever looking healthy.
 	MaxSendFailures int
+
+	// Mode is where this endpoint's address comes from: RFC 9915, RFC 4862,
+	// or whichever of the two the router says. Mode6 says what each value
+	// means and why the zero value is DHCPv6.
+	Mode Mode6
+
+	// LinkAddr is the interface's own hardware address, and it is the source
+	// of RFC 4291 Appendix A's interface identifier.
+	//
+	// THIS LIBRARY NEVER FILLS IT IN. Params.CHAddr is filled from the link
+	// when a caller leaves it empty, and the M6 review's carried row is what
+	// that costs: a caller that supplies an address of its own gets a client
+	// whose own-traffic exemption never matches, forever, with nothing to
+	// read that says so. Here the failure would be worse — an empty address
+	// forms the same identifier on every node of the link — so an empty one
+	// in a mode that forms addresses is refused at New6 and a supplied one is
+	// used as supplied.
+	LinkAddr []byte
+
+	// AutoFallback is how long Mode6Auto keeps trying DHCPv6 after a router
+	// has said M=1 before it forms an address from an autonomous prefix
+	// instead.
+	//
+	// IT IS MEASURED FROM THE INSTANT THE MODE COMMITS, which is the first
+	// advertisement carrying M=1 and is the same instant the Solicit exchange
+	// begins. Measuring it from machine start would have spent it on router
+	// discovery: an advertisement that arrived late would leave the Solicit
+	// almost no time, and the fallback would fire while the first Solicit was
+	// still in flight.
+	//
+	// Zero is the default, DefaultAutoFallback. NEGATIVE IS STRICT: the
+	// machine never falls back, and a link whose router says M=1 while no
+	// server answers ends in ReasonNoServer. Negative rather than a second
+	// boolean for the reason RouterSolicitations uses it: zero already means
+	// "the caller did not say", and a flag beside a duration would let a
+	// caller set a delay and switch it off in the same value.
+	AutoFallback Duration
 }
 
 // DefaultParams6 is RFC 9915 §7.6's Table 1, unmodified, plus the defaults for

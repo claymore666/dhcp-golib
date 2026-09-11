@@ -216,6 +216,31 @@ type Machine6 struct {
 	// ever arm the refresh again — §21.23's SHOULD would be dropped in
 	// silence. Found by the reviewer's pre-push read.
 	refreshOwed bool
+
+	// slaac is RFC 4862 §5.5.3's list of addresses this client configured by
+	// stateless autoconfiguration, and slaacPhases the §5.5.4 phase each of
+	// them was in when the lease was last announced.
+	//
+	// THE PHASES ARE REMEMBERED AND NOT RE-DERIVED, because what they are
+	// compared against is what the CALLER was last told: the table can say
+	// which addresses are deprecated now, and only a record of the last
+	// announcement can say whether that is news.
+	slaac       slaacTable
+	slaacPhases map[netip.Addr]bool
+
+	// autoDecided and dhcpCommitted are Mode6Auto's one decision: whether it
+	// has been taken, and which way. dhcpCommitted is cleared by the fallback
+	// and by a formed lease, and it is what awaitingAddress reads.
+	autoDecided   bool
+	dhcpCommitted bool
+
+	// wantConfig is a router having said M or O in a mode that forms its own
+	// address, and askedConfig that the Information-request it asks for has
+	// been sent. Two fields because the two facts arrive in different Steps:
+	// the flag comes with an advertisement and the exchange waits for a state
+	// it can be started from.
+	wantConfig  bool
+	askedConfig bool
 }
 
 // New6 builds a Machine6 in State6Stopped.
@@ -333,6 +358,29 @@ func (m *Machine6) RouterTableEvictions() uint64 { return m.routers.evicted }
 // one number an operator reads.
 func (m *Machine6) RouterOptionsIgnored() uint64 { return m.routers.optIgnored }
 
+// SLAACCounters is what this machine did with the Prefix Information options
+// it was given, mirrored by ring 2 at every Step the way RouterTableDrops is.
+//
+// IT IS A COPY OF A VALUE AND NOT A POINTER: the array inside is the reason.
+// A caller holding a pointer to the machine's own counters would read a set of
+// numbers that moved between two of its own reads, and the whole use of them
+// is a comparison of one moment against another.
+func (m *Machine6) SLAACCounters() SLAACCounters { return m.slaac.counts }
+
+// SLAACAddrs is every address this machine has formed under RFC 4862 §5.5.3,
+// in the order their prefixes were first advertised.
+//
+// It is what the DAD-in-flight window has that Lease() does not: an address
+// this machine has formed and not yet announced is not a lease, and a caller
+// that needs to know what is being checked cannot read it anywhere else.
+func (m *Machine6) SLAACAddrs() []netip.Addr {
+	out := make([]netip.Addr, 0, len(m.slaac.entries))
+	for _, e := range m.slaac.entries {
+		out = append(out, e.addr)
+	}
+	return out
+}
+
 func (m *Machine6) takeActionID() ActionID {
 	id := m.nextAction
 	m.nextAction++
@@ -380,6 +428,18 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6RouterSolicit:
 		m.routerSolicitTick(&out)
+		return m.state, out.list
+	case ev.Kind == EvTimerFired && ev.Timer == Timer6SLAAC:
+		// RFC 4862 §5.5.4's two moments mean the same thing in every state,
+		// and they are handled here for the reason the expiry below is: a
+		// formed address is held across the states the machine passes through
+		// while it asks a router or a server for anything else, and an arm per
+		// state is how the state that forgot it comes to report an address
+		// that has been invalid for an hour.
+		m.slaacTick(now, rnd, &out)
+		return m.state, out.list
+	case ev.Kind == EvTimerFired && ev.Timer == Timer6AutoFallback:
+		m.autoFallbackFired(now, rnd, &out)
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6Expire:
 		// The valid lifetime running out means the same thing in every state,
@@ -440,6 +500,8 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		m.stepInfoRequesting6(now, rnd, ev, &out)
 	case State6DAD:
 		m.stepDAD6(now, rnd, ev, &out)
+	case State6Discovering:
+		m.stepDiscovering6(now, rnd, ev, &out)
 	case State6Bound:
 		m.stepBound6(now, rnd, ev, &out)
 	case State6Renewing, State6Rebinding:
@@ -954,10 +1016,17 @@ func (m *Machine6) stepRenewal6(now Instant, rnd uint64, ev Event, out *actions)
 // client that waited for an M flag would be silent on exactly the networks
 // where it is needed most.
 func (m *Machine6) begin(now Instant, rnd uint64, out *actions) {
+	if m.params.Mode.formsAddresses() && !m.dhcpCommitted {
+		// Mode6SLAAC never solicits a server, and Mode6Auto does not solicit
+		// one until a router has said M=1. Both wait in DISCOVERING6, which is
+		// where the advertisement their address comes from is waited for.
+		m.beginSLAAC(now, rnd, out)
+		return
+	}
 	m.adverts, m.windowDone, m.tried = nil, false, nil
 	m.sendFailures = 0
 	m.rsCount = 0
-	m.solicitRouter(out)
+	m.startRouterDiscovery(out)
 
 	t := wire.MsgSolicit
 	delay := m.params.SolMaxDelay
@@ -1127,6 +1196,15 @@ func (m *Machine6) halt(out *actions, r Reason) {
 	if m.haveLse {
 		m.loseLease(out, r)
 	}
+	// The formed set goes with the lease it was reported as. A machine that
+	// kept it would, on the next Start, find every prefix already "equal to
+	// the prefix of an address configured by stateless autoconfiguration"
+	// (§5.5.3 d) and form nothing at all, while announcing addresses nothing
+	// had checked since the stop.
+	m.slaac = slaacTable{counts: m.slaac.counts}
+	m.slaacPhases = nil
+	m.autoDecided, m.dhcpCommitted = false, false
+	m.wantConfig, m.askedConfig = false, false
 	m.dropPending()
 	m.msgType = 0
 	m.declining = nil
@@ -1673,6 +1751,10 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	if len(m.dadWait) > 0 {
 		return
 	}
+	if m.pending.SLAAC {
+		m.finishSLAACDAD(now, rnd, out)
+		return
+	}
 	out.cancel(m, Timer6DAD)
 
 	if len(m.dadBad) == 0 {
@@ -1714,12 +1796,25 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	// ConflictsDetected, so a machine that emitted both would double-count.
 	held := m.haveLse
 	m.dropPending()
-	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
-		m.restartDiscovery(n, r, o)
-	})
+	// THE VERDICT IS STAMPED BEFORE THE DECLINE IS SENT, and the order is the
+	// whole content of this line.
+	//
+	// Ring 2 bumps its conflict counters in the arm that drains ActFailed, and
+	// it drains the actions in the order they are listed here. With the
+	// Decline listed first, the DHCPDECLINE reached the server — and the
+	// server's log, which is the only outside evidence a Decline leaves —
+	// while the counter had not moved yet, so every observer that waited on
+	// that log line and then read the counter was racing a ring boundary.
+	// MEASURED as a flake in TestADuplicateAddressOnTheLinkIsDeclined.
+	//
+	// It is also the right order on its own terms: §18.2.10.1's Decline is
+	// sent BECAUSE the acquisition failed, so the failure is the earlier fact.
 	if !held {
 		out.failed(m, ReasonConflict, note)
 	}
+	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
+		m.restartDiscovery(n, r, o)
+	})
 }
 
 // ---------------------------------------------------------- bound states --
@@ -2085,29 +2180,92 @@ func (m *Machine6) refreshTime(v Duration, present bool, out *actions) Duration 
 // §6.3.7: "To obtain Router Advertisements quickly, a host SHOULD transmit up
 // to MAX_RTR_SOLICITATIONS Router Solicitation messages, each separated by at
 // least RTR_SOLICITATION_INTERVAL seconds."
+// solicitRouter sends one Router Solicitation and arms the next moment of RFC
+// 4861 §6.3.7's schedule.
+//
+// THE LAST SOLICITATION IS FOLLOWED BY A WAIT AND NOT BY SILENCE when this
+// client's address can only come from an advertisement. §6.3.7: "If a host
+// sends MAX_RTR_SOLICITATIONS solicitations, and receives no Router
+// Advertisements after having waited MAX_RTR_SOLICITATION_DELAY seconds after
+// sending the last solicitation, the host concludes that there are no routers
+// on the link for the purpose of [ADDRCONF]." That conclusion is a verdict the
+// caller needs, so something has to be armed to reach it; a DHCPv6 client,
+// which has a server to talk to whatever the routers do, keeps today's
+// behaviour and arms nothing.
 func (m *Machine6) solicitRouter(out *actions) {
-	if m.router.Seen || m.rsCount >= m.params.routerSolicitations() {
+	if m.rsCount >= m.params.routerSolicitations() {
 		return
 	}
 	m.rsCount++
 	out.stamp(m, Action{Kind: ActSendRouterSolicit})
-	if m.rsCount < m.params.routerSolicitations() {
+	switch {
+	case m.rsCount < m.params.routerSolicitations():
 		out.set(m, Timer6RouterSolicit, m.params.routerSolicitInterval())
-		return
+	case m.awaitingAddress():
+		out.set(m, Timer6RouterSolicit, MaxRtrSolicitationDelay)
+	default:
+		out.cancel(m, Timer6RouterSolicit)
 	}
-	out.cancel(m, Timer6RouterSolicit)
 }
 
 func (m *Machine6) routerSolicitTick(out *actions) {
-	if m.router.Seen {
-		// Unreachable while observeRouter cancels the timer, and handled
-		// anyway: a timer that had already fired when the RA arrived is still
-		// on its way here.
-		out.journal(m, "the router solicitation timer fired after a Router Advertisement had arrived: ignored")
-		out.cancel(m, Timer6RouterSolicit)
+	if m.rsCount < m.params.routerSolicitations() {
+		if m.router.Seen && !m.awaitingAddress() {
+			// Unreachable while observeRouter cancels the timer, and handled
+			// anyway: a timer that had already fired when the RA arrived is
+			// still on its way here.
+			out.journal(m, "the router solicitation timer fired after a Router Advertisement had arrived: ignored")
+			out.cancel(m, Timer6RouterSolicit)
+			return
+		}
+		m.solicitRouter(out)
 		return
 	}
-	m.solicitRouter(out)
+	out.cancel(m, Timer6RouterSolicit)
+	if !m.awaitingAddress() {
+		out.journal(m, "router discovery is finished")
+		return
+	}
+	// §6.3.7's conclusion, in the two shapes a caller must tell apart: a link
+	// with no router at all, and a router that advertises nothing this client
+	// can form an address from. The SLAACIgnore counters say which rule
+	// refused what was advertised.
+	//
+	// THE MACHINE STAYS IN DISCOVERING6 rather than halting, because §6.3.7
+	// does not stop listening either: "However, the host continues to receive
+	// and process Router Advertisements messages in the event that routers
+	// appear on the link." The verdict is the caller's to act on.
+	if m.router.Seen {
+		out.failed(m, ReasonNoPrefix, fmt.Sprintf("a router advertises on this link and none of its prefixes formed an address (RFC 4862 §5.5.3); %d option(s) refused", m.slaac.counts.IgnoredTotal()))
+		return
+	}
+	out.failed(m, ReasonNoRouter, fmt.Sprintf("no Router Advertisement after %d solicitation(s) (RFC 4861 §6.3.7)", m.rsCount))
+}
+
+// stepDiscovering6 is the wait for an advertisement. Every input that matters
+// here — the advertisement, the solicitation schedule, the lifetimes of
+// anything already formed — is handled in Step's prologue, in every state, so
+// this state's own arms are the ones that end it.
+func (m *Machine6) stepDiscovering6(now Instant, rnd uint64, ev Event, out *actions) {
+	switch ev.Kind {
+	case EvStop:
+		m.halt(out, ReasonStopped)
+	case EvLinkDown:
+		m.halt(out, ReasonLinkDown)
+	case EvRelease:
+		// Nothing was granted by anybody, so there is nothing to give back.
+		m.halt(out, ReasonReleased)
+	case EvStart:
+		out.journal(m, "already waiting for a Router Advertisement")
+	case EvTimerFired:
+		if ev.Timer == Timer6Delay {
+			m.startExchange(now, rnd, m.pendingType, out)
+			return
+		}
+		out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
+	default:
+		out.journal(m, fmt.Sprintf("event %s in %s: ignored", ev.Kind, m.state))
+	}
 }
 
 // observeRouter reports every Router Advertisement and applies design §A.3.3
@@ -2141,12 +2299,29 @@ func (m *Machine6) observeRouter(now Instant, rnd uint64, ev Event, out *actions
 		out.journal(m, fmt.Sprintf("Router Advertisement carried %d option(s) refused by their own standard's validity rule; the rest of the advertisement was read", ev.RA.IgnoredOptions))
 	}
 	out.stamp(m, Action{Kind: ActRouterObserved, Router: m.router})
-	if first {
+	if first && !m.awaitingAddress() {
 		// §6.3.7's schedule exists "To obtain Router Advertisements quickly".
 		// One has arrived, so the remaining solicitations would be asking a
 		// question that has been answered.
+		//
+		// IT IS NOT ANSWERED FOR A CLIENT THAT STILL HAS NO ADDRESS. An
+		// advertisement that carried no prefix this client could use has told
+		// it nothing it needed, and cancelling here would leave the schedule
+		// with nothing to reach §6.3.7's conclusion with — the machine would
+		// wait for a second advertisement that may never come, with no
+		// verdict either way.
 		out.cancel(m, Timer6RouterSolicit)
 	}
+
+	switch m.params.Mode {
+	case Mode6SLAAC:
+		m.observeSLAAC(now, rnd, ev.RA, out)
+		return
+	case Mode6Auto:
+		m.observeAuto(now, rnd, ev.RA, out)
+		return
+	}
+	m.countUnusedPrefixes(ev.RA, out)
 
 	switch {
 	case ev.RA.Managed:

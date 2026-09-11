@@ -95,6 +95,19 @@ type Lease6 struct {
 	// reason Lease.Options exists: a forgotten option is recoverable rather
 	// than gone.
 	Options wire.OptionsV6
+
+	// SLAAC says this lease was formed from Router Advertisements under RFC
+	// 4862 §5.5.3 and not granted by a server.
+	//
+	// IT IS A FIELD AND NOT A DERIVATION. "IAID is zero and ServerDUID is
+	// nil" describes a SLAAC lease today and also describes a DHCPv6 lease
+	// from a server that used IAID 0 and a record rebuilt without its DUID,
+	// and the two want opposite things from the machine: one has T1 and T2
+	// and a server to renew with, the other has neither and is refreshed only
+	// by the next advertisement. Deadlines reads this field for that reason,
+	// and Equal compares it so a resumed record cannot change family in
+	// silence.
+	SLAAC bool
 }
 
 // Addr is the first address of the IA, which is the one a single-address
@@ -209,6 +222,17 @@ func (l Lease6) Deadlines() Deadlines {
 	if len(l.Addrs) == 0 || (!valid.IsInfinite() && valid <= 0) {
 		return d
 	}
+	if l.SLAAC {
+		// A SLAAC lease HAS NO RENEWAL, and the alternative is not a
+		// harmless extra timer. §21.4's T1 and T2 are the moments a client
+		// contacts the server that granted the lease; this lease was granted
+		// by nobody, so T1 would enter RENEWING, find no Server Identifier,
+		// fall through to REBINDING and put a Rebind on a link where nothing
+		// was ever solicited. The lifetimes are the whole schedule, and
+		// Machine6 arms Timer6SLAAC for them per address rather than this
+		// aggregate expiry.
+		return d
+	}
 
 	pref := l.shortestPreferred()
 	renew, rebind := l.T1, l.T2
@@ -284,7 +308,7 @@ func (l Lease6) Deadlines() Deadlines {
 // ActLeaseRenewed and not ActLeaseChanged, which is the distinction this
 // predicate exists to draw.
 func (l Lease6) Equal(o Lease6) bool {
-	if l.IAID != o.IAID || len(l.Addrs) != len(o.Addrs) {
+	if l.IAID != o.IAID || len(l.Addrs) != len(o.Addrs) || l.SLAAC != o.SLAAC {
 		return false
 	}
 	for i := range l.Addrs {

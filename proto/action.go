@@ -123,6 +123,29 @@ const (
 	// and one timer for both would cancel the DHCP retransmission every time a
 	// solicitation went out.
 	Timer6RouterSolicit
+	// Timer6SLAAC is the next instant at which RFC 4862 §5.5.4 has something
+	// to say about an address formed under §5.5.3: a preferred lifetime
+	// running out, which deprecates it, or a valid lifetime running out,
+	// which invalidates it.
+	//
+	// ONE TIMER FOR EVERY FORMED ADDRESS, re-armed after each firing for the
+	// earliest moment still ahead. It is TimerACD's argument and not
+	// Timer6Renew's: the moments are sequential, the machine deals with the
+	// one that has arrived and then computes the next, so a second id could
+	// only ever be armed by a phase that had disarmed the first. A timer per
+	// address would have needed an id space the size of MaxSLAACAddresses,
+	// which ring 3's timer table indexes by id.
+	//
+	// It is NOT Timer6Expire. That one is the IA_NA's aggregate expiry and it
+	// ends the lease; this one usually does not — an address of several
+	// reaching its valid lifetime leaves the others standing, and only the
+	// last one ends the lease.
+	Timer6SLAAC
+	// Timer6AutoFallback is Mode6Auto's budget for DHCPv6 after a router said
+	// M=1: when it fires with no lease in hand, the machine forms an address
+	// from an autonomous prefix instead. Params6.AutoFallback says where the
+	// duration comes from and from when it is measured.
+	Timer6AutoFallback
 )
 
 func (t TimerID) String() string {
@@ -157,6 +180,10 @@ func (t TimerID) String() string {
 		return "refresh6"
 	case Timer6RouterSolicit:
 		return "router-solicit6"
+	case Timer6SLAAC:
+		return "slaac6"
+	case Timer6AutoFallback:
+		return "auto-fallback6"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
@@ -177,6 +204,7 @@ func AllTimerIDs() []TimerID {
 		TimerRebind, TimerACD,
 		Timer6Retransmit, Timer6Delay, Timer6Expire, Timer6Renew,
 		Timer6Rebind, Timer6DAD, Timer6Refresh, Timer6RouterSolicit,
+		Timer6SLAAC, Timer6AutoFallback,
 	}
 }
 
@@ -427,6 +455,24 @@ const (
 	// still holds its binding at the server until the lease runs out, a
 	// released one does not (RFC 2131 section 4.3.4).
 	ReasonReleased
+	// ReasonNoRouter means router discovery ended with no Router
+	// Advertisement at all, in a mode whose address can only come from one.
+	// RFC 4861 §6.3.7 bounds the attempt and says what to conclude: "If a
+	// host sends MAX_RTR_SOLICITATIONS solicitations, and receives no Router
+	// Advertisements after having waited MAX_RTR_SOLICITATION_DELAY seconds
+	// after sending the last solicitation, the host concludes that there are
+	// no routers on the link for the purpose of [ADDRCONF]."
+	//
+	// It is NOT ReasonNoServer. A link with no router and a link whose DHCPv6
+	// server did not answer are two different things to go and fix, and one
+	// reason for both is exactly the confusion the v6 absence counters exist
+	// to end.
+	ReasonNoRouter
+	// ReasonNoPrefix means a router WAS heard and it advertised no prefix
+	// this client could form an address from: no Prefix Information option
+	// with the Autonomous flag, or only ones RFC 4862 §5.5.3 refuses. The
+	// SLAACIgnore counters say which rule refused them.
+	ReasonNoPrefix
 )
 
 func (r Reason) String() string {
@@ -453,6 +499,10 @@ func (r Reason) String() string {
 		return "dad-incomplete"
 	case ReasonReleased:
 		return "released"
+	case ReasonNoRouter:
+		return "no-router"
+	case ReasonNoPrefix:
+		return "no-prefix"
 	default:
 		return fmt.Sprintf("reason(%d)", uint8(r))
 	}

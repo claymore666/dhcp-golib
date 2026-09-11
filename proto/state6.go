@@ -74,6 +74,19 @@ const (
 	// received addresses for any traffic." So no Acquired is emitted from
 	// here, which is D22's shape at the v6 layer.
 	State6DAD
+	// State6Discovering is the window in which a client whose address can only
+	// come from a Router Advertisement is waiting for one: RFC 4862 §5.5.3 is
+	// driven by the advertisement and this client has nothing else to send.
+	//
+	// IT IS NOT SELECTING WITH THE SOLICIT LEFT OUT. SELECTING6's whole
+	// content is §18.2.1 — a Solicit in flight, a collection window, Advertise
+	// messages arriving — and a machine sitting in it with no exchange would
+	// make every journal line and every state assertion about this phase a
+	// sentence that is not true. The two are told apart by what ends them: a
+	// Reply ends SELECTING6, an advertisement carrying an autonomous prefix
+	// ends this one, and RFC 4861 §6.3.7's solicitation budget ends it with
+	// ReasonNoRouter when nothing arrives.
+	State6Discovering
 	// State6Bound holds the lease.
 	State6Bound
 	// State6Renewing is §18.2.4, entered at T1: a Renew is in flight to the
@@ -101,6 +114,8 @@ func (s State6) String() string {
 		return "INFO-REQUESTING6"
 	case State6DAD:
 		return "DAD6"
+	case State6Discovering:
+		return "DISCOVERING6"
 	case State6Bound:
 		return "BOUND6"
 	case State6Renewing:
@@ -124,7 +139,7 @@ func (s State6) String() string {
 func AllStates6() []State6 {
 	return []State6{
 		State6Stopped, State6Init, State6Selecting, State6Requesting,
-		State6Confirming, State6InfoRequesting, State6DAD, State6Bound,
-		State6Renewing, State6Rebinding,
+		State6Confirming, State6InfoRequesting, State6DAD,
+		State6Discovering, State6Bound, State6Renewing, State6Rebinding,
 	}
 }

@@ -766,7 +766,55 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster -netns run for the namespaced one: 825 declared and 42 netns, which
 # is not 805 and 767 added, because the arithmetic is what would hide a
 # collision between the sides. dev at 56888c7 measures 767 and 41.
-MIN_DECLARED_TESTS=825
+
+# AND THIS ROUND ON TOP OF ALL OF THEM.
+# STATELESS ADDRESS AUTOCONFIGURATION (#818, #819, #817): 825 -> 863, measured
+# the same way, one testroster run over the base and one over this head,
+# differenced as a set. Thirty-eight added, in three files:
+#
+#   proto/slaac6_test.go               (16)  TheFormedAddressIsRFC4291
+#     AppendixAsOwnOctets, ALinkAddressOfAnotherLengthFormsNoIdentifier,
+#     APrefixLengthThatDoesNotSumTo128FormsNothing,
+#     EachIgnoreRuleIsChargedByName,
+#     EveryIgnoreReasonIsDeclaredCountedAndNamed,
+#     PrefixEqualityIsMaskedAndLengthAware,
+#     TheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers,
+#     RuleOneIsTriedFirstAndItsArmsAreADisjunction,
+#     TheTwoHourConstantIsTwoHours, EachAddressKeepsItsOwnLifetimeOrigin,
+#     TwoAutonomousPrefixesFormTwoAddresses, TheFormedSetIsCapped,
+#     AnInfiniteLifetimeIsASentinelAndNeverAnInstant,
+#     ThePreferredLifetimeNeverOutlivesTheValidOneAfterTheRules,
+#     ExpiryDropsOnlyTheAddressesWhoseValidLifetimeRanOut,
+#     Lease6EqualComparesEveryFieldItConfigures
+#   proto/machine6_slaac_test.go       (20)  AModeThatFormsAddressesNever
+#     SolicitsAServer, NewSixRefusesAParamsItCannotRun,
+#     ANewlyFormedAddressGoesThroughDuplicateAddressDetection,
+#     APureLifetimeRefreshDoesNotRestartDuplicateAddressDetection,
+#     ASLAACLeaseArmsNoRenewalTimers, ASecondPrefixFormsASecondAddress,
+#     DeprecationKeepsTheAddressAndReportsAChange,
+#     OneAddressExpiringIsNotTheLeaseExpiring,
+#     ADuplicateCostsOneAddressAndNotTheSet,
+#     APrefixArrivingDuringDuplicateAddressDetectionIsCheckedToo,
+#     AResumedFormedLeaseIsNotFormedASecondTime,
+#     TheAutoModeDecisionIsTakenOnceOnTheFirstAdvertisement,
+#     TheAutoFallbackFiresOnlyWhenItMust,
+#     RouterDiscoveryEndsWithItsOwnReason,
+#     AHeldPrefixReadvertisedWithoutTheAutonomousFlagChangesNothing,
+#     ADHCPv6LeaseIsNeverTouchedByAPrefixInformationOption,
+#     TheFailureIsStampedBeforeTheDecline,
+#     AMomentThatArrivesDuringDuplicateAddressDetectionStillArmsTheNextOne,
+#     AutoDoesNotFallBackIntoFormingAfterItCommittedToDHCPv6,
+#     AnAdvertisementWithNothingToFormFromDoesNotEndTheSolicitationSchedule
+#   lease/slaac6_test.go                (2)  AnAddressFormedFromAn
+#     AdvertisementReachesTheCaller, EveryRememberedAddressComesBack
+#
+# The last four came out of the mutant campaign: each one is the test a
+# surviving mutant named, and each one kills that mutant.
+#
+# NONE OF THE THIRTY-EIGHT IS A NETNS TEST, MEASURED with testroster -netns at
+# 42 over the base and 42 here, so the netns enumeration in verify.sh does not
+# move in this round and is not re-measured.
+MIN_DECLARED_TESTS=863
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
