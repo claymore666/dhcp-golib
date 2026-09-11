@@ -597,3 +597,87 @@ func TestTheRenewTimerLeftOverByAnEarlyRenewalIsIgnored(t *testing.T) {
 		t.Fatal("the stale T1 cost the lease")
 	}
 }
+
+// TestAHostnameSetBeforeTheClientStartsGoesOutInTheFirstDiscover drives the
+// STOPPED arm. A caller that has the name before it has a client should not
+// have to choose between Params and the setter, and the machine has no message
+// to put it in yet — so it is recorded, and the first DHCPDISCOVER carries it.
+func TestAHostnameSetBeforeTheClientStartsGoesOutInTheFirstDiscover(t *testing.T) {
+	m := machineIn(t, StateStopped)
+
+	st, acts := m.Step(at(1), 0xF00D, SetHostname("named-before-start"))
+	if st != StateStopped {
+		t.Fatalf("state = %s, want STOPPED: there is nothing to send from", st)
+	}
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("a stopped machine sent something:\n%v", RenderActions(acts))
+	}
+
+	_, acts = m.Step(at(2), 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	if got, ok := hostnameOf(disc); !ok || got != "named-before-start" {
+		t.Fatalf("the first DHCPDISCOVER carries option 12 %q (present=%v), want %q", got, ok, "named-before-start")
+	}
+}
+
+// TestAHostnameSetDuringTheDesyncWaitGoesOutInTheDiscover drives the INIT arm,
+// through the door a default client actually sits behind: RFC 2131 section
+// 4.4.1's startup delay, which DefaultParams sets to between one and ten
+// seconds. Nothing is in flight for that whole window, so a name arriving in
+// it has to ride the DHCPDISCOVER that ends the wait.
+func TestAHostnameSetDuringTheDesyncWaitGoesOutInTheDiscover(t *testing.T) {
+	p := testParams()
+	p.DesyncMin, p.DesyncMax = 4*Second, 4*Second
+	m := newMachine(t, p)
+
+	st, acts := m.Step(at(0), 1, Simple(EvStart))
+	if st != StateInit {
+		t.Fatalf("state = %s, want INIT: the desync wait has not elapsed", st)
+	}
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("the DHCPDISCOVER went out before the desync wait:\n%v", RenderActions(acts))
+	}
+	delay, ok := timerSet(acts, TimerDesync)
+	if !ok {
+		t.Fatalf("no desync timer was armed:\n%v", RenderActions(acts))
+	}
+
+	if st, acts = m.Step(at(1), 0xF00D, SetHostname("named-while-waiting")); st != StateInit {
+		t.Fatalf("state = %s, want INIT", st)
+	}
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("the name sent a message of its own from INIT:\n%v", RenderActions(acts))
+	}
+
+	_, acts = m.Step(at(0).Add(delay), 2, TimerFired(TimerDesync))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	if got, ok := hostnameOf(disc); !ok || got != "named-while-waiting" {
+		t.Fatalf("the DHCPDISCOVER carries option 12 %q (present=%v), want %q", got, ok, "named-while-waiting")
+	}
+}
+
+// TestAHostnameSetWhileRebootingGoesOutInTheNextRequest drives the REBOOTING
+// arm, which every client handed a remembered lease passes through (RFC 2131
+// section 3.2). The DHCPREQUEST for the remembered address has already gone by
+// the time the name arrives, so what carries it is the retransmission of that
+// same request.
+func TestAHostnameSetWhileRebootingGoesOutInTheNextRequest(t *testing.T) {
+	m := machineIn(t, StateRebooting)
+
+	st, acts := m.Step(at(10), 0xF00D, SetHostname("named-while-rebooting"))
+	if st != StateRebooting {
+		t.Fatalf("state = %s, want REBOOTING", st)
+	}
+	if _, ok := find(acts, ActSend); ok {
+		t.Fatalf("the name sent a message of its own from REBOOTING:\n%v", RenderActions(acts))
+	}
+
+	_, acts = m.Step(at(11), 2, TimerFired(TimerRetransmit))
+	req := mustSend(t, acts, wire.MsgRequest)
+	if got, ok := hostnameOf(req); !ok || got != "named-while-rebooting" {
+		t.Fatalf("the retransmitted DHCPREQUEST carries option 12 %q (present=%v), want %q", got, ok, "named-while-rebooting")
+	}
+	if _, ok := req.Options[wire.OptServerID]; ok {
+		t.Fatal("the INIT-REBOOT request carries option 54; RFC 2131 4.3.2 makes it MUST NOT")
+	}
+}

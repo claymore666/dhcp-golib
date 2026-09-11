@@ -83,8 +83,15 @@ func (m *Machine) announceHostname(now Instant, rnd uint64, out *actions) bool {
 		// Nothing is held and nothing is in flight, so there is no message
 		// this name belongs in. The next one this machine builds carries it,
 		// and enterBound checks again the moment there is a lease — which is
-		// what makes a name that arrives during SELECTING, REQUESTING or
-		// PROBING reach the server at the bind instead of at T1.
+		// what makes a name that arrives before the lease reach the server at
+		// the bind instead of at T1.
+		//
+		// The states are all six that are not BOUND, RENEWING or REBINDING,
+		// and each has its own observer rather than an entry in a list here:
+		// STOPPED and INIT (the first DHCPDISCOVER, one of them through RFC
+		// 2131 section 4.4.1's desync wait), SELECTING and REQUESTING (the
+		// bind), REBOOTING (the retransmitted DHCPREQUEST of section 3.2) and
+		// PROBING (the announcement after RFC 5227 section 2.1's check).
 		return false
 	}
 }
