@@ -157,6 +157,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	scripts/oracle-contracts.sh
 	scripts/sweep-doc-numbers.sh
 	.github/lane/domain.sh
+	.github/lane/govulncheck-pin.sh
 	.github/lane/oracle-aggregate.sh
 	.github/lane/oracle-run-check.sh
 	.github/lane/oracle-shard.sh
@@ -164,7 +165,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	.github/lane/prepare.sh
 	.github/lane/verdict.sh
 )
-MANIFEST_SHELL_SCRIPTS_N=12
+MANIFEST_SHELL_SCRIPTS_N=13
 
 # The unit suite's declared-test population, stated rather than derived.
 #
@@ -425,7 +426,20 @@ MANIFEST_SHELL_SCRIPTS_N=12
 # row it was not driving. Shard 2's ceiling-control and shard 1's
 # ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
 # the plant only exists inside the oracle.
-MIN_DECLARED_TESTS=654
+#
+# THE GOVULNCHECK PIN ROUND: 654 -> 656, measured the same way, one testroster
+# run over the base and one over this head, the difference taken as a set. Two
+# added, in one file, and they are the observer the scan workflow did not have:
+# nothing outside that workflow ran the pin guard, so deleting both of its
+# steps left every check green.
+#
+#   internal/publication/govulncheck_test.go  (2)  TheScanWorkflowRunsThePin
+#     GuardBeforeItInstalls, ThePinGuardRowSpeaksInBothDirections
+#
+# Neither is a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+MIN_DECLARED_TESTS=656
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
