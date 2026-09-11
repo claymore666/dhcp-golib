@@ -41,11 +41,16 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # PINNED, and the contrast with govulncheck's `@latest` next door is the
-      # argument rather than an inconsistency: a linter's job is to say the
-      # same thing about the same file tomorrow, so a new rule arriving on its
-      # own is a red push nobody asked for. A vulnerability database's job is
-      # the opposite. Bump this deliberately.
+      # PINNED, and so is the scanner next door. This comment used to argue
+      # the contrast: a linter should say the same thing about the same file
+      # tomorrow, while a vulnerability database's job is the opposite, so
+      # govulncheck floated at `@latest`. The second half was wrong.
+      # govulncheck fetches its advisories from https://vuln.go.dev at scan
+      # time and carries none in the binary, so pinning it froze the analysis
+      # and not the data; floating it only meant a release could raise the
+      # scanner's own `go` requirement above this repository's toolchain,
+      # which is what happened and what stopped the scan running at all.
+      # Both tools are pinned, both bumps are deliberate.
       - name: Install the linter
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
