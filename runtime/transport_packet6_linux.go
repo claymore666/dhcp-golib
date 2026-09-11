@@ -427,7 +427,7 @@ func (t *PacketTransportV6) deliver(frame []byte) {
 	copy(p, dg.Payload)
 
 	select {
-	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
+	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src, To: dg.Dst}:
 	default:
 		t.dropped.Add(1)
 	}

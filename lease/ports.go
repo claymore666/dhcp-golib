@@ -38,7 +38,16 @@ type Entropy interface {
 type Inbound struct {
 	Payload []byte
 	From    netip.Addr
-	Err     error
+	// To is the IP destination the datagram was addressed to, as the
+	// transport read it off the frame, and the zero Addr means the transport
+	// did not report one.
+	//
+	// IT EXISTS FOR RFC 9915 §16.11's FIRST BULLET: a client discards a
+	// Reconfigure that "was not unicast to the client". A transport that
+	// reports nothing here makes every Reconfigure fail that rule, which is
+	// the safe direction — see proto.Event.Dst for the bound.
+	To  netip.Addr
+	Err error
 }
 
 // Transport carries DHCP payloads — the UDP payload only. Building the IP and

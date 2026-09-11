@@ -48,7 +48,10 @@ func (mg *Manager) onInbound6(ctx context.Context, in Inbound) {
 		mg.bump(func(s *Stats) { s.DecodeFailures++ })
 		return
 	}
-	mg.dispatch(ctx, proto.ReceivedV6(msg, append([]byte(nil), in.Payload...)))
+	// THE DESTINATION TRAVELS WITH THE OCTETS because §16.11's first
+	// Reconfigure rule is about the address the datagram was addressed to,
+	// which is not in the payload and cannot be recovered later.
+	mg.dispatch(ctx, proto.ReceivedV6To(msg, append([]byte(nil), in.Payload...), in.To))
 }
 
 // onND is one ICMPv6 Neighbor Discovery frame off the link.

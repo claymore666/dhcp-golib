@@ -172,6 +172,49 @@ type Machine6 struct {
 	// produced, and refresh the §21.23 time it carries.
 	config  Config6
 	refresh Duration
+
+	// reconf is the RKAP state of every server that has sent this client a
+	// reconfigure key, keyed by that server's DUID. See reconfServer for why
+	// it is per server and what bounds it.
+	//
+	// IT DOES NOT SURVIVE A RESTART, and that is a bound rather than an
+	// oversight. Params6.Resume carries a lease across a process; nothing
+	// carries a reconfigure key, so a machine rebuilt from a Resume6 accepts
+	// no Reconfigure until its next Solicit/Reply, Request/Reply or
+	// Information-request/Reply hands it a new one (§20.4.2). The key is a
+	// shared secret, and the record a caller would have to write it into is
+	// the one this library asks callers to persist and hands to Journal6; a
+	// field that put it there would put it in every operator's log. The
+	// cost is one refused Reconfigure per restart, which §18.2.11 already
+	// tolerates: a server whose Reconfigure is discarded falls back to the
+	// client's own T1.
+	reconf map[string]*reconfServer
+
+	// reconfDetour says the Information-request in flight was asked for by a
+	// Reconfigure while this machine was BOUND6, so its Reply returns to
+	// BOUND6 rather than leaving the lease behind in INFO-REQUESTING6.
+	reconfDetour bool
+	// reconfServerID is the Server Identifier §18.2.6 requires in an
+	// Information-request that answers a Reconfigure: "When responding to a
+	// Reconfigure, the client MUST include a Server Identifier option (see
+	// Section 21.3) with the identifier from the Reconfigure message to which
+	// the client is responding." It is cleared when that exchange ends.
+	reconfServerID []byte
+
+	// refreshOwed says §21.23's refresh time has elapsed and the
+	// Information-request it asks for has not yet produced a Reply.
+	//
+	// IT EXISTS BECAUSE BOUND6 NOW HAS TWO CLOCKS. Before §18.2.11 the
+	// refresh cycle ran in INFO-REQUESTING6, where a stateless client has no
+	// lease and therefore no T1 and no T2. A bound client that reaches the
+	// refresh arm has both, and the delay §21.23 asks for ("the client MUST
+	// delay sending the first Information-request by a random amount of time
+	// between 0 and INF_MAX_DELAY") is a window in which T1 can fall due.
+	// Without this flag the renewal would take the machine out of BOUND6 with
+	// the delay timer pending, RENEWING6 would ignore it, and nothing would
+	// ever arm the refresh again — §21.23's SHOULD would be dropped in
+	// silence. Found by the reviewer's pre-push read.
+	refreshOwed bool
 }
 
 // New6 builds a Machine6 in State6Stopped.
@@ -321,6 +364,21 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		// the same thing in every state, and a per-state arm is how the state
 		// that forgot it comes to believe its message went out.
 		m.noteActionFailed(now, rnd, ev, &out)
+		return m.state, out.list
+	case ev.Kind == EvReceived && ev.MsgV6 != nil && ev.MsgV6.Type == wire.MsgReconfigure:
+		// §18.2.11: "A client receives Reconfigure messages sent to UDP port
+		// 546 on interfaces for which it has acquired configuration
+		// information through DHCP. These messages may be sent at any time."
+		//
+		// HERE FOR INTERLOCK 1's REASON AND ONE OF ITS OWN. "At any time" is
+		// every state, so a per-state arm would be ten arms of which the nine
+		// nobody drove would each be a Reconfigure discarded without a word.
+		// The other reason is admit: it opens with the transaction-id of the
+		// exchange in flight, and §18.2.11 says "The client ignores the
+		// 'transaction-id' field in the received Reconfigure message", so a
+		// Reconfigure that reached admit would be refused by a rule §16.11
+		// does not have.
+		m.takeReconfigure(now, rnd, ev, &out)
 		return m.state, out.list
 	case ev.Kind == EvARPReceived || ev.Kind == EvConflictDetected:
 		// The v4 machine's two conflict inputs. They reach this machine only
@@ -599,6 +657,28 @@ func (m *Machine6) stepInfoRequesting6(now Instant, rnd uint64, ev Event, out *a
 			out.set(m, Timer6Delay, d)
 		case Timer6Delay:
 			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
+		case Timer6Renew, Timer6Rebind:
+			// THE LEASE OUTRANKS THE STATELESS EXCHANGE, and this arm exists
+			// because §18.2.11 lets a Reconfigure move a BOUND6 client here:
+			// msg-type 11 is one of §21.19's three, and a bound client that
+			// answers it is in INFO-REQUESTING6 while T1 and T2 keep running
+			// underneath. Without these two arms that Information-request
+			// would swallow the renewal: T1 fires, "ignored", T2 fires,
+			// "ignored", and the lease runs to its valid lifetime and is
+			// withdrawn. Configuration data is refreshable at any time; an
+			// address that reached its valid lifetime is gone.
+			if !m.haveLse {
+				out.journal(m, fmt.Sprintf("timer %s fired in %s with no lease: ignored", ev.Timer, m.state))
+				return
+			}
+			m.reconfDetour = false
+			if ev.Timer == Timer6Renew {
+				out.journal(m, "T1 elapsed during an Information-request: the renewal takes precedence (§18.2.4)")
+				m.enterRenewing(now, rnd, out)
+				return
+			}
+			out.journal(m, "T2 elapsed during an Information-request: the rebind takes precedence (§18.2.5)")
+			m.enterRebinding(now, rnd, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -694,6 +774,27 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 			// recommendation produced no renewal time, or when a renewal was
 			// never armed.
 			m.enterRebinding(now, rnd, out)
+		case Timer6Refresh:
+			// Reachable from BOUND after §18.2.11's Information-request
+			// detour: takeConfig arms §21.23's refresh time and the detour
+			// returns the machine to BOUND6, so the refresh falls due here
+			// rather than in INFO-REQUESTING6. §21.23: "When the client
+			// detects that the refresh time has expired, it SHOULD try to
+			// update its configuration data by sending an
+			// Information-request as specified in Section 18.2.6, except
+			// that the client MUST delay sending the first
+			// Information-request by a random amount of time between 0 and
+			// INF_MAX_DELAY."
+			d := randomDelay(m.params.InfMaxDelay, rnd)
+			out.journal(m, "the information refresh time elapsed: another Information-request after "+d.String()+" (§21.23)")
+			m.refreshOwed = true
+			m.reconfDetour = true
+			m.pendingType = wire.MsgInformationRequest
+			out.set(m, Timer6Delay, d)
+		case Timer6Delay:
+			// The delay §21.23 asks for, armed by the arm above. The machine
+			// is still BOUND6 and the detour flag brings it back here.
+			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -853,6 +954,18 @@ func (m *Machine6) restartDiscovery(now Instant, rnd uint64, out *actions) {
 // had just started trying, and one that never reset it would saturate the
 // field within eleven minutes of the client's boot and stay there.
 func (m *Machine6) startExchange(now Instant, rnd uint64, t wire.MessageTypeV6, out *actions) {
+	m.startExchangeAnswering(now, rnd, t, nil, out)
+}
+
+// startExchangeAnswering is startExchange for an exchange that answers a
+// Reconfigure, carrying the Server Identifier §18.2.6 requires.
+//
+// EVERY OTHER EXCHANGE CLEARS IT, which is why the two are one function and
+// not a field somebody sets. The identifier belongs to one exchange; a field
+// that outlived it would put a Server Identifier §18.2.6 says SHOULD NOT be
+// there into the next Information-request the refresh timer starts.
+func (m *Machine6) startExchangeAnswering(now Instant, rnd uint64, t wire.MessageTypeV6, sid []byte, out *actions) {
+	m.reconfServerID = append([]byte(nil), sid...)
 	m.msgType = t
 	m.xid = uint32(rnd) & (wire.MaxXID6 - 1)
 	m.exchangeStart = now
@@ -1344,6 +1457,13 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 	m.pending, m.havePending, m.pendingRenewal = l, true, renewal
 	out.cancel(m, Timer6Retransmit)
 	m.msgType = 0
+	// §20.4.3: "The client will receive a reconfigure key from the server in
+	// an Authentication option (see Section 21.11) in the initial Reply
+	// message from the server." It is recorded HERE, on the accepted Reply,
+	// and not on every Reply that reaches this function: a Reply this client
+	// went on to reject is not one whose server it agreed to be reconfigured
+	// by.
+	m.noteReconfigureKey(msg, out)
 
 	// §18.2.10.1: "The client MUST perform duplicate address detection as per
 	// Section 5.4 of [RFC4862], which does list some exceptions, on each of the
@@ -1499,6 +1619,19 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 	m.armDeadline(now, Timer6Renew, d.Renew, d.HasRenew, out)
 	m.armDeadline(now, Timer6Rebind, d.Rebind, d.HasRebind, out)
 	m.armDeadline(now, Timer6Expire, d.Expire, d.HasExpire, out)
+
+	// §21.23's Information-request, owed since before the exchange that just
+	// ended and given up by abandonRefreshDelay so the lease could be renewed.
+	// The delay is drawn again rather than resumed: §21.23 fixes no phase, it
+	// asks for "a random amount of time between 0 and INF_MAX_DELAY" before
+	// the first Information-request, and a fresh draw satisfies that.
+	if m.refreshOwed {
+		dd := randomDelay(m.params.InfMaxDelay, rnd)
+		out.journal(m, "the lease is bound again and §21.23's refresh is still owed: Information-request after "+dd.String())
+		m.reconfDetour = true
+		m.pendingType = wire.MsgInformationRequest
+		out.set(m, Timer6Delay, dd)
+	}
 }
 
 // armDeadline arms t for ts, or cancels it when there is none.
@@ -1521,7 +1654,25 @@ func (m *Machine6) armDeadline(now Instant, t TimerID, ts Instant, has bool, out
 
 // enterRenewing is T1. §18.2.4: "At time T1, the client initiates a Renew/Reply
 // message exchange to extend the lifetimes on any leases in the IA."
+// abandonRefreshDelay gives up a pending §21.23 delay because a lease exchange
+// outranks it, and leaves the debt recorded so enterBound can arm it again.
+//
+// THE LEASE OUTRANKS THE REFRESH, for the reason the same rule has in
+// INFO-REQUESTING6: configuration data is refreshable at any time, and an
+// address that reached its valid lifetime is gone. What must not happen is the
+// silent third outcome — the delay pending in a state that ignores it and the
+// refresh never armed again.
+func (m *Machine6) abandonRefreshDelay(out *actions) {
+	if !m.refreshOwed || m.state != State6Bound {
+		return
+	}
+	m.reconfDetour = false
+	out.cancel(m, Timer6Delay)
+	out.journal(m, "a lease exchange starts while §21.23's refresh delay is pending: the delay is dropped and the Information-request is armed again when the lease is bound")
+}
+
 func (m *Machine6) enterRenewing(now Instant, rnd uint64, out *actions) {
+	m.abandonRefreshDelay(out)
 	if len(m.lease.ServerDUID) == 0 {
 		// §18.2.4: "The client MUST include a Server Identifier option (see
 		// Section 21.3) in the Renew message, identifying the server with
@@ -1542,6 +1693,7 @@ func (m *Machine6) enterRenewing(now Instant, rnd uint64, out *actions) {
 // responded), the client initiates a Rebind/Reply message exchange with any
 // available server."
 func (m *Machine6) enterRebinding(now Instant, rnd uint64, out *actions) {
+	m.abandonRefreshDelay(out)
 	m.server = nil
 	out.journal(m, "T2: rebinding")
 	m.startExchange(now, rnd, wire.MsgRebind, out)
@@ -1755,8 +1907,11 @@ func (m *Machine6) takeConfig(now Instant, msg *wire.MessageV6, out *actions) {
 	c.RefreshTime = m.refreshTime(c.RefreshTime, ok, out)
 	m.config = c
 	m.refresh = c.RefreshTime
+	m.refreshOwed = false
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
+	m.noteReconfigureKey(msg, out)
+	m.endReconfigureDetour(out)
 	out.stamp(m, Action{Kind: ActConfigured, Config: c})
 	if m.refresh.IsInfinite() {
 		// §21.23: "As per Section 7.7, the value 0xffffffff is taken to mean
@@ -1904,6 +2059,61 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 			Code: wire.OptV6ServerID,
 			Data: append([]byte(nil), m.server...),
 		})
+	case wire.MsgInformationRequest:
+		// §18.2.6: "When responding to a Reconfigure, the client MUST include
+		// a Server Identifier option (see Section 21.3) with the identifier
+		// from the Reconfigure message to which the client is responding."
+		//
+		// AND IN NO OTHER INFORMATION-REQUEST. §18.2.6 names the Client
+		// Identifier, the Elapsed Time and the Option Request options and
+		// says nothing about a Server Identifier outside that one sentence,
+		// so the option goes in when a Reconfigure asked for the exchange and
+		// stays out when nothing did. (RFC 3315 §18.1.5 carried a SHOULD NOT
+		// for the other case; RFC 9915 does not, and this comment said it
+		// did until a reviewer checked the text.)
+		//
+		// SO THE IDENTIFIER IS THE RECONFIGURE'S AND NOT m.server: a client
+		// that has only ever done Information-requests has no m.server at
+		// all, and one that holds a lease would name the server that granted
+		// the lease rather than the one that asked for this exchange.
+		if len(m.reconfServerID) > 0 {
+			msg.Options = append(msg.Options, wire.OptionV6{
+				Code: wire.OptV6ServerID,
+				Data: append([]byte(nil), m.reconfServerID...),
+			})
+		}
+	}
+
+	// §21.20's Reconfigure Accept option, in the three message kinds whose
+	// own sections allow it, and in no others.
+	//
+	// WHY THESE THREE AND NOT FIVE. §18.2.1 names it for the Solicit: "The
+	// client includes a Reconfigure Accept option (see Section 21.20) if the
+	// client is willing to accept Reconfigure messages from the server." —
+	// and in the same section, "The client MUST NOT include any other options
+	// in the Solicit message, except as specifically allowed in the
+	// definition of individual options." §18.2.2 carries the first sentence
+	// again, word for word, for the Request. No §18.2 section names the
+	// option for a Renew or a Rebind, and §20.4.2 says why: "The server
+	// selects a reconfigure key for a client during the Request/Reply,
+	// Solicit/Reply, or Information-request/Reply message exchange." — the
+	// three exchanges that can grant a key are the three that carry the
+	// announcement.
+	//
+	// The Information-request is the third of those three. §18.2.6 names no
+	// Reconfigure Accept option and places no MUST NOT on the message's
+	// options, and §21.20 is general about who may send it: "A client uses
+	// the Reconfigure Accept option to announce to the server whether the
+	// client is willing to accept Reconfigure messages". So the announcement
+	// rides the one remaining key-granting exchange; a stateless client that
+	// could never announce could never be reconfigured, which is exactly what
+	// msg-type 11 exists for.
+	if m.params.AcceptReconfigure {
+		switch t {
+		case wire.MsgSolicit, wire.MsgRequest6, wire.MsgInformationRequest:
+			// §21.20: "option-len: 0". The option IS the announcement.
+			msg.Options = append(msg.Options, wire.OptionV6{Code: wire.OptV6ReconfAccept})
+		}
 	}
 
 	if ia, ok, err := m.buildIA(t); err != nil {

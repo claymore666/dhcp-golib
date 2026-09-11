@@ -300,6 +300,14 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # loop. The whole list is one run again rather than the previous one with a
 # line inserted.
 #
+# AND AGAIN AT L5 (#925, DHCPv6 Reconfigure): the roster is 36 with
+# TestAnAuthenticatedReconfigureMakesTheClientRenew and
+# TestAClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing,
+# which drive a server-initiated Reconfigure against a hand-built DHCPv6 server
+# on a real link — dnsmasq 2.91 has no code that sends one (MEASURED, see the
+# head of runtime/reconfigure6_linux_test.go). One run again, not two lines
+# inserted.
+#
 # AND AGAIN AT M7f: the roster is 34 with
 # TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed, which
 # drives a real duplicate-address collision on a real link so that the flag
@@ -313,58 +321,76 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # at the end of this block; this table is the session box's, and the two are
 # compared there rather than mixed:
 #
-#   TestAClientOnALinkWithNoRouterStillAcquires                         3.26
-#   TestADeclinedHintIsNotAskedForAgain                                 3.53
-#   TestADuplicateAddressOnTheLinkIsDeclined                            1.47
-#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne             3.07
-#   TestARefusedResumeRestartsAgainstRealDnsmasq                        1.30
-#   TestARestartResumesItsLeaseAgainstRealDnsmasq                       1.29
-#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                       3.64
-#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                               1.27
-#   TestASquatterAfterBoundTakesSection24sPath                          2.50
-#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline             2.50
-#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline              2.38
-#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured  2.23
-#   TestAV6ClientAcquiresFromRealDnsmasq                                3.12
-#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport              4.14
-#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               2.23
-#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress             5.03
-#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress           2.88
-#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed   1.43
-#   TestAV6ReleaseReachesRealDnsmasq                                    3.87
-#   TestAcquiresFromRealDnsmasq                                         1.15
-#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                      1.28
-#   TestAnOffClientPutsNoARPOnTheWire                                   4.18
-#   TestDeclineAndReleaseReachRealDnsmasq                               2.16
-#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease             4.26
-#   TestPacketTransportDropsWhenTheConsumerStalls                       3.66
-#   TestPacketTransportFollowsAPeerToANewHardwareAddress                1.28
-#   TestPacketTransportOnARealLink                                      1.29
-#   TestRenewalAndNakReachRealDnsmasq                                   7.16
-#   TestTheClientKeepsTheNamespaceItWasBuiltIn                          1.18
-#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                 9.37
-#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                       1.59
-#   TestTheRebuiltJournalMatchesTheServersLeaseFile                     1.45
-#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                        2.48
-#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn             1.15
+#   TestAClientOnALinkWithNoRouterStillAcquires                          3.20
+#   TestAClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing
+#                                                                        5.72
+#   TestADeclinedHintIsNotAskedForAgain                                  3.31
+#   TestADuplicateAddressOnTheLinkIsDeclined                             1.84
+#   TestAManagedLinkWhoseServerIsSilentIsNotALinkWithoutOne              2.75
+#   TestARefusedResumeRestartsAgainstRealDnsmasq                         1.42
+#   TestARestartResumesItsLeaseAgainstRealDnsmasq                        1.41
+#   TestAResumedV6LeaseConfirmsAgainstRealDnsmasq                        4.48
+#   TestASLAACOnlyLinkSaysThereIsNoDHCPv6                                1.37
+#   TestASquatterAfterBoundTakesSection24sPath                           2.55
+#   TestASquatterInTheProbeWindowMakesAWaitingClientDecline              2.56
+#   TestASquatterInTheProbeWindowMakesAnAsyncClientDecline               2.47
+#   TestASquatterInTheProbeWindowStillDeclinesWithTheAddressConfigured   2.30
+#   TestAV6ClientAcquiresFromRealDnsmasq                                 2.58
+#   TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport               4.14
+#   TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased               20.37
+#   TestAV6ClientRefusesALinkThatNeverGetsALinkLocalAddress              5.04
+#   TestAV6ClientWaitsForTheKernelToAssignTheLinkLocalAddress            3.26
+#   TestAV6LinkLocalThatLostTheKernelsDuplicateCheckIsRefusedAsFailed    1.84
+#   TestAV6ReleaseReachesRealDnsmasq                                     4.31
+#   TestAcquiresFromRealDnsmasq                                          1.22
+#   TestAnAuthenticatedReconfigureMakesTheClientRenew                    5.78
+#   TestAnExpiredResumeDiscoversAgainstRealDnsmasq                       1.38
+#   TestAnOffClientPutsNoARPOnTheWire                                    4.24
+#   TestDeclineAndReleaseReachRealDnsmasq                                2.26
+#   TestOurOwnTrafficInTheProbeWindowDoesNotDeclineOurLease              4.32
+#   TestPacketTransportDropsWhenTheConsumerStalls                        4.68
+#   TestPacketTransportFollowsAPeerToANewHardwareAddress                 1.35
+#   TestPacketTransportOnARealLink                                       1.36
+#   TestRenewalAndNakReachRealDnsmasq                                    7.29
+#   TestTheClientKeepsTheNamespaceItWasBuiltIn                           1.20
+#   TestTheDelayBeforeAnAcquisitionIsRFC5227sArithmetic                  8.77
+#   TestTheProbeCarriesTheLinkAddressAndNotCHAddr                        1.76
+#   TestTheRebuiltJournalMatchesTheServersLeaseFile                      1.64
+#   TestTheV6ClientKeepsTheNamespaceItWasBuiltIn                         2.56
+#   TestTheV6ClientReadsTheLinkLocalOfTheThreadItWasBuiltOn              1.21
 #
-# The per-test figures sum to 94.78s against a 97s wall clock; the
+# The per-test figures sum to 127.94s against a 131s wall clock; the
 # difference is the build, the race instrumentation and the re-exec, and it is
-# why the ceiling is set off the WALL figure. The wall has NOT moved past what
-# 140 was derived on: 94s at M7c, 93s at 8c87caf, 94.54s at M7e, 97s here over
-# a roster one test larger again. The new test costs 1.43s of it; the remaining
-# 1.1s against the previous run is draw-to-draw variation in tests that WAIT on
-# real DHCP, ARP and DAD intervals — the paragraph below measures how wide that
-# variation gets on one row.
+# why the ceiling is set off the WALL figure.
+#
+# THE TWO NEW TESTS COST 11.50s OF IT, and that is the figure the ceiling rule
+# is applied to. The rest of the move from the previous table's 97s is the
+# outlier below and the load this run carried: the session box was running five
+# concurrent agent sessions while this table was taken, which is the condition
+# the load paragraph further down measured at eighteen percent on this row.
 #
 # THE VARIANCE IS NOT UNIFORM ACROSS THE LIST, and one row carries most of it.
-# MEASURED 2026-09-07 while building this table: a first pass put
-# TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased at 13.29s against the
-# 2.07s above, and driven alone it drew 2.5, 3.3 and 17.0 seconds in three
-# runs; at the base commit, on an idle box, four runs drew 2.99-3.46s. So the
-# outlier is that test waiting on a real Router Advertisement interval under
-# load, not a regression in this branch — and it is the reason the headroom is
-# a ratio over the wall rather than a margin over the sum.
+# MEASURED 2026-09-07 while building the previous table:
+# TestAV6ClientOnAStatelessLinkIsConfiguredAndNotLeased drew 13.29s against the
+# 2.07s in it, and driven alone it drew 2.5, 3.3 and 17.0 seconds in three
+# runs; at the base commit, on an idle box, four runs drew 2.99-3.46s.
+# MEASURED AGAIN 2026-09-11 at this head, which is why the figure above it is
+# 20.37: two runs of this row minutes apart drew 2.64s and 20.37s for that one
+# test, and 114.61s and 127.94s for the sums that contain it. So the outlier is
+# that test waiting on a real Router Advertisement interval under load, not a
+# regression in this branch — and it is the reason the headroom is a ratio over
+# the wall rather than a margin over the sum.
+#
+# WHY 140 DOES NOT MOVE FOR L5. The lane runs on the hosted image (D41), not on
+# this box, and the ceiling is enforced where the lane runs: three runs at M7f
+# measured 86s, 88s and 87s there against 97s here. This change adds 11.50s of
+# measured test time, so the expected hosted wall is about 100s and the headroom
+# about 40s. The rule is the one stated below — the headroom must cover two more
+# rounds of the largest round-on-round increase this row has shown, a 32s floor
+# — and 40s clears it. The session box's own 131s is a LOADED figure and is
+# recorded as the co-tenancy observation it is, not as the row's wall; a local
+# `./verify.sh` taken with five other sessions on the box can redden this row
+# without the lane being any closer to its ceiling.
 #
 # WHAT THIS ENUMERATION STILL DOES NOT HAVE: a gate. Nothing compares the
 # names here against internal/tools/testroster -netns, which is how it came to
