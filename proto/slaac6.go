@@ -202,6 +202,14 @@ const (
 	// client configured for DHCPv6 is a configuration worth being able to see
 	// from outside.
 	SLAACIgnoreModeDHCP
+	// SLAACIgnoreDuplicate is an address this client already formed once and
+	// duplicate address detection found in use (RFC 4862 §5.4.5). The address
+	// a prefix forms is a function of that prefix and this link's hardware
+	// address, so forming it again produces the same address and the same
+	// answer. A router repeats its advertisement every few seconds (RFC 4861
+	// §6.2.1), so without this the refusal is charged once per advertisement
+	// for as long as the other node holds the address.
+	SLAACIgnoreDuplicate
 
 	// numSLAACIgnore is one past the last reason, which is what sizes
 	// SLAACCounters.Ignored. It is written here, immediately after the block,
@@ -229,6 +237,8 @@ func (r SLAACIgnore) String() string {
 		return "no interface identifier can be formed from this link address (RFC 4291 Appendix A)"
 	case SLAACIgnoreModeDHCP:
 		return "this client's address comes from DHCPv6"
+	case SLAACIgnoreDuplicate:
+		return "the address this prefix forms is in use on the link (RFC 4862 §5.4.5)"
 	default:
 		return fmt.Sprintf("slaac-ignore(%d)", uint8(r))
 	}
@@ -241,7 +251,7 @@ func AllSLAACIgnores() []SLAACIgnore {
 		SLAACIgnoreNotAutonomous, SLAACIgnoreLinkLocal,
 		SLAACIgnorePreferredOverValid, SLAACIgnoreBadLength,
 		SLAACIgnoreValidZero, SLAACIgnoreCapReached, SLAACIgnoreLinkAddr,
-		SLAACIgnoreModeDHCP,
+		SLAACIgnoreModeDHCP, SLAACIgnoreDuplicate,
 	}
 }
 
@@ -366,6 +376,18 @@ type slaacEntry struct {
 	preferred Duration
 	valid     Duration
 
+	// deprecationCharged says RFC 4862 §5.5.4's change of phase has already
+	// been counted and journalled for THIS address.
+	//
+	// IT IS NOT slaacPhases. That record is what the CALLER was last told, and
+	// it is read by enterBoundSLAAC to tell a renewal from a change; writing it
+	// on a path that announced nothing would make the next announcement look
+	// like a renewal and swallow the change. This one is what the MACHINE has
+	// already charged, it belongs to the entry, it goes when the entry goes,
+	// and refresh clears it because §5.5.3 e's closing note resets the
+	// preferred lifetime, which makes the address preferred again.
+	deprecationCharged bool
+
 	// tentative is set while duplicate address detection has not answered for
 	// this address. A router repeats its advertisement every few seconds
 	// (RFC 4861 §6.2.1), and without this the repeat would start a second
@@ -436,6 +458,23 @@ func durGreater(a, b Duration) bool {
 type slaacTable struct {
 	entries []slaacEntry
 	counts  SLAACCounters
+
+	// refused is every address duplicate address detection found in use, kept
+	// for the life of the machine. §5.4.5 ends the address and this library
+	// has no second identifier to try (RFC 4941's temporary addresses are not
+	// implemented), so the same prefix would form the same address again on
+	// the router's next advertisement, and the check would answer the same
+	// way. It is cleared by a stop, with the rest of the table.
+	refused map[netip.Addr]bool
+}
+
+// refuse records an address as in use on the link, so no later advertisement
+// of the prefix that formed it forms it again.
+func (t *slaacTable) refuse(a netip.Addr) {
+	if t.refused == nil {
+		t.refused = map[netip.Addr]bool{}
+	}
+	t.refused[a] = true
 }
 
 // find is §5.5.3 d's equality test, quoted in full because the whole of
@@ -510,6 +549,9 @@ func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, hw []byte) (forme
 	if err != nil {
 		return false, false, SLAACIgnoreLinkAddr
 	}
+	if t.refused[addr] {
+		return false, false, SLAACIgnoreDuplicate
+	}
 	t.entries = append(t.entries, slaacEntry{
 		prefix:    p.Masked(),
 		addr:      addr,
@@ -535,6 +577,11 @@ func (t *slaacTable) refresh(now Instant, i int, preferred, valid Duration) bool
 	// ignored." It is written before the three rules for that reason: none of
 	// their branches may skip it.
 	e.preferred = preferred
+	// A reset preferred lifetime makes the address preferred again, so the
+	// next time it runs out is a new change of phase and is charged again.
+	if !e.deprecated(now) {
+		e.deprecationCharged = false
+	}
 
 	switch {
 	case durGreater(valid, TwoHours) || durGreater(valid, remaining):
@@ -677,6 +724,7 @@ func (t *slaacTable) lease(now Instant, iaid uint32) Lease6 {
 			Addr:      e.addr,
 			Preferred: e.remainingPreferred(now),
 			Valid:     e.remaining(now),
+			PrefixLen: e.prefix.Bits(),
 		})
 	}
 	return l

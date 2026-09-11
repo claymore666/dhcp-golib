@@ -542,20 +542,20 @@ func TestTheV6DeadlinesApplyTwentyOneFoursRecommendation(t *testing.T) {
 	}{
 		{
 			name:  "the server's own T1 and T2 are used as sent",
-			addrs: []Addr6{{addr, 600 * Second, 900 * Second}},
+			addrs: []Addr6{{Addr: addr, Preferred: 600 * Second, Valid: 900 * Second}},
 			t1:    300 * Second, t2: 480 * Second,
 			renew: 300 * Second, rebind: 480 * Second, expir: 900 * Second,
 			hasR: true, hasB: true, hasE: true,
 		},
 		{
 			name:  "both zero falls back to 0.5 and 0.8 of the shortest preferred lifetime",
-			addrs: []Addr6{{addr, 600 * Second, 900 * Second}},
+			addrs: []Addr6{{Addr: addr, Preferred: 600 * Second, Valid: 900 * Second}},
 			renew: 300 * Second, rebind: 480 * Second, expir: 900 * Second,
 			hasR: true, hasB: true, hasE: true,
 		},
 		{
 			name:  "T1 alone still falls back for T2",
-			addrs: []Addr6{{addr, 600 * Second, 900 * Second}},
+			addrs: []Addr6{{Addr: addr, Preferred: 600 * Second, Valid: 900 * Second}},
 			t1:    60 * Second,
 			renew: 60 * Second, rebind: 480 * Second, expir: 900 * Second,
 			hasR: true, hasB: true, hasE: true,
@@ -563,26 +563,26 @@ func TestTheV6DeadlinesApplyTwentyOneFoursRecommendation(t *testing.T) {
 		{
 			name: "the fractions are of the SHORTEST preferred lifetime and the expiry is the LONGEST valid one",
 			addrs: []Addr6{
-				{addr, 1200 * Second, 900 * Second},
-				{other, 600 * Second, 1800 * Second},
+				{Addr: addr, Preferred: 1200 * Second, Valid: 900 * Second},
+				{Addr: other, Preferred: 600 * Second, Valid: 1800 * Second},
 			},
 			renew: 300 * Second, rebind: 480 * Second, expir: 1800 * Second,
 			hasR: true, hasB: true, hasE: true,
 		},
 		{
 			name:  "an infinite preferred lifetime arms no renewal and no rebind",
-			addrs: []Addr6{{addr, Infinite, Infinite}},
+			addrs: []Addr6{{Addr: addr, Preferred: Infinite, Valid: Infinite}},
 		},
 		{
 			name:  "a T2 at the expiry is clamped to 0.8 of the shortest preferred, and said so",
-			addrs: []Addr6{{addr, 600 * Second, 900 * Second}},
+			addrs: []Addr6{{Addr: addr, Preferred: 600 * Second, Valid: 900 * Second}},
 			t1:    300 * Second, t2: 900 * Second,
 			renew: 300 * Second, rebind: 480 * Second, expir: 900 * Second,
 			hasR: true, hasB: true, hasE: true, note: true,
 		},
 		{
 			name:  "a T1 not earlier than T2 becomes half of T2, and said so",
-			addrs: []Addr6{{addr, 600 * Second, 900 * Second}},
+			addrs: []Addr6{{Addr: addr, Preferred: 600 * Second, Valid: 900 * Second}},
 			t1:    500 * Second, t2: 480 * Second,
 			renew: 240 * Second, rebind: 480 * Second, expir: 900 * Second,
 			hasR: true, hasB: true, hasE: true, note: true,

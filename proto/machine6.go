@@ -427,7 +427,7 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		m.observeRouter(now, rnd, ev, &out)
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6RouterSolicit:
-		m.routerSolicitTick(&out)
+		m.routerSolicitTick(now, rnd, &out)
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6SLAAC:
 		// RFC 4862 §5.5.4's two moments mean the same thing in every state,
@@ -2208,7 +2208,7 @@ func (m *Machine6) solicitRouter(out *actions) {
 	}
 }
 
-func (m *Machine6) routerSolicitTick(out *actions) {
+func (m *Machine6) routerSolicitTick(now Instant, rnd uint64, out *actions) {
 	if m.rsCount < m.params.routerSolicitations() {
 		if m.router.Seen && !m.awaitingAddress() {
 			// Unreachable while observeRouter cancels the timer, and handled
@@ -2236,6 +2236,24 @@ func (m *Machine6) routerSolicitTick(out *actions) {
 	// and process Router Advertisements messages in the event that routers
 	// appear on the link." The verdict is the caller's to act on.
 	if m.router.Seen {
+		// A ROUTER THAT SAID O=1 HAS STILL OFFERED SOMETHING, AND THIS IS THE
+		// auto ROW ONLY. RFC 4861 §4.2: "When set, it indicates that other
+		// configuration information is available via DHCPv6." The schedule has
+		// run out with no address, so there is no exchange in flight for
+		// §18.2.6's to take the state of, and this is the link the design's
+		// mode table calls "no PIO but O=1: configured without an address".
+		//
+		// THE slaac ROW OF THE SAME TABLE IS FATAL WITH NO O=1 EXCEPTION, and
+		// it is one of the two verdicts #816 exists to tell apart. A client
+		// told to form its own address and given none has failed, whatever
+		// else the router is offering, so the mode is part of this condition
+		// and not an accident of which flag arrived.
+		if m.params.Mode == Mode6Auto && m.wantConfig && !m.askedConfig && m.msgType == 0 {
+			m.askedConfig = true
+			out.journal(m, "router discovery formed no address and the router offers other configuration over DHCPv6: Information-request (§18.2.6)")
+			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
+			return
+		}
 		out.failed(m, ReasonNoPrefix, fmt.Sprintf("a router advertises on this link and none of its prefixes formed an address (RFC 4862 §5.5.3); %d option(s) refused", m.slaac.counts.IgnoredTotal()))
 		return
 	}

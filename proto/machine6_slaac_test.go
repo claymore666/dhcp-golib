@@ -676,23 +676,40 @@ func TestTheAutoModeDecisionIsTakenOnceOnTheFirstAdvertisement(t *testing.T) {
 		m := newMachine6(t, testParams6Auto())
 		m.Step(at(0), 0, Simple(EvStart))
 		s, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+		if s != State6Init {
+			t.Fatalf("M=1 left the machine in %s, want %s.%s", s, State6Init, journalLines(acts))
+		}
+		// §18.2.1's delay, and the reason it is here: one advertisement is one
+		// multicast frame every host on the link receives at once.
+		if _, ok := timerSet(acts, Timer6Delay); !ok {
+			t.Errorf("the Solicit that an advertisement triggered was not delayed.%s", journalLines(acts))
+		}
+		if hasSendV6(acts, wire.MsgSolicit) {
+			t.Error("the Solicit went out in the same instant as the advertisement that triggered it")
+		}
+		// The prefixes of the advertisement that TAKES the decision are
+		// accounted in that same Step and not only from the next one on.
+		if got := m.SLAACCounters().Ignored[SLAACIgnoreModeDHCP]; got != 1 {
+			t.Errorf("the deciding advertisement's autonomous prefix is charged %d time(s), want 1", got)
+		}
+		s, acts = m.Step(at(2), 0, TimerFired(Timer6Delay))
 		if s != State6Selecting {
-			t.Fatalf("M=1 left the machine in %s, want %s.%s", s, State6Selecting, journalLines(acts))
+			t.Fatalf("the delay left the machine in %s, want %s.%s", s, State6Selecting, journalLines(acts))
 		}
 		mustSendV6(t, acts, wire.MsgSolicit)
 		if got := m.SLAACCounters().Formed; got != 0 {
 			t.Errorf("%d address(es) were formed on a link whose router said DHCPv6", got)
 		}
 		// A later M=0 is observed and forms nothing: the machine is committed.
-		s, acts = m.Step(at(2), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+		s, acts = m.Step(at(3), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
 		if s != State6Selecting {
 			t.Fatalf("a later M=0 left the machine in %s", s)
 		}
 		if got := m.SLAACCounters().Formed; got != 0 {
 			t.Errorf("a later M=0 formed %d address(es) under an exchange in flight", got)
 		}
-		if got := m.SLAACCounters().Ignored[SLAACIgnoreModeDHCP]; got == 0 {
-			t.Error("the unused autonomous prefix was not accounted")
+		if got := m.SLAACCounters().Ignored[SLAACIgnoreModeDHCP]; got != 2 {
+			t.Errorf("the unused autonomous prefixes are charged %d time(s), want 2 (one per advertisement)", got)
 		}
 	})
 }
@@ -756,7 +773,8 @@ func TestTheAutoFallbackFiresOnlyWhenItMust(t *testing.T) {
 		if d, ok := timerSet(acts, Timer6AutoFallback); ok {
 			t.Errorf("a strict setting armed a fallback deadline of %s", d)
 		}
-		mustSendV6(t, acts, wire.MsgSolicit)
+		_, acts2 := m.Step(at(2), 0, TimerFired(Timer6Delay))
+		mustSendV6(t, acts2, wire.MsgSolicit)
 		if !journalContains(acts, "no fallback is configured") {
 			t.Errorf("a strict setting left no journal line saying so.%s", journalLines(acts))
 		}
@@ -766,11 +784,12 @@ func TestTheAutoFallbackFiresOnlyWhenItMust(t *testing.T) {
 		p := testParams6Auto()
 		m := newMachine6(t, p)
 		m.Step(at(0), 0, Simple(EvStart))
-		_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, prefix)))
+		m.Step(at(1), 0, raEvent6(t, ra6(true, false, prefix)))
+		_, acts := m.Step(at(2), 0, TimerFired(Timer6Delay))
 		sol := mustSendV6(t, acts, wire.MsgSolicit)
-		m.Step(at(2), capXIDRequest, advertise(t, sol.XID, 255))
-		_, acts = m.Step(at(3), 0, reply(t, uint32(capXIDRequest), "fd00:99::184"))
-		m.Step(at(4), 0, DADResult(netip.MustParseAddr("fd00:99::184"), false))
+		m.Step(at(3), capXIDRequest, advertise(t, sol.XID, 255))
+		_, acts = m.Step(at(4), 0, reply(t, uint32(capXIDRequest), "fd00:99::184"))
+		m.Step(at(5), 0, DADResult(netip.MustParseAddr("fd00:99::184"), false))
 		if _, held := m.Lease(); !held {
 			t.Fatalf("the DHCPv6 path did not acquire.%s", journalLines(acts))
 		}
@@ -1079,6 +1098,44 @@ func TestAMomentThatArrivesDuringDuplicateAddressDetectionStillArmsTheNextOne(t 
 	if want := 86400*Second - Duration(at(203)-at(3)); d != want {
 		t.Errorf("the next moment was armed for %s, want %s", d, want)
 	}
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Fatalf("the deprecation counter is %d after one deprecation, want 1", got)
+	}
+	// AND A SECOND TICK WHILE THE CHECK IS STILL RUNNING CHARGES NOTHING. The
+	// counter leaves this ring through Stats, so an arm that reported a
+	// deprecation and forgot to write the phase record would charge the same
+	// address once per tick for as long as the check ran.
+	_, acts = m.Step(at(204), 0, TimerFired(Timer6SLAAC))
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Errorf("a second tick charged the same address again: %d.%s", got, journalLines(acts))
+	}
+	if journalContains(acts, "deprecated") {
+		t.Errorf("a second tick reported the same deprecation again.%s", journalLines(acts))
+	}
+
+	// AND THE CALLER IS STILL TOLD, once there is something to tell it. The
+	// record of what the machine has CHARGED and the record of what the CALLER
+	// was told are two records: a machine that used one for both would reach
+	// this announcement with the deprecation already "reported" and hand the
+	// caller a plain renewal, so the chassis would install no second address
+	// and deprecate nothing. Both assertions stand in one test for that
+	// reason.
+	_, acts = m.Step(at(205), 0, DADResult(netip.MustParseAddr("2001:db8:2::42:acff:fe11:2"), false))
+	ch, ok := find(acts, ActLeaseChanged)
+	if !ok {
+		t.Fatalf("the set gained an address and one member deprecated, and neither reached the caller.%s", journalLines(acts))
+	}
+	if len(ch.Lease6.Addrs) != 2 {
+		t.Fatalf("the reported lease carries %v, want both addresses", ch.Lease6.Addrs)
+	}
+	for _, a := range ch.Lease6.Addrs {
+		if a.Addr == netip.MustParseAddr("2001:db8:1::42:acff:fe11:2") && a.Preferred != 0 {
+			t.Errorf("the deprecated address is reported preferred for %s, want 0 (RFC 4862 §5.5.4)", a.Preferred)
+		}
+	}
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Errorf("the announcement charged the deprecation a second time: %d", got)
+	}
 }
 
 // TestAutoDoesNotFallBackIntoFormingAfterItCommittedToDHCPv6 is defeat row
@@ -1096,8 +1153,9 @@ func TestAutoDoesNotFallBackIntoFormingAfterItCommittedToDHCPv6(t *testing.T) {
 
 	// M=1 with an autonomous prefix present: the prefix is what the mutant
 	// would form from, and it stays unused.
-	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false,
+	m.Step(at(1), 0, raEvent6(t, ra6(true, false,
 		pio(testSLAACPrefix, 64, true, 86400, 14400))))
+	_, acts := m.Step(at(2), 0, TimerFired(Timer6Delay))
 	sol := mustSendV6(t, acts, wire.MsgSolicit)
 	m.Step(at(2), capXIDRequest, advertise(t, sol.XID, 255))
 	if s, _ := m.Step(at(3), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr)); s != State6DAD {
@@ -1177,4 +1235,245 @@ func TestAnAdvertisementWithNothingToFormFromDoesNotEndTheSolicitationSchedule(t
 			t.Errorf("the schedule outlived the answer it was asking for.%s", journalLines(acts))
 		}
 	})
+}
+
+// TestAStatelessLinkWithNoUsablePrefixStillAsksForItsConfiguration is defeat
+// row R-50.
+//
+// RFC 4861 §4.2: "When set, it indicates that other configuration information
+// is available via DHCPv6." A link whose router says M=0 O=1 and advertises no
+// prefix this client can form an address from has offered something, and the
+// design's mode table calls that row "no PIO but O=1: configured without an
+// address". Ending RFC 4861 §6.3.7's schedule with a fatal verdict there would
+// leave that configuration unasked for.
+//
+// The question is asked at the END of the schedule and not on the
+// advertisement, because the machine runs one exchange at a time: an
+// Information-request started while a prefix might still arrive would take the
+// state the advertisement's address needs.
+func TestAStatelessLinkWithNoUsablePrefixStillAsksForItsConfiguration(t *testing.T) {
+	p := testParams6Auto()
+	m := newMachine6(t, p)
+	m.Step(at(0), 0, Simple(EvStart))
+
+	// M=0, O=1, and the one prefix is not autonomous: §5.5.3 a refuses it.
+	at1 := at(1)
+	s, acts := m.Step(at1, 0, raEvent6(t, ra6(false, true,
+		pio(testSLAACPrefix, 64, false, 86400, 14400))))
+	if s != State6Discovering {
+		t.Fatalf("the advertisement left the machine in %s, want %s.%s", s, State6Discovering, journalLines(acts))
+	}
+	if hasSendV6(acts, wire.MsgInformationRequest) {
+		t.Error("the stateless exchange started while a prefix could still arrive")
+	}
+
+	// Run the schedule out. EvStart already sent the first solicitation, so
+	// the remaining transmissions and the tick that ends the schedule are
+	// MaxRtrSolicitations ticks.
+	var last []Action
+	for i := 0; i < MaxRtrSolicitations; i++ {
+		s, last = m.Step(at(int64(10+i)), 0, TimerFired(Timer6RouterSolicit))
+	}
+	if _, ok := find(last, ActFailed); ok {
+		t.Errorf("a link that offered configuration ended fatal.%s", journalLines(last))
+	}
+	if s != State6InfoRequesting {
+		t.Fatalf("the schedule ended in %s, want %s.%s", s, State6InfoRequesting, journalLines(last))
+	}
+	msg := mustSendV6(t, last, wire.MsgInformationRequest)
+	if _, ok := msg.Options.First(wire.OptV6IANA); ok {
+		t.Error("the stateless exchange carries an IA_NA; §18.2.6's message asks for no address")
+	}
+
+	// AND IT IS ASKED ONCE. The exchange completes, and a solicitation timer
+	// that had already fired when the schedule ended is still on its way here;
+	// it must not start §18.2.6 a second time.
+	m.Step(at(20), 0, receivedV6(t, wire.MsgReply, msg.XID,
+		optClientID(capDUID), optServerID(testServerDUID)))
+	_, acts = m.Step(at(21), 0, TimerFired(Timer6RouterSolicit))
+	if hasSendV6(acts, wire.MsgInformationRequest) {
+		t.Errorf("a stale solicitation tick asked for the same configuration again.%s", journalLines(acts))
+	}
+
+	// AND THE SAME LINK IN slaac IS FATAL. The design's mode table gives that
+	// row no O=1 exception: a client told to form its own address and given
+	// none has failed, and ReasonNoPrefix is one of the two verdicts #816
+	// exists to tell apart. The two modes are driven in one test because it is
+	// the DIFFERENCE between the rows that the arm is keyed on.
+	sm := newMachine6(t, testParams6SLAAC())
+	sm.Step(at(0), 0, Simple(EvStart))
+	sm.Step(at(1), 0, raEvent6(t, ra6(false, true,
+		pio(testSLAACPrefix, 64, false, 86400, 14400))))
+	var slast []Action
+	for i := 0; i < MaxRtrSolicitations; i++ {
+		_, slast = sm.Step(at(int64(10+i)), 0, TimerFired(Timer6RouterSolicit))
+	}
+	f, ok := find(slast, ActFailed)
+	if !ok {
+		t.Fatalf("a slaac link that formed no address did not fail.%s", journalLines(slast))
+	}
+	if f.Reason != ReasonNoPrefix {
+		t.Errorf("the slaac verdict is %s, want %s", f.Reason, ReasonNoPrefix)
+	}
+	if hasSendV6(slast, wire.MsgInformationRequest) {
+		t.Errorf("a slaac machine asked a DHCPv6 server for configuration.%s", journalLines(slast))
+	}
+}
+
+// TestTheFallbackWindowIsHalfOfTheScheduleThisMachineWillRun is defeat row
+// R-51: decision Q3 is "half the window", and the window is RFC 4861 §6.3.7's
+// schedule as this machine is configured to run it, not as the constants
+// describe it. A caller that lengthens router discovery and sets no fallback
+// was otherwise given half of a window it had replaced.
+func TestTheFallbackWindowIsHalfOfTheScheduleThisMachineWillRun(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		solicits int
+		interval Duration
+		want     Duration
+	}{
+		{"the defaults", 0, 0, DefaultAutoFallback},
+		{"a longer schedule", 6, 10 * Second, 30 * Second},
+		{"more solicitations only", 8, 0, 16 * Second},
+		{"a longer interval only", 0, 20 * Second, 30 * Second},
+		// HALF OF NOTHING IS NOT A BUDGET. A negative value is this field's
+		// documented "no solicitations at all", and a fallback of zero would
+		// fire before the first Solicit ever left.
+		{"router solicitation turned off", -1, 0, DefaultAutoFallback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testParams6Auto()
+			p.RouterSolicitations = tc.solicits
+			p.RouterSolicitInterval = tc.interval
+			m := newMachine6(t, p)
+			m.Step(at(0), 0, Simple(EvStart))
+			// A non-zero draw, so the §18.2.1 delay is visible and the window
+			// can be told apart from the window plus the delay.
+			_, acts := m.Step(at(1), 7, raEvent6(t, ra6(true, false,
+				pio(testSLAACPrefix, 64, true, 86400, 14400))))
+			d, ok := timerSet(acts, Timer6AutoFallback)
+			if !ok {
+				t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+			}
+			// THE WINDOW IS THE SERVER'S AND IS MEASURED FROM THE SOLICIT. The
+			// deadline is armed in the Step that commits and the Solicit
+			// leaves one delay later, so the delay is added to the window and
+			// not taken out of it.
+			sd, ok := timerSet(acts, Timer6Delay)
+			if !ok {
+				t.Fatalf("the Solicit was not delayed.%s", journalLines(acts))
+			}
+			if sd <= 0 {
+				t.Fatalf("the delay drawn is %s; this row cannot tell the two shapes apart", sd)
+			}
+			if d != sd+tc.want {
+				t.Errorf("the fallback deadline is %s, want %s (the %s window after the %s delay)", d, sd+tc.want, tc.want, sd)
+			}
+			// And the Solicit really does go out first.
+			s, acts := m.Step(at(1).Add(sd), 0, TimerFired(Timer6Delay))
+			if s != State6Selecting || !hasSendV6(acts, wire.MsgSolicit) {
+				t.Fatalf("the fallback window opened in %s with no Solicit.%s", s, journalLines(acts))
+			}
+			if got := m.SLAACCounters().Fallbacks; got != 0 {
+				t.Errorf("the fallback fired before the Solicit: %d", got)
+			}
+		})
+	}
+}
+
+// TestAnAddressTheLinkAlreadyHoldsIsNotFormedAgainOnEveryAdvertisement is
+// defeat row R-52.
+//
+// RFC 4861 §6.2.1 has a router advertise unsolicited "at least every
+// MaxRtrAdvInterval", and RFC 4862 §5.5.3 d forms an address from the prefix
+// and this link's own hardware address, which is the same address every time.
+// A machine that only dropped the duplicate would form it, check it and fail
+// again once per advertisement, for as long as the other node held it, and
+// every one of those is an ActFailed the caller acts on.
+func TestAnAddressTheLinkAlreadyHoldsIsNotFormedAgainOnEveryAdvertisement(t *testing.T) {
+	prefix := pio(testSLAACPrefix, 64, true, 86400, 14400)
+	m := newMachine6(t, testParams6SLAAC())
+	m.Step(at(0), 0, Simple(EvStart))
+	m.Step(at(1), 0, raEvent6(t, ra6(false, false, prefix)))
+	_, acts := m.Step(at(2), 0, DADResult(netip.MustParseAddr(testSLAACAddr), true))
+	if _, ok := find(acts, ActFailed); !ok {
+		t.Fatalf("the duplicate produced no failure.%s", journalLines(acts))
+	}
+	if got := m.SLAACCounters().Conflicts; got != 1 {
+		t.Fatalf("the conflict counter is %d, want 1", got)
+	}
+
+	// The router repeats the same advertisement. Nothing is formed and nothing
+	// is checked a second time.
+	s, acts := m.Step(at(3), 0, raEvent6(t, ra6(false, false, prefix)))
+	if _, ok := find(acts, ActStartDAD); ok {
+		t.Errorf("the repeat started a second check for an address already found in use.%s", journalLines(acts))
+	}
+	if _, ok := find(acts, ActFailed); ok {
+		t.Errorf("the repeat produced a second failure for one duplicate.%s", journalLines(acts))
+	}
+	if s != State6Discovering {
+		t.Errorf("the repeat left the machine in %s, want %s", s, State6Discovering)
+	}
+	if got := m.SLAACCounters().Formed; got != 1 {
+		t.Errorf("%d address(es) were formed, want the one the duplicate cost", got)
+	}
+	if got := m.SLAACCounters().Conflicts; got != 1 {
+		t.Errorf("the conflict counter is %d after one duplicate and two advertisements, want 1", got)
+	}
+	// The refusal is charged under its own reason, so an operator can see why
+	// this link produced no address.
+	if got := m.SLAACCounters().Ignored[SLAACIgnoreDuplicate]; got != 1 {
+		t.Errorf("the repeated prefix is charged %d time(s) to the duplicate reason, want 1", got)
+	}
+
+	// A stop and a start is the only event that can mean the other node let it
+	// go, and it tries once more.
+	m.Step(at(4), 0, Simple(EvStop))
+	m.Step(at(5), 0, Simple(EvStart))
+	_, acts = m.Step(at(6), 0, raEvent6(t, ra6(false, false, prefix)))
+	if _, ok := find(acts, ActStartDAD); !ok {
+		t.Errorf("a restarted machine did not try the address again.%s", journalLines(acts))
+	}
+}
+
+// TestAnAddressMadePreferredAgainCanDeprecateAgain is defeat row R-54.
+//
+// RFC 4862 §5.5.3 e's closing note: "the preferred lifetime of the
+// corresponding address is always reset to the Preferred Lifetime in the
+// received Prefix Information option". An address the router makes preferred
+// again is preferred again, so the next time its preferred lifetime runs out
+// is a second change of phase, and the record of what has been charged must
+// let go of it. A record that never cleared would silence every deprecation
+// of that address for the life of the machine.
+func TestAnAddressMadePreferredAgainCanDeprecateAgain(t *testing.T) {
+	addr := netip.MustParseAddr(testSLAACAddr)
+	m := newMachine6(t, testParams6SLAAC())
+	m.Step(at(0), 0, Simple(EvStart))
+	m.Step(at(1), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 100))))
+	m.Step(at(2), 0, DADResult(addr, false))
+
+	_, acts := m.Step(at(101), 0, TimerFired(Timer6SLAAC))
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Fatalf("the deprecation counter is %d after the first deprecation, want 1.%s", got, journalLines(acts))
+	}
+
+	// The router makes it preferred again.
+	_, acts = m.Step(at(102), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 200))))
+	ch, ok := find(acts, ActLeaseChanged)
+	if !ok {
+		t.Fatalf("an address that became preferred again was reported as a plain renewal.%s", journalLines(acts))
+	}
+	if len(ch.Lease6.Addrs) != 1 || ch.Lease6.Addrs[0].Preferred <= 0 {
+		t.Fatalf("the reported lease is %v, want the address preferred again", ch.Lease6.Addrs)
+	}
+
+	// And it deprecates again when the new preferred lifetime runs out.
+	_, acts = m.Step(at(302), 0, TimerFired(Timer6SLAAC))
+	if got := m.SLAACCounters().Deprecated; got != 2 {
+		t.Errorf("the second deprecation of the same address is charged %d time(s) in total, want 2.%s", got, journalLines(acts))
+	}
+	if !journalContains(acts, "deprecated") {
+		t.Errorf("the second deprecation was not reported.%s", journalLines(acts))
+	}
 }

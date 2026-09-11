@@ -32,6 +32,11 @@ func TestAV6ManagerAcquiresThroughEveryPort(t *testing.T) {
 	if got := e.Lease.Addr.String(); got != test6Addr+"/128" {
 		t.Errorf("acquired %s, want %s/128 — RFC 9915 §21.6 carries an address and no prefix length", got, test6Addr)
 	}
+	// The preservation control for the formed address's advertised prefix
+	// length: a GRANTED address has none, and §18.2.10.1 forbids inventing one.
+	if len(e.Lease.Addrs) != 1 || e.Lease.Addrs[0].Addr.Bits() != 128 {
+		t.Errorf("the granted address list is %v, want one address as a /128", e.Lease.Addrs)
+	}
 	if !sameBytes(e.Lease.ServerDUID, test6ServerDUID) {
 		t.Errorf("the lease names the server %x, want %x", e.Lease.ServerDUID, test6ServerDUID)
 	}

@@ -897,3 +897,90 @@ func TestLease6EqualComparesEveryFieldItConfigures(t *testing.T) {
 		})
 	}
 }
+
+// TestRulesABAndCAreTriedBeforeTheHeldPrefixIsLookedUp is defeat row R-53.
+//
+// RFC 4862 §5.5.3's order is the guarantee: a, b and c come before d and e, so
+// an option the section says to ignore never reaches e, and e's closing note —
+// "the preferred lifetime of the corresponding address is always reset to the
+// Preferred Lifetime in the received Prefix Information option" — cannot be
+// reached by an option c refused. A tree that looked the prefix up first would
+// refresh a held address from an advertisement that is not to be read at all.
+func TestRulesABAndCAreTriedBeforeTheHeldPrefixIsLookedUp(t *testing.T) {
+	hw := testLinkAddr6
+
+	t.Run("rule c, on a prefix this client holds", func(t *testing.T) {
+		var tb slaacTable
+		formed, _, why := tb.applyPIO(at(0), wire.PrefixInfo{
+			Prefix: netip.MustParseAddr("2001:db8:1::"), PrefixLen: 64,
+			Autonomous: true, ValidLifetime: 86400, PreferredLifetime: 14400,
+		}, hw)
+		if !formed || why != SLAACIgnoreNone {
+			t.Fatalf("the fixture formed nothing: %v %v", formed, why)
+		}
+		before := tb.entries[0]
+
+		// The same prefix, advertised with a preferred lifetime greater than
+		// its valid one. §5.5.3 c: "If the preferred lifetime is greater than
+		// the valid lifetime, silently ignore the Prefix Information option."
+		_, changed, why := tb.applyPIO(at(100), wire.PrefixInfo{
+			Prefix: netip.MustParseAddr("2001:db8:1::"), PrefixLen: 64,
+			Autonomous: true, ValidLifetime: 10, PreferredLifetime: 20000,
+		}, hw)
+		if why != SLAACIgnorePreferredOverValid {
+			t.Errorf("the option is charged to %v, want rule c", why)
+		}
+		if changed {
+			t.Error("an option rule c refuses reported a change")
+		}
+		if tb.entries[0] != before {
+			t.Errorf("an option rule c refuses moved the held entry: %+v -> %+v", before, tb.entries[0])
+		}
+	})
+
+	t.Run("rule b, on a prefix this client holds", func(t *testing.T) {
+		// A caller can hand a link-local address back through Resume6, which
+		// is the only way an entry with the link-local prefix exists at all.
+		var tb slaacTable
+		tb.entries = append(tb.entries, slaacEntry{
+			prefix:    netip.MustParsePrefix("fe80::/64"),
+			addr:      netip.MustParseAddr("fe80::42:acff:fe11:2"),
+			start:     at(0),
+			preferred: 14400 * Second,
+			valid:     86400 * Second,
+		})
+		before := tb.entries[0]
+		_, changed, why := tb.applyPIO(at(100), wire.PrefixInfo{
+			Prefix: netip.MustParseAddr("fe80::"), PrefixLen: 64,
+			Autonomous: true, ValidLifetime: 300, PreferredLifetime: 300,
+		}, hw)
+		if why != SLAACIgnoreLinkLocal {
+			t.Errorf("the option is charged to %v, want rule b", why)
+		}
+		if changed {
+			t.Error("an option rule b refuses reported a change")
+		}
+		if tb.entries[0] != before {
+			t.Errorf("an option rule b refuses moved the held entry: %+v -> %+v", before, tb.entries[0])
+		}
+	})
+
+	t.Run("rule a, on a prefix this client holds", func(t *testing.T) {
+		var tb slaacTable
+		tb.applyPIO(at(0), wire.PrefixInfo{
+			Prefix: netip.MustParseAddr("2001:db8:2::"), PrefixLen: 64,
+			Autonomous: true, ValidLifetime: 86400, PreferredLifetime: 14400,
+		}, hw)
+		before := tb.entries[0]
+		_, changed, why := tb.applyPIO(at(100), wire.PrefixInfo{
+			Prefix: netip.MustParseAddr("2001:db8:2::"), PrefixLen: 64,
+			Autonomous: false, ValidLifetime: 300, PreferredLifetime: 300,
+		}, hw)
+		if why != SLAACIgnoreNotAutonomous {
+			t.Errorf("the option is charged to %v, want rule a", why)
+		}
+		if changed || tb.entries[0] != before {
+			t.Errorf("an option rule a refuses moved the held entry: %+v -> %+v", before, tb.entries[0])
+		}
+	})
+}

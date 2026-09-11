@@ -196,9 +196,11 @@ func (m *Machine6) reportSLAAC(now Instant, rnd uint64, out *actions) {
 //
 // AND THERE IS NO RETRY. RFC 4862 §5.4 ends at "the address is not unique";
 // the identifier is this link's own hardware address, so §5.5.3 offers no
-// second candidate to form. The address is dropped and its prefix will form it
-// again only if the address is released by whoever holds it and the prefix is
-// re-advertised after this entry has gone.
+// second candidate to form. The address is dropped and it is REMEMBERED as
+// refused, so the router's next advertisement of the same prefix is charged to
+// SLAACIgnoreDuplicate and forms nothing. A machine that is stopped and
+// started again has a new table and tries once more, which is the only event
+// that can mean the other node let the address go.
 func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 	out.cancel(m, Timer6DAD)
 	bad := append([]netip.Addr(nil), m.dadBad...)
@@ -206,6 +208,15 @@ func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 		if m.slaac.drop(a) {
 			m.slaac.counts.Conflicts++
 		}
+		// AND IT IS NOT FORMED AGAIN. The prefix that formed it is
+		// re-advertised every few seconds (RFC 4861 §6.2.1) and would form the
+		// same address from the same link hardware address every time, so
+		// without this the machine repeats the whole formation, check and
+		// failure once per advertisement interval, for as long as the other
+		// node holds the address. The repeat is charged to
+		// SLAACIgnoreDuplicate instead, and router discovery reaches its own
+		// verdict.
+		m.slaac.refuse(a)
 	}
 	// ONLY THE ADDRESSES THIS ROUND ASKED ABOUT ARE SETTLED. A router repeats
 	// its advertisement while a check is running and a NEW prefix can arrive
@@ -330,8 +341,10 @@ func (m *Machine6) slaacTick(now Instant, rnd uint64, out *actions) {
 	for _, a := range m.slaac.expire(now) {
 		out.journal(m, "the valid lifetime of "+a.String()+" has run out: the address is invalid (RFC 4862 §5.5.4)")
 	}
-	for _, e := range m.slaac.entries {
-		if e.deprecated(now) && !was(m.slaacPhases, e.addr) {
+	for i := range m.slaac.entries {
+		e := &m.slaac.entries[i]
+		if e.deprecated(now) && !e.deprecationCharged {
+			e.deprecationCharged = true
 			m.slaac.counts.Deprecated++
 			out.journal(m, "the preferred lifetime of "+e.addr.String()+" has run out: the address is deprecated (RFC 4862 §5.5.4)")
 		}
@@ -350,6 +363,13 @@ func (m *Machine6) slaacTick(now Instant, rnd uint64, out *actions) {
 		// Duplicate address detection is still running on at least one of
 		// them, so there is nothing to announce yet. The moments that have not
 		// arrived are still moments.
+		//
+		// AND slaacPhases IS NOT WRITTEN HERE. It is what the CALLER was last
+		// told, and nothing was told on this path; writing it would make the
+		// announcement that finally comes look like a plain renewal and
+		// swallow both the deprecation and the address that arrived with it.
+		// What the machine has already charged is the entry's own
+		// deprecationCharged, which the loop above keeps.
 		m.armSLAAC(now, out)
 		return
 	}
@@ -359,9 +379,6 @@ func (m *Machine6) slaacTick(now Instant, rnd uint64, out *actions) {
 	}
 	m.enterBoundSLAAC(now, rnd, out)
 }
-
-// was reports the phase an address had at the last report.
-func was(phases map[netip.Addr]bool, a netip.Addr) bool { return phases[a] }
 
 // observeAuto is Mode6Auto: the router decides, once.
 //
@@ -381,10 +398,35 @@ func (m *Machine6) observeAuto(now Instant, rnd uint64, ra *wire.RouterAdvert, o
 			d, ok := m.params.autoFallback()
 			out.journal(m, "Router Advertisement M=1: this link's addresses come from DHCPv6 (RFC 4861 §4.2), soliciting")
 			out.cancel(m, Timer6RouterSolicit)
-			m.startExchange(now, rnd, wire.MsgSolicit, out)
+			// THE SOLICIT IS DELAYED, and this trigger is the one §18.2.1
+			// names: "The first Solicit message from the client on the
+			// interface SHOULD be delayed by a random amount of time between 0
+			// and SOL_MAX_DELAY. This random delay helps desynchronize clients
+			// that start a DHCP session at the same time, such as after
+			// recovery from a power failure or after a router outage after
+			// seeing that DHCP is available in Router Advertisement messages".
+			// One advertisement is one multicast frame every host on the link
+			// receives at once, so sending here would be the synchronised case
+			// the delay exists for.
+			m.pendingType = wire.MsgSolicit
+			m.state = State6Init
+			sd := randomDelay(m.params.SolMaxDelay, rnd)
+			out.journal(m, "first Solicit after "+sd.String()+" (§18.2.1)")
+			out.set(m, Timer6Delay, sd)
+			// The prefixes of the advertisement that TAKES the decision are
+			// accounted like every other advertisement's. Returning here
+			// without them made the one advertisement that decides the one
+			// advertisement nothing counts.
+			m.countUnusedPrefixes(ra, out)
 			if ok {
-				out.journal(m, "if no server answers within "+d.String()+" this client will form an address from an autonomous prefix instead")
-				out.set(m, Timer6AutoFallback, d)
+				// THE WINDOW IS THE SERVER'S, MEASURED FROM THE SOLICIT. The
+				// deadline is armed here, in the Step that commits, and the
+				// first Solicit leaves one delay later, so the delay is added
+				// rather than taken out of the window. R-30's rule is that
+				// nothing before the exchange eats the server's time; the
+				// delay is one of those things.
+				out.journal(m, "if no server answers within "+d.String()+" of the first Solicit this client will form an address from an autonomous prefix instead")
+				out.set(m, Timer6AutoFallback, sd+d)
 			} else {
 				out.journal(m, "no fallback is configured: a silent server ends this acquisition")
 			}

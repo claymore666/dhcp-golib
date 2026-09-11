@@ -486,7 +486,13 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	}
 	out.SLAAC = l.SLAAC
 	for _, a := range l.Addrs {
-		e := Addr6{Addr: netip.PrefixFrom(a.Addr, 128)}
+		bits := a.PrefixLen
+		if bits <= 0 {
+			// A granted address has no prefix length of its own, so it is a
+			// host address. Only RFC 4862 §5.5.3's option carries one.
+			bits = a.Addr.BitLen()
+		}
+		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
 		if !a.Preferred.IsInfinite() {
 			e.Preferred = b.at(l.Start.Add(a.Preferred))
 		}

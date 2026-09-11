@@ -61,11 +61,20 @@ func TestAnAddressFormedFromAnAdvertisementReachesTheCaller(t *testing.T) {
 	if e.Kind != Acquired {
 		t.Fatalf("the first event is %s, want acquired", e.Kind)
 	}
-	if got := e.Lease.Addr.String(); got != slaacRAAddr+"/128" {
-		t.Fatalf("the acquired lease carries %s, want %s/128", got, slaacRAAddr)
+	// THE ADVERTISED PREFIX LENGTH CROSSES THE RING BOUNDARY. RFC 9915
+	// §18.2.10.1's "MUST NOT be used to form an implicit prefix with a length
+	// other than 128" binds an IA Address option, which carries no length; RFC
+	// 4862 §5.5.3 d's option carries one, and it is the only thing on the link
+	// that says which addresses are reachable without a router. A caller given
+	// a /128 would re-derive it from the router observation instead.
+	if got := e.Lease.Addr.String(); got != slaacRAAddr+"/64" {
+		t.Fatalf("the acquired lease carries %s, want %s/64", got, slaacRAAddr)
 	}
 	if len(e.Lease.Addrs) != 1 || e.Lease.Addrs[0].Addr.Addr().String() != slaacRAAddr {
 		t.Fatalf("the acquired lease's address list is %v, want the one formed address", e.Lease.Addrs)
+	}
+	if got := e.Lease.Addrs[0].Addr.Bits(); got != 64 {
+		t.Errorf("the formed address is reported as a /%d, want the advertised /64", got)
 	}
 	if !e.Lease.SLAAC {
 		t.Error("the acquired lease does not say it was formed rather than granted")

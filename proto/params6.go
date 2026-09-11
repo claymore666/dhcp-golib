@@ -92,6 +92,11 @@ const DefaultDADTimeout = (DupAddrDetectTransmits + MaxMulticastSolicit) * Retra
 // RTR_SOLICITATION_INTERVAL apart, and half of that is the value here. A
 // chassis with a longer window passes half of its own in Params6.AutoFallback
 // and this default is never reached.
+//
+// IT IS THE VALUE FOR A Params6 THAT SETS NEITHER SCHEDULE FIELD. autoFallback
+// takes half of the schedule the machine will actually run, so a caller that
+// lengthens RouterSolicitations or RouterSolicitInterval and leaves
+// AutoFallback at zero gets half of ITS window and not half of this constant.
 const DefaultAutoFallback = (MaxRtrSolicitations * RtrSolicitationInterval) / 2
 
 // DefaultMaxSendFailures6 is the consecutive-ActSendV6-failure budget. It
@@ -288,6 +293,20 @@ func (p Params6) autoFallback() (Duration, bool) {
 	case p.AutoFallback < 0:
 		return 0, false
 	case p.AutoFallback == 0:
+		// HALF OF THE SCHEDULE THIS MACHINE WILL ACTUALLY RUN, not half of
+		// the constants. A caller that lengthens router discovery through
+		// RouterSolicitations or RouterSolicitInterval and leaves this at zero
+		// was otherwise given a fallback measured against a window it had
+		// replaced. DefaultAutoFallback is what this returns for a Params6
+		// that sets neither.
+		// HALF OF NOTHING IS NOT A BUDGET. A caller that turns router
+		// solicitation off (a negative RouterSolicitations) has said nothing
+		// about how long a DHCPv6 server may take, and a zero here would arm
+		// the fallback at the instant of the advertisement, so an M=1 link
+		// would form an address without this client ever having solicited.
+		if w := Duration(p.routerSolicitations()) * p.routerSolicitInterval() / 2; w > 0 {
+			return w, true
+		}
 		return DefaultAutoFallback, true
 	default:
 		return p.AutoFallback, true
