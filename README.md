@@ -17,23 +17,23 @@ and it needs no root.
 |---|:---:|:---:|
 | Take a lease and keep it: renew at T1, rebind at T2, expire when nobody answers | yes | yes |
 | Give the lease back, and cope with a server that refuses it (DHCPNAK / Status Code) | yes | yes |
-| Give a lease back from its record alone, with no client and no interface left | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) |
+| Give a lease back from its record alone, with no client and no interface left | yes | yes |
 | Check the address is free before announcing it, and decline a duplicate (RFC 5227 / RFC 4862) | yes | yes |
 | Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
 | Give a running client a name for the server's table, and send it at once (RFC 2132's Host Name option) | yes | unsupported |
 | Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
-| Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
+| Report the gateway, the static routes and the link MTU | yes | yes |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
-| Tell a server that refused apart from one that never answered, and say which code it sent | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/816) |
-| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
+| Tell a server that refused apart from one that never answered, and say which code it sent | yes | yes |
+| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
-| Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
+| Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
-| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/925) |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | yes |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
 
@@ -58,18 +58,18 @@ holds the reconfigure key it gave the client can make it renew, rebind or ask
 for configuration again, and a Reconfigure that is not signed with that key is
 discarded. Nothing on DHCPv4 is planned for a later release.
 
-The library is pre-1.0 and the API is not stable. It moves without a
-deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.
-The API still moves between tags. One consumer is being built on it. Nothing
-that uses it has shipped.
+v1.0.0 is the DHCPv6 release. What it has shipped is in the tree and says
+`yes` above: the Router Advertisement read for everything it carries, a
+refusal told apart from a silence, a reconfiguration the server starts, and a
+lease given back from its record alone. What is left of it is the row that
+still says `v1.0.0`.
 
-v1.0.0 is when every `v1.0.0` row above is shipped. The scope of v1.0.0 is
-exactly those rows. They are this library's share of the IPv6 work on the
-`docker-net-dhcp` plugin's `v2.2.0` milestone. That milestone is wider than
-this matrix, and its other rows land in the plugin.
+This library is the DHCP engine of docker-net-dhcp 2.x. The API is not stable.
+It moves between tags and without a deprecation cycle. Releases are tagged on
+`main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-m7).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v100).
 
 ## Usage
 
@@ -231,7 +231,7 @@ The bounds below are written down so that nobody has to infer them.
   another host's messages.
 - No server-initiated reconfiguration on IPv4. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is served and is a `v1.0.0`
+  DHCPFORCERENEW included. DHCPv6's Reconfigure is served, which is a `yes`
   row above.
 - No name option on DHCPv6. IPv4 sends RFC 2132's Host Name option, and a
   running client's name can be changed. DHCPv6's counterpart, RFC 4704's Client

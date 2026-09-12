@@ -64,10 +64,11 @@ the library was built in. They are not releases.
 | M8 | Integration into the docker-net-dhcp plugin. Done in the plugin's own repository. |
 
 "Done" means the milestone's tests are in the tree and the verifier passes on
-them.
+them. Work after M8 is named by its issue and by the release it ships in, not
+by a milestone letter.
 
 
-## Coverage by claim, through M7
+## Coverage by claim, through v1.0.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -116,6 +117,23 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
+- **A lease given back with no client and no interface left.**
+  `lease.BuildRelease` renders the datagram out of a `Record` alone and
+  `runtime.SendRelease` writes it, on both families, from a source address the
+  caller names. What it is asserted against is dnsmasq's own lease file and
+  dnsmasq's own log: the released binding is gone and its DHCPRELEASE line is
+  there, a control lease taken in the same fixture and never released is still
+  there at the end, a release carrying the wrong identity runs first and leaves
+  the binding where it is, and the fixture's lease lifetime is measured against
+  the run's own wall time so that an expiry cannot be read as a release
+  (`TestAReleaseBuiltFromARecordReachesRealDnsmasq`,
+  `TestAV6ReleaseBuiltFromARecordReachesRealDnsmasq`). On IPv6 the source may
+  not be the address being given back, RFC 9915 §18.2.7: "The client MUST NOT
+  use any of the addresses it is releasing as the source address in the Release
+  message or in any subsequently transmitted message." `SendRelease` refuses
+  that shape itself and does not trust the caller for it: a server accepts the
+  datagram either way, so no outside evidence would ever show the violation
+  (`TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing`).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
@@ -141,6 +159,37 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   That last shape differs from a link with no server at all. Each mode is
   asserted on two channels, dnsmasq's log and the Router Advertisement on the
   link.
+- **What the advertisement carries, kept per router and stamped on the
+  lease.** Its Prefix Information options, the link MTU (RFC 4861 §4.6.4),
+  RFC 4191 §2.3's more-specific routes and RFC 8106's resolver and search-list
+  options are decoded in ring 0. The four that describe the LINK are kept in
+  ring 1 as a table; the prefixes describe one frame and are reported as that
+  frame sent them, in wire order. The table is a union and not a snapshot of the
+  last frame, RFC 4861 §6.3.4: "Hosts accept the union of all received
+  information; the receipt of a Router Advertisement MUST NOT invalidate all
+  information received in a previous advertisement or from another source."
+  Every entry expires on its own lifetime and not on the router's, §4.2: "The
+  Router Lifetime applies only to the router's usefulness as a default router;
+  it does not apply to information contained in other message fields or
+  options. Options that need time limits for their information include their
+  own lifetime fields." The default router list is ordered by RFC 4191 §2.2's
+  preference, so a caller that wants one gateway takes the first
+  (`TestTheTableTakesTheUnionOfWhatTwoRoutersSaid`,
+  `TestEachEntryExpiresOnItsOwnLifetime`,
+  `TestTheDefaultRouterListIsOrderedByTheAdvertisedPreference`). Where DHCPv6
+  sent the same kind of thing, its entries keep their places and the
+  advertisement's are appended after them, RFC 8106 §5.3.1: "the DNS
+  information from DHCP takes precedence over that from RAs"
+  (`TestWhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst`). The outside
+  evidence is dnsmasq's own advertisement on the link, read back off the lease:
+  the gateway, which DHCPv6 has no option for at all and which can only have
+  come from the frame's source address, an MTU the veth pair does not have, and
+  a search domain that arrives once
+  (`TestTheOptionsARealRouterAdvertisesReachTheCaller`). The table is pruned by
+  the `now` every `Step` is handed and by nothing else, so what a caller reads
+  is correct as of the last `Step` and not as of the read. That bound is
+  driven and not only written down
+  (`TestTheRouterViewOnTheLeaseIsAsOfTheLastStep`).
 - **A server that refuses, told apart from one that never answered.** dnsmasq
   is given a pool of one address, a first client takes it, and a second client
   on the same link is answered and not ignored: the refusal reaches the
@@ -176,6 +225,28 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestTheDeclinedSetSurvivesSeveralRebuilds`).
 - **A restart that confirms.** A client started with a binding from a previous
   run sends RFC 9915 §18.2.3's Confirm as its first message (`TestAResumedV6LeaseConfirmsAgainstRealDnsmasq`).
+- **A reconfiguration the server starts.** RFC 9915 §18.2.11: "Upon receipt of
+  a valid Reconfigure message, the client responds with a Renew message, a
+  Rebind message, or an Information-request message as indicated by the
+  Reconfigure Message option (see Section 21.19)." A client announces §21.20's
+  Reconfigure Accept option, records the reconfigure key a Reply hands it
+  (§20.4.3), and answers an authenticated Reconfigure with the exchange the
+  message names. dnsmasq cannot send one: the fixture's own record is a
+  measurement against the 2.91 sources, two constants and no code that builds
+  or sends the message. So the proof runs against a server written for it,
+  which signs with RFC 2104's construction written out from the RFC and not
+  with this library's own helpers
+  (`TestAnAuthenticatedReconfigureMakesTheClientRenew`). A client built with
+  the option off announces nothing and answers nothing
+  (`TestAClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing`).
+  Every §16.11 discard rule is driven on its own, so six rules that only ever
+  fire together are not six rules
+  (`TestEveryReconfigureDiscardRuleFiresOnItsOwn`), the §20.3 replay floor is
+  per server and rises only where the client acted
+  (`TestTheReplayDetectionValueIsPerServerAndMustIncrease`,
+  `TestAFailedReconfigureDoesNotRaiseTheReplayFloor`), and the key appears
+  in no journal line and in no action a caller could log
+  (`TestTheReconfigureKeyNeverReachesTheJournal`).
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.
