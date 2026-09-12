@@ -18,18 +18,20 @@ import (
 //
 // WHAT THIS SPEAKS, AND WHAT IT REFUSES. Only the client half: the messages a
 // client sends (§7.3's SOLICIT, REQUEST, CONFIRM, RENEW, REBIND, RELEASE,
-// DECLINE, INFORMATION-REQUEST) and the two it accepts (ADVERTISE, REPLY). A
-// Relay-forward, a Relay-reply or a Reconfigure is refused BY NAME rather than
-// parsed, because their headers are not this one — a Relay message carries a
-// hop-count, a link-address and a peer-address before its options (§9), so a
-// decoder that walked its options from offset 4 would read the link address as
-// an option code and terminate on whatever it found.
+// DECLINE, INFORMATION-REQUEST) and the three it accepts (ADVERTISE, REPLY,
+// RECONFIGURE). A Relay-forward or a Relay-reply is refused BY NAME rather
+// than parsed, because their headers are not this one — a Relay message
+// carries a hop-count, a link-address and a peer-address before its options
+// (§9), so a decoder that walked its options from offset 4 would read the link
+// address as an option code and terminate on whatever it found. A Reconfigure
+// has THIS header (§8) and is decoded here; whether one is obeyed is §16.11's
+// and §18.2.11's question, which proto.Machine6 answers.
 //
-// D25 keeps IA_PD, IA_TA, Reconfigure, Rapid Commit and RDNSS out of the 2.0
-// line. They are not implemented and not special-cased: an option this codec
-// does not name survives decoding as bytes under its numeric code, which is
-// what §16 requires of everyone ("Clients, relay agents, and servers MUST NOT
-// discard messages that contain unknown options").
+// D25 keeps IA_PD, IA_TA and Rapid Commit out of the 2.0 line. They are not
+// implemented and not special-cased: an option this codec does not name
+// survives decoding as bytes under its numeric code, which is what §16
+// requires of everyone ("Clients, relay agents, and servers MUST NOT discard
+// messages that contain unknown options").
 //
 // The Server Unicast option (§21.12) and the UseMulticast status code (§21.13)
 // are OBSOLETE, §16: "The Server Unicast option (see Section 21.12) and
@@ -94,9 +96,16 @@ func (m MessageTypeV6) String() string {
 }
 
 // ForClient reports whether a message of this type belongs to the client
-// exchange this codec speaks: §7.3's types 1-9 and 11.
+// exchange this codec speaks: §7.3's types 1-11.
+//
+// RECONFIGURE (10) IS IN THE SET AND WAS NOT BEFORE #925. It is not a message
+// a client sends; it is one a client receives and, under §16.11's conditions,
+// obeys — §18.2.11: "A client receives Reconfigure messages sent to UDP port
+// 546 on interfaces for which it has acquired configuration information
+// through DHCP." What stays outside is the relay pair, whose HEADER is not
+// this one.
 func (m MessageTypeV6) ForClient() bool {
-	return (m >= MsgSolicit && m <= MsgDecline6) || m == MsgInformationRequest
+	return m >= MsgSolicit && m <= MsgInformationRequest
 }
 
 // OptionCodeV6 is the 2-octet option-code of §21.1.
@@ -129,6 +138,9 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6Preference:   "preference",
 	OptV6ElapsedTime:  "elapsed-time",
 	OptV6StatusCode:   "status-code",
+	OptV6Auth:         "auth",
+	OptV6ReconfMsg:    "reconf-msg",
+	OptV6ReconfAccept: "reconf-accept",
 	OptV6DNSServers:   "dns-servers",
 	OptV6DomainList:   "domain-list",
 	OptV6InfoRefresh:  "info-refresh-time",
@@ -150,8 +162,9 @@ func (c OptionCodeV6) String() string {
 var (
 	// ErrV6Short is a datagram shorter than §8's four-octet header.
 	ErrV6Short = errors.New("wire: DHCPv6 message shorter than the 4-octet header")
-	// ErrV6NotForClient is a Relay-forward, Relay-reply or Reconfigure: a
-	// well-formed DHCPv6 message that this client neither sends nor accepts.
+	// ErrV6NotForClient is a Relay-forward or a Relay-reply: a well-formed
+	// DHCPv6 message that this client neither sends nor accepts, and whose
+	// header is not §8's.
 	ErrV6NotForClient = errors.New("wire: DHCPv6 message is not one a client sends or accepts")
 	// ErrV6UnknownType is §16's "A client or server MUST discard any received
 	// DHCP messages with an unknown message type."
@@ -256,7 +269,7 @@ func DecodeV6(b []byte) (*MessageV6, error) {
 	t := MessageTypeV6(b[0])
 	switch {
 	case t.ForClient():
-	case t == MsgReconfigure || t == MsgRelayForw || t == MsgRelayRepl:
+	case t == MsgRelayForw || t == MsgRelayRepl:
 		return nil, fmt.Errorf("%w: %s", ErrV6NotForClient, t)
 	default:
 		return nil, fmt.Errorf("%w: %d", ErrV6UnknownType, uint8(b[0]))
