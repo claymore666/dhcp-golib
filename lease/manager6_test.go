@@ -5,6 +5,7 @@ package lease
 import (
 	"errors"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -756,7 +757,11 @@ func TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen(t *testing.T) {
 	if ev.Kind != Failed || ev.Reason != proto.ReasonNak {
 		t.Fatalf("the second event is %s, want the refusal the retransmission drew", ev)
 	}
-	if ev.Router != obs {
+	// DeepEqual and not ==, because the merge with #814 gave RouterObservation
+	// slice fields (the prefixes, the resolvers, the search list and the
+	// routes) and a struct holding a slice does not compare. The property is
+	// unchanged: every field of the event's copy is the live observation's.
+	if !reflect.DeepEqual(ev.Router, obs) {
 		t.Fatalf("the second refusal carries %s while the manager reports %s: the field is the live observation at the moment the event was stamped, and a caller told otherwise is reading a fabrication", ev.Router, obs)
 	}
 }

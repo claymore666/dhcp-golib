@@ -166,6 +166,7 @@ type Machine6 struct {
 	// router is what router discovery has seen, and rsCount how many Router
 	// Solicitations have gone out.
 	router  RouterObservation
+	routers routerTable
 	rsCount int
 
 	// config is the last stateless configuration an Information-request
@@ -309,6 +310,29 @@ func (m *Machine6) MaxRT() (sol, inf Duration) {
 // Router returns what router discovery has observed on this link.
 func (m *Machine6) Router() RouterObservation { return m.router }
 
+// RouterTableDrops is how many arrivals a full list in the router table would
+// not take, and RouterTableEvictions how many entries a full list threw out to
+// take one: the Default Router List and the route table refuse, the resolver
+// and search lists evict (RFC 8106 §6.2 (d)). Neither is part of the
+// observation: the observation is what the routers said, and these are what
+// this client could not hold, each with its cause.
+func (m *Machine6) RouterTableDrops() uint64 { return m.routers.refused }
+
+// RouterTableEvictions is the eviction half of RouterTableDrops's pair.
+func (m *Machine6) RouterTableEvictions() uint64 { return m.routers.evicted }
+
+// RouterOptionsIgnored is how many options this ring walked past because the
+// option's own standard says the value is not usable, while the rest of the
+// advertisement was read. Today that is the MTU option outside the bounds RFC
+// 4861 §6.3.4 lets a host copy.
+//
+// IT IS THE DECODER'S IgnoredOptions POPULATION AND NOT THE TABLE'S. Ring 0
+// refuses an option it cannot parse by its own standard's rule; this ring
+// refuses a value it parsed and may not use. Neither is a full list, so
+// neither belongs beside RouterTableDrops, and ring 2 adds the two into the
+// one number an operator reads.
+func (m *Machine6) RouterOptionsIgnored() uint64 { return m.routers.optIgnored }
+
 func (m *Machine6) takeActionID() ActionID {
 	id := m.nextAction
 	m.nextAction++
@@ -333,6 +357,17 @@ type advert6 struct {
 // AllEventKinds.
 func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 	var out actions
+
+	// THE ROUTER TABLE IS AGED HERE, ON EVERY EVENT, and not only on an
+	// advertisement. Its entries expire on wall time the machine does not read
+	// — it is handed one now per Step and has no other clock — so ageing it
+	// where the advertisements arrive would mean a link whose router has gone
+	// quiet keeps reporting the gateway that timed out, forever, because the
+	// only thing that could have noticed is the advertisement that never came.
+	// It is not a transition and emits nothing; see RouterObservation's bound.
+	if m.router.Seen {
+		m.routers.fill(now, &m.router)
+	}
 
 	// Router discovery runs BESIDE the DHCP exchange, in every state, which is
 	// design §A.3.3 interlock 1 and lead ruling 7. It is handled before the
@@ -2088,7 +2123,23 @@ func (m *Machine6) observeRouter(now Instant, rnd uint64, ev Event, out *actions
 		return
 	}
 	first := !m.router.Seen
-	m.router = RouterObservation{Seen: true, Managed: ev.RA.Managed, Other: ev.RA.Other}
+	m.router = RouterObservation{
+		Seen:    true,
+		Managed: ev.RA.Managed,
+		Other:   ev.RA.Other,
+		Router:  ev.RA.Router,
+		// A COPY, not the decoded advertisement's own slice. The same
+		// *wire.RouterAdvert reaches ring 2's capture ring, and a machine
+		// holding its slices would share them with whatever reads that ring.
+		Prefixes: append([]wire.PrefixInfo(nil), ev.RA.Prefixes...),
+	}
+	if !m.routers.observe(now, ev.RA) {
+		out.journal(m, "Router Advertisement with no source address: its flags are read and it names no router, so it adds nothing to the router table (RFC 4861 §6.3.4 keys the list on the source address of the packet)")
+	}
+	m.routers.fill(now, &m.router)
+	if ev.RA.IgnoredOptions > 0 {
+		out.journal(m, fmt.Sprintf("Router Advertisement carried %d option(s) refused by their own standard's validity rule; the rest of the advertisement was read", ev.RA.IgnoredOptions))
+	}
 	out.stamp(m, Action{Kind: ActRouterObserved, Router: m.router})
 	if first {
 		// §6.3.7's schedule exists "To obtain Router Advertisements quickly".

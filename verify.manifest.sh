@@ -489,6 +489,84 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # — different files, no test renamed or removed in either — so the merge
 # product carries both, 656 + 22 and 674 + 2 reaching the same number. It is
 # MEASURED on the merge product and not added up: one testroster run here.
+
+# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 700, measured the same way,
+# one testroster run over the base and one over this head, differenced as a set.
+# Forty-nine added, in five files. The eight in the middle of the wire, proto
+# and lease lists are round 2's: the three duplicate guards in the router/DHCP
+# merge, RFC 4191 section 2.2's Default Router Preference, the withdrawal that
+# has to free its slot, and row D-9's Prefix Information option moving from the
+# packet rule to the option rule. The three at the end of the proto list are
+# round 3's: the search list's own withdrawal, a full list evicting the entry
+# that expires first, and a router that changes the preference it advertises.
+#
+#   wire/icmpv6_options_test.go        (14)  TheMTUOptionIsReadFromItsOwnOffset,
+#     AnMTUOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot,
+#     TheRouteInformationOptionChecksItsLengthAgainstItsPrefixLength,
+#     TheRoutePreferenceIsTwoBitsSignedAndReservedIsARefusal,
+#     TheRouteInformationPrefixIsMaskedAndItsLifetimeIsItsOwn,
+#     TheRecursiveDNSServerOptionCarriesItsAddressesAndOneLifetime,
+#     TheRecursiveDNSServerOptionIsCheckedAsSection531SaysToCheckIt,
+#     TheSearchListOptionDecodesItsLabelsAndDropsItsPadding,
+#     TheSearchListOptionRefusesTheEncodingsSection52Forbids,
+#     AnOptionLengthOfZeroOrAnOverrunDiscardsTheWholePacket,
+#     AnUnrecognisedOptionIsNotCountedAsIgnored,
+#     TheDecoderDoesNotSetTheRouterAddress,
+#     TheDnsmasqShapedAdvertisementDecodesEveryOption,
+#     ADecodedAdvertisementKeepsNothingOfItsInputBuffer
+#   wire/icmpv6_test.go                 (2)  APrefixInformationOptionOfThe
+#     WrongLengthIsIgnoredAndItsSiblingsAreNot,
+#     TheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules
+#   proto/router6_test.go              (21)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
+#     TheSamePrefixFromTwoRoutersIsTwoRoutes,
+#     TheRoutesAreOrderedMostPreferredFirst,
+#     AZeroLifetimeWithdrawsTheEntryItNames,
+#     ARouterNeverSeenBeforeWithLifetimeZeroIsNotADefaultRouter,
+#     EachEntryExpiresOnItsOwnLifetime,
+#     TheRouterLifetimeIsSixteenBitsAndHasNoInfinity,
+#     TheMTUIsBoundedBelowByTheMinimumLinkMTU,
+#     AnAdvertisementWithNoSourceAddressNamesNoRouter,
+#     TheTableCapsHoldAtLeastWhatTheStandardsRequire,
+#     TheTableIsBoundedAndSaysSoWhenItRefuses,
+#     AnExpiredEntryMakesRoomForANewOne,
+#     ARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut,
+#     TheObservationHoldsNoSliceOfTheAdvertisement,
+#     TheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement,
+#     AReplayedAdvertisementKeepsTheRouterItCameFrom,
+#     AWithdrawnResolverFreesItsSlotInTheSameAdvertisement,
+#     TheDefaultRouterListIsOrderedByTheAdvertisedPreference,
+#     AWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement,
+#     AFullListEvictsTheEntryThatExpiresFirst,
+#     ARouterThatChangesItsPreferenceMovesInTheDefaultRouterList
+#   lease/router6_test.go              (11)  TheAddressTheSocketReadIsTheRouter
+#     TheTableKeysOn, ABrokenAdvertisementIsNotTheSameAsNoAdvertisement,
+#     AnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot,
+#     TheV6LeaseCarriesWhatTheRouterAdvertised,
+#     TheAdvertisedViewFillsOnlyWhatTheLeaseDoesNotHave,
+#     TheAdvertisedViewNeverWritesIntoTheLeaseItWasGiven,
+#     TheRouterViewOnTheLeaseIsAsOfTheLastStep,
+#     OneMalformedPrefixDoesNotHideTheRouterThatSentIt,
+#     WhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst,
+#     ARouteBothSourcesCarryIsNotAddedTwice,
+#     TheLeaseNamesTheRouterThatAdvertisedTheHigherPreference
+#   runtime/dnsmasq6_linux_test.go      (1)  TheOptionsARealRouterAdvertises
+#     ReachTheCaller
+#
+# ONE OF THE FORTY-NINE IS A NETNS TEST, the last one, MEASURED with
+# testroster -netns at 35 over this round's base and 36 on the merge product.
+# The netns roster is derived rather than declared, so nothing else has to be
+# written down for it, and NETNS_CEILING_SECONDS was re-measured rather than
+# assumed: the netns row's wall time on the merge product left more headroom
+# than the floor that block derives, so the ceiling does not move. The figure
+# is in the round's record.
+#
+# THE BACK-MERGE OF THE PIN ROUND AND #816 INTO #814: the three rounds above
+# are disjoint — different files, and no test renamed or removed in any of
+# them — so the merge product carries all of them. The number below is
+# MEASURED on the merge product with one testroster run and NOT added up from
+# the three sides, which is the arithmetic that would hide a collision. Round
+# three re-measured it the same way after adding the three tests named above.
+#
 #
 # L5, #925 (DHCPv6 Reconfigure), over the back-merge of #816 and the pin round:
 # 678 -> 725, measured the same way — one testroster run over the merge base and
@@ -553,6 +631,33 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # ends this branch's Reconfigure detour, and a clean textual merge answers
 # nothing about what becomes of the detour.
 #
+# THE BACK-MERGE OF #925 INTO #814. The two enumerations above are kept whole
+# and not folded into one, because each is the record of what its own round
+# added and a merged list says which round to ask about nothing. The rounds are
+# disjoint: different files on both sides, and no test renamed or removed in
+# either. The number below is MEASURED on the merge product with one testroster
+# run, and the netns count the same way with testroster -netns, because adding
+# the two sides is the arithmetic that would hide a collision. MEASURED on the
+# merge product: 775 declared and 38 netns, against 727 and 36 on this branch
+# and 725 and 37 on dev. NETNS_CEILING_SECONDS is #925's 170 and the netns row
+# on the merge product is measured against it in this round's record.
+#
+# TWO MORE ARE THE MERGE'S OWN, which is why they are named here and not in
+# either round's list above, and 775 becomes 777:
+#
+#   proto/machine6_replay_test.go      (1)  OneJournalCarriesBothTheRouter
+#     SourceAndTheDestination
+#   lease/record_test.go               (1)  EveryWireCounterSurvivesThe
+#     RecordsEncoding
+#
+# The first is the collision itself: JournalEntry6 gained a field on each side
+# of the merge, each round's tests pass on a product that kept only its own
+# half, and a diff shows nothing because the text that collides is text neither
+# side wrote. One journal that carries both is the only fixture that sees it.
+# The second is this round's new wire counter taking the second of the two
+# routes a counter reaches a file by, the struct tags, where a name given twice
+# is answered by writing neither.
+
 # THE HOSTNAME SETTER, #961, AND ITS BACK-MERGE INTO THIS BATCH: this branch
 # moved the pin 654 -> 676 and then 678 without writing its set down, which is
 # what this block repays. 725 -> 747, MEASURED here, one testroster run over
@@ -596,6 +701,40 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # to the netns row moves here. It is derived at run time in verify.sh, so there
 # is no second number to patch; NETNS_CEILING_SECONDS is this batch's 170 and
 # is not moved by one more namespaced test.
+
+# AND A THIRD BACK-MERGE, #961's hostname setter, whose block is the one
+# directly above. Three rounds now meet in this file and all three lists are
+# kept whole for the reason the first pair were: a merged list is a list that
+# says which round to ask about nothing. The pin below is MEASURED on THIS
+# merge product with one testroster run and the netns count with one
+# testroster -netns run: 799 declared and 39 netns, which 777 and 747 are not
+# added up to, because the arithmetic is what would hide a collision between
+# the two sides. dev at 6a69a38 measures 747 and 38, so this branch's own
+# addition is 52 declared and 1 netns on any base it has sat on.
+#
+# The collision this merge did have is again JournalEntry6 and its v4 twin:
+# #925 put Dst on one, this branch put RASrc on both, #961 put Hostname on
+# both, and replayEvent's signature carries all three. Every hunk was resolved
+# by keeping every field, and the observer that sees a dropped one is named in
+# this branch's list above.
+#
+# ROUND 4 ADDS SIX, all of them answers to one pre-push read, and 799 becomes
+# 805:
+#
+#   proto/router6_test.go        (3)  AnUnusableMTUIsAnIgnoredOptionAndNotA
+#     FullList, AnMTUInsideTheBoundsCountsNothing, TheReportedResolversAnd
+#     SearchDomainsAreInTheOrderTheyWereFirstHeard
+#   proto/machine6_test.go       (1)  TheExportedRingOneCountersNameTheirOwn
+#     Cause
+#   lease/router6_test.go        (2)  AnUnusableMTUReachesTheOperatorAsAn
+#     IgnoredOptionAndNotACapInForce, TheDecodersIgnoredOptionsAndRingOnesAre
+#     OneNumber
+#
+# The first five are one finding: an MTU outside what a host may copy was
+# counted as a full list refusing an arrival, on a link where no list was full
+# and nothing was refused. The sixth states an order that was the only one on
+# the observation left unstated.
+
 #
 # THE RELEASE-BY-RECORD ROUND, ROUND 2 OF THE READ: one more added,
 # TestBindingTheReleaseSocketToALinkIsCheckedOrRefused, which drives the two
@@ -619,7 +758,15 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster run here and not added up. 766 declared and 41 netns on the
 # product of this branch and dev at 6a69a38, which is dev's 747 and 38 plus
 # this round's nineteen and three.
-MIN_DECLARED_TESTS=767
+
+# AND A FOURTH BACK-MERGE, #962's release by record, whose block is the one
+# directly above. Four rounds now meet in this file and every list is kept
+# whole, for the reason the earlier ones were. The pin below is MEASURED on
+# THIS merge product, one testroster run for the declared count and one
+# testroster -netns run for the namespaced one: 825 declared and 42 netns, which
+# is not 805 and 767 added, because the arithmetic is what would hide a
+# collision between the sides. dev at 56888c7 measures 767 and 41.
+MIN_DECLARED_TESTS=825
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

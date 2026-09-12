@@ -650,11 +650,80 @@ type RouterObservation struct {
 	Seen    bool
 	Managed bool
 	Other   bool
+
+	// Router is the link-local source address of the MOST RECENT
+	// advertisement, and Prefixes its Prefix Information options in wire
+	// order. They describe one frame; everything below describes the link.
+	//
+	// Router does not expire. It answers "who last spoke", which is a fact
+	// about the past and stays true; whether that router is still a default
+	// router is Routers' question and is answered by the lifetime it
+	// advertised.
+	Router   netip.Addr
+	Prefixes []wire.PrefixInfo
+
+	// Routers is RFC 4861 §6.3.4's Default Router List: every router whose
+	// advertised Router Lifetime has not run out, ordered by RFC 4191 §2.2's
+	// Default Router Preference, most preferred first, with the order they
+	// were first heard as the tie-break between equals. A caller that wants
+	// one gateway takes the first.
+	Routers []netip.Addr
+
+	// MTU is the link MTU the most recent MTU option offered, zero if none was
+	// offered or the value was outside what a host may copy (§6.3.4).
+	MTU uint32
+
+	// DNS and Search are RFC 8106's two lists, unioned across routers, each
+	// entry held until its own lifetime runs out, IN THE ORDER THEY WERE FIRST
+	// HEARD. A resolver refreshed by a later advertisement keeps the place it
+	// had; only an entry that was withdrawn or expired and then heard again is
+	// last.
+	//
+	// THAT IS THE DNS SERVER LIST'S ORDER AND NOT THE RESOLVER REPOSITORY'S.
+	// §6.2 keeps two structures and gives them different rules: it stores the
+	// addresses "(in order) in both the DNS Server List and the Resolver
+	// Repository", and its step (d) then says to "register the RDNSS address
+	// and Lifetime with the DNS Server List and then insert the RDNSS address
+	// as the first one in the Resolver Repository". Newest-first is the
+	// repository's rule, and the repository is the thing that resolves names.
+	// This library resolves nothing and installs nothing, so what it reports
+	// is the list, and a caller that keeps a repository applies (d) to its own
+	// when it reads this one. §6.3 gives the search list the same processing.
+	//
+	// Routes are RFC 4191's more-specific routes with the router that
+	// advertised each one as the next hop, most preferred first.
+	DNS    []netip.Addr
+	Search []string
+	Routes []wire.Route
+
+	// IT IS A SNAPSHOT TAKEN AT THE LAST Step AND NOT A LIVE VIEW. This client
+	// arms no timer for an entry's expiry: the table is pruned from the now
+	// every Step is handed, so a machine that has taken no Step since an entry
+	// expired still reports it, and the report is corrected by the next Step
+	// rather than by a wake-up. On a link with a router that is advertising,
+	// the next advertisement is the next Step. On a link that has gone quiet,
+	// the stale window is as long as the caller's own silence.
 }
 
 func (r RouterObservation) String() string {
 	if !r.Seen {
 		return "no router advertisement seen"
 	}
-	return fmt.Sprintf("router advertisement M=%t O=%t", r.Managed, r.Other)
+	s := fmt.Sprintf("router advertisement M=%t O=%t", r.Managed, r.Other)
+	if r.Router.IsValid() {
+		s += " from " + r.Router.String()
+	}
+	if len(r.Routers) > 0 {
+		s += fmt.Sprintf(", %d default router(s)", len(r.Routers))
+	}
+	if r.MTU != 0 {
+		s += fmt.Sprintf(", mtu %d", r.MTU)
+	}
+	if len(r.DNS) > 0 || len(r.Search) > 0 {
+		s += fmt.Sprintf(", %d resolver(s), %d search domain(s)", len(r.DNS), len(r.Search))
+	}
+	if len(r.Routes) > 0 {
+		s += fmt.Sprintf(", %d route(s)", len(r.Routes))
+	}
+	return s
 }

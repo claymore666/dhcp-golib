@@ -77,16 +77,36 @@ func (mg *Manager) onND(ctx context.Context, in NDInbound) {
 	// frame counted and not yet classified.
 	ra, err := wire.DecodeRouterAdvert(in.Frame)
 	if err != nil {
-		// Not a Router Advertisement. That covers both "a Neighbor
-		// Advertisement, which is not ours to read" and "not a valid ICMPv6
-		// message at all", and the two are not separated here because this
-		// ring cannot tell them apart without a second decode of a frame it
-		// is going to drop either way. What distinguishes them is the type
-		// octet, and it is in the frame the caller still has.
-		mg.bump(func(s *Stats) { s.NDSeen++; s.NDIgnored++ })
+		// A FRAME THAT WAS NOT AN ADVERTISEMENT AND ONE THAT WAS A BROKEN
+		// ADVERTISEMENT ARE DIFFERENT FACTS, and the type octet separates
+		// them. A link whose router is sending advertisements this decoder
+		// refuses — a zero-length option, an option running past the end, a
+		// non-zero ICMP Code — looks exactly like a link with no router at
+		// all in a counter that holds both, and the operator's next step
+		// differs: one is a router to fix, the other is a router to find.
+		refused := len(in.Frame) > 0 && in.Frame[0] == wire.ICMPv6RouterAdvert
+		mg.bump(func(s *Stats) {
+			s.NDSeen++
+			s.NDIgnored++
+			if refused {
+				s.RouterAdvertsRefused++
+			}
+		})
 		return
 	}
-	mg.bump(func(s *Stats) { s.NDSeen++; s.RouterAdvertsSeen++ })
+	// The router's address, RFC 4861 section 6.3.4's "a host extracts the
+	// source address of the packet". It is not in the ICMPv6 body, so the
+	// decoder cannot have set it and this is the only ring that has both.
+	ra.Router = in.Src
+	ignored := uint64(ra.IgnoredOptions)
+	mg.bump(func(s *Stats) {
+		s.NDSeen++
+		s.RouterAdvertsSeen++
+		// The decoder's half only. Ring 1 refuses options of its own and adds
+		// them to this same number at the Step that follows, from the one
+		// place that is allowed to read ring 1.
+		s.RouterAdvertOptionsIgnored += ignored
+	})
 	mg.packets6.Record(CapturedPacketV6{
 		At:  mg.cfg.Clock.Wall(),
 		Dir: DirIn,

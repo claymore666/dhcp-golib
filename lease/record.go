@@ -683,15 +683,19 @@ type WireCounters struct {
 	// way: the record folds it from its own Configured events into
 	// RecordCounters.Configurations, so carrying it on the wire half too
 	// would be one fact derived twice.
-	RateLimited        uint64 `json:"rate_limited,omitempty"`
-	NDSeen             uint64 `json:"nd_seen,omitempty"`
-	NDIgnored          uint64 `json:"nd_ignored,omitempty"`
-	NDErrors           uint64 `json:"nd_errors,omitempty"`
-	NDSendFailures     uint64 `json:"nd_send_failures,omitempty"`
-	RouterSolicitsSent uint64 `json:"router_solicits_sent,omitempty"`
-	RouterAdvertsSeen  uint64 `json:"router_adverts_seen,omitempty"`
-	DADChecksStarted   uint64 `json:"dad_checks_started,omitempty"`
-	DADConflicts       uint64 `json:"dad_conflicts,omitempty"`
+	RateLimited                uint64 `json:"rate_limited,omitempty"`
+	NDSeen                     uint64 `json:"nd_seen,omitempty"`
+	NDIgnored                  uint64 `json:"nd_ignored,omitempty"`
+	NDErrors                   uint64 `json:"nd_errors,omitempty"`
+	NDSendFailures             uint64 `json:"nd_send_failures,omitempty"`
+	RouterSolicitsSent         uint64 `json:"router_solicits_sent,omitempty"`
+	RouterAdvertsSeen          uint64 `json:"router_adverts_seen,omitempty"`
+	RouterAdvertsRefused       uint64 `json:"router_adverts_refused,omitempty"`
+	RouterAdvertOptionsIgnored uint64 `json:"router_advert_options_ignored,omitempty"`
+	RouterTableEntriesDropped  uint64 `json:"router_table_entries_dropped,omitempty"`
+	RouterTableEntriesEvicted  uint64 `json:"router_table_entries_evicted,omitempty"`
+	DADChecksStarted           uint64 `json:"dad_checks_started,omitempty"`
+	DADConflicts               uint64 `json:"dad_conflicts,omitempty"`
 }
 
 // The seven Stats fields WireCounters deliberately does not carry, because the

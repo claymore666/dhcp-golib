@@ -3,6 +3,7 @@
 package lease
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"reflect"
@@ -656,3 +657,101 @@ func TestEveryWireCounterSurvivesTheArithmetic(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestEveryWireCounterSurvivesTheRecordsEncoding drives every field of
+// WireCounters through the encoding a record is stored in, with a value unique
+// to that field.
+//
+// A COUNTER REACHES THE WIRE HALF AND THE FILE BY TWO DIFFERENT ROUTES. The
+// test above drives the first, which is reflective and would show a field
+// skipped; this drives the second, which is the struct tags, and the ways that
+// one loses a counter are quiet: a field with no tag at all, or two fields
+// given one name, which encoding/json answers by writing neither. Either reads
+// back as a zero from a client that counted.
+func TestEveryWireCounterSurvivesTheRecordsEncoding(t *testing.T) {
+	wt := reflect.TypeOf(WireCounters{})
+	var w WireCounters
+	wv := reflect.ValueOf(&w).Elem()
+	for i := range wt.NumField() {
+		wv.Field(i).SetUint(uint64(i + 1))
+	}
+
+	b, err := json.Marshal(RecordCounters{Wire: w})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var back RecordCounters
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	gv := reflect.ValueOf(back.Wire)
+	for i := range wt.NumField() {
+		if want := uint64(i + 1); gv.Field(i).Uint() != want {
+			t.Errorf("%s came back as %d, want %d: the record's encoding lost it",
+				wt.Field(i).Name, gv.Field(i).Uint(), want)
+		}
+	}
+
+	// AND THE NAME IS PART OF THE FORMAT. A round trip is blind to a rename,
+	// because both halves of it read the same tag: a counter written under a
+	// new key and read back from that key survives the trip and still breaks
+	// every reader holding the old name. The key is therefore derived from
+	// the field's own name and compared, which is also what makes a field
+	// added with no tag at all visible, since Go would then encode it under
+	// its Go name.
+	//
+	// A name given TWICE is the same class and IS this test's. vet reports a
+	// repeated json tag, but vet is not what runs here: go test builds and
+	// runs this package with a subset of vet that does not include the
+	// struct-tag analyser, so a tree carrying two fields under one name
+	// compiles, runs, and fails on these assertions. MEASURED, by spelling the
+	// eviction counter's tag as the refusal counter's and running go test:
+	// five lines fail, two from the round trip and three from the names. An
+	// earlier version of this comment claimed the toolchain refused it before
+	// a test could see it; that was read off a mutation harness whose syntax
+	// check happened to be go vet, which is a fact about the harness and not
+	// about this tree.
+	var outer struct {
+		Wire map[string]json.RawMessage `json:"wire"`
+	}
+	if err := json.Unmarshal(b, &outer); err != nil {
+		t.Fatalf("json.Unmarshal into a map: %v", err)
+	}
+	raw := outer.Wire
+	for i := range wt.NumField() {
+		f := wt.Field(i)
+		want := snakeCase(f.Name)
+		if got := f.Tag.Get("json"); got != want+",omitempty" {
+			t.Errorf("%s carries the json tag %q, want %q: the wire name is "+
+				"part of the record's format", f.Name, got, want+",omitempty")
+		}
+		if _, ok := raw[want]; !ok {
+			t.Errorf("%s did not reach the encoding as %q", f.Name, want)
+		}
+	}
+}
+
+// snakeCase spells a Go field name the way this record's wire names are
+// spelled: a break before an upper-case letter that follows a lower-case one,
+// and before the last upper-case letter of a run that begins a word, so
+// ARPSendFailures is arp_send_failures and not a_r_p_send_failures.
+func snakeCase(name string) string {
+	var out []rune
+	r := []rune(name)
+	for i, c := range r {
+		upper := c >= 'A' && c <= 'Z'
+		if upper && i > 0 {
+			prevLower := r[i-1] >= 'a' && r[i-1] <= 'z'
+			nextLower := i+1 < len(r) && r[i+1] >= 'a' && r[i+1] <= 'z'
+			if prevLower || nextLower {
+				out = append(out, '_')
+			}
+		}
+		if upper {
+			c += 'a' - 'A'
+		}
+		out = append(out, c)
+	}
+	return string(out)
+}

@@ -7,7 +7,20 @@
 // internal/gates/t1), because ring 1 imports it and an impure ring 0 would
 // make ring 1 impure transitively.
 //
-// DHCPv4 only, and only what DISCOVER / OFFER / REQUEST / ACK / NAK need. The
+// Three protocols live here: DHCPv4, DHCPv6, and the part of Neighbor
+// Discovery a DHCP client has to read. The Router Advertisement is decoded for
+// RFC 4861 section 4.2's M and O flags, its Prefix Information options, and
+// the four options this client reports — the link MTU (RFC 4861 section
+// 4.6.4), Route Information (RFC 4191 section 2.3), and the recursive DNS
+// server and DNS search list options (RFC 8106 sections 5.1 and 5.2). Nothing
+// here ever builds one: this library does not advertise.
+//
+// THE SOURCE ADDRESS IS NOT IN THE MESSAGE. RFC 4861 section 6.3.4 keys
+// everything a host keeps on "the source address of the packet", which lives
+// in the IPv6 header this codec is never given, so RouterAdvert.Router is a
+// field only a caller that owns the socket can fill in.
+//
+// Of DHCPv4, only what DISCOVER / OFFER / REQUEST / ACK / NAK need. The
 // message struct carries every BOOTP field and every option, so a message
 // carrying options this milestone does not interpret round-trips without loss.
 // That is why Options is a byte map and not a struct of parsed fields.

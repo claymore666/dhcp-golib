@@ -235,6 +235,20 @@ type Manager struct {
 	// having produced counters that could be deleted with the suite still
 	// green.
 	stats Stats
+
+	// raOptionsIgnoredRing1 is how much of Stats.RouterAdvertOptionsIgnored
+	// has already been taken from ring 1.
+	//
+	// THE FIELD IS ONE NUMBER WITH TWO PRODUCERS, which is why this one
+	// exists. The decoder's half is ADDED at receive, so the public field
+	// cannot be assigned from ring 1's total without losing it; ring 1's own
+	// total is cumulative, so it cannot be added either without counting every
+	// earlier option again at every Step. What is added is the part of ring
+	// 1's total that has not been added yet, and this is that watermark. It is
+	// read and written only from the goroutine that runs Step, which is the
+	// same rule the mirrored table counters beside it follow: ring 1 is not
+	// concurrency-safe and this ring touches it in exactly one place.
+	raOptionsIgnoredRing1 uint64
 }
 
 // Stats are the counters this manager produces.
@@ -376,8 +390,40 @@ type Stats struct {
 
 	// RouterSolicitsSent counts RFC 4861 section 6.3.7's solicitations that
 	// left the host; RouterAdvertsSeen the advertisements that reached ring 1.
-	RouterSolicitsSent uint64
-	RouterAdvertsSeen  uint64
+	//
+	// RouterAdvertsRefused counts frames that WERE Router Advertisements — the
+	// ICMPv6 type octet says so — and would not decode. It is separate from
+	// NDIgnored, which holds every frame this ring dropped, because their
+	// difference is the diagnostic: a link with no router and a link whose
+	// router is advertising something this decoder refuses are the same number
+	// in NDIgnored alone, and only one of them is a router to go and fix.
+	//
+	// RouterAdvertOptionsIgnored counts OPTIONS, not frames: a recognised
+	// option refused by its own standard's validity rule while the rest of the
+	// advertisement was read. It rises on advertisements that are otherwise
+	// fine, which is why it is not folded into the refusal count.
+	//
+	// TWO RINGS PUT OPTIONS IN IT. The decoder refuses an option it cannot
+	// read by that option's own rule; the state machine refuses a value it
+	// read and may not use, which today is an MTU outside the bounds RFC 4861
+	// §6.3.4 lets a host copy. Both are one option nobody could use out of an
+	// advertisement that was otherwise read, so both are this number. Neither
+	// is a full list, which is why neither is below.
+	//
+	// RouterTableEntriesDropped is ring 1's, mirrored here at each Step: an
+	// arrival a full list in the router table would not take.
+	// RouterTableEntriesEvicted is its pair, an entry a full list threw out to
+	// take an arrival, which is what RFC 8106 §6.2 (d) asks of the resolver
+	// and search lists. They are two counters because they ask for different
+	// next steps, and either above zero means the table's caps are in force,
+	// which on a quiet link means something is advertising more than a link
+	// has.
+	RouterSolicitsSent         uint64
+	RouterAdvertsSeen          uint64
+	RouterAdvertsRefused       uint64
+	RouterAdvertOptionsIgnored uint64
+	RouterTableEntriesDropped  uint64
+	RouterTableEntriesEvicted  uint64
 
 	// DADChecksStarted counts addresses handed to ring 3 for RFC 4862 section
 	// 5.4, and DADConflicts the ones that came back in use. Their difference
@@ -646,9 +692,29 @@ func (mg *Manager) v6() bool { return mg.machine6 != nil }
 func (mg *Manager) Events() <-chan Event { return mg.events }
 
 // Lease returns a snapshot of the held lease.
+//
+// ON v6 IT CARRIES WHAT THE ROUTER ADVERTISED, exactly as an event's lease
+// does, and it is the reason this is not a bare field read. The two arrive on
+// two protocols with no ordering between them: an advertisement that lands
+// after the Reply cannot retroactively appear in an event that has already
+// been emitted, and this library emits no event of its own when the router's
+// view changes. Reading it here is how a caller that already holds a lease
+// sees the gateway, the MTU, the routes and the resolvers the router has
+// since advertised.
+//
+// THE ADVERTISED HALF IS AS OF THE LAST Step, NOT AS OF THIS CALL. The router
+// table is pruned from the now each Step is handed and this client arms no
+// timer for an entry's expiry, so a lifetime that ran out while the machine
+// was quiet is still reported here and is corrected by the next Step. The DHCP
+// half of the lease is not affected: its own deadlines are fields on the
+// returned value, which a caller compares against its own clock. See
+// proto.RouterObservation's doc for the size of the window.
 func (mg *Manager) Lease() (Lease, bool) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
+	if mg.held && mg.v6() {
+		return withRouterAdvert(mg.lease, mg.router), true
+	}
 	return mg.lease, mg.held
 }
 
@@ -1029,6 +1095,12 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// would be one fact derived twice, in two places that can be
 			// edited apart.
 			mg.router = mg.machine6.Router()
+			mg.stats.RouterTableEntriesDropped = mg.machine6.RouterTableDrops()
+			mg.stats.RouterTableEntriesEvicted = mg.machine6.RouterTableEvictions()
+			if n := mg.machine6.RouterOptionsIgnored(); n > mg.raOptionsIgnoredRing1 {
+				mg.stats.RouterAdvertOptionsIgnored += n - mg.raOptionsIgnoredRing1
+				mg.raOptionsIgnoredRing1 = n
+			}
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d
@@ -1446,6 +1518,14 @@ func (mg *Manager) emit(ctx context.Context, e Event) {
 		e.Router = mg.machine6.Router()
 		if e.Kind != Configured {
 			e.Config = mg.config
+		}
+		switch e.Kind {
+		case Acquired, Changed, Renewed:
+			// The three kinds that carry a lease. A Lost or a Failed carries
+			// an empty one, and filling a gateway and a resolver into a lease
+			// that has no address would describe a configuration the caller
+			// must not install.
+			e.Lease = withRouterAdvert(e.Lease, e.Router)
 		}
 	} else {
 		e.Family = FamilyV4

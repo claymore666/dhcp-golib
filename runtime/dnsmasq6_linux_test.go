@@ -88,7 +88,28 @@ const (
 	// otherwise.
 	test6RAInterval = 4
 	test6RALifetime = 300
+
+	// test6RAMTU is the link MTU v6ManagedOptions advertises. It is NOT the
+	// interface's own MTU, which is what makes it evidence: the veth pair
+	// wireUpV6 builds carries the kernel default, so a client reporting this
+	// number read it out of the option.
+	test6RAMTU = 1420
+	// test6RASearch is the search domain that mode advertises. It is not
+	// test6Search, so a lease carrying it cannot have got it from the v4
+	// fixture, and it reaches the client on BOTH protocols because dnsmasq
+	// builds the DNSSL option out of its DHCPv6 options.
+	test6RASearch = "ra.invalid"
 )
+
+// raParam builds the --ra-param argument for a mode. The interval and the
+// lifetime are the fixture's, written once; the mtu: keyword is the mode's.
+func raParam(mode v6Mode) string {
+	out := "--ra-param=" + test6ServerIf + ","
+	if mode.raMTU != 0 {
+		out += "mtu:" + fmt.Sprint(mode.raMTU) + ","
+	}
+	return out + fmt.Sprint(test6RAInterval) + "," + fmt.Sprint(test6RALifetime)
+}
 
 // test6RAUnsolicitedMax is how long a link that advertises at all can stay
 // silent, and it is READ OUT OF THE FIXTURE'S OWN SOURCE rather than derived
@@ -183,9 +204,19 @@ type v6Mode struct {
 	// only by one proof's own DHCPADVERTISE count eight lines later. Both
 	// checks below fail on it now.
 	serves bool
+	// raMTU is the value --ra-param carries as mtu:<n>, or zero for no
+	// mtu: keyword at all.
+	//
+	// ZERO IS NOT "NO MTU OPTION". MEASURED against dnsmasq 2.91 src/radv.c:
+	// with no mtu: keyword the value is zero, and on Linux zero means "read
+	// /proc/sys/net/ipv6/conf/<if>/mtu and send THAT" — so every mode here
+	// advertises an MTU option carrying the link's own MTU. A mode setting
+	// this names a value the link does not have, which is the only way a
+	// test can say the number came from the option.
+	raMTU int
 }
 
-// The six modes, and every one of them is reachable from a real network.
+// The seven modes, and every one of them is reachable from a real network.
 //
 // v6Managed is a container link on a managed network — the shape this library
 // exists for. v6Stateless is RFC 9915 section 18.2.6's link: addresses come
@@ -270,6 +301,32 @@ var (
 		absent:     []string{"DHCPv6 stateless on"},
 		advertises: true, managed: true, other: true, autonomous: false,
 		serves: false,
+	}
+	// v6ManagedOptions is v6Managed with the three options dnsmasq 2.91 can
+	// be made to advertise beyond the prefix: the MTU, the recursive DNS
+	// server and the search list.
+	//
+	// THE ROUTE INFORMATION OPTION IS NOT HERE BECAUSE DNSMASQ CANNOT SEND
+	// ONE. MEASURED against the 2.91 source: src/radv-protocol.h defines
+	// ICMP6_OPT_RT_INFO as 24 and nothing in the tree ever writes it, so the
+	// only fixtures for RFC 4191's option are the hand-built ones in the wire
+	// package's own tests. Said here rather than left as a gap in the table.
+	v6ManagedOptions = v6Mode{
+		name: "managed-options",
+		args: []string{
+			"--dhcp-range=" + test6RangeLo + "," + test6RangeHi + ",64," + fmt.Sprint(test6LeaseSec),
+			"--enable-ra",
+			// dnsmasq builds the RDNSS and DNSSL options out of its DHCPv6
+			// options (src/radv.c, "RDNSS, RFC 6106, use relevant DHCP6
+			// options"), so the search list is set once and reaches the
+			// client twice, on two protocols.
+			"--dhcp-option=option6:domain-search," + test6RASearch,
+		},
+		ready:      "DHCPv6, IP range " + test6RangeLo,
+		absent:     []string{"DHCPv6 stateless on"},
+		advertises: true, managed: true, other: true, autonomous: false,
+		serves: true,
+		raMTU:  test6RAMTU,
 	}
 )
 
@@ -482,7 +539,7 @@ func startDnsmasq6(t *testing.T, mode v6Mode) *dnsmasqServer {
 		// The advertisement interval, small, and the ONE place it is written.
 		// Every negative assertion about advertisements derives its window
 		// from test6RAInterval rather than from a number of its own.
-		"--ra-param=" + test6ServerIf + "," + fmt.Sprint(test6RAInterval) + "," + fmt.Sprint(test6RALifetime),
+		raParam(mode),
 	}
 	args = append(args, mode.args...)
 
@@ -547,16 +604,35 @@ func modeServesDHCPv6(args []string) bool {
 	return serves
 }
 
+// allV6Modes is every mode this file defines, in one place, so a mode added
+// without being added here is the kind of omission a reader can see.
+func allV6Modes() []v6Mode {
+	return []v6Mode{v6Managed, v6Stateless, v6SLAAC, v6NoRA, v6ManagedSilent, v6Exhausted, v6ManagedOptions}
+}
+
 // TestTheFixtureReadsItsOwnDnsmasqArguments drives modeServesDHCPv6 over the
-// six modes and over the mis-spelling that made this column necessary.
+// seven modes and over the mis-spelling that made this column necessary.
 //
 // The derivation is fixture code, so nothing else in this package can fail
 // when it is wrong: a derivation that always returned the declared value would
 // make the check above pass for every mode, including the broken one.
 func TestTheFixtureReadsItsOwnDnsmasqArguments(t *testing.T) {
-	for _, m := range []v6Mode{v6Managed, v6Stateless, v6SLAAC, v6NoRA, v6ManagedSilent, v6Exhausted} {
+	for _, m := range allV6Modes() {
 		if got := modeServesDHCPv6(m.args); got != m.serves {
 			t.Errorf("mode %s: modeServesDHCPv6 = %t, the mode declares %t", m.name, got, m.serves)
+		}
+		// The other derivation this fixture makes from a mode. A mode that
+		// names no MTU must produce no mtu: keyword, because with one
+		// dnsmasq sends the value it names and without one it sends the
+		// link's — two different numbers, and a builder that leaked the
+		// keyword into every mode would make the one test that reads the
+		// number pass against every other mode too.
+		got := raParam(m)
+		if want := strings.Contains(got, "mtu:"); want != (m.raMTU != 0) {
+			t.Errorf("mode %s declares raMTU=%d and its --ra-param is %q", m.name, m.raMTU, got)
+		}
+		if m.raMTU != 0 && !strings.Contains(got, "mtu:"+fmt.Sprint(m.raMTU)+",") {
+			t.Errorf("mode %s declares raMTU=%d and its --ra-param is %q", m.name, m.raMTU, got)
 		}
 	}
 	misspelt := append([]string(nil), v6ManagedSilent.args...)
@@ -2841,6 +2917,26 @@ func awaitTransportReads(t *testing.T, c *Client6, n uint64) TransportStatsV6 {
 	}
 }
 
+// TestTheOptionsARealRouterAdvertisesReachTheCaller is #814 end to end: the
+// options dnsmasq puts in its advertisement are decoded, kept per router, and
+// stamped on the lease the caller already has.
+//
+// THE THREE FACTS ARE CHOSEN SO NONE OF THEM CAN HAVE COME FROM DHCPv6.
+// The gateway is the first: RFC 9915 has no gateway option at all, so an
+// address in Lease.Gateway can only have come from the advertisement's SOURCE,
+// which is not in its body either. The MTU is the second: v6ManagedOptions
+// names a value the veth pair does not have. The search domain is the third
+// and it is the weakest, because dnsmasq builds the DNSSL option out of the
+// same DHCPv6 option — so what is asserted about it is that it arrives ONCE,
+// which is the deduplication rather than the decode.
+func TestTheOptionsARealRouterAdvertisesReachTheCaller(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		v6RouterOptionsAgainstDnsmasq(t)
+		return
+	}
+	reexecInNamespaces(t)
+}
+
 // TestAV6ClientIsToldTheServerRefused is #816's library half against a real
 // server: a pool with one address in it, one client holding that address, and
 // a second client that gets an answer rather than silence.
@@ -2864,6 +2960,110 @@ func TestAV6ClientIsToldTheServerRefused(t *testing.T) {
 		return
 	}
 	reexecInNamespaces(t)
+}
+
+func v6RouterOptionsAgainstDnsmasq(t *testing.T) {
+	wireUpV6(t)
+	srv := startDnsmasq6(t, v6ManagedOptions)
+	watch := newRAWatch(t, test6ClientIf)
+
+	c, _ := newV6Client(t)
+	stop := runV6Client(t, c)
+	defer stop()
+
+	// ---------------------------------------------------- the wire half --
+	//
+	// What dnsmasq actually sent, decoded from the bytes by the same decoder
+	// the client uses. This is the row that says the fixture advertises the
+	// options at all; every assertion below it is about what the library did
+	// with them.
+	ra := assertMode(t, srv, watch, v6ManagedOptions)
+	if ra.MTU != test6RAMTU {
+		t.Fatalf("the advertisement on the wire carries MTU %d, want the %d --ra-param named: %s", ra.MTU, test6RAMTU, ra)
+	}
+	if len(ra.RDNSS) != 1 || len(ra.RDNSS[0].Addrs) != 1 || ra.RDNSS[0].Addrs[0].String() != test6ServerIP {
+		t.Fatalf("the advertisement on the wire carries RDNSS %v, want the one address the fixture was given: %s", ra.RDNSS, ra)
+	}
+	if len(ra.DNSSL) != 1 || len(ra.DNSSL[0].Names) != 1 || ra.DNSSL[0].Names[0] != test6RASearch {
+		t.Fatalf("the advertisement on the wire carries the search list %v, want [%s]: %s", ra.DNSSL, test6RASearch, ra)
+	}
+	if ra.IgnoredOptions != 0 {
+		t.Errorf("the decoder refused %d option(s) of a real dnsmasq advertisement: %s", ra.IgnoredOptions, ra)
+	}
+	// The decoder cannot know the source address, and this is the one place
+	// where that can be checked against a router that really exists.
+	if ra.Router.IsValid() {
+		t.Errorf("the decoder set the router address to %s; it is not in the bytes it was given", ra.Router)
+	}
+
+	// ---------------------------------------------------- the ring-1 half --
+	obs := awaitRouterObservation(t, c)
+	if !obs.Router.IsValid() || !obs.Router.IsLinkLocalUnicast() {
+		t.Fatalf("ring 1 reports the router as %s, want the link-local address the frame came from: %s", obs.Router, obs)
+	}
+	if len(obs.Routers) != 1 || obs.Routers[0] != obs.Router {
+		t.Errorf("the default router list is %v, want the one router this link has", obs.Routers)
+	}
+	if obs.MTU != test6RAMTU {
+		t.Errorf("ring 1 reports MTU %d, want %d", obs.MTU, test6RAMTU)
+	}
+
+	// ---------------------------------------------------- the caller's --
+	//
+	// THE LEASE IS READ OFF Lease() AND NOT OFF THE EVENT, because the two
+	// protocols have no ordering between them: the advertisement answering
+	// this client's Router Solicitation and dnsmasq's Reply are two exchanges
+	// racing, and an advertisement that lands after the Reply cannot appear in
+	// an event already emitted. awaitRouterObservation above has closed that
+	// window for Lease(); nothing can close it for a queued event.
+	if ev := awaitV6(t, c, lease.Acquired); !ev.Lease.Addr.IsValid() {
+		t.Fatalf("the Acquired event carries no address: %s", ev)
+	}
+	l, held := c.Lease()
+	if !held {
+		t.Fatal("the client holds no lease after reporting one acquired")
+	}
+	if l.Gateway != obs.Router {
+		t.Errorf("the lease names gateway %s, want the router %s: DHCPv6 carries no gateway at all, so this can only have come from the advertisement", l.Gateway, obs.Router)
+	}
+	if l.MTU != test6RAMTU {
+		t.Errorf("the lease names MTU %d, want %d — the veth pair does not have that MTU, so the number came from the option", l.MTU, test6RAMTU)
+	}
+	if n := countString(l.DomainSearch, test6RASearch); n != 1 {
+		t.Errorf("the lease carries the search list %v; %s appears %d time(s) and it arrived on both protocols, so anything but once is the deduplication failing", l.DomainSearch, test6RASearch, n)
+	}
+	if n := countAddr(l.DNS, netip.MustParseAddr(test6ServerIP)); n != 1 {
+		t.Errorf("the lease carries DNS %v; %s appears %d time(s) and it arrived on both protocols", l.DNS, test6ServerIP, n)
+	}
+	if got := c.Stats().RouterAdvertOptionsIgnored; got != 0 {
+		t.Errorf("the manager refused %d option(s) of a real advertisement", got)
+	}
+	if got := c.Stats().RouterAdvertsRefused; got != 0 {
+		t.Errorf("the manager refused %d real advertisement(s)", got)
+	}
+
+	// The server's own record that it was the one advertising.
+	srv.waitFor(t, "RTR-ADVERT("+test6ServerIf+")")
+}
+
+func countString(in []string, want string) int {
+	n := 0
+	for _, s := range in {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
+
+func countAddr(in []netip.Addr, want netip.Addr) int {
+	n := 0
+	for _, a := range in {
+		if a == want {
+			n++
+		}
+	}
+	return n
 }
 
 func v6RefusedByDnsmasq(t *testing.T) {

@@ -5,6 +5,7 @@ package proto
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/wire"
 )
@@ -37,6 +38,17 @@ type JournalEntry struct {
 	// two places instead of one — the shape that let the RA payload be dropped
 	// in the first place (M7a carried row 2).
 	RA []byte
+	// RASrc is the advertising router's address for EvRouterAdvert.
+	//
+	// IT IS THE ONE PART OF THE EVENT THAT IS NOT IN RA's BYTES. The source
+	// address lives in the IPv6 header, which the ND port strips, so a replay
+	// that re-decoded RA alone would rebuild a machine whose router table is
+	// keyed on nothing — every advertisement from every router merged into one
+	// entry, or none at all. That is the M7a carried row again: an event whose
+	// payload the recorder dropped replays as a different client, and the
+	// recorded From and To agree with it because they were recorded by the
+	// same dropping recorder.
+	RASrc netip.Addr
 	// Hostname is the name an EvSetHostname carried.
 	//
 	// A FIELD OF ITS OWN, beside Reason and not inside it. The default arm of
@@ -80,10 +92,19 @@ type JournalEntry struct {
 func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
 	return JournalEntry{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, DAD: ev.DAD, Hostname: ev.Hostname,
+		Raw: ev.Raw, RA: ev.RARaw, RASrc: raSrcOf(ev), DAD: ev.DAD, Hostname: ev.Hostname,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
+}
+
+// raSrcOf reads the advertising router's address off an event, if it has one.
+// One function, called by both entry types, for NewJournalEntry's reason.
+func raSrcOf(ev Event) netip.Addr {
+	if ev.RA == nil {
+		return netip.Addr{}
+	}
+	return ev.RA.Router
 }
 
 // Event reconstructs the Step input this entry records.
@@ -91,7 +112,7 @@ func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to Sta
 // A Received entry is re-DECODED here, so a corrupt or unparseable Raw is
 // reported rather than silently replayed as a nil message.
 func (e JournalEntry) Event() (Event, error) {
-	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason, e.Hostname); done {
+	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.RASrc, e.DAD, e.Timer, e.Action, e.Reason, e.Hostname); done {
 		return ev, err
 	}
 	msg, err := wire.Decode(e.Raw)
@@ -111,7 +132,7 @@ func (e JournalEntry) Event() (Event, error) {
 // dropped, which is the defect M7a's carried row 2 recorded: the default arm
 // reconstructed EvRouterAdvert and EvDADResult as bare kinds, and the test
 // that was supposed to catch it built them as bare kinds too.
-func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer TimerID, action ActionID, reason, hostname string) (Event, bool, error) {
+func replayEvent(seq uint64, kind EventKind, ra []byte, raSrc netip.Addr, dad DADOutcome, timer TimerID, action ActionID, reason, hostname string) (Event, bool, error) {
 	switch kind {
 	case EvReceived:
 		return Event{}, false, nil
@@ -133,6 +154,9 @@ func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer Ti
 		if err != nil {
 			return Event{}, true, fmt.Errorf("entry %d: %w", seq, err)
 		}
+		// Put back what the decoder cannot know, from the field that recorded
+		// it beside the bytes.
+		adv.Router = raSrc
 		return RouterAdvertRaw(adv, ra), true, nil
 	case EvDADResult:
 		return DADResult(dad.Addr, dad.Duplicate), true, nil
