@@ -105,6 +105,45 @@ type Lease struct {
 
 	// Options is every option from the ACK, unparsed.
 	Options wire.Options
+
+	// Addrs is EVERY address this v6 lease holds, in the order the protocol
+	// produced them, and Addr is the first of them. It is empty for v4 and
+	// for a v6 lease with no address.
+	//
+	// IT IS A LIST BECAUSE RFC 4862 §5.5.3 FORMS ONE ADDRESS PER AUTONOMOUS
+	// PREFIX, and a link with two prefixes is an ordinary link. A chassis
+	// reading Addr alone would install one of them and leave the rest
+	// unconfigured, with nothing anywhere saying so. DHCPv6 can carry several
+	// IA Address options in one IA_NA for the same reason (§21.6), so this is
+	// not a stateless-only shape.
+	//
+	// EACH CARRIES ITS OWN TWO DEADLINES. §5.5.3 e resets the lifetimes of
+	// one prefix at a time, so the addresses of one lease deprecate and
+	// expire independently and a single pair of deadlines on the lease can
+	// only be an aggregate. Lease.Preferred and Lease.Valid remain that
+	// aggregate, for a caller with no per-address handling.
+	Addrs []Addr6
+
+	// SLAAC says the addresses were FORMED from a Router Advertisement (RFC
+	// 4862 §5.5.3) rather than granted by a server.
+	//
+	// IT IS A FIELD AND NOT A DERIVATION. "ServerDUID is empty" and "IAID is
+	// zero" are both true of things that are not this, and a caller that
+	// guessed would send a Release for an address nobody granted. It is also
+	// what tells a caller that there is no renewal schedule to wait for: a
+	// formed address is kept alive by the router repeating its advertisement,
+	// so Renew and Rebind are zero on such a lease and their absence is not a
+	// server that forgot to send T1 and T2.
+	SLAAC bool
+}
+
+// Addr6 is one address of a v6 lease with its own two RFC 9915 §7.1
+// lifetimes, as wall-clock deadlines. A zero deadline is an infinite lifetime,
+// which is Lease.Expire's convention read for one address.
+type Addr6 struct {
+	Addr      netip.Prefix
+	Preferred time.Time
+	Valid     time.Time
 }
 
 func (l Lease) String() string {
@@ -444,6 +483,23 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	}
 	if pfx, ok := l.Prefix(); ok {
 		out.Addr = pfx
+	}
+	out.SLAAC = l.SLAAC
+	for _, a := range l.Addrs {
+		bits := a.PrefixLen
+		if bits <= 0 {
+			// A granted address has no prefix length of its own, so it is a
+			// host address. Only RFC 4862 §5.5.3's option carries one.
+			bits = a.Addr.BitLen()
+		}
+		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
+		if !a.Preferred.IsInfinite() {
+			e.Preferred = b.at(l.Start.Add(a.Preferred))
+		}
+		if !a.Valid.IsInfinite() {
+			e.Valid = b.at(l.Start.Add(a.Valid))
+		}
+		out.Addrs = append(out.Addrs, e)
 	}
 	// Domain is option 15's single name and has no DHCPv6 counterpart: RFC
 	// 3646 defines a search LIST (option 24) and no single-name option, so

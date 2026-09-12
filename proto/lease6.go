@@ -21,9 +21,22 @@ type Addr6 struct {
 	Addr      netip.Addr
 	Preferred Duration
 	Valid     Duration
+
+	// PrefixLen is the ON-LINK PREFIX LENGTH this address was formed against,
+	// and ZERO MEANS THERE IS NONE. RFC 9915 gives an IA Address option no
+	// prefix length, so a granted address leaves this at zero and a caller
+	// installs it as a host address. RFC 4862 §5.5.3 d's Prefix Information
+	// option DOES carry one, and it is the only thing on the link that says
+	// which addresses are reachable without a router, so dropping it here
+	// would leave a caller re-deriving it from the router observation, which
+	// is the same fact taken a second way.
+	PrefixLen int
 }
 
 func (a Addr6) String() string {
+	if a.PrefixLen > 0 {
+		return fmt.Sprintf("%s/%d pref=%s valid=%s", a.Addr, a.PrefixLen, a.Preferred, a.Valid)
+	}
 	return fmt.Sprintf("%s pref=%s valid=%s", a.Addr, a.Preferred, a.Valid)
 }
 
@@ -95,6 +108,19 @@ type Lease6 struct {
 	// reason Lease.Options exists: a forgotten option is recoverable rather
 	// than gone.
 	Options wire.OptionsV6
+
+	// SLAAC says this lease was formed from Router Advertisements under RFC
+	// 4862 §5.5.3 and not granted by a server.
+	//
+	// IT IS A FIELD AND NOT A DERIVATION. "IAID is zero and ServerDUID is
+	// nil" describes a SLAAC lease today and also describes a DHCPv6 lease
+	// from a server that used IAID 0 and a record rebuilt without its DUID,
+	// and the two want opposite things from the machine: one has T1 and T2
+	// and a server to renew with, the other has neither and is refreshed only
+	// by the next advertisement. Deadlines reads this field for that reason,
+	// and Equal compares it so a resumed record cannot change family in
+	// silence.
+	SLAAC bool
 }
 
 // Addr is the first address of the IA, which is the one a single-address
@@ -106,17 +132,27 @@ func (l Lease6) Addr() (netip.Addr, bool) {
 	return l.Addrs[0].Addr, true
 }
 
-// Prefix is the first address as a /128.
+// Prefix is the first address with the length it was assigned under.
 //
-// §18.2.10.1 forbids any other length: "Addresses obtained from an IA Address
-// option MUST NOT be used to form an implicit prefix with a length other than
-// 128." The constant is written here once so no caller has to remember it,
-// and a caller that wants the on-link prefix must get it from a Router
-// Advertisement, which is the whole point of that sentence.
+// A GRANTED ADDRESS IS A /128 AND §18.2.10.1 SAYS SO: "Addresses obtained from
+// an IA Address option MUST NOT be used to form an implicit prefix with a
+// length other than 128." The constant is written here once so no caller has
+// to remember it.
+//
+// THAT SENTENCE BINDS AN IA ADDRESS OPTION AND A FORMED ADDRESS IS NOT ONE. An
+// IA Address option carries no prefix length, which is why an implicit one
+// would be invented; RFC 4862 §5.5.3 d's Prefix Information option carries the
+// length explicitly, and that is the length here. A caller that took 128 for
+// both would install a formed address with no on-link prefix and re-derive the
+// prefix from the router observation, which is the same fact taken a second
+// way.
 func (l Lease6) Prefix() (netip.Prefix, bool) {
 	a, ok := l.Addr()
 	if !ok {
 		return netip.Prefix{}, false
+	}
+	if n := l.Addrs[0].PrefixLen; n > 0 {
+		return netip.PrefixFrom(a, n), true
 	}
 	return netip.PrefixFrom(a, 128), true
 }
@@ -209,6 +245,17 @@ func (l Lease6) Deadlines() Deadlines {
 	if len(l.Addrs) == 0 || (!valid.IsInfinite() && valid <= 0) {
 		return d
 	}
+	if l.SLAAC {
+		// A SLAAC lease HAS NO RENEWAL, and the alternative is not a
+		// harmless extra timer. §21.4's T1 and T2 are the moments a client
+		// contacts the server that granted the lease; this lease was granted
+		// by nobody, so T1 would enter RENEWING, find no Server Identifier,
+		// fall through to REBINDING and put a Rebind on a link where nothing
+		// was ever solicited. The lifetimes are the whole schedule, and
+		// Machine6 arms Timer6SLAAC for them per address rather than this
+		// aggregate expiry.
+		return d
+	}
 
 	pref := l.shortestPreferred()
 	renew, rebind := l.T1, l.T2
@@ -284,7 +331,7 @@ func (l Lease6) Deadlines() Deadlines {
 // ActLeaseRenewed and not ActLeaseChanged, which is the distinction this
 // predicate exists to draw.
 func (l Lease6) Equal(o Lease6) bool {
-	if l.IAID != o.IAID || len(l.Addrs) != len(o.Addrs) {
+	if l.IAID != o.IAID || len(l.Addrs) != len(o.Addrs) || l.SLAAC != o.SLAAC {
 		return false
 	}
 	for i := range l.Addrs {

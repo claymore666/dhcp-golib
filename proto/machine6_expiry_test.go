@@ -58,9 +58,9 @@ func TestEveryStateEndsALeaseAtItsValidLifetime(t *testing.T) {
 		})
 	}
 	// D-1: a state added to the constant block and not to the fixture would
-	// shrink this domain silently, and a skip reads like a pass. Two states
+	// shrink this domain silently, and a skip reads like a pass. Three states
 	// cannot hold an announced lease and every other one must.
-	if want := len(AllStates6()) - 2; covered != want {
+	if want := len(AllStates6()) - 3; covered != want {
 		t.Errorf("%d states were driven, want %d: a state that can hold a lease is being skipped", covered, want)
 	}
 }
@@ -166,7 +166,13 @@ func leaseHeld6In(t *testing.T, s State6) (*Machine6, bool) {
 	t.Helper()
 	p := testParams6()
 	switch s {
-	case State6Stopped, State6Confirming:
+	case State6Stopped, State6Confirming, State6Discovering:
+		// DISCOVERING6 is the third: it is by construction the window BEFORE
+		// the first address a Router Advertisement forms and AFTER the last
+		// one was lost, so a machine that holds an announced lease is never
+		// in it. Every path that re-enters it — the last valid lifetime
+		// running out, every formed address found in use — reports the loss
+		// first.
 		return nil, false
 	case State6Bound:
 		return bind6(t, p, dnsmasqLeasedAddr), true
