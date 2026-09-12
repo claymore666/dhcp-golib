@@ -596,7 +596,30 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # to the netns row moves here. It is derived at run time in verify.sh, so there
 # is no second number to patch; NETNS_CEILING_SECONDS is this batch's 170 and
 # is not moved by one more namespaced test.
-MIN_DECLARED_TESTS=747
+#
+# THE RELEASE-BY-RECORD ROUND, ROUND 2 OF THE READ: one more added,
+# TestBindingTheReleaseSocketToALinkIsCheckedOrRefused, which drives the two
+# sentences beside bindToDevice that were stated and run by nothing. It is not
+# a netns test, MEASURED with testroster -netns at 41 on both sides of this
+# fold, so the netns enumeration does not move here. 766 -> 767.
+#
+# THE RELEASE-BY-RECORD ROUND, #962: nineteen added, none removed, measured
+# the same way, one testroster run over the base and one over this head with
+# the difference taken as a SET. Ten read the built datagram's octets in
+# lease, six read what the sender hands the transport in runtime, and three
+# run a release against the dnsmasq fixture: one per family, and one that
+# gives a second client exactly the identifier an invented option 61 would be.
+#
+# THREE OF THEM ARE NETNS TESTS, so the netns enumeration in verify.sh moves
+# in this round and is re-measured there rather than patched with a line.
+#
+# THE BACK-MERGE OF dev INTO THIS BRANCH, three times: the rounds above are
+# disjoint from this one, different files and no test renamed or removed in
+# any of them, so the number below is MEASURED on the merge product with one
+# testroster run here and not added up. 766 declared and 41 netns on the
+# product of this branch and dev at 6a69a38, which is dev's 747 and 38 plus
+# this round's nineteen and three.
+MIN_DECLARED_TESTS=767
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

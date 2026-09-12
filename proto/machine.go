@@ -1338,7 +1338,10 @@ func (m *Machine) sendRenewal(now Instant, out *actions) {
 		// Section 4.4.5: unicast to the server. Src is the leased address —
 		// the datagram carries it in 'ciaddr' and must come FROM it, or the
 		// server has no return path and ring 3 has nothing to build an IP
-		// header from. Same reason as the DHCPRELEASE above.
+		// header from. The return path is REAL here and it is not real for the
+		// DHCPRELEASE below: section 4.4.5's renewal is answered with a
+		// DHCPACK addressed back to this client, and a release is answered
+		// with nothing.
 		out.send(m, msg, Dest{Addr: m.lease.ServerID, Src: msg.CIAddr})
 	} else {
 		out.send(m, msg, Dest{Broadcast: true})
@@ -1472,9 +1475,11 @@ func (m *Machine) sendRelease(rnd uint64, out *actions) {
 	msg.Options[wire.OptServerID] = sv[:]
 	msg.Options[wire.OptMessage] = []byte(releaseMessage)
 	// RFC 2131 section 4.4.4: "The client unicasts DHCPRELEASE messages to the
-	// server." Src is the released address: the datagram carries it in
-	// 'ciaddr' and must also come FROM it, or the server has no return path
-	// and ring 3 has nothing to build an IP header from.
+	// server." Src is the released address because this client still holds it
+	// and ring 3 has nothing else to build an IP header from. NOT because the
+	// server matches on it: it does not, and Dest.Src carries the measurement.
+	// lease.BuildRelease is the other path, for a lease whose holder is gone,
+	// and it leaves the source to its caller.
 	out.send(m, msg, Dest{Addr: sid, Src: addr})
 }
 
