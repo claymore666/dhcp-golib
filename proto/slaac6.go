@@ -577,11 +577,6 @@ func (t *slaacTable) refresh(now Instant, i int, preferred, valid Duration) bool
 	// ignored." It is written before the three rules for that reason: none of
 	// their branches may skip it.
 	e.preferred = preferred
-	// A reset preferred lifetime makes the address preferred again, so the
-	// next time it runs out is a new change of phase and is charged again.
-	if !e.deprecated(now) {
-		e.deprecationCharged = false
-	}
 
 	switch {
 	case durGreater(valid, TwoHours) || durGreater(valid, remaining):
@@ -606,6 +601,18 @@ func (t *slaacTable) refresh(now Instant, i int, preferred, valid Duration) bool
 		e.valid = TwoHours
 	}
 	e.start = now
+	// A reset preferred lifetime makes the address preferred again, so the
+	// next time it runs out is a new change of phase and is charged again.
+	//
+	// THE QUESTION IS ASKED AGAINST THE NEW ORIGIN, and that is the whole of
+	// it: §5.5.3 e's note resets the lifetime, and the origin moves with it,
+	// so asking before `e.start = now` answers for the lifetime that just
+	// ended. Every repeat that arrives later than the old preferred lifetime
+	// reads "still deprecated" there and leaves the charge standing, which
+	// costs the SECOND deprecation its counter and its journal line.
+	if !e.deprecated(now) {
+		e.deprecationCharged = false
+	}
 	t.counts.Refreshed++
 
 	// WHAT COUNTS AS A CHANGE IS THE DEADLINE AND THE PHASE, not the stored

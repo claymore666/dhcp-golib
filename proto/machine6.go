@@ -234,6 +234,14 @@ type Machine6 struct {
 	autoDecided   bool
 	dhcpCommitted bool
 
+	// deferredPrefixes is every autonomous prefix this machine has been told
+	// about while committed to DHCPv6, kept so that the fallback forms from
+	// what the ROUTER HAS SAID and not from what its most recent frame
+	// happened to carry. RouterObservation.Prefixes is the last advertisement's
+	// options by definition, and reading it at the fallback loses a prefix a
+	// router advertised once and then split out of a later advertisement.
+	deferredPrefixes []deferredPIO
+
 	// wantConfig is a router having said M or O in a mode that forms its own
 	// address, and askedConfig that the Information-request it asks for has
 	// been sent. Two fields because the two facts arrive in different Steps:
@@ -1203,6 +1211,11 @@ func (m *Machine6) halt(out *actions, r Reason) {
 	// had checked since the stop.
 	m.slaac = slaacTable{counts: m.slaac.counts}
 	m.slaacPhases = nil
+	// The deferred union goes the same way and for the same reason. It is what
+	// a router said to a decision this stop has just thrown away, and a
+	// machine that kept it would form, on some later fallback, from an option
+	// whose lifetime has been running since before the stop.
+	m.deferredPrefixes = nil
 	m.autoDecided, m.dhcpCommitted = false, false
 	m.wantConfig, m.askedConfig = false, false
 	m.dropPending()

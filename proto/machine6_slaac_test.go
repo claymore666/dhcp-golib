@@ -3,6 +3,7 @@
 package proto
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"strings"
@@ -1475,5 +1476,354 @@ func TestAnAddressMadePreferredAgainCanDeprecateAgain(t *testing.T) {
 	}
 	if !journalContains(acts, "deprecated") {
 		t.Errorf("the second deprecation was not reported.%s", journalLines(acts))
+	}
+}
+
+// journalCount is how many journal lines carry sub, because "it was reported"
+// and "it was reported once per time it happened" are different assertions and
+// only the second one can see a change of phase that is charged once.
+func journalCount(acts []Action, sub string) int {
+	n := 0
+	for _, a := range acts {
+		if a.Kind == ActJournal && strings.Contains(a.Note, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestASecondDeprecationIsChargedWhenTheRepeatArrivesLate is defeat row R-55,
+// and it is R-54 with the one distance that makes the defect visible.
+//
+// R-54's repeat advertisement arrives while the NEW preferred lifetime, counted
+// from the OLD origin, still has time to run, so the question "is this address
+// deprecated" answers correctly there by accident. A router that repeats its
+// advertisement later than that — which is every router on its own unsolicited
+// schedule, RFC 4861 §6.2.1 — answers it against the lifetime that just ended.
+// The address is then preferred again for the caller and deprecates again in
+// fact, and neither the counter nor the journal says so.
+func TestASecondDeprecationIsChargedWhenTheRepeatArrivesLate(t *testing.T) {
+	addr := netip.MustParseAddr(testSLAACAddr)
+	m := newMachine6(t, testParams6SLAAC())
+	m.Step(at(0), 0, Simple(EvStart))
+	m.Step(at(1), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 100))))
+	m.Step(at(2), 0, DADResult(addr, false))
+
+	var seen []Action
+	_, acts := m.Step(at(101), 0, TimerFired(Timer6SLAAC))
+	seen = append(seen, acts...)
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Fatalf("the first deprecation is charged %d time(s), want 1.%s", got, journalLines(acts))
+	}
+
+	// THE REPEAT IS LATE: at(1000) is past at(1) plus the 200 seconds this
+	// advertisement grants, which is exactly the arithmetic the defect used.
+	_, acts = m.Step(at(1000), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 200))))
+	seen = append(seen, acts...)
+	ch, ok := find(acts, ActLeaseChanged)
+	if !ok {
+		t.Fatalf("a late repeat that makes the address preferred again was reported as a plain renewal.%s", journalLines(acts))
+	}
+	if len(ch.Lease6.Addrs) != 1 || ch.Lease6.Addrs[0].Preferred <= 0 {
+		t.Fatalf("the reported lease is %v, want the address preferred again", ch.Lease6.Addrs)
+	}
+
+	_, acts = m.Step(at(1200), 0, TimerFired(Timer6SLAAC))
+	seen = append(seen, acts...)
+	if got := m.SLAACCounters().Deprecated; got != 2 {
+		t.Errorf("two deprecations of the same address are charged %d time(s), want 2.%s", got, journalLines(acts))
+	}
+	if got := journalCount(seen, "is deprecated"); got != 2 {
+		t.Errorf("two deprecations left %d journal line(s), want 2.%s", got, journalLines(seen))
+	}
+}
+
+// TestARepeatThatLeavesTheAddressDeprecatedIsNotASecondDeprecation is defeat
+// row R-56, and it is R-55's opposite direction.
+//
+// §5.5.3 e's note resets the preferred lifetime to what the option carries, and
+// an option carrying zero resets it to zero: the address stays deprecated, and
+// nothing has changed phase. A charge that cleared on every advertisement would
+// report one deprecation again for every advertisement a router repeats, which
+// is the failure the charge exists to prevent.
+func TestARepeatThatLeavesTheAddressDeprecatedIsNotASecondDeprecation(t *testing.T) {
+	addr := netip.MustParseAddr(testSLAACAddr)
+	m := newMachine6(t, testParams6SLAAC())
+	m.Step(at(0), 0, Simple(EvStart))
+	m.Step(at(1), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 100))))
+	m.Step(at(2), 0, DADResult(addr, false))
+
+	var seen []Action
+	_, acts := m.Step(at(101), 0, TimerFired(Timer6SLAAC))
+	seen = append(seen, acts...)
+
+	// The router repeats the prefix with a preferred lifetime of zero: still
+	// valid, still deprecated, and the valid lifetime is untouched.
+	_, acts = m.Step(at(1000), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, 86400, 0))))
+	seen = append(seen, acts...)
+	_, acts = m.Step(at(1200), 0, TimerFired(Timer6SLAAC))
+	seen = append(seen, acts...)
+
+	if got := m.SLAACCounters().Deprecated; got != 1 {
+		t.Errorf("one deprecation is charged %d time(s), want 1.%s", got, journalLines(seen))
+	}
+	if got := journalCount(seen, "is deprecated"); got != 1 {
+		t.Errorf("one deprecation left %d journal line(s), want 1.%s", got, journalLines(seen))
+	}
+	l, held := m.Lease()
+	if !held || len(l.Addrs) != 1 || l.Addrs[0].Preferred != 0 {
+		t.Errorf("the lease is %v held=%v, want one address with no preferred lifetime left", l.Addrs, held)
+	}
+}
+
+// TestAPrefixAdvertisedOnceIsStillFormedFromAtTheFallback is defeat row R-57.
+//
+// RFC 4861 §6.3.4: "Hosts accept the union of all received information; the
+// receipt of a Router Advertisement MUST NOT invalidate all information
+// received in a previous advertisement or from another source." A router may
+// carry its Prefix Information options in one advertisement and leave them out
+// of the next, so a fallback that reads only the most recent advertisement
+// refuses to form from a prefix the router has already granted, and reports the
+// link as having no prefix at all.
+func TestAPrefixAdvertisedOnceIsStillFormedFromAtTheFallback(t *testing.T) {
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+
+	// RA 1: M=1 with an autonomous prefix. The machine commits to DHCPv6.
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	_, acts = m.Step(at(2), 0, TimerFired(Timer6Delay))
+	mustSendV6(t, acts, wire.MsgSolicit)
+
+	// RA 2: the same router, no Prefix Information option at all.
+	if s, acts := m.Step(at(3), 0, raEvent6(t, ra6(true, false))); s == State6DAD {
+		t.Fatalf("an advertisement with no prefix started address formation.%s", journalLines(acts))
+	}
+
+	// No server answers.
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if f, failed := find(acts, ActFailed); failed {
+		t.Fatalf("the fallback refused to form: %s %q.%s", f.Reason, f.Note, journalLines(acts))
+	}
+	if s != State6DAD {
+		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+	}
+	dad, ok := find(acts, ActStartDAD)
+	if !ok {
+		t.Fatalf("the fallback formed no address.%s", journalLines(acts))
+	}
+	if want := netip.MustParseAddr(testSLAACAddr); dad.Target != want {
+		t.Errorf("the fallback formed %s, want %s: the prefix is the one RA 1 carried", dad.Target, want)
+	}
+	if got := m.SLAACCounters().Fallbacks; got != 1 {
+		t.Errorf("the fallback counter is %d, want 1", got)
+	}
+
+	// THE LIFETIMES ARE COUNTED FROM THE ADVERTISEMENT THAT GRANTED THEM, not
+	// from the fallback. The wait for a silent server is the client's, and a
+	// client that restarted the clock here would hold the address longer than
+	// the router allowed.
+	m.Step(at(1).Add(d), 0, DADResult(netip.MustParseAddr(testSLAACAddr), false))
+	l, held := m.Lease()
+	if !held || len(l.Addrs) != 1 {
+		t.Fatalf("the formed lease is %v held=%v, want one address", l.Addrs, held)
+	}
+	if got, want := l.Addrs[0].Valid, 86400*Second-Duration(d); got != want {
+		t.Errorf("the valid lifetime is %s, want %s: it runs from RA 1 and not from the fallback", got, want)
+	}
+}
+
+// TestTheMostRecentOptionForAPrefixIsTheOneTheFallbackForms is defeat row R-59.
+//
+// RFC 4861 §6.3.4: "when received information for a specific parameter (e.g.,
+// Link MTU) or option (e.g., Lifetime on a specific Prefix) differs from
+// information received earlier, and the parameter/option can only have one
+// value, the most recently received information is considered authoritative."
+// A union that kept the first option it saw would form from a lifetime the
+// router has since replaced.
+func TestTheMostRecentOptionForAPrefixIsTheOneTheFallbackForms(t *testing.T) {
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+	// The same prefix again, with a longer valid lifetime, one second later.
+	m.Step(at(3), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 172800, 14400))))
+
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if s != State6DAD {
+		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+	}
+	m.Step(at(1).Add(d), 0, DADResult(netip.MustParseAddr(testSLAACAddr), false))
+	l, held := m.Lease()
+	if !held || len(l.Addrs) != 1 {
+		t.Fatalf("the formed lease is %v held=%v, want one address", l.Addrs, held)
+	}
+	// Counted from the SECOND advertisement, at(3), and not from the first.
+	if got, want := l.Addrs[0].Valid, 172800*Second-Duration(at(1).Add(d)-at(3)); got != want {
+		t.Errorf("the valid lifetime is %s, want %s: the newer option is the authoritative one", got, want)
+	}
+}
+
+// TestAPrefixThatArrivesAfterTheDecisionIsFormedFromAtTheFallback is defeat row
+// R-60, and it is R-57's other half: the union accumulates FORWARD as well.
+//
+// The advertisement that decides the mode may carry no prefix at all — §6.3.4's
+// union is what makes that legal — and a later advertisement from the same
+// router may carry one while this client is still waiting for a server. The
+// fallback forms from it, or the split costs the client its address.
+func TestAPrefixThatArrivesAfterTheDecisionIsFormedFromAtTheFallback(t *testing.T) {
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false)))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+	m.Step(at(3), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if f, failed := find(acts, ActFailed); failed {
+		t.Fatalf("the fallback refused to form: %s %q.%s", f.Reason, f.Note, journalLines(acts))
+	}
+	if s != State6DAD {
+		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+	}
+	dad, ok := find(acts, ActStartDAD)
+	if !ok {
+		t.Fatalf("the fallback formed no address.%s", journalLines(acts))
+	}
+	if want := netip.MustParseAddr(testSLAACAddr); dad.Target != want {
+		t.Errorf("the fallback formed %s, want %s", dad.Target, want)
+	}
+}
+
+// TestAPrefixThatRanOutWhileWaitingFormsNothingAtTheFallback is defeat row
+// R-58, and it is R-57's other direction: the union is replayed with each
+// option's OWN origin, so an option that expired while this client waited for a
+// server has nothing left to give.
+//
+// RFC 4862 §5.5.3 d forms an address "if the Valid Lifetime is not 0", and the
+// valid lifetime of a deferred option is what is left of it at the moment the
+// address would be formed. Replaying with the fallback's own instant as the
+// origin would grant the client a lifetime the router never advertised.
+func TestAPrefixThatRanOutWhileWaitingFormsNothingAtTheFallback(t *testing.T) {
+	p := testParams6Auto()
+	m := newMachine6(t, p)
+	m.Step(at(0), 0, Simple(EvStart))
+
+	// The valid lifetime is one second and the fallback budget is longer, so
+	// the option is dead before the deadline it is waiting on.
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 1, 1))))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	if d <= Second {
+		t.Fatalf("the fallback budget is %s, which is not longer than the advertised valid lifetime", d)
+	}
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+
+	before := m.SLAACCounters().Ignored[SLAACIgnoreValidZero]
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if _, ok := find(acts, ActStartDAD); ok {
+		t.Fatalf("an option whose valid lifetime had run out formed an address.%s", journalLines(acts))
+	}
+	f, failed := find(acts, ActFailed)
+	if !failed || f.Reason != ReasonNoPrefix {
+		t.Fatalf("the fallback ended with %v, want a %s verdict.%s", f.Reason, ReasonNoPrefix, journalLines(acts))
+	}
+	if s != State6Discovering {
+		t.Errorf("the verdict left the machine in %s, want %s", s, State6Discovering)
+	}
+	if got := m.SLAACCounters().Ignored[SLAACIgnoreValidZero] - before; got != 1 {
+		t.Errorf("rule d's zero-valid counter rose by %d, want 1.%s", got, journalLines(acts))
+	}
+	if got := m.SLAACCounters().Fallbacks; got != 0 {
+		t.Errorf("the fallback counter is %d, want 0: nothing was formed", got)
+	}
+}
+
+// TestTheDeferredUnionDoesNotSurviveAStop is defeat row R-61.
+//
+// A stop throws away the decision the union was kept for, and RFC 4861 §6.3.4's
+// union is information a router gave to THIS run of the machine. The lifetimes
+// in it have been running since the advertisement that carried them, so a
+// machine that kept the set across a stop would, on the next link's fallback,
+// form from an option nothing has re-advertised since.
+func TestTheDeferredUnionDoesNotSurviveAStop(t *testing.T) {
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+	m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+
+	if s, _ := m.Step(at(3), 0, Simple(EvStop)); s != State6Stopped {
+		t.Fatalf("EvStop left the machine in %s, want %s", s, State6Stopped)
+	}
+	m.Step(at(4), 0, Simple(EvStart))
+
+	// The new run's router says DHCPv6 and advertises no prefix at all.
+	_, acts := m.Step(at(5), 0, raEvent6(t, ra6(true, false)))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed in the second run.%s", journalLines(acts))
+	}
+	s, acts := m.Step(at(5).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if _, ok := find(acts, ActStartDAD); ok {
+		t.Fatalf("the second run formed an address from a prefix the first run was told about.%s", journalLines(acts))
+	}
+	f, failed := find(acts, ActFailed)
+	if !failed || f.Reason != ReasonNoPrefix {
+		t.Fatalf("the fallback ended with %v, want a %s verdict.%s", f.Reason, ReasonNoPrefix, journalLines(acts))
+	}
+	if s != State6Discovering {
+		t.Errorf("the verdict left the machine in %s, want %s", s, State6Discovering)
+	}
+}
+
+// TestTheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress is defeat row
+// R-62.
+//
+// The union is bounded, and what it is bounded BY is the number of addresses
+// this client can hold. RFC 4862 §5.5.3 a is "If the Autonomous flag is not
+// set, silently ignore the Prefix Information option", so an option with A=0
+// can never become an address and must never take a slot from one that can. A
+// router advertising a page of on-link-only prefixes is ordinary.
+func TestTheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress(t *testing.T) {
+	opts := [][]byte{}
+	for i := 0; i < MaxSLAACAddresses; i++ {
+		opts = append(opts, pio(fmt.Sprintf("fd00:%d::", i+1), 64, false, 86400, 14400))
+	}
+	opts = append(opts, pio(testSLAACPrefix, 64, true, 86400, 14400))
+
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, opts...)))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if f, failed := find(acts, ActFailed); failed {
+		t.Fatalf("a page of A=0 prefixes crowded out the one that forms: %s %q.%s", f.Reason, f.Note, journalLines(acts))
+	}
+	if s != State6DAD {
+		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+	}
+	dad, ok := find(acts, ActStartDAD)
+	if !ok {
+		t.Fatalf("the fallback formed no address.%s", journalLines(acts))
+	}
+	if want := netip.MustParseAddr(testSLAACAddr); dad.Target != want {
+		t.Errorf("the fallback formed %s, want %s", dad.Target, want)
 	}
 }

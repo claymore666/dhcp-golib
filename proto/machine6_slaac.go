@@ -418,6 +418,7 @@ func (m *Machine6) observeAuto(now Instant, rnd uint64, ra *wire.RouterAdvert, o
 			// without them made the one advertisement that decides the one
 			// advertisement nothing counts.
 			m.countUnusedPrefixes(ra, out)
+			m.deferPrefixes(now, ra)
 			if ok {
 				// THE WINDOW IS THE SERVER'S, MEASURED FROM THE SOLICIT. The
 				// deadline is armed here, in the Step that commits, and the
@@ -436,8 +437,10 @@ func (m *Machine6) observeAuto(now Instant, rnd uint64, ra *wire.RouterAdvert, o
 	}
 	if m.dhcpCommitted {
 		// Committed to DHCPv6. The advertisement is still observed — L1's
-		// router table has already taken it — and its prefixes form nothing.
+		// router table has already taken it — and its prefixes form nothing
+		// NOW. They are remembered for the fallback.
 		m.countUnusedPrefixes(ra, out)
+		m.deferPrefixes(now, ra)
 		return
 	}
 	m.observeSLAAC(now, rnd, ra, out)
@@ -457,18 +460,36 @@ func (m *Machine6) autoFallbackFired(now Instant, rnd uint64, out *actions) {
 		return
 	}
 	m.dhcpCommitted = false
-	// Re-read every prefix this machine has already seen: the advertisements
-	// that carried them were observed while the machine was committed to
-	// DHCPv6, and their Prefix Information options formed nothing then.
+	// Re-read every prefix this machine has already been told about: the
+	// advertisements that carried them were observed while the machine was
+	// committed to DHCPv6, and their Prefix Information options formed nothing
+	// then. It is the UNION over those advertisements, not the last one's
+	// options, because §6.3.4 says a host accepts the union.
 	changed := false
-	for _, pi := range m.router.Prefixes {
-		formed, moved, why := m.slaac.applyPIO(now, pi, m.params.LinkAddr)
+	for _, d := range m.deferredPrefixes {
+		// AN OPTION THAT RAN OUT WHILE THIS CLIENT WAITED FORMS NOTHING. The
+		// lifetime is counted from the instant the option arrived, so a valid
+		// lifetime shorter than the budget spent on a silent server has no
+		// lifetime left to give: §5.5.3 d's "and if the Valid Lifetime is not
+		// 0" is the condition that is false here, measured at the moment the
+		// address would be formed.
+		valid := SecondsToDuration(d.info.ValidLifetime)
+		if !valid.IsInfinite() && d.at.Add(valid) <= now {
+			m.slaac.counts.Ignored[SLAACIgnoreValidZero]++
+			out.journal(m, "the valid lifetime of "+d.info.Prefix.String()+" ran out while this client waited for a server: it forms nothing (RFC 4862 §5.5.3 d)")
+			continue
+		}
+		// THE ORIGIN IS THE OPTION'S OWN INSTANT, not this one. The lifetimes
+		// a router granted are counted from the advertisement that carried
+		// them, and forming with `now` would extend both by the wait.
+		formed, moved, why := m.slaac.applyPIO(d.at, d.info, m.params.LinkAddr)
 		if why != SLAACIgnoreNone {
 			m.slaac.counts.Ignored[why]++
 			continue
 		}
 		changed = changed || formed || moved
 	}
+	m.deferredPrefixes = nil
 	if !changed || len(m.slaac.entries) == 0 {
 		note := "no server answered and the router advertises no prefix this client can form an address from (RFC 4862 §5.5.3)"
 		out.journal(m, note)
@@ -482,6 +503,58 @@ func (m *Machine6) autoFallbackFired(now Instant, rnd uint64, out *actions) {
 	m.endExchange(out)
 	m.adverts, m.windowDone = nil, false
 	m.reportSLAAC(now, rnd, out)
+}
+
+// deferredPIO is a Prefix Information option seen while Mode6Auto was
+// committed to DHCPv6, kept with the instant it arrived.
+//
+// RFC 4861 §6.3.4 is why the set exists. "Hosts accept the union of all
+// received information; the receipt of a Router Advertisement MUST NOT
+// invalidate all information received in a previous advertisement or from
+// another source." A router may carry its Prefix Information options in one
+// advertisement and leave them out of the next, so the last packet is not the
+// list, and a fallback that read only the last packet would refuse to form
+// from a prefix the router had already granted.
+//
+// THE INSTANT IS KEPT BECAUSE A LIFETIME IS COUNTED FROM THE OPTION. Replaying
+// at the fallback with `now` as the origin would hand the client more lifetime
+// than the router granted, by exactly the time it spent waiting for a server.
+type deferredPIO struct {
+	at   Instant
+	info wire.PrefixInfo
+}
+
+// deferPrefixes remembers this advertisement's autonomous prefixes for the
+// fallback, newest option winning: §6.3.4 again, "when received information
+// for a specific parameter (e.g., Link MTU) or option (e.g., Lifetime on a
+// specific Prefix) differs from information received earlier, and the
+// parameter/option can only have one value, the most recently received
+// information is considered authoritative."
+//
+// The set is bounded by MaxSLAACAddresses because it is the population that
+// can ever become an address, and a link advertising more autonomous prefixes
+// than this client will ever form from has nothing to gain from the extra
+// slots. Non-autonomous options are §5.5.3 a's silent ignore and can form
+// nothing, so they are not kept.
+func (m *Machine6) deferPrefixes(now Instant, ra *wire.RouterAdvert) {
+	for _, pi := range ra.Prefixes {
+		if !pi.Autonomous {
+			continue
+		}
+		replaced := false
+		for i := range m.deferredPrefixes {
+			d := &m.deferredPrefixes[i]
+			if d.info.Prefix == pi.Prefix && d.info.PrefixLen == pi.PrefixLen {
+				d.at, d.info = now, pi
+				replaced = true
+				break
+			}
+		}
+		if replaced || len(m.deferredPrefixes) >= MaxSLAACAddresses {
+			continue
+		}
+		m.deferredPrefixes = append(m.deferredPrefixes, deferredPIO{at: now, info: pi})
+	}
 }
 
 // countUnusedPrefixes accounts the Prefix Information options of a link whose
