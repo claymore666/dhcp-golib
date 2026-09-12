@@ -418,7 +418,7 @@ func (m *Machine6) observeAuto(now Instant, rnd uint64, ra *wire.RouterAdvert, o
 			// without them made the one advertisement that decides the one
 			// advertisement nothing counts.
 			m.countUnusedPrefixes(ra, out)
-			m.deferPrefixes(now, ra)
+			m.deferPrefixes(now, ra, out)
 			if ok {
 				// THE WINDOW IS THE SERVER'S, MEASURED FROM THE SOLICIT. The
 				// deadline is armed here, in the Step that commits, and the
@@ -440,7 +440,7 @@ func (m *Machine6) observeAuto(now Instant, rnd uint64, ra *wire.RouterAdvert, o
 		// router table has already taken it — and its prefixes form nothing
 		// NOW. They are remembered for the fallback.
 		m.countUnusedPrefixes(ra, out)
-		m.deferPrefixes(now, ra)
+		m.deferPrefixes(now, ra, out)
 		return
 	}
 	m.observeSLAAC(now, rnd, ra, out)
@@ -520,41 +520,73 @@ func (m *Machine6) autoFallbackFired(now Instant, rnd uint64, out *actions) {
 // at the fallback with `now` as the origin would hand the client more lifetime
 // than the router granted, by exactly the time it spent waiting for a server.
 type deferredPIO struct {
-	at   Instant
-	info wire.PrefixInfo
+	at Instant
+	// prefix is the option's prefix MASKED, which is the key slaacTable keeps
+	// its own entries under: two options naming one prefix with different host
+	// bits are one prefix to the table and must be one slot here.
+	prefix netip.Prefix
+	info   wire.PrefixInfo
 }
 
-// deferPrefixes remembers this advertisement's autonomous prefixes for the
-// fallback, newest option winning: §6.3.4 again, "when received information
-// for a specific parameter (e.g., Link MTU) or option (e.g., Lifetime on a
-// specific Prefix) differs from information received earlier, and the
-// parameter/option can only have one value, the most recently received
-// information is considered authoritative."
+// deferPrefixes remembers this advertisement's usable prefixes for the
+// fallback, newest option winning: §6.3.4 again, "when received information for
+// a specific parameter (e.g., Link MTU) or option (e.g., Lifetime on a specific
+// Prefix) differs from information received earlier, and the parameter/option
+// can only have one value, the most recently received information is considered
+// authoritative."
 //
-// The set is bounded by MaxSLAACAddresses because it is the population that
-// can ever become an address, and a link advertising more autonomous prefixes
-// than this client will ever form from has nothing to gain from the extra
-// slots. Non-autonomous options are §5.5.3 a's silent ignore and can form
-// nothing, so they are not kept.
-func (m *Machine6) deferPrefixes(now Instant, ra *wire.RouterAdvert) {
+// A SLOT IS A PROMISE THAT ONE ADDRESS CAN COME OUT OF IT. The set is bounded
+// by MaxSLAACAddresses because that is the population that can ever become an
+// address, and the bound is only sound if the options it counts are options
+// §5.5.3 would form from: a bound spent on an option rule a, b, c or d refuses
+// drops a usable prefix advertised behind it and forms nothing where the router
+// granted something. The admission test is therefore slaacTable.applyPIO's own
+// two halves, in applyPIO's own order, and an option refused here is charged to
+// the same reason the direct path charges it to.
+//
+// AND A REFUSED OPTION IS COUNTED WHERE IT IS REFUSED. An option dropped for
+// want of a slot used to vanish with no number and no journal line, so the
+// counters read "this link advertises no prefix this client can use" where the
+// truth was "this client is at its cap".
+func (m *Machine6) deferPrefixes(now Instant, ra *wire.RouterAdvert, out *actions) {
 	for _, pi := range ra.Prefixes {
-		if !pi.Autonomous {
+		p, why := slaacOptionRules(pi)
+		// THE REPLACEMENT SITS WHERE applyPIO's HELD-PREFIX LOOKUP SITS, before
+		// rule d's preconditions and not after them. A router withdraws a
+		// prefix by re-advertising it with a valid lifetime of 0, and that is
+		// exactly an option rule d refuses to form from: asking whether it can
+		// form an address first would refuse the withdrawal and leave this set
+		// holding the grant that the withdrawal cancels.
+		if why == SLAACIgnoreNone && m.replaceDeferred(now, p, pi) {
 			continue
 		}
-		replaced := false
-		for i := range m.deferredPrefixes {
-			d := &m.deferredPrefixes[i]
-			if d.info.Prefix == pi.Prefix && d.info.PrefixLen == pi.PrefixLen {
-				d.at, d.info = now, pi
-				replaced = true
-				break
-			}
+		if why == SLAACIgnoreNone {
+			_, why = slaacFormRules(pi, m.params.LinkAddr)
 		}
-		if replaced || len(m.deferredPrefixes) >= MaxSLAACAddresses {
+		if why == SLAACIgnoreNone && len(m.deferredPrefixes) >= MaxSLAACAddresses {
+			why = SLAACIgnoreCapReached
+		}
+		if why != SLAACIgnoreNone {
+			m.slaac.counts.Ignored[why]++
+			out.journal(m, fmt.Sprintf("Prefix Information option %s is not kept for the fallback: %s", pi, why))
 			continue
 		}
-		m.deferredPrefixes = append(m.deferredPrefixes, deferredPIO{at: now, info: pi})
+		m.deferredPrefixes = append(m.deferredPrefixes, deferredPIO{at: now, prefix: p, info: pi})
 	}
+}
+
+// replaceDeferred is the union's half of RFC 4861 §6.3.4's "the most recently
+// received information is considered authoritative": an option naming a prefix
+// this set already holds replaces it, with its own arrival instant, and spends
+// no second slot.
+func (m *Machine6) replaceDeferred(now Instant, p netip.Prefix, pi wire.PrefixInfo) bool {
+	for i := range m.deferredPrefixes {
+		if d := &m.deferredPrefixes[i]; d.prefix == p {
+			d.at, d.info = now, pi
+			return true
+		}
+	}
+	return false
 }
 
 // countUnusedPrefixes accounts the Prefix Information options of a link whose

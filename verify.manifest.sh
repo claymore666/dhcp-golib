@@ -768,9 +768,9 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # collision between the sides. dev at 56888c7 measures 767 and 41.
 
 # AND THIS ROUND ON TOP OF ALL OF THEM.
-# STATELESS ADDRESS AUTOCONFIGURATION (#818, #819, #817): 825 -> 876, measured
+# STATELESS ADDRESS AUTOCONFIGURATION (#818, #819, #817): 825 -> 880, measured
 # the same way, one testroster run over the base and one over this head,
-# differenced as a set. Fifty-one added, in three files:
+# differenced as a set. Fifty-five added, in three files:
 #
 #   proto/slaac6_test.go               (17)  TheFormedAddressIsRFC4291
 #     AppendixAsOwnOctets, ALinkAddressOfAnotherLengthFormsNoIdentifier,
@@ -787,7 +787,7 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     ExpiryDropsOnlyTheAddressesWhoseValidLifetimeRanOut,
 #     Lease6EqualComparesEveryFieldItConfigures,
 #     RulesABAndCAreTriedBeforeTheHeldPrefixIsLookedUp
-#   proto/machine6_slaac_test.go       (32)  AModeThatFormsAddressesNever
+#   proto/machine6_slaac_test.go       (36)  AModeThatFormsAddressesNever
 #     SolicitsAServer, NewSixRefusesAParamsItCannotRun,
 #     ANewlyFormedAddressGoesThroughDuplicateAddressDetection,
 #     APureLifetimeRefreshDoesNotRestartDuplicateAddressDetection,
@@ -817,18 +817,22 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     APrefixThatArrivesAfterTheDecisionIsFormedFromAtTheFallback,
 #     APrefixThatRanOutWhileWaitingFormsNothingAtTheFallback,
 #     TheDeferredUnionDoesNotSurviveAStop,
-#     TheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress
+#     TheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress,
+#     APrefixDroppedForWantOfAFallbackSlotIsCounted,
+#     TwoOptionsForOnePrefixSpendOneFallbackSlot,
+#     APrefixWithdrawnBeforeTheFallbackFormsNothing,
+#     ALinkAddressNoIdentifierComesFromKeepsNoPrefix
 #   lease/slaac6_test.go                (2)  AnAddressFormedFromAn
 #     AdvertisementReachesTheCaller, EveryRememberedAddressComesBack
 #
-# The last sixteen came out of the mutant campaign, the pre-push read and round
-# 1's HOLD: each one is the test a surviving mutant or a reviewed finding named,
-# and each one kills that mutant.
+# The last twenty came out of the mutant campaign, the pre-push read and rounds
+# 1 and 2 of the review: each one is the test a surviving mutant or a reviewed
+# finding named, and each one kills that mutant.
 #
-# NONE OF THE FIFTY-ONE IS A NETNS TEST, MEASURED with testroster -netns at
+# NONE OF THE FIFTY-FIVE IS A NETNS TEST, MEASURED with testroster -netns at
 # 42 over the base and 42 here, so the netns enumeration in verify.sh does not
 # move in this round and is not re-measured.
-MIN_DECLARED_TESTS=876
+MIN_DECLARED_TESTS=880
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

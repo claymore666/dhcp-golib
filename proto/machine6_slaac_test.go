@@ -1788,19 +1788,92 @@ func TestTheDeferredUnionDoesNotSurviveAStop(t *testing.T) {
 	}
 }
 
-// TestTheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress is defeat row
-// R-62.
-//
-// The union is bounded, and what it is bounded BY is the number of addresses
-// this client can hold. RFC 4862 §5.5.3 a is "If the Autonomous flag is not
-// set, silently ignore the Prefix Information option", so an option with A=0
-// can never become an address and must never take a slot from one that can. A
-// router advertising a page of on-link-only prefixes is ordinary.
+// THE SLOT BOUND OF THE FALLBACK'S UNION BELONGS TO THE PREFIXES §5.5.3 WOULD
+// FORM FROM. A slot is a promise that one address can come out of it, so an
+// option any rule of §5.5.3 refuses may not spend one: eight of them in front
+// of a usable prefix would otherwise leave the client with nothing where the
+// router granted something. The reason is charged where the option is refused,
+// which is the same reason the direct path charges.
 func TestTheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress(t *testing.T) {
-	opts := [][]byte{}
-	for i := 0; i < MaxSLAACAddresses; i++ {
-		opts = append(opts, pio(fmt.Sprintf("fd00:%d::", i+1), 64, false, 86400, 14400))
+	cases := []struct {
+		name string
+		junk func(i int) []byte
+		why  SLAACIgnore
+	}{
+		{"rule a, the Autonomous flag is not set", func(i int) []byte {
+			return pio(fmt.Sprintf("fd00:%d::", i+1), 64, false, 86400, 14400)
+		}, SLAACIgnoreNotAutonomous},
+		{"rule b, the link-local prefix", func(i int) []byte {
+			return pio(fmt.Sprintf("fe80:%d::", i+1), 64, true, 86400, 14400)
+		}, SLAACIgnoreLinkLocal},
+		{"rule c, the preferred lifetime is greater than the valid one", func(i int) []byte {
+			return pio(fmt.Sprintf("fd00:%d::", i+1), 64, true, 100, 200)
+		}, SLAACIgnorePreferredOverValid},
+		{"rule d, the lengths do not sum to 128", func(i int) []byte {
+			return pio(fmt.Sprintf("fd00:%d::", i+1), 48, true, 86400, 14400)
+		}, SLAACIgnoreBadLength},
+		{"rule d, the valid lifetime is 0", func(i int) []byte {
+			return pio(fmt.Sprintf("fd00:%d::", i+1), 64, true, 0, 0)
+		}, SLAACIgnoreValidZero},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts [][]byte
+			for i := 0; i < MaxSLAACAddresses; i++ {
+				opts = append(opts, tc.junk(i))
+			}
+			// The one option that can become an address arrives LAST, behind a
+			// full page of options that cannot.
+			opts = append(opts, pio(testSLAACPrefix, 64, true, 86400, 14400))
+
+			m := newMachine6(t, testParams6Auto())
+			m.Step(at(0), 0, Simple(EvStart))
+			_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, opts...)))
+			d, ok := timerSet(acts, Timer6AutoFallback)
+			if !ok {
+				t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+			}
+			if n := journalCount(acts, "is not kept for the fallback"); n != MaxSLAACAddresses {
+				t.Errorf("%d option(s) were refused a slot in the journal, want %d.%s", n, MaxSLAACAddresses, journalLines(acts))
+			}
+			if got := m.SLAACCounters().Ignored[tc.why]; got != MaxSLAACAddresses {
+				t.Errorf("%s is charged %d time(s), want %d", tc.why, got, MaxSLAACAddresses)
+			}
+			if got := m.SLAACCounters().Ignored[SLAACIgnoreCapReached]; got != 0 {
+				t.Errorf("options no rule can form from spent %d slot(s) of the cap, want 0", got)
+			}
+			m.Step(at(2), 0, TimerFired(Timer6Delay))
+
+			s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+			if f, failed := find(acts, ActFailed); failed {
+				t.Fatalf("a page of unusable prefixes crowded out the one that forms: %s %q.%s", f.Reason, f.Note, journalLines(acts))
+			}
+			if s != State6DAD {
+				t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+			}
+			dad, ok := find(acts, ActStartDAD)
+			if !ok {
+				t.Fatalf("the fallback formed no address.%s", journalLines(acts))
+			}
+			if want := netip.MustParseAddr(testSLAACAddr); dad.Target != want {
+				t.Errorf("the fallback formed %s, want %s", dad.Target, want)
+			}
+		})
+	}
+}
+
+// AN OPTION REFUSED FOR WANT OF A SLOT IS COUNTED WHERE IT IS REFUSED. The
+// direct path charges SLAACIgnoreCapReached for a prefix this client has no
+// room for; the fallback's union used to drop one with no number and no journal
+// line, so the counters read "this link advertises no prefix this client can
+// use" where the truth was "this client is at its cap".
+func TestAPrefixDroppedForWantOfAFallbackSlotIsCounted(t *testing.T) {
+	var opts [][]byte
+	for i := 0; i < MaxSLAACAddresses; i++ {
+		opts = append(opts, pio(fmt.Sprintf("fd00:%d::", i+1), 64, true, 86400, 14400))
+	}
+	// One more than this client will ever hold, and it is the one that is
+	// dropped: MaxSLAACAddresses usable prefixes are already remembered.
 	opts = append(opts, pio(testSLAACPrefix, 64, true, 86400, 14400))
 
 	m := newMachine6(t, testParams6Auto())
@@ -1810,20 +1883,126 @@ func TestTheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress(t *testing.T
 	if !ok {
 		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
 	}
+	if !journalContains(acts, testSLAACPrefix+"/64") || !journalContains(acts, "is not kept for the fallback") {
+		t.Errorf("nothing in the journal says which prefix was dropped.%s", journalLines(acts))
+	}
+	if got := m.SLAACCounters().Ignored[SLAACIgnoreCapReached]; got != 1 {
+		t.Errorf("the dropped option is charged to the cap %d time(s), want 1", got)
+	}
 	m.Step(at(2), 0, TimerFired(Timer6Delay))
 
 	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
-	if f, failed := find(acts, ActFailed); failed {
-		t.Fatalf("a page of A=0 prefixes crowded out the one that forms: %s %q.%s", f.Reason, f.Note, journalLines(acts))
-	}
 	if s != State6DAD {
 		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
 	}
-	dad, ok := find(acts, ActStartDAD)
-	if !ok {
-		t.Fatalf("the fallback formed no address.%s", journalLines(acts))
+	n := 0
+	for _, a := range acts {
+		if a.Kind != ActStartDAD {
+			continue
+		}
+		n++
+		if a.Target == netip.MustParseAddr(testSLAACAddr) {
+			t.Errorf("the fallback formed %s, which is the prefix that found no slot", a.Target)
+		}
 	}
-	if want := netip.MustParseAddr(testSLAACAddr); dad.Target != want {
-		t.Errorf("the fallback formed %s, want %s", dad.Target, want)
+	if n != MaxSLAACAddresses {
+		t.Errorf("the fallback formed %d address(es), want %d", n, MaxSLAACAddresses)
+	}
+}
+
+// TWO OPTIONS NAMING ONE PREFIX ARE ONE SLOT. slaacTable.find masks the prefix
+// before it compares, so a router that advertises 2001:db8:1::/64 and then
+// 2001:db8:1::beef/64 has named one prefix twice; a union keyed on the
+// unmasked option would spend two slots on it and drop a prefix it had room
+// for.
+func TestTwoOptionsForOnePrefixSpendOneFallbackSlot(t *testing.T) {
+	var opts [][]byte
+	for i := 0; i < MaxSLAACAddresses; i++ {
+		opts = append(opts, pio(fmt.Sprintf("fd00:%d::", i+1), 64, true, 86400, 14400))
+	}
+	opts = append(opts, pio("fd00:1::beef", 64, true, 86400, 14400))
+
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, opts...)))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	if got := m.SLAACCounters().Ignored[SLAACIgnoreCapReached]; got != 0 {
+		t.Errorf("the host bits of an advertised prefix cost %d slot(s), want 0.%s", got, journalLines(acts))
+	}
+	m.Step(at(2), 0, TimerFired(Timer6Delay))
+
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if s != State6DAD {
+		t.Fatalf("the fallback left the machine in %s, want %s.%s", s, State6DAD, journalLines(acts))
+	}
+	n := 0
+	for _, a := range acts {
+		if a.Kind == ActStartDAD {
+			n++
+		}
+	}
+	if n != MaxSLAACAddresses {
+		t.Errorf("the fallback formed %d address(es), want %d", n, MaxSLAACAddresses)
+	}
+}
+
+// A ROUTER WITHDRAWS A PREFIX BY RE-ADVERTISING IT WITH A VALID LIFETIME OF 0,
+// and the withdrawal reaches the fallback's union. §6.3.4's "the most recently
+// received information is considered authoritative" is what makes the second
+// option replace the first, and it only happens if the replacement is asked
+// BEFORE the option is tested for whether it can form an address: the
+// withdrawal is exactly an option §5.5.3 d refuses to form from.
+func TestAPrefixWithdrawnBeforeTheFallbackFormsNothing(t *testing.T) {
+	m := newMachine6(t, testParams6Auto())
+	m.Step(at(0), 0, Simple(EvStart))
+
+	_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+	d, ok := timerSet(acts, Timer6AutoFallback)
+	if !ok {
+		t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+	}
+	_, acts = m.Step(at(2), 0, TimerFired(Timer6Delay))
+	mustSendV6(t, acts, wire.MsgSolicit)
+
+	// The same prefix, withdrawn.
+	m.Step(at(3), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 0, 0))))
+
+	s, acts := m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+	if dad, started := find(acts, ActStartDAD); started {
+		t.Fatalf("the fallback formed %s from a prefix the router had withdrawn.%s", dad.Target, journalLines(acts))
+	}
+	f, failed := find(acts, ActFailed)
+	if !failed {
+		t.Fatalf("the fallback neither formed nor failed.%s", journalLines(acts))
+	}
+	if f.Reason != ReasonNoPrefix {
+		t.Errorf("the fallback failed with %s, want %s", f.Reason, ReasonNoPrefix)
+	}
+	if s != State6Discovering {
+		t.Errorf("the fallback left the machine in %s, want %s", s, State6Discovering)
+	}
+}
+
+// THE LINK-ADDRESS RULE IS ASKED AT ADMISSION TOO, and it is asked of the same
+// text both paths use. It is stated here at the helper because Params6.Check
+// refuses a link address no identifier can be formed from before a machine
+// exists, so no Machine6 can drive this arm: the rule is reachable only from
+// slaacFormRules itself, and both of its directions are driven.
+func TestALinkAddressNoIdentifierComesFromKeepsNoPrefix(t *testing.T) {
+	ra := mustRA(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400)))
+	pi := ra.Prefixes[0]
+
+	if _, why := slaacFormRules(pi, []byte{0x02, 0x42, 0xac}); why != SLAACIgnoreLinkAddr {
+		t.Errorf("a three-octet link address is refused with %s, want %s", why, SLAACIgnoreLinkAddr)
+	}
+	addr, why := slaacFormRules(pi, testLinkAddr6)
+	if why != SLAACIgnoreNone {
+		t.Fatalf("the same option with a usable link address is refused with %s", why)
+	}
+	if want := netip.MustParseAddr(testSLAACAddr); addr != want {
+		t.Errorf("the option forms %s, want %s", addr, want)
 	}
 }

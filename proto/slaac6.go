@@ -493,71 +493,107 @@ func (t *slaacTable) find(p netip.Prefix) int {
 	return -1
 }
 
-// applyPIO runs RFC 4862 §5.5.3 over one Prefix Information option and reports
-// which rule decided, whether an address was formed, and whether anything the
-// caller reports changed.
+// slaacOptionRules is the half of §5.5.3 that reads nothing but the option:
+// rules a, b and c, and the malformed prefix none of them names. It returns the
+// prefix the option names, masked, which is the key slaacTable keeps its
+// entries under.
 //
-// THE RULES ARE IN THE SECTION'S OWN ORDER, and that is load-bearing twice
-// over. a, b and c come before d and e, so an option refused by c never
-// reaches e's "always reset the preferred lifetime" — a held address is not
-// touched by an advertisement the section says to ignore. And inside e, rule 1
-// is tried FIRST and its two arms are a disjunction: a tree that asked "is
-// RemainingLifetime <= 2 hours" before rule 1 would refuse a router's
-// legitimate extension of a nearly-expired prefix, which is the common case
-// after a renumbering.
-func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, hw []byte) (formed bool, changed bool, why SLAACIgnore) {
+// IT IS SEPARATE BECAUSE IT HAS TWO CALLERS AND MUST NOT BECOME TWO TEXTS.
+// These rules run BEFORE the held-prefix lookup — an option refused here
+// updates nothing a client holds — and they are a function of the option alone,
+// so Mode6Auto's deferred union asks them before it spends one of its slots on
+// an option §5.5.3 could never have formed an address from.
+func slaacOptionRules(pi wire.PrefixInfo) (netip.Prefix, SLAACIgnore) {
 	if !pi.Autonomous {
-		return false, false, SLAACIgnoreNotAutonomous
+		return netip.Prefix{}, SLAACIgnoreNotAutonomous
 	}
 	if !pi.Prefix.Is6() || pi.Prefix.Is4In6() {
 		// Not an IPv6 prefix at all, so no length of identifier can make the
 		// sum 128. Unreachable through wire.DecodeRouterAdvert, which reads
 		// sixteen octets, and given its own arm rather than folded into the
 		// link-local one, which would name the wrong rule.
-		return false, false, SLAACIgnoreBadLength
+		return netip.Prefix{}, SLAACIgnoreBadLength
 	}
 	if linkLocalPrefix.Contains(pi.Prefix) {
-		return false, false, SLAACIgnoreLinkLocal
+		return netip.Prefix{}, SLAACIgnoreLinkLocal
 	}
-	preferred := SecondsToDuration(pi.PreferredLifetime)
-	valid := SecondsToDuration(pi.ValidLifetime)
-	if durGreater(preferred, valid) {
-		return false, false, SLAACIgnorePreferredOverValid
+	if durGreater(SecondsToDuration(pi.PreferredLifetime), SecondsToDuration(pi.ValidLifetime)) {
+		return netip.Prefix{}, SLAACIgnorePreferredOverValid
 	}
-
 	p := netip.PrefixFrom(pi.Prefix, int(pi.PrefixLen))
 	if !p.IsValid() {
-		return false, false, SLAACIgnoreBadLength
+		return netip.Prefix{}, SLAACIgnoreBadLength
 	}
-	if i := t.find(p); i >= 0 {
-		return false, t.refresh(now, i, preferred, valid), SLAACIgnoreNone
-	}
+	return p.Masked(), SLAACIgnoreNone
+}
 
+// slaacFormRules is what §5.5.3 d asks of an option naming a prefix this client
+// does NOT already hold, and it returns the address that option forms.
+//
+// The three conditions read the option and this link's hardware address and
+// nothing else, which is again what lets the deferred union ask them before it
+// keeps an option. What is deliberately NOT here is everything that reads the
+// table — the held-prefix refresh, this client's cap, and an address duplicate
+// address detection already refused — because the answer to those at the
+// instant an option arrives is not the answer at the instant it is used.
+func slaacFormRules(pi wire.PrefixInfo, hw []byte) (netip.Addr, SLAACIgnore) {
 	if !lengthsSumTo128(int(pi.PrefixLen), IIDBits) {
-		return false, false, SLAACIgnoreBadLength
+		return netip.Addr{}, SLAACIgnoreBadLength
 	}
 	// §5.5.3 d: "and if the Valid Lifetime is not 0, form an address". A
 	// prefix this client does not hold and whose valid lifetime is zero is a
 	// prefix that would be invalid the instant it was formed.
-	if valid == 0 {
-		return false, false, SLAACIgnoreValidZero
-	}
-	if len(t.entries) >= MaxSLAACAddresses {
-		return false, false, SLAACIgnoreCapReached
+	if SecondsToDuration(pi.ValidLifetime) == 0 {
+		return netip.Addr{}, SLAACIgnoreValidZero
 	}
 	addr, err := SLAACAddress(pi.Prefix, pi.PrefixLen, hw)
 	if err != nil {
-		return false, false, SLAACIgnoreLinkAddr
+		return netip.Addr{}, SLAACIgnoreLinkAddr
+	}
+	return addr, SLAACIgnoreNone
+}
+
+// applyPIO runs RFC 4862 §5.5.3 over one Prefix Information option and reports
+// which rule decided, whether an address was formed, and whether anything the
+// caller reports changed.
+//
+// THE ORDER IS THE RFC'S: rules a, b and c, then the held-prefix lookup that
+// rule e is about, then rule d's preconditions, then the two refusals that are
+// this client's own. Mode6Auto's deferred union keeps the same order over the
+// same two helpers, so a prefix is admitted there exactly where it would be
+// formed here.
+func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, hw []byte) (formed bool, changed bool, why SLAACIgnore) {
+	p, why := slaacOptionRules(pi)
+	if why != SLAACIgnoreNone {
+		return false, false, why
+	}
+	if i := t.find(p); i >= 0 {
+		preferred := SecondsToDuration(pi.PreferredLifetime)
+		valid := SecondsToDuration(pi.ValidLifetime)
+		return false, t.refresh(now, i, preferred, valid), SLAACIgnoreNone
+	}
+
+	addr, why := slaacFormRules(pi, hw)
+	if why != SLAACIgnoreNone {
+		return false, false, why
+	}
+	// THE CAP IS ASKED AFTER THE RULES AND NOT BEFORE THEM. It says this client
+	// already holds the addresses it will hold, which is a claim about an
+	// option that would otherwise have become one of them; charging it for an
+	// option no identifier can be formed from would report a client at its
+	// limit where the truth is a link address this library cannot use.
+	if len(t.entries) >= MaxSLAACAddresses {
+		return false, false, SLAACIgnoreCapReached
 	}
 	if t.refused[addr] {
 		return false, false, SLAACIgnoreDuplicate
 	}
 	t.entries = append(t.entries, slaacEntry{
-		prefix:    p.Masked(),
+		prefix:    p,
 		addr:      addr,
 		start:     now,
-		preferred: preferred,
-		valid:     valid,
+		preferred: SecondsToDuration(pi.PreferredLifetime),
+		valid:     SecondsToDuration(pi.ValidLifetime),
 		tentative: true,
 	})
 	t.counts.Formed++
