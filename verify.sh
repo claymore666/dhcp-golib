@@ -326,6 +326,14 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # link and reads them off the lease. One run on the merge product, not a line
 # inserted into the table above.
 #
+# THAT FIGURE IS THAT ROUND'S AND THE ROSTER HAS MOVED UNDER IT TWICE SINCE, to
+# 39 over #961 and to 42 over #962, which added three of its own. Each line in
+# this history is the count at the round it names and none of them is patched
+# when a later round lands, because the row derives the roster at run time and
+# there is no number in this file for a stale one to contradict. The ceiling is
+# what a stale figure could put wrong, and the ceiling is checked against the
+# measured wall time of the row on the merge product in this round's record.
+#
 # MEASURED 2026-09-12 on the session box at this branch's head, exactly as this
 # file runs the row (-race -count=1 -v -timeout 180s, -run over the roster),
 # taking the OUTER (re-exec parent) figure per test. The lane itself now runs on
