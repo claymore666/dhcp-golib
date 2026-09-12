@@ -490,6 +490,23 @@ type Action struct {
 	Reason Reason // ActLeaseLost, ActFailed
 	Note   string // ActJournal, and detail beside Reason
 
+	// Status is the DHCPv6 status code the server refused us with, on
+	// ActFailed with ReasonNak and nowhere else. `actions.refused` is the only
+	// thing that sets it, which is what keeps the reason and the code from
+	// parting company.
+	//
+	// ITS ZERO IS wire.StatusSuccess AND THAT IS NOT AN AMBIGUITY HERE. RFC
+	// 9915 §21.13: "If the Status Code option does not appear in a message in
+	// which the option could appear, the status of the message is assumed to
+	// be Success." So absent and Success are one verdict — "the server stated
+	// no failure" — and neither of them can be the cause of a refusal. The
+	// zero therefore reads as "no status code refused this client", which is
+	// what a v4 DHCPNAK, a timeout and a conflict all are. The one value that
+	// would break that is wire.StatusMalformed, and it never reaches here:
+	// every decode error is checked before the code is read and returns
+	// without a refusal.
+	Status wire.StatusCode
+
 	// Requested is the address this client ASKED FOR, on ActLeaseAcquired
 	// only, and the zero value means it asked for none.
 	//
@@ -529,6 +546,15 @@ func (a Action) String() string {
 	case ActLeaseLost:
 		return fmt.Sprintf("LeaseLost %s", a.Reason)
 	case ActFailed:
+		// THE CODE IS RENDERED AND NOT ONLY CARRIED, because this string is
+		// what the durable journal holds and what Replay6 compares: a Status
+		// that diverged from the one the machine would produce today is
+		// invisible to that proof if the rendering drops it. The Note carries
+		// the code as English at every emit site, which is a second copy and
+		// not an observer of the first.
+		if a.Status != wire.StatusSuccess {
+			return fmt.Sprintf("Failed %s (%s): %s", a.Reason, a.Status, a.Note)
+		}
 		return fmt.Sprintf("Failed %s: %s", a.Reason, a.Note)
 	case ActJournal:
 		return "Journal " + a.Note

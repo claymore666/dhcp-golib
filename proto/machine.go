@@ -1615,3 +1615,17 @@ func (a *actions) journal(m stamper, note string) {
 func (a *actions) failed(m stamper, r Reason, note string) {
 	a.stamp(m, Action{Kind: ActFailed, Reason: r, Note: note})
 }
+
+// refused is failed for the one cause that carries a code: a DHCPv6 server
+// that answered and said no.
+//
+// IT IS A SEPARATE CONSTRUCTOR SO THAT THE REASON AND THE CODE CANNOT PART
+// COMPANY. ReasonNak is v4's DHCPNAK reason and RFC 9915 has no NAK message —
+// the refusal arrives as RFC 9915 §21.13's Status Code option instead — so the
+// two families' refusals are one reason with one counter, and the code is the
+// detail only the v6 one has. A call site free to set Reason and Status
+// independently could emit a refusal with no code, or a code on a timeout;
+// there is one way to say it instead.
+func (a *actions) refused(m stamper, st wire.StatusCode, note string) {
+	a.stamp(m, Action{Kind: ActFailed, Reason: ReasonNak, Status: st, Note: note})
+}

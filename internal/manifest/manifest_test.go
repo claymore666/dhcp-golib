@@ -106,7 +106,7 @@ const (
 	// naming the wrong test and the FLOOR itself observed nothing. Raise it in
 	// the same change that grows the population, every time.
 	minScenarios     = 85
-	minShellScripts  = 12
+	minShellScripts  = 13
 	minDeclaredTests = 382
 	// The self-check row's probes and the refusals record() owes them. Pinned
 	// here for the reason the manifest declares them at all: the count must
