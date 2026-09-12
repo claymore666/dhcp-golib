@@ -17,13 +17,21 @@ import (
 // subnet is the case: the release reaches the server either way, and only one
 // of the two ways is the link the lease was taken on.
 //
-// A device that does not exist is an error here rather than a silent fallback,
+// A device that does not exist is an error here and not a silent fallback,
 // which is also the only way to tell this option apart from one that is
-// accepted and ignored.
+// accepted and ignored: a Control that did nothing would open the socket just
+// the same, and the datagram would leave by whatever link the route table
+// preferred while the caller believed it had named one.
 //
-// SO_BINDTODEVICE needs CAP_NET_RAW. An unprivileged caller gets the error
-// from this function rather than an unbound socket, so the choice of link is
-// never made silently by the route table when the caller asked for one.
+// THE KERNEL REFUSES LESS THAN "THIS NEEDS ROOT", MEASURED on Linux 6.12 with
+// an empty effective capability set: binding a fresh socket to an existing
+// link succeeds there, and an absent link comes back ENODEV. So this is not a
+// privileged path in the ordinary case, and a caller that reads it as one
+// would skip the release it could have sent. What the function guarantees is
+// the half that holds either way: a refusal arrives HERE, as an error on the
+// dial, and never as a socket that quietly went out by the route table's
+// choice. TestBindingTheReleaseSocketToALinkIsCheckedOrRefused drives both
+// directions.
 func bindToDevice(iface string) func(network, address string, c syscall.RawConn) error {
 	return func(_, _ string, c syscall.RawConn) error {
 		var opErr error
