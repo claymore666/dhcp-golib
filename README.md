@@ -17,7 +17,7 @@ and it needs no root.
 |---|:---:|:---:|
 | Take a lease and keep it: renew at T1, rebind at T2, expire when nobody answers | yes | yes |
 | Give the lease back, and cope with a server that refuses it (DHCPNAK / Status Code) | yes | yes |
-| Give a lease back from its record alone, after the container and its link are gone | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) |
+| Give a lease back from its record alone, with no client and no interface left | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/962) |
 | Check the address is free before announcing it, and decline a duplicate (RFC 5227 / RFC 4862) | yes | yes |
 | Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |

@@ -109,6 +109,9 @@ func TestARefusedReleaseReachesTheTransportZeroTimes(t *testing.T) {
 		{"a v4-mapped source for a v6 record", relRec6(),
 			ReleaseConfig{Source: netip.AddrFrom16(netip.MustParseAddr(relHostSrc4).As16()), Interface: relIface, Rand: NewEntropySeeded(1)},
 			ErrReleaseSourceFamily},
+		{"the v4-mapped unspecified source", relRec4(),
+			ReleaseConfig{Source: netip.AddrFrom16(netip.IPv4Unspecified().As16()), Rand: NewEntropySeeded(1)},
+			ErrReleaseNoSource},
 		{"the released v6 address wearing a zone", relRec6(),
 			ReleaseConfig{Source: netip.MustParseAddr(relAddr6).WithZone(relIface), Interface: relIface, Rand: NewEntropySeeded(1)},
 			ErrReleaseSourceIsReleased},
@@ -218,6 +221,21 @@ func TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing(t *testing.T) {
 	}
 	if f4.src.Addr().String() != relAddr4 {
 		t.Errorf("the v4 source = %s, want the caller's explicit choice %s", f4.src.Addr(), relAddr4)
+	}
+
+	// THE SAME ADDRESS IN ITS OTHER SPELLING, and it must reach the transport
+	// in the first one. A v4-mapped source is a v4 address, so refusing it
+	// would refuse a legal caller; passing it through unchanged would leave
+	// three guards and a bind reading two different forms of one address.
+	fm := &relFake{}
+	cfgm := relCfg4()
+	cfgm.Source = netip.AddrFrom16(netip.MustParseAddr(relHostSrc4).As16())
+	if err := sendReleaseWith(relRec4(), cfgm, fm.send); err != nil {
+		t.Fatalf("a v4-mapped source was refused: %v", err)
+	}
+	if fm.calls != 1 || fm.src.Addr().String() != relHostSrc4 {
+		t.Errorf("a v4-mapped source reached the transport %d time(s) as %s, want one as %s",
+			fm.calls, fm.src.Addr(), relHostSrc4)
 	}
 }
 

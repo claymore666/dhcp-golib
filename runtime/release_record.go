@@ -124,7 +124,15 @@ func SendRelease(rec lease.Record, cfg ReleaseConfig) error {
 type releaseSender func(src, dst netip.AddrPort, iface string, payload []byte) error
 
 func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) error {
-	if !cfg.Source.IsValid() || cfg.Source.IsUnspecified() {
+	// ONE SPELLING, DECIDED BEFORE ANYTHING IS ASKED ABOUT IT. A v4 address
+	// has two forms in netip and the two answer differently: IsUnspecified is
+	// false for ::ffff:0.0.0.0 and Is4 is false for ::ffff:192.168.0.2, while
+	// net.UDPAddrFromAddrPort turns both back into the 4-octet form on the way
+	// to the socket. Three guards below and a bind afterwards would each be
+	// reading a different fact about the same address. Unmapping first means
+	// every one of them reads the address the kernel will get.
+	src := cfg.Source.Unmap()
+	if !src.IsValid() || src.IsUnspecified() {
 		return ErrReleaseNoSource
 	}
 
@@ -142,7 +150,7 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		return err
 	}
 
-	if (cfg.Source.Is4() || cfg.Source.Is4In6()) != dst.Addr().Is4() {
+	if src.Is4() != dst.Addr().Is4() {
 		return fmt.Errorf("%w: %s", ErrReleaseSourceFamily, cfg.Source)
 	}
 	port := cfg.SourcePort
@@ -157,12 +165,12 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		if port == 0 {
 			port = ClientPort6
 		}
-		if cfg.Source.WithZone("") == rec.Lease.Addr.Addr().WithZone("") {
+		if src.WithZone("") == rec.Lease.Addr.Addr().WithZone("") {
 			return fmt.Errorf("%w: %s", ErrReleaseSourceIsReleased, cfg.Source)
 		}
 	}
 
-	return send(netip.AddrPortFrom(cfg.Source, port), dst, cfg.Interface, payload)
+	return send(netip.AddrPortFrom(src, port), dst, cfg.Interface, payload)
 }
 
 // sendOneDatagram is the real transport: an ordinary UDP socket, bound to the

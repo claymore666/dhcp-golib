@@ -366,13 +366,15 @@ func relWaitLease(t *testing.T, path string, addr netip.Addr) dnsmasqLease {
 
 // relPoll is the pause between two reads of a file another process rewrites.
 //
-// It is not a guess about how long that takes, which is what the waits here
-// refuse to make: the loops carry no deadline and stop on the state they are
-// waiting for. It is a yield with a floor, because a bare Gosched spins a core
-// flat while the lane already runs several suites at once on this box.
+// It is a yield and not a wait, and the difference is the whole point: a
+// duration here would be a guess about how long dnsmasq takes to rewrite its
+// lease file, and a guess that is too short gets "fixed" by making it longer
+// until the test measures the box instead of the subject. The loops that call
+// it carry no deadline and stop on the state they are waiting for, so the
+// enclosing test timeout is what bounds them. T2 forbids a test to name
+// time.Sleep for exactly this reason.
 func relPoll() {
 	goruntime.Gosched()
-	time.Sleep(time.Millisecond)
 }
 
 // relAssertLifetimeMargin is observer 3's premise, measured rather than
