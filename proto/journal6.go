@@ -31,6 +31,7 @@ type JournalEntry6 struct {
 	Raw    []byte
 	RA     []byte
 	RASrc  netip.Addr
+	Dst    netip.Addr
 	DAD    DADOutcome
 	Timer  TimerID
 	Action ActionID
@@ -67,7 +68,7 @@ type JournalEntry6 struct {
 func NewJournalEntry6(seq uint64, now Instant, rnd uint64, ev Event, from, to State6, acts []Action) JournalEntry6 {
 	return JournalEntry6{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, RASrc: raSrcOf(ev), DAD: ev.DAD,
+		Raw: ev.Raw, RA: ev.RARaw, RASrc: raSrcOf(ev), Dst: ev.Dst, DAD: ev.DAD,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
@@ -83,7 +84,12 @@ func (e JournalEntry6) Event() (Event, error) {
 	if err != nil {
 		return Event{}, fmt.Errorf("entry %d: %w", e.Seq, err)
 	}
-	return ReceivedV6(msg, e.Raw), nil
+	// THE DESTINATION IS REPLAYED WITH THE OCTETS. Without it a recorded
+	// Reconfigure that was accepted replays as one §16.11's first bullet
+	// drops, and the replay reports a divergence in the machine that is really
+	// a gap in the record — or, if the recording client dropped it too, the
+	// two agree for two different reasons.
+	return ReceivedV6To(msg, e.Raw, e.Dst), nil
 }
 
 // ReplayResult6 is what a v6 replay produced.

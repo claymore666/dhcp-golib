@@ -51,9 +51,10 @@ A mark that is a link points at the issue that holds the plan.
 IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its flags and for the options
 it carries, and every one of those is reported and none of it is applied. No
-address is formed from a prefix. There is no prefix delegation. A server
-cannot reconfigure a client that already holds a lease. Nothing on DHCPv4 is
-planned for a later release.
+address is formed from a prefix. There is no prefix delegation. A server that
+holds the reconfigure key it gave the client can make it renew, rebind or ask
+for configuration again, and a Reconfigure that is not signed with that key is
+discarded. Nothing on DHCPv4 is planned for a later release.
 
 The library is pre-1.0 and the API is not stable. It moves without a
 deprecation cycle. Releases are tagged on `main`, so a consumer pins a tag.
@@ -228,7 +229,8 @@ The bounds below are written down so that nobody has to infer them.
   another host's messages.
 - No server-initiated reconfiguration on IPv4. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `v1.0.0` row above.
+  DHCPFORCERENEW included. DHCPv6's Reconfigure is served and is a `v1.0.0`
+  row above.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.
