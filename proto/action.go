@@ -123,6 +123,29 @@ const (
 	// and one timer for both would cancel the DHCP retransmission every time a
 	// solicitation went out.
 	Timer6RouterSolicit
+	// Timer6SLAAC is the next instant at which RFC 4862 §5.5.4 has something
+	// to say about an address formed under §5.5.3: a preferred lifetime
+	// running out, which deprecates it, or a valid lifetime running out,
+	// which invalidates it.
+	//
+	// ONE TIMER FOR EVERY FORMED ADDRESS, re-armed after each firing for the
+	// earliest moment still ahead. It is TimerACD's argument and not
+	// Timer6Renew's: the moments are sequential, the machine deals with the
+	// one that has arrived and then computes the next, so a second id could
+	// only ever be armed by a phase that had disarmed the first. A timer per
+	// address would have needed an id space the size of MaxSLAACAddresses,
+	// which ring 3's timer table indexes by id.
+	//
+	// It is NOT Timer6Expire. That one is the IA_NA's aggregate expiry and it
+	// ends the lease; this one usually does not — an address of several
+	// reaching its valid lifetime leaves the others standing, and only the
+	// last one ends the lease.
+	Timer6SLAAC
+	// Timer6AutoFallback is Mode6Auto's budget for DHCPv6 after a router said
+	// M=1: when it fires with no lease in hand, the machine forms an address
+	// from an autonomous prefix instead. Params6.AutoFallback says where the
+	// duration comes from and from when it is measured.
+	Timer6AutoFallback
 )
 
 func (t TimerID) String() string {
@@ -157,6 +180,10 @@ func (t TimerID) String() string {
 		return "refresh6"
 	case Timer6RouterSolicit:
 		return "router-solicit6"
+	case Timer6SLAAC:
+		return "slaac6"
+	case Timer6AutoFallback:
+		return "auto-fallback6"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
@@ -177,6 +204,7 @@ func AllTimerIDs() []TimerID {
 		TimerRebind, TimerACD,
 		Timer6Retransmit, Timer6Delay, Timer6Expire, Timer6Renew,
 		Timer6Rebind, Timer6DAD, Timer6Refresh, Timer6RouterSolicit,
+		Timer6SLAAC, Timer6AutoFallback,
 	}
 }
 
@@ -353,8 +381,21 @@ type Dest struct {
 	//
 	// RFC 2131 section 4.4.4 unicasts the DHCPRELEASE to the server, and
 	// section 4.4.6's message identifies the binding by the address it is
-	// released from — Table 5 carries it in 'ciaddr'. A release sent from
-	// 0.0.0.0 is a datagram the server can neither route back nor match.
+	// released from — Table 5 carries it in 'ciaddr'.
+	//
+	// WHAT A 0.0.0.0 SOURCE COSTS IS THE PATH OUT, not the match. This
+	// sentence used to say the server could neither route back to such a
+	// datagram nor match it, and the second half is false: MEASURED against
+	// dnsmasq 2.91 while building lease.BuildRelease, the server matches the
+	// binding on 'ciaddr' plus the client-identifier and does not consult the
+	// source address at all — which is exactly what lets a host give a
+	// container's lease back from its own address. Nor is there anything to
+	// route back: section 4.4.6 says "the correct operation of DHCP does not
+	// depend on the transmission of DHCPRELEASE messages", and no server
+	// answers one. The source is here because ring 3 has to put SOME address
+	// in the IP header and nothing below this struct knows one, and because a
+	// datagram whose source the sending host does not own is what a
+	// reverse-path filter drops on the way out.
 	//
 	// Zero for a broadcast, where RFC 2131 section 4.1 requires the source to
 	// be 0.0.0.0 anyway.
@@ -414,6 +455,24 @@ const (
 	// still holds its binding at the server until the lease runs out, a
 	// released one does not (RFC 2131 section 4.3.4).
 	ReasonReleased
+	// ReasonNoRouter means router discovery ended with no Router
+	// Advertisement at all, in a mode whose address can only come from one.
+	// RFC 4861 §6.3.7 bounds the attempt and says what to conclude: "If a
+	// host sends MAX_RTR_SOLICITATIONS solicitations, and receives no Router
+	// Advertisements after having waited MAX_RTR_SOLICITATION_DELAY seconds
+	// after sending the last solicitation, the host concludes that there are
+	// no routers on the link for the purpose of [ADDRCONF]."
+	//
+	// It is NOT ReasonNoServer. A link with no router and a link whose DHCPv6
+	// server did not answer are two different things to go and fix, and one
+	// reason for both is exactly the confusion the v6 absence counters exist
+	// to end.
+	ReasonNoRouter
+	// ReasonNoPrefix means a router WAS heard and it advertised no prefix
+	// this client could form an address from: no Prefix Information option
+	// with the Autonomous flag, or only ones RFC 4862 §5.5.3 refuses. The
+	// SLAACIgnore counters say which rule refused them.
+	ReasonNoPrefix
 )
 
 func (r Reason) String() string {
@@ -440,6 +499,10 @@ func (r Reason) String() string {
 		return "dad-incomplete"
 	case ReasonReleased:
 		return "released"
+	case ReasonNoRouter:
+		return "no-router"
+	case ReasonNoPrefix:
+		return "no-prefix"
 	default:
 		return fmt.Sprintf("reason(%d)", uint8(r))
 	}
@@ -476,6 +539,23 @@ type Action struct {
 	Lease6 Lease6 // ActLeaseAcquired, ActLeaseChanged, ActLeaseRenewed (v6)
 	Reason Reason // ActLeaseLost, ActFailed
 	Note   string // ActJournal, and detail beside Reason
+
+	// Status is the DHCPv6 status code the server refused us with, on
+	// ActFailed with ReasonNak and nowhere else. `actions.refused` is the only
+	// thing that sets it, which is what keeps the reason and the code from
+	// parting company.
+	//
+	// ITS ZERO IS wire.StatusSuccess AND THAT IS NOT AN AMBIGUITY HERE. RFC
+	// 9915 §21.13: "If the Status Code option does not appear in a message in
+	// which the option could appear, the status of the message is assumed to
+	// be Success." So absent and Success are one verdict — "the server stated
+	// no failure" — and neither of them can be the cause of a refusal. The
+	// zero therefore reads as "no status code refused this client", which is
+	// what a v4 DHCPNAK, a timeout and a conflict all are. The one value that
+	// would break that is wire.StatusMalformed, and it never reaches here:
+	// every decode error is checked before the code is read and returns
+	// without a refusal.
+	Status wire.StatusCode
 
 	// Requested is the address this client ASKED FOR, on ActLeaseAcquired
 	// only, and the zero value means it asked for none.
@@ -516,6 +596,15 @@ func (a Action) String() string {
 	case ActLeaseLost:
 		return fmt.Sprintf("LeaseLost %s", a.Reason)
 	case ActFailed:
+		// THE CODE IS RENDERED AND NOT ONLY CARRIED, because this string is
+		// what the durable journal holds and what Replay6 compares: a Status
+		// that diverged from the one the machine would produce today is
+		// invisible to that proof if the rendering drops it. The Note carries
+		// the code as English at every emit site, which is a second copy and
+		// not an observer of the first.
+		if a.Status != wire.StatusSuccess {
+			return fmt.Sprintf("Failed %s (%s): %s", a.Reason, a.Status, a.Note)
+		}
 		return fmt.Sprintf("Failed %s: %s", a.Reason, a.Note)
 	case ActJournal:
 		return "Journal " + a.Note
@@ -611,11 +700,80 @@ type RouterObservation struct {
 	Seen    bool
 	Managed bool
 	Other   bool
+
+	// Router is the link-local source address of the MOST RECENT
+	// advertisement, and Prefixes its Prefix Information options in wire
+	// order. They describe one frame; everything below describes the link.
+	//
+	// Router does not expire. It answers "who last spoke", which is a fact
+	// about the past and stays true; whether that router is still a default
+	// router is Routers' question and is answered by the lifetime it
+	// advertised.
+	Router   netip.Addr
+	Prefixes []wire.PrefixInfo
+
+	// Routers is RFC 4861 §6.3.4's Default Router List: every router whose
+	// advertised Router Lifetime has not run out, ordered by RFC 4191 §2.2's
+	// Default Router Preference, most preferred first, with the order they
+	// were first heard as the tie-break between equals. A caller that wants
+	// one gateway takes the first.
+	Routers []netip.Addr
+
+	// MTU is the link MTU the most recent MTU option offered, zero if none was
+	// offered or the value was outside what a host may copy (§6.3.4).
+	MTU uint32
+
+	// DNS and Search are RFC 8106's two lists, unioned across routers, each
+	// entry held until its own lifetime runs out, IN THE ORDER THEY WERE FIRST
+	// HEARD. A resolver refreshed by a later advertisement keeps the place it
+	// had; only an entry that was withdrawn or expired and then heard again is
+	// last.
+	//
+	// THAT IS THE DNS SERVER LIST'S ORDER AND NOT THE RESOLVER REPOSITORY'S.
+	// §6.2 keeps two structures and gives them different rules: it stores the
+	// addresses "(in order) in both the DNS Server List and the Resolver
+	// Repository", and its step (d) then says to "register the RDNSS address
+	// and Lifetime with the DNS Server List and then insert the RDNSS address
+	// as the first one in the Resolver Repository". Newest-first is the
+	// repository's rule, and the repository is the thing that resolves names.
+	// This library resolves nothing and installs nothing, so what it reports
+	// is the list, and a caller that keeps a repository applies (d) to its own
+	// when it reads this one. §6.3 gives the search list the same processing.
+	//
+	// Routes are RFC 4191's more-specific routes with the router that
+	// advertised each one as the next hop, most preferred first.
+	DNS    []netip.Addr
+	Search []string
+	Routes []wire.Route
+
+	// IT IS A SNAPSHOT TAKEN AT THE LAST Step AND NOT A LIVE VIEW. This client
+	// arms no timer for an entry's expiry: the table is pruned from the now
+	// every Step is handed, so a machine that has taken no Step since an entry
+	// expired still reports it, and the report is corrected by the next Step
+	// rather than by a wake-up. On a link with a router that is advertising,
+	// the next advertisement is the next Step. On a link that has gone quiet,
+	// the stale window is as long as the caller's own silence.
 }
 
 func (r RouterObservation) String() string {
 	if !r.Seen {
 		return "no router advertisement seen"
 	}
-	return fmt.Sprintf("router advertisement M=%t O=%t", r.Managed, r.Other)
+	s := fmt.Sprintf("router advertisement M=%t O=%t", r.Managed, r.Other)
+	if r.Router.IsValid() {
+		s += " from " + r.Router.String()
+	}
+	if len(r.Routers) > 0 {
+		s += fmt.Sprintf(", %d default router(s)", len(r.Routers))
+	}
+	if r.MTU != 0 {
+		s += fmt.Sprintf(", mtu %d", r.MTU)
+	}
+	if len(r.DNS) > 0 || len(r.Search) > 0 {
+		s += fmt.Sprintf(", %d resolver(s), %d search domain(s)", len(r.DNS), len(r.Search))
+	}
+	if len(r.Routes) > 0 {
+		s += fmt.Sprintf(", %d route(s)", len(r.Routes))
+	}
+	return s
 }

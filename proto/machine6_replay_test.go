@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // record6 drives a Machine6 through a script, recording a journal as it goes.
@@ -248,4 +250,103 @@ func TestReplay6TellsAHintedSolicitFromAnUnhintedOne(t *testing.T) {
 			t.Errorf("the replayed action %q names the declined address", d.Replayed)
 		}
 	})
+}
+
+// TestOneJournalCarriesBothTheRouterSourceAndTheDestination is the merge of
+// #814 and #925 at the one declaration both of them widened. Each round added
+// a field to JournalEntry6 — the advertisement's source address here, the
+// received message's destination there — and each round's own tests pass on a
+// merge product that kept only its own half, because a test that never makes
+// the other field non-zero cannot see it go missing. The diff shows nothing
+// either: the text that collides is the text neither side changed.
+//
+// ONE JOURNAL WITH BOTH IN IT IS THE ONLY FIXTURE THAT SEES IT. The recording
+// below takes a lease from a server that sent a reconfigure key, hears one
+// advertisement, and is then reconfigured on a unicast destination, so one
+// entry carries a source, a later one carries a destination, and the two
+// fields are non-zero in the same journal and never on the same entry.
+func TestOneJournalCarriesBothTheRouterSourceAndTheDestination(t *testing.T) {
+	p := testParams6()
+	r := newRecord6(t, p)
+	r.step(at(0), 0, Simple(EvStart))
+	r.step(at(1), capXIDSolicit, TimerFired(Timer6Delay))
+	r.step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+	r.step(at(3), 0, replyWithKey(t, uint32(capXIDRequest), dnsmasqLeasedAddr, testReconfKey))
+	r.step(at(4), 0, DADResult(addr6(dnsmasqLeasedAddr), false))
+
+	raw := raWithOptions("fd00::53", netip.MustParsePrefix("2001:db8:1::/48"))
+	ra := mustRA(t, raw)
+	ra.Router = netip.MustParseAddr("fe80::abcd")
+	r.step(at(5), 0, RouterAdvertRaw(ra, raw))
+
+	if s, _ := r.step(at(10), 7, goodReconfigure(t, wire.MsgRenew, 1)); s != State6Renewing {
+		t.Fatalf("the recorded run did not act on the Reconfigure: %s", s)
+	}
+
+	// Both fields are in this one journal, on entries of different kinds.
+	var srcs, dsts int
+	for _, e := range r.entries {
+		if e.RASrc.IsValid() {
+			srcs++
+			if e.Kind != EvRouterAdvert {
+				t.Errorf("entry %d is a %s and carries a router source", e.Seq, e.Kind)
+			}
+		}
+		if e.Dst.IsValid() {
+			dsts++
+			if e.Kind != EvReceived {
+				t.Errorf("entry %d is a %s and carries a destination", e.Seq, e.Kind)
+			}
+		}
+	}
+	if srcs == 0 || dsts == 0 {
+		t.Fatalf("the journal carries %d router source(s) and %d destination(s); the fixture has to make both non-zero", srcs, dsts)
+	}
+
+	live := r.m.Router()
+	res, err := Replay6(p, r.entries)
+	if err != nil {
+		t.Fatalf("Replay6: %v", err)
+	}
+	if res.State != State6Renewing {
+		t.Errorf("the replay ended in %s, want %s", res.State, State6Renewing)
+	}
+
+	// The destination half: dropping it diverges, which is #925's own control.
+	noDst := append([]JournalEntry6(nil), r.entries...)
+	last := noDst[len(noDst)-1]
+	last.Dst = netip.Addr{}
+	noDst[len(noDst)-1] = last
+	if _, err := Replay6(p, noDst); err == nil {
+		t.Error("the same journal with the destination dropped replayed clean")
+	}
+
+	// The source half: the table is not part of what Replay6 compares, so it
+	// is rebuilt from the journal's own events. Dropping the source leaves the
+	// states identical and the table without its router.
+	rebuild := func(entries []JournalEntry6) RouterObservation {
+		t.Helper()
+		again := newMachine6(t, p)
+		for _, e := range entries {
+			ev, err := e.Event()
+			if err != nil {
+				t.Fatalf("entry %d: %v", e.Seq, err)
+			}
+			again.Step(e.Now, e.Rnd, ev)
+		}
+		return again.Router()
+	}
+	if got := rebuild(r.entries); got.String() != live.String() {
+		t.Errorf("the replayed observation is\n  %s\nand the recorded one is\n  %s", got, live)
+	}
+	noSrc := append([]JournalEntry6(nil), r.entries...)
+	for i, e := range noSrc {
+		if e.Kind == EvRouterAdvert {
+			e.RASrc = netip.Addr{}
+			noSrc[i] = e
+		}
+	}
+	if got := rebuild(noSrc); got.String() == live.String() {
+		t.Error("the same journal with the advertisement's source dropped rebuilt the same table")
+	}
 }

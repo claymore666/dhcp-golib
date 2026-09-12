@@ -184,6 +184,8 @@ func (m *Machine) stepProbing(now Instant, rnd uint64, ev Event, out *actions) {
 		out.journal(m, "message in PROBING with no transaction open: discarded")
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in PROBING", ev.Kind))
 	}

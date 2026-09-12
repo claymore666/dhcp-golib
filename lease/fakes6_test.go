@@ -151,9 +151,21 @@ func (n *fakeND) sentPackets() []wire.ICMPv6Packet {
 
 // inject pushes one frame at the manager. The channel is unbuffered, so the
 // push completes only once the manager has taken it.
+//
+// IT NAMES NO SOURCE, which is the socket that lost the address rather than a
+// frame that had none: NDInbound.Src travels beside the frame because it is
+// not in it. injectFrom is the shape the real port produces.
 func (n *fakeND) inject(frame []byte) {
 	select {
 	case n.in <- NDInbound{Frame: frame}:
+	case <-n.closed:
+	}
+}
+
+// injectFrom pushes one frame carrying the address the socket read it from.
+func (n *fakeND) injectFrom(frame []byte, src string) {
+	select {
+	case n.in <- NDInbound{Frame: frame, Src: netip.MustParseAddr(src)}:
 	case <-n.closed:
 	}
 }
@@ -512,7 +524,12 @@ func newRig6On(t *testing.T, clk *fakeClock, p proto.Params6, behaviour server6B
 	// timers never fire on their own. The rig fires it, so every test below
 	// starts from a client that has begun talking; the delay itself is ring
 	// 1's to assert, and proto's suite does.
-	if r.timers.waitArmed(proto.Timer6Delay) {
+	//
+	// A MODE THAT FORMS ADDRESSES ARMS NO SUCH TIMER. begin() goes straight to
+	// DISCOVERING6 and arms RFC 4861 §6.3.7's solicitation schedule instead,
+	// so waiting for Timer6Delay in those modes would wait until the rig's
+	// own teardown.
+	if p.Mode == proto.Mode6DHCP && r.timers.waitArmed(proto.Timer6Delay) {
 		r.timers.fire(proto.Timer6Delay)
 	}
 

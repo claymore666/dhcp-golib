@@ -157,6 +157,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	scripts/oracle-contracts.sh
 	scripts/sweep-doc-numbers.sh
 	.github/lane/domain.sh
+	.github/lane/govulncheck-pin.sh
 	.github/lane/oracle-aggregate.sh
 	.github/lane/oracle-run-check.sh
 	.github/lane/oracle-shard.sh
@@ -164,7 +165,7 @@ MANIFEST_SHELL_SCRIPTS=(
 	.github/lane/prepare.sh
 	.github/lane/verdict.sh
 )
-MANIFEST_SHELL_SCRIPTS_N=12
+MANIFEST_SHELL_SCRIPTS_N=13
 
 # The unit suite's declared-test population, stated rather than derived.
 #
@@ -406,7 +407,436 @@ MANIFEST_SHELL_SCRIPTS_N=12
 #
 # None is a netns test, so the netns enumeration in verify.sh does not move in
 # this round and is not re-measured.
-MIN_DECLARED_TESTS=653
+#
+# THE DOCS ROUND, ROUND 2: 653 -> 654, measured the same way, one testroster
+# run over the base and one over this head, and the difference taken as a set
+# rather than as two numbers. One added, in one file, and it is the observer
+# the domain of the doc-numbers sweep did not have:
+#
+#   internal/manifest/manifest_test.go  (1)  TheStatedDomainIsTheOneTheSweep
+#     Reads
+#
+# It is not a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+#
+# ROUND 1 OF THIS ROUND LEFT IT AT 653 AND THAT IS THE FINDING. The band was
+# full: 654 declared against 653 plus a margin of 1, so every oracle scenario
+# that plants a test into its own copy reached 655 and failed the unit-suite
+# row it was not driving. Shard 2's ceiling-control and shard 1's
+# ceiling-fires are what said so, and a local `./verify.sh --inner` cannot:
+# the plant only exists inside the oracle.
+#
+# THE GOVULNCHECK PIN ROUND: 654 -> 656, measured the same way, one testroster
+# run over the base and one over this head, the difference taken as a set. Two
+# added, in one file, and they are the observer the scan workflow did not have:
+# nothing outside that workflow ran the pin guard, so deleting both of its
+# steps left every check green.
+#
+#   internal/publication/govulncheck_test.go  (2)  TheScanWorkflowRunsThePin
+#     GuardBeforeItInstalls, ThePinGuardRowSpeaksInBothDirections
+#
+# Neither is a netns test, MEASURED with testroster -netns at 34 over the base
+# and 34 here, so the netns enumeration in verify.sh does not move and is not
+# re-measured.
+#
+# L4 OF THE v2.2.0 IPv6 BATCH, #816: 654 -> 674, measured the same way, one
+# testroster run over a clean worktree at the base and one over this head, the
+# difference taken as a SET and not as two numbers. Twenty added, none removed,
+# in three files:
+#
+#   proto/machine6_status_test.go  (18)  AReplyThatRefusesIsReportedWithThe
+#     ServersOwnCode, AReplyThatSaysSuccessIsNotARefusal, AReplyWithNoAddress
+#     AndNoStatusIsNotARefusal, AnAdvertiseThatRefusesIsReportedAndTheSchedule
+#     Stands, ARefusedRenewKeepsTheLeaseAndSaysWhy, ANoBindingRenewIsA
+#     RecoveryAndNotARefusal, NotOnLinkCostsTheLeaseAndIsCountedOnce,
+#     AMalformedStatusCodeIsNeverReportedAsARefusal, AStatusInsideAnIAAddress
+#     IsNotRead, AnIAThatRefusesAndOffersGivesNoAddress, ARefusedInformation
+#     RequestIsNotAConfiguration, ALaterFailureCarriesNoEarlierStatus,
+#     AV4NakCarriesNoStatusCode, EveryRefusingMessageIsReported, AMessageLevel
+#     RefusalBesideAUsableAddressIsNotARefusal, AnAdvertiseThatRefusesAndOffers
+#     IsNotSelected, AConfirmRefusedForThisLinkIsReported, AFailedAction
+#     RendersTheCodeItCarries
+#   lease/manager6_test.go          (1)  TheCallerIsToldWhichCodeTheServer
+#     RefusedWith
+#   runtime/dnsmasq6_linux_test.go  (1)  AV6ClientIsToldTheServerRefused
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 34 over
+# the base and 35 here, so the netns enumeration in verify.sh moves in this
+# round and is re-measured there as one run rather than patched with a line.
+#
+# #816 ROUND 2, THE REVIEW ROUND: 674 -> 676, measured the same way. Two added,
+# in two files, and each is an observer a round-2 finding asked for:
+#
+#   proto/machine6_status_test.go   (1)  AnIAThatFailsForAnotherReasonStill
+#     HandsOverItsAddress
+#   lease/manager6_test.go          (1)  TheRouterObservationOnARefusalIsWhat
+#     HadBeenSeenByThen
+#
+# The first is the PRESERVATION direction of §18.2.10.1: the rule was observed
+# only where it fires, so widening it to any failure code left the suite green.
+# The second pins what Event.Router carries on a refusal stamped before any
+# Router Advertisement has arrived, which is the ordering the advice beside
+# that field is written against.
+#
+# NEITHER IS A NETNS TEST, measured with testroster -netns at 35 on both sides
+# of this round, so the netns enumeration in verify.sh is not re-measured here.
+# NETNS_CEILING_SECONDS did move, 140 -> 160, and the derivation is in that
+# block: at 108s the old headroom sat exactly on its 32s floor, and this round
+# is the one the block named as having to move the number.
+#
+# THE BACK-MERGE OF THE PIN ROUND INTO #816: the two rounds above are disjoint
+# — different files, no test renamed or removed in either — so the merge
+# product carries both, 656 + 22 and 674 + 2 reaching the same number. It is
+# MEASURED on the merge product and not added up: one testroster run here.
+
+# THE ROUTER ADVERTISEMENT'S OPTIONS (#814): 654 -> 700, measured the same way,
+# one testroster run over the base and one over this head, differenced as a set.
+# Forty-nine added, in five files. The eight in the middle of the wire, proto
+# and lease lists are round 2's: the three duplicate guards in the router/DHCP
+# merge, RFC 4191 section 2.2's Default Router Preference, the withdrawal that
+# has to free its slot, and row D-9's Prefix Information option moving from the
+# packet rule to the option rule. The three at the end of the proto list are
+# round 3's: the search list's own withdrawal, a full list evicting the entry
+# that expires first, and a router that changes the preference it advertises.
+#
+#   wire/icmpv6_options_test.go        (14)  TheMTUOptionIsReadFromItsOwnOffset,
+#     AnMTUOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot,
+#     TheRouteInformationOptionChecksItsLengthAgainstItsPrefixLength,
+#     TheRoutePreferenceIsTwoBitsSignedAndReservedIsARefusal,
+#     TheRouteInformationPrefixIsMaskedAndItsLifetimeIsItsOwn,
+#     TheRecursiveDNSServerOptionCarriesItsAddressesAndOneLifetime,
+#     TheRecursiveDNSServerOptionIsCheckedAsSection531SaysToCheckIt,
+#     TheSearchListOptionDecodesItsLabelsAndDropsItsPadding,
+#     TheSearchListOptionRefusesTheEncodingsSection52Forbids,
+#     AnOptionLengthOfZeroOrAnOverrunDiscardsTheWholePacket,
+#     AnUnrecognisedOptionIsNotCountedAsIgnored,
+#     TheDecoderDoesNotSetTheRouterAddress,
+#     TheDnsmasqShapedAdvertisementDecodesEveryOption,
+#     ADecodedAdvertisementKeepsNothingOfItsInputBuffer
+#   wire/icmpv6_test.go                 (2)  APrefixInformationOptionOfThe
+#     WrongLengthIsIgnoredAndItsSiblingsAreNot,
+#     TheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules
+#   proto/router6_test.go              (21)  TheTableTakesTheUnionOfWhatTwoRoutersSaid,
+#     TheSamePrefixFromTwoRoutersIsTwoRoutes,
+#     TheRoutesAreOrderedMostPreferredFirst,
+#     AZeroLifetimeWithdrawsTheEntryItNames,
+#     ARouterNeverSeenBeforeWithLifetimeZeroIsNotADefaultRouter,
+#     EachEntryExpiresOnItsOwnLifetime,
+#     TheRouterLifetimeIsSixteenBitsAndHasNoInfinity,
+#     TheMTUIsBoundedBelowByTheMinimumLinkMTU,
+#     AnAdvertisementWithNoSourceAddressNamesNoRouter,
+#     TheTableCapsHoldAtLeastWhatTheStandardsRequire,
+#     TheTableIsBoundedAndSaysSoWhenItRefuses,
+#     AnExpiredEntryMakesRoomForANewOne,
+#     ARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut,
+#     TheObservationHoldsNoSliceOfTheAdvertisement,
+#     TheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement,
+#     AReplayedAdvertisementKeepsTheRouterItCameFrom,
+#     AWithdrawnResolverFreesItsSlotInTheSameAdvertisement,
+#     TheDefaultRouterListIsOrderedByTheAdvertisedPreference,
+#     AWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement,
+#     AFullListEvictsTheEntryThatExpiresFirst,
+#     ARouterThatChangesItsPreferenceMovesInTheDefaultRouterList
+#   lease/router6_test.go              (11)  TheAddressTheSocketReadIsTheRouter
+#     TheTableKeysOn, ABrokenAdvertisementIsNotTheSameAsNoAdvertisement,
+#     AnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot,
+#     TheV6LeaseCarriesWhatTheRouterAdvertised,
+#     TheAdvertisedViewFillsOnlyWhatTheLeaseDoesNotHave,
+#     TheAdvertisedViewNeverWritesIntoTheLeaseItWasGiven,
+#     TheRouterViewOnTheLeaseIsAsOfTheLastStep,
+#     OneMalformedPrefixDoesNotHideTheRouterThatSentIt,
+#     WhatBothProtocolsSentAppearsOnceAndDHCPsCopyIsFirst,
+#     ARouteBothSourcesCarryIsNotAddedTwice,
+#     TheLeaseNamesTheRouterThatAdvertisedTheHigherPreference
+#   runtime/dnsmasq6_linux_test.go      (1)  TheOptionsARealRouterAdvertises
+#     ReachTheCaller
+#
+# ONE OF THE FORTY-NINE IS A NETNS TEST, the last one, MEASURED with
+# testroster -netns at 35 over this round's base and 36 on the merge product.
+# The netns roster is derived rather than declared, so nothing else has to be
+# written down for it, and NETNS_CEILING_SECONDS was re-measured rather than
+# assumed: the netns row's wall time on the merge product left more headroom
+# than the floor that block derives, so the ceiling does not move. The figure
+# is in the round's record.
+#
+# THE BACK-MERGE OF THE PIN ROUND AND #816 INTO #814: the three rounds above
+# are disjoint — different files, and no test renamed or removed in any of
+# them — so the merge product carries all of them. The number below is
+# MEASURED on the merge product with one testroster run and NOT added up from
+# the three sides, which is the arithmetic that would hide a collision. Round
+# three re-measured it the same way after adding the three tests named above.
+#
+#
+# L5, #925 (DHCPv6 Reconfigure), over the back-merge of #816 and the pin round:
+# 678 -> 725, measured the same way — one testroster run over the merge base and
+# one over the merge product, the difference taken as a set and not added up.
+# Forty-seven added, in four files, none removed:
+#
+#   wire/dhcpv6_reconfigure_test.go     (13) TheReconfigureMessageOptionReads
+#     AllThreeMsgTypes, TheReconfigureMessageOptionRefusesEveryOtherMsgType,
+#     TheReconfigureAcceptOptionIsZeroLength, TheAuthenticationOptionRoundTrips,
+#     TheAuthenticationOptionRefusesWhatIsNotRKAP,
+#     RKAPVerifyAcceptsTheSpanRFC9915Defines, RKAPVerifyRefusesAWrongZeroedSpan,
+#     RKAPVerifyCoversTheWholeMessage, RKAPVerifyReadsTheOctetsThatArrived,
+#     RKAPVerifyRefusesAKeyThatIsNotOneHundredAndTwentyEightBits,
+#     RKAPVerifyRefusesAMessageWithNoAuthenticationOption,
+#     RKAPVerifyRefusesASecondAuthenticationOption,
+#     RKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets
+#   wire/hmacmd5_test.go                (7)  MD5MatchesRFC1321sOwnVectors,
+#     HMACMD5MatchesRFC2202sOwnVectors,
+#     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
+#     HMACMD5AgreesWithTheStandardLibrary,
+#     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
+#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
+#     AReconfigureNamingRebindStartsARebind,
+#     AReconfigureNamingInformationRequestKeepsTheLease,
+#     TheLeaseOutranksAReconfiguresInformationRequest,
+#     TheRefreshTimerIsHonouredAfterTheDetour,
+#     EveryReconfigureDiscardRuleFiresOnItsOwn,
+#     AReconfigureFromAServerThatSentNoKeyIsDiscarded,
+#     TheReplayDetectionValueIsPerServerAndMustIncrease,
+#     TheReplayFloorIsPerServer, AFailedReconfigureDoesNotRaiseTheReplayFloor,
+#     AReconfigureIsIgnoredWhileTheExchangeItAskedForIsInFlight,
+#     AReconfiguresTransactionIdIsIgnored,
+#     AReconfigureIsIgnoredWhereTheClientHoldsNothing,
+#     TheReconfigureAcceptOptionGoesWhereTheRFCAllowsIt,
+#     AcceptReconfigureOffIsOffInBothDirections,
+#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal
+#     (renamed in the v1.0.0 docs round to
+#     NoActionNoteOrReasonCarriesTheReconfigureKey, because the old name
+#     asserted a universal its body does not check; this record keeps the name
+#     the round it describes added),
+#     AReconfigureReplaysWithItsDestination,
+#     OnlyRKAPTypeOneIsStoredAsTheReconfigureKey,
+#     TheAnsweringServerIdentifierDiesWithItsExchange,
+#     ALaterReplysKeyReplacesTheOldOneAndAKeylessReplyKeepsIt,
+#     AReconfigureRefusedForStateDoesNotBurnItsReplayValue,
+#     ARingOneRuleCannotSeeWhoseUnicastAddressItIs,
+#     ARenewalDuringTheRefreshDelayDoesNotLoseTheRefresh,
+#     AReconfiguresInformationRequestRefusedKeepsTheDetourOpen
+#   runtime/reconfigure6_linux_test.go  (2)  AnAuthenticatedReconfigureMakesThe
+#     ClientRenew,
+#     AClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing
+#
+# The last two ARE netns tests, so the netns enumeration in verify.sh moves in
+# this round and is re-measured there — MEASURED with testroster -netns at 35
+# over the merge base and 37 over the merge product, and the whole table is one
+# run on the merge product rather than #816's table with two lines inserted.
+# NETNS_CEILING_SECONDS moves with it, 160 -> 170: #816's paragraph named the
+# round that adds a netns test as the one that has to move the number rather
+# than re-check it, this is that round, and 170 is 117s of measured wall plus
+# 53s of derived headroom. The derivation is in that block.
+#
+# AReconfiguresInformationRequestRefusedKeepsTheDetourOpen is the one test here
+# that exists because of the merge rather than because of either side: #816's
+# early return on a refused Information-request sits in front of the call that
+# ends this branch's Reconfigure detour, and a clean textual merge answers
+# nothing about what becomes of the detour.
+#
+# THE BACK-MERGE OF #925 INTO #814. The two enumerations above are kept whole
+# and not folded into one, because each is the record of what its own round
+# added and a merged list says which round to ask about nothing. The rounds are
+# disjoint: different files on both sides, and no test renamed or removed in
+# either. The number below is MEASURED on the merge product with one testroster
+# run, and the netns count the same way with testroster -netns, because adding
+# the two sides is the arithmetic that would hide a collision. MEASURED on the
+# merge product: 775 declared and 38 netns, against 727 and 36 on this branch
+# and 725 and 37 on dev. NETNS_CEILING_SECONDS is #925's 170 and the netns row
+# on the merge product is measured against it in this round's record.
+#
+# TWO MORE ARE THE MERGE'S OWN, which is why they are named here and not in
+# either round's list above, and 775 becomes 777:
+#
+#   proto/machine6_replay_test.go      (1)  OneJournalCarriesBothTheRouter
+#     SourceAndTheDestination
+#   lease/record_test.go               (1)  EveryWireCounterSurvivesThe
+#     RecordsEncoding
+#
+# The first is the collision itself: JournalEntry6 gained a field on each side
+# of the merge, each round's tests pass on a product that kept only its own
+# half, and a diff shows nothing because the text that collides is text neither
+# side wrote. One journal that carries both is the only fixture that sees it.
+# The second is this round's new wire counter taking the second of the two
+# routes a counter reaches a file by, the struct tags, where a name given twice
+# is answered by writing neither.
+
+# THE HOSTNAME SETTER, #961, AND ITS BACK-MERGE INTO THIS BATCH: this branch
+# moved the pin 654 -> 676 and then 678 without writing its set down, which is
+# what this block repays. 725 -> 747, MEASURED here, one testroster run over
+# dev at the back-merge base and one over the merge product, the difference
+# taken as a SET and not added up: twenty-two added, none removed, none
+# renamed, in three files:
+#
+#   proto/hostname_test.go                 (18)
+#     AHostnameArrivingBeforeTheLeaseGoesOutAtTheBind,
+#     AHostnameArrivingWhileProbingGoesOutAtTheAnnouncement,
+#     AHostnameDuringARenewalResendsTheOpenTransaction,
+#     AHostnameInBoundIsSentAsAnEarlyRenewal,
+#     AHostnameOnALeaseWithNoServerIdentifierWaitsForT2,
+#     AHostnameRenewalThatIsNAKedLosesTheLease,
+#     AHostnameSetAfterStartReplaysFromTheStartParams,
+#     AHostnameSetBeforeTheClientStartsGoesOutInTheFirstDiscover,
+#     AHostnameSetDuringTheDesyncWaitGoesOutInTheDiscover,
+#     AHostnameSetTwiceSendsOneMessage,
+#     AHostnameSetWhileRebootingGoesOutInTheNextRequest,
+#     AMachineRefusesAnUnsendableHostnameAtRuntime,
+#     AnEmptyHostnameStopsTheOptionAndSendsNothing,
+#     AnFqdnClientIgnoresAHostname, AnOrdinaryAcquisitionSendsNoExtraMessage,
+#     NewRefusesAnUnsendableHostname, ParamsIsNotMovedByASetter,
+#     TheRenewTimerLeftOverByAnEarlyRenewalIsIgnored
+#
+#   lease/hostname_test.go                 (3)
+#     SetHostnameOnARunningManagerReachesTheServer,
+#     SetHostnameRefusesWhatCannotBeSent, SetHostnameReportsAFullRequestQueue
+#
+#   runtime/hostname_dnsmasq_linux_test.go (1)
+#     AHostnameSetAfterStartReachesTheServersLeaseFile
+#
+# No TEST file is touched by both sides, which is what makes the set a union
+# with nothing to reconcile inside it. Three files did need a hand resolution
+# and none of them declares a test: this pin, README.md's out-of-scope list,
+# and JournalEntry6, where #925's Dst and this branch's Hostname are two new
+# fields on one struct.
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 37 over
+# dev and 38 on the merge product, so the population the unit-suite row hands
+# to the netns row moves here. It is derived at run time in verify.sh, so there
+# is no second number to patch; NETNS_CEILING_SECONDS is this batch's 170 and
+# is not moved by one more namespaced test.
+
+# AND A THIRD BACK-MERGE, #961's hostname setter, whose block is the one
+# directly above. Three rounds now meet in this file and all three lists are
+# kept whole for the reason the first pair were: a merged list is a list that
+# says which round to ask about nothing. The pin below is MEASURED on THIS
+# merge product with one testroster run and the netns count with one
+# testroster -netns run: 799 declared and 39 netns, which 777 and 747 are not
+# added up to, because the arithmetic is what would hide a collision between
+# the two sides. dev at 6a69a38 measures 747 and 38, so this branch's own
+# addition is 52 declared and 1 netns on any base it has sat on.
+#
+# The collision this merge did have is again JournalEntry6 and its v4 twin:
+# #925 put Dst on one, this branch put RASrc on both, #961 put Hostname on
+# both, and replayEvent's signature carries all three. Every hunk was resolved
+# by keeping every field, and the observer that sees a dropped one is named in
+# this branch's list above.
+#
+# ROUND 4 ADDS SIX, all of them answers to one pre-push read, and 799 becomes
+# 805:
+#
+#   proto/router6_test.go        (3)  AnUnusableMTUIsAnIgnoredOptionAndNotA
+#     FullList, AnMTUInsideTheBoundsCountsNothing, TheReportedResolversAnd
+#     SearchDomainsAreInTheOrderTheyWereFirstHeard
+#   proto/machine6_test.go       (1)  TheExportedRingOneCountersNameTheirOwn
+#     Cause
+#   lease/router6_test.go        (2)  AnUnusableMTUReachesTheOperatorAsAn
+#     IgnoredOptionAndNotACapInForce, TheDecodersIgnoredOptionsAndRingOnesAre
+#     OneNumber
+#
+# The first five are one finding: an MTU outside what a host may copy was
+# counted as a full list refusing an arrival, on a link where no list was full
+# and nothing was refused. The sixth states an order that was the only one on
+# the observation left unstated.
+
+#
+# THE RELEASE-BY-RECORD ROUND, ROUND 2 OF THE READ: one more added,
+# TestBindingTheReleaseSocketToALinkIsCheckedOrRefused, which drives the two
+# sentences beside bindToDevice that were stated and run by nothing. It is not
+# a netns test, MEASURED with testroster -netns at 41 on both sides of this
+# fold, so the netns enumeration does not move here. 766 -> 767.
+#
+# THE RELEASE-BY-RECORD ROUND, #962: nineteen added, none removed, measured
+# the same way, one testroster run over the base and one over this head with
+# the difference taken as a SET. Ten read the built datagram's octets in
+# lease, six read what the sender hands the transport in runtime, and three
+# run a release against the dnsmasq fixture: one per family, and one that
+# gives a second client exactly the identifier an invented option 61 would be.
+#
+# THREE OF THEM ARE NETNS TESTS, so the netns enumeration in verify.sh moves
+# in this round and is re-measured there rather than patched with a line.
+#
+# THE BACK-MERGE OF dev INTO THIS BRANCH, three times: the rounds above are
+# disjoint from this one, different files and no test renamed or removed in
+# any of them, so the number below is MEASURED on the merge product with one
+# testroster run here and not added up. 766 declared and 41 netns on the
+# product of this branch and dev at 6a69a38, which is dev's 747 and 38 plus
+# this round's nineteen and three.
+
+# AND A FOURTH BACK-MERGE, #962's release by record, whose block is the one
+# directly above. Four rounds now meet in this file and every list is kept
+# whole, for the reason the earlier ones were. The pin below is MEASURED on
+# THIS merge product, one testroster run for the declared count and one
+# testroster -netns run for the namespaced one: 825 declared and 42 netns, which
+# is not 805 and 767 added, because the arithmetic is what would hide a
+# collision between the sides. dev at 56888c7 measures 767 and 41.
+
+# AND THIS ROUND ON TOP OF ALL OF THEM.
+# STATELESS ADDRESS AUTOCONFIGURATION (#818, #819, #817): 825 -> 880, measured
+# the same way, one testroster run over the base and one over this head,
+# differenced as a set. Fifty-five added, in three files:
+#
+#   proto/slaac6_test.go               (17)  TheFormedAddressIsRFC4291
+#     AppendixAsOwnOctets, ALinkAddressOfAnotherLengthFormsNoIdentifier,
+#     APrefixLengthThatDoesNotSumTo128FormsNothing,
+#     EachIgnoreRuleIsChargedByName,
+#     EveryIgnoreReasonIsDeclaredCountedAndNamed,
+#     PrefixEqualityIsMaskedAndLengthAware,
+#     TheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers,
+#     RuleOneIsTriedFirstAndItsArmsAreADisjunction,
+#     TheTwoHourConstantIsTwoHours, EachAddressKeepsItsOwnLifetimeOrigin,
+#     TwoAutonomousPrefixesFormTwoAddresses, TheFormedSetIsCapped,
+#     AnInfiniteLifetimeIsASentinelAndNeverAnInstant,
+#     ThePreferredLifetimeNeverOutlivesTheValidOneAfterTheRules,
+#     ExpiryDropsOnlyTheAddressesWhoseValidLifetimeRanOut,
+#     Lease6EqualComparesEveryFieldItConfigures,
+#     RulesABAndCAreTriedBeforeTheHeldPrefixIsLookedUp
+#   proto/machine6_slaac_test.go       (36)  AModeThatFormsAddressesNever
+#     SolicitsAServer, NewSixRefusesAParamsItCannotRun,
+#     ANewlyFormedAddressGoesThroughDuplicateAddressDetection,
+#     APureLifetimeRefreshDoesNotRestartDuplicateAddressDetection,
+#     ASLAACLeaseArmsNoRenewalTimers, ASecondPrefixFormsASecondAddress,
+#     DeprecationKeepsTheAddressAndReportsAChange,
+#     OneAddressExpiringIsNotTheLeaseExpiring,
+#     ADuplicateCostsOneAddressAndNotTheSet,
+#     APrefixArrivingDuringDuplicateAddressDetectionIsCheckedToo,
+#     AResumedFormedLeaseIsNotFormedASecondTime,
+#     TheAutoModeDecisionIsTakenOnceOnTheFirstAdvertisement,
+#     TheAutoFallbackFiresOnlyWhenItMust,
+#     RouterDiscoveryEndsWithItsOwnReason,
+#     AHeldPrefixReadvertisedWithoutTheAutonomousFlagChangesNothing,
+#     ADHCPv6LeaseIsNeverTouchedByAPrefixInformationOption,
+#     TheFailureIsStampedBeforeTheDecline,
+#     AMomentThatArrivesDuringDuplicateAddressDetectionStillArmsTheNextOne,
+#     AutoDoesNotFallBackIntoFormingAfterItCommittedToDHCPv6,
+#     AnAdvertisementWithNothingToFormFromDoesNotEndTheSolicitationSchedule,
+#     AStatelessLinkWithNoUsablePrefixStillAsksForItsConfiguration,
+#     TheFallbackWindowIsHalfOfTheScheduleThisMachineWillRun,
+#     AnAddressTheLinkAlreadyHoldsIsNotFormedAgainOnEveryAdvertisement,
+#     AnAddressMadePreferredAgainCanDeprecateAgain,
+#     ASecondDeprecationIsChargedWhenTheRepeatArrivesLate,
+#     ARepeatThatLeavesTheAddressDeprecatedIsNotASecondDeprecation,
+#     APrefixAdvertisedOnceIsStillFormedFromAtTheFallback,
+#     TheMostRecentOptionForAPrefixIsTheOneTheFallbackForms,
+#     APrefixThatArrivesAfterTheDecisionIsFormedFromAtTheFallback,
+#     APrefixThatRanOutWhileWaitingFormsNothingAtTheFallback,
+#     TheDeferredUnionDoesNotSurviveAStop,
+#     TheDeferredUnionsSlotsBelongToPrefixesThatCanFormAnAddress,
+#     APrefixDroppedForWantOfAFallbackSlotIsCounted,
+#     TwoOptionsForOnePrefixSpendOneFallbackSlot,
+#     APrefixWithdrawnBeforeTheFallbackFormsNothing,
+#     ALinkAddressNoIdentifierComesFromKeepsNoPrefix
+#   lease/slaac6_test.go                (2)  AnAddressFormedFromAn
+#     AdvertisementReachesTheCaller, EveryRememberedAddressComesBack
+#
+# The last twenty came out of the mutant campaign, the pre-push read and rounds
+# 1 and 2 of the review: each one is the test a surviving mutant or a reviewed
+# finding named, and each one kills that mutant.
+#
+# NONE OF THE FIFTY-FIVE IS A NETNS TEST, MEASURED with testroster -netns at
+# 42 over the base and 42 here, so the netns enumeration in verify.sh does not
+# move in this round and is not re-measured.
+MIN_DECLARED_TESTS=880
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -600,20 +1030,68 @@ SELF_DRIVE_SURVIVES_N=5
 # coincidence, and it is written down here because "the number did not move" is
 # a measurement like any other.
 #
+# WHAT MOVED IT IN THE DOCS WORDING ROUND, 2026-09-08, +2, and the two lines
+# are enumerated because a bump without the list is a ratchet nobody earned:
+# docs/design.md's heading is now the noun "Purity of ring 1" and carries a
+# ring number, and docs/verifying.md's ceilings paragraph re-wrapped so that
+# the sentence about the old two-core figure now sits on a line of its own.
+# Both are reflow. No number was added to the prose and none was deleted.
+#
+# WHAT MOVED IT IN THE v1.0.0 DOCS ROUND, 2026-09-12, 72 to 78, and every line
+# is enumerated because a bump without the list is a ratchet nobody earned.
+# ONE of the six was already standing on dev and is what the margin bought,
+# MEASURED by running the sweep over the tree at 41ac6b8, where the marker was
+# set, and over dev: docs/design.md's refusal bullet says "RFC 9915 section
+# 21.13's status code", and a section number written out in words is not the
+# token the sweep blanks. The other five arrive with this round:
+#   README.md       "the DHCP engine of docker-net-dhcp 2.x", the product line
+#   docs/design.md  "decoded in ring 0"
+#   docs/design.md  "kept in ring 1 as a table"
+#   docs/design.md  RFC 9915 section 18.2.11 quoted verbatim, and the quoted
+#                   text itself says "(see Section 21.19)"
+#   docs/design.md  "the 2.91 sources", the dnsmasq version the Reconfigure
+#                   fixture's claim about that server is measured against
+# Not one of them is a number an instrument here prints: two are ring numbers,
+# one is a product line, one is inside a quotation that may not be edited, and
+# one is a version. That took the marker to 78 with the ceiling at 79, the pair
+# scripts/sweep-doc-numbers.sh --check printed for the population it counted,
+# and the block below then moved it again in the same round.
+#
+# WHAT MOVED IT WHEN THE SLAAC ROW LANDED, 2026-09-12, 78 to 80, both lines
+# enumerated for the same reason as the block above:
+#   docs/design.md  RFC 4862 section 5.5.3 d quoted verbatim, and the quoted
+#                   text itself says "does not equal 128 bits"
+#   docs/design.md  "driven at ring 1 and ring 2", the bound on the one entry
+#                   of that list with no run against a real link behind it
+# One is inside a quotation that may not be edited and one is a pair of ring
+# numbers. The pair below is the pair scripts/sweep-doc-numbers.sh --check
+# printed for the population it counted.
+#
+# THE POPULATION RULE, stated in the marker line below and nowhere else here.
+# The domain is the prose pages of the repository: README.md, SECURITY.md and
+# docs/*.md, which is the FILES array in scripts/sweep-doc-numbers.sh.
+# SECURITY.md joined the domain in this round and contributes zero lines,
+# MEASURED at the head of it, so the number below does not move for it. A URL's
+# digits are blanked as a token there, the way a date and an RFC number are: an
+# issue number in a link is an address, and no instrument recomputes it.
+# internal/manifest's TestTheStatedDomainIsTheOneTheSweepReads holds the two
+# spellings of the domain to each other, so it cannot drift from the page that
+# records the count.
+#
 # ONE NUMBER, TWO READINGS HERE AND THE THIRD IN THE ROW. The marker on the
-# next line is the ONLY place this paragraph states the measurement.
+# next line is the ONLY place this paragraph states the measurement, and what
+# it states is the POPULATION, which is the band's lower edge.
 # internal/manifest's TestTheStatedPopulationIsWhatTheSweepCounts compares that
-# marker to the constant under it and asserts DOC_NUMBER_MARGIN is zero; it
-# does NOT run the sweep, deliberately — a second doc-numbers row made out of a
-# unit test reddens on exactly the trees the self-drive row plants a bare
-# number into, which is what took five oracle shards down on run 34214582437.
-# The third leg is the doc-numbers ROW itself, which the arbiter runs on every
-# run and which at margin zero is an equality between this ceiling and the
-# population the sweep counts. Marker = constant = population follows, with
-# each leg made once. Re-measuring is a one-line edit to the marker, and
-# forgetting the marker is red.
-# DOC-NUMBER POPULATION MEASURED 2026-09-08: 70
-DOC_NUMBER_CEILING=70
+# marker to the constant under it through the margin: ceiling = marker +
+# margin. It does NOT run the sweep, deliberately, because a second doc-numbers
+# row made out of a unit test reddens on exactly the trees the self-drive row
+# plants a bare number into, which is what took five oracle shards down on run
+# 34214582437. The third leg is the doc-numbers ROW itself, which the arbiter
+# runs on every run and which refuses a population under the marker or over the
+# ceiling. Marker = population follows, with each leg made once. Re-measuring
+# is a one-line edit to the marker, and forgetting the marker is red.
+# DOC-NUMBER POPULATION MEASURED 2026-09-12 over README.md SECURITY.md docs/*.md: 80
+DOC_NUMBER_CEILING=81
 
 # How far UNDER the ceiling the population may sit before the row refuses.
 #
@@ -635,10 +1113,44 @@ DOC_NUMBER_CEILING=70
 # to README.md — "22 of the 102 allowlisted identifiers" — is caught by the
 # PATTERN list above it and never reaches the count, so it moves no margin.
 #
-# BOUND, and it is the same one the ceiling already had: this is a size, not a
+# BOUND, and it is the same one the ceiling already had: this is a size and no
 # membership. Deleting one bare number and adding another is invisible to both
 # edges.
-DOC_NUMBER_MARGIN=0
+#
+# 2026-09-08, THE DOCS WORDING ROUND, and this is where the margin stops being
+# zero. At zero the band is an equality and every docs change that touches a
+# line carrying a digit is red until somebody edits this file, which prices a
+# wording pass at a machinery edit and puts the oracle matrix on the push. The
+# brief for this round asked for a stated margin instead.
+#
+# ONE, and the derivation is a measurement over this repository's own history.
+# MEASURED 2026-09-08 with scripts/sweep-doc-numbers.sh, replayed over the
+# twenty most recent commits that touch README.md, SECURITY.md or docs/: the
+# population moved by zero in eighteen of them, by one in 237536d, and by five
+# in 0998583, the round that re-derived the CI ceilings and raised this ceiling
+# with its lines enumerated. So one bare number is what an ordinary docs change
+# adds. The margin buys exactly that one. A change that adds two is red and
+# raises the ceiling with its lines named, which is the ratchet the paragraph
+# above asks for, and docNumberMarginCap in internal/manifest holds this edge
+# from growing.
+#
+# THE MARGIN IS HEADROOM IN ONE DIRECTION AND THE ROW REFUSES IN BOTH, which
+# the paragraph above did not say and which a wording pass pays for. The band
+# is [marker, marker + margin]. A docs change that ADDS one bare-number line
+# stays green. A docs change that REMOVES one, or that reflows two of them onto
+# a single line, falls under the marker and is RED, so a wording pass still
+# costs a manifest edit in the falling direction. That is deliberate and it is
+# not an oversight: the lower edge is the whole reason this margin exists at
+# all, since a ceiling standing above its population IS an allowance, which is
+# what 66 against 64 bought on the previous head. Widening the band downward by
+# the margin would hand that allowance back, doubled. What the falling
+# direction costs is bounded and named: one line to the marker and one to the
+# ceiling, printed by scripts/sweep-doc-numbers.sh's own diagnosis as the pair
+# internal/manifest accepts. MEASURED 2026-09-08 in this round: deleting one
+# bare-number line from docs/design.md takes the population to 71 and the row
+# red, and the pair the diagnosis then prints, marker 71 with the ceiling at
+# 72, leaves the row green and internal/manifest green.
+DOC_NUMBER_MARGIN=1
 
 # RE-MEASURED 2026-09-06 at M7c, this box, this tree, ORACLE_JOBS=4, over the
 # 77 scenarios MANIFEST_SCENARIOS declared then: 623s, from the verify-oracle
@@ -936,7 +1448,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:140|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:170|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

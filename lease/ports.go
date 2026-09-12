@@ -38,7 +38,16 @@ type Entropy interface {
 type Inbound struct {
 	Payload []byte
 	From    netip.Addr
-	Err     error
+	// To is the IP destination the datagram was addressed to, as the
+	// transport read it off the frame, and the zero Addr means the transport
+	// did not report one.
+	//
+	// IT EXISTS FOR RFC 9915 §16.11's FIRST BULLET: a client discards a
+	// Reconfigure that "was not unicast to the client". A transport that
+	// reports nothing here makes every Reconfigure fail that rule, which is
+	// the safe direction — see proto.Event.Dst for the bound.
+	To  netip.Addr
+	Err error
 }
 
 // Transport carries DHCP payloads — the UDP payload only. Building the IP and
@@ -252,7 +261,20 @@ type TransportV6 interface {
 // for the reason Inbound gives.
 type NDInbound struct {
 	Frame []byte
-	Err   error
+	// Src is the IPv6 source address the frame arrived from.
+	//
+	// IT TRAVELS WITH THE FRAME BECAUSE IT IS NOT IN IT. RFC 4861 §6.3.4's
+	// first step on a valid advertisement is "a host extracts the source
+	// address of the packet", and every router-keyed thing above this port —
+	// the Default Router List, which router withdrew which route, which
+	// router's MTU is the most recent — is keyed on it. It is in the IPv6
+	// header, which this port's implementation has already parsed and which
+	// the ICMPv6 decoder above it never sees, so a port that carried only the
+	// body would leave the ring above to invent the one value it cannot
+	// derive. It is also the value §6.1.2's link-local check was made on, so
+	// carrying it is what lets a reader see WHICH router was checked.
+	Src netip.Addr
+	Err error
 }
 
 // ND is the link's IPv6 Neighbor Discovery traffic: Router Solicitations and

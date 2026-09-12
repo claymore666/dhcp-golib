@@ -98,6 +98,34 @@ type Machine struct {
 	probing   Lease
 	haveProbe bool
 
+	// hostname is the name option 12 carries NOW, which is not necessarily
+	// params.Hostname.
+	//
+	// A SEPARATE FIELD BECAUSE params IS THE REPLAY SEED. Params is "copied
+	// into the Machine at New and never mutated, so that a replay constructs
+	// the same Machine from the same Params" (see Params), and Replay is
+	// handed exactly that value. A setter writing params.Hostname would make
+	// the recorded configuration disagree with the run, and the replay would
+	// then start with the name the run ENDED with and send it from the first
+	// DHCPDISCOVER. The change of name is journalled as an event instead, so
+	// the replay applies it where the run applied it.
+	//
+	// The consequence is a bound rather than a defect, and Hostname is the
+	// reader for it: a caller persisting configuration across a process
+	// restart must persist this and not Params().Hostname. Same shape as
+	// lease.Manager's Params6 and Declined6.
+	hostname string
+
+	// nameOnWire is what option 12 carried in the most recent message this
+	// machine BUILT, and it is read back out of that message rather than set
+	// beside the write — so it cannot claim a name the message does not have.
+	//
+	// It is what decides whether a new name needs a message at all: the
+	// question is not "did the name change" but "is the server being told
+	// something it has not been told", and those differ in every state that
+	// records a name without sending one.
+	nameOnWire string
+
 	// arpAction is the id of the ActSendARP most recently emitted, and
 	// haveARPAction says whether one is outstanding.
 	//
@@ -135,7 +163,7 @@ func New(p Params) (*Machine, error) {
 	// passed in could otherwise move the remembered address out from under a
 	// machine that has already decided to ask for it.
 	p.Resume = p.Resume.Clone()
-	m := &Machine{params: p, state: StateStopped, resume: p.Resume}
+	m := &Machine{params: p, state: StateStopped, resume: p.Resume, hostname: p.Hostname}
 	if p.Conflict != ConflictOff {
 		m.acd = newACD(p.acd(), p.Conflict, p.linkHW())
 	}
@@ -158,6 +186,14 @@ func (m *Machine) Params() Params {
 	p.Resume = p.Resume.Clone()
 	return p
 }
+
+// Hostname is the name this machine is putting in option 12 now.
+//
+// It is Params().Hostname until a EvSetHostname changes it, and the two are
+// deliberately different readers afterwards: Params is what a replay must be
+// handed, this is what the client is currently asking the server to record.
+// See Machine.hostname.
+func (m *Machine) Hostname() string { return m.hostname }
 
 // Step is total: every (state, event) pair yields a defined result and no
 // reachable panic. R1 tests that over the whole product of AllStates and
@@ -212,6 +248,8 @@ func (m *Machine) stepStopped(now Instant, rnd uint64, ev Event, out *actions) {
 		// can be read is this line.
 		out.journal(m, fmt.Sprintf("%s failed (%s) after the machine stopped: the lease is given up locally, and the server may still hold the binding (RFC 2131 4.4.6)",
 			ev.Action, ev.Reason))
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in STOPPED", ev.Kind))
 	}
@@ -256,6 +294,8 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 		m.beginAcquisition(now, rnd, out, true)
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in INIT", ev.Kind))
 	}
@@ -316,6 +356,8 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 		m.linkDown(out)
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in SELECTING", ev.Kind))
 	}
@@ -375,6 +417,8 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 		m.linkDown(out)
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in REQUESTING", ev.Kind))
 	}
@@ -489,6 +533,8 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 		m.linkDown(out)
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in REBOOTING", ev.Kind))
 	}
@@ -551,6 +597,8 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 		out.journal(m, "message in BOUND with no transaction open: discarded")
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in BOUND", ev.Kind))
 	}
@@ -658,6 +706,8 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 		m.beginAcquisition(now, rnd, out, false)
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
+	case EvSetHostname:
+		m.takeHostname(now, rnd, ev, out)
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in %s", ev.Kind, m.state))
 	}
@@ -967,6 +1017,20 @@ func (m *Machine) enterBound(now Instant, rnd uint64, l Lease, out *actions, ren
 
 	if !renewal {
 		out.stamp(m, Action{Kind: ActLeaseAcquired, Lease: l, Requested: m.requestedAddr()})
+		// A name that arrived while this client was acquiring — in SELECTING,
+		// in REQUESTING, or during RFC 5227's probe window, which is where the
+		// default ConflictWait client spends the five seconds after the
+		// DHCPACK — has been recorded and not sent. This is the first moment
+		// there is a lease to renew, and announceHostname does nothing at all
+		// when the DHCPREQUEST that produced this lease already carried the
+		// name, which is the ordinary acquisition.
+		//
+		// ONLY the fresh bind, never the renewal below. A name arriving in
+		// RENEWING or REBINDING is put on the wire by announceHostname itself,
+		// so the DHCPACK that ends that transaction answers a DHCPREQUEST that
+		// already carried it. MEASURED: a copy of this call at the end of the
+		// renewal path was mutated away (M9) and the suite stayed green.
+		m.announceHostname(now, rnd, out)
 		return
 	}
 	// G-3: a Renewed action on EVERY ACK that extends a held lease, whether
@@ -1157,7 +1221,10 @@ func (m *Machine) enterRenewing(now Instant, rnd uint64, out *actions) {
 		// this costs the renewal attempt between T1 and T2 and not the lease.
 		// The alternative — rebinding immediately at T1 — would broadcast
 		// during the window RFC 2131 reserves for the leasing server alone.
-		out.journal(m, "T1 reached with no server identifier in the lease: staying in BOUND until T2, where the DHCPREQUEST is broadcast (RFC 2131 4.4.5)")
+		// Worded for both doors, not only T1's: the early renewal that
+		// carries a name set at runtime arrives here as well, and a line
+		// saying "T1 reached" would be false in that journal.
+		out.journal(m, "no server identifier in the lease: staying in BOUND until T2, where the DHCPREQUEST is broadcast (RFC 2131 4.4.5)")
 		return
 	}
 	m.beginRenewalTransaction(now, rnd)
@@ -1271,7 +1338,10 @@ func (m *Machine) sendRenewal(now Instant, out *actions) {
 		// Section 4.4.5: unicast to the server. Src is the leased address —
 		// the datagram carries it in 'ciaddr' and must come FROM it, or the
 		// server has no return path and ring 3 has nothing to build an IP
-		// header from. Same reason as the DHCPRELEASE above.
+		// header from. The return path is REAL here and it is not real for the
+		// DHCPRELEASE below: section 4.4.5's renewal is answered with a
+		// DHCPACK addressed back to this client, and a release is answered
+		// with nothing.
 		out.send(m, msg, Dest{Addr: m.lease.ServerID, Src: msg.CIAddr})
 	} else {
 		out.send(m, msg, Dest{Broadcast: true})
@@ -1405,9 +1475,11 @@ func (m *Machine) sendRelease(rnd uint64, out *actions) {
 	msg.Options[wire.OptServerID] = sv[:]
 	msg.Options[wire.OptMessage] = []byte(releaseMessage)
 	// RFC 2131 section 4.4.4: "The client unicasts DHCPRELEASE messages to the
-	// server." Src is the released address: the datagram carries it in
-	// 'ciaddr' and must also come FROM it, or the server has no return path
-	// and ring 3 has nothing to build an IP header from.
+	// server." Src is the released address because this client still holds it
+	// and ring 3 has nothing else to build an IP header from. NOT because the
+	// server matches on it: it does not, and Dest.Src carries the measurement.
+	// lease.BuildRelease is the other path, for a lease whose holder is gone,
+	// and it leaves the source to its caller.
 	out.send(m, msg, Dest{Addr: sid, Src: addr})
 }
 
@@ -1442,9 +1514,10 @@ func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
 		// ignore option 12) — so the choice is made here, where the caller's
 		// intent is known, and option 12 is not sent at all.
 		msg.Options[wire.OptFQDN] = append([]byte(nil), m.params.fqdn...)
-	} else if m.params.Hostname != "" {
-		msg.Options[wire.OptHostName] = []byte(m.params.Hostname)
+	} else if m.hostname != "" {
+		msg.Options[wire.OptHostName] = []byte(m.hostname)
 	}
+	m.nameOnWire = string(msg.Options[wire.OptHostName])
 	if m.params.VendorClass != "" {
 		msg.Options[wire.OptVendorClassID] = []byte(m.params.VendorClass)
 	}
@@ -1609,4 +1682,18 @@ func (a *actions) journal(m stamper, note string) {
 
 func (a *actions) failed(m stamper, r Reason, note string) {
 	a.stamp(m, Action{Kind: ActFailed, Reason: r, Note: note})
+}
+
+// refused is failed for the one cause that carries a code: a DHCPv6 server
+// that answered and said no.
+//
+// IT IS A SEPARATE CONSTRUCTOR SO THAT THE REASON AND THE CODE CANNOT PART
+// COMPANY. ReasonNak is v4's DHCPNAK reason and RFC 9915 has no NAK message —
+// the refusal arrives as RFC 9915 §21.13's Status Code option instead — so the
+// two families' refusals are one reason with one counter, and the code is the
+// detail only the v6 one has. A call site free to set Reason and Status
+// independently could emit a refusal with no code, or a code on a timeout;
+// there is one way to say it instead.
+func (a *actions) refused(m stamper, st wire.StatusCode, note string) {
+	a.stamp(m, Action{Kind: ActFailed, Reason: ReasonNak, Status: st, Note: note})
 }

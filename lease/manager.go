@@ -177,6 +177,16 @@ type Manager struct {
 	params6   proto.Params6
 	declined6 []netip.Addr
 
+	// hostname mirrors the v4 machine's live option-12 name, for Hostname, and
+	// is refreshed after every Step for the reason acd is: the machine belongs
+	// to Run's goroutine and a caller reading it directly would race.
+	//
+	// IT IS THE MACHINE'S VALUE AND NOT THE LAST NAME PASSED TO SetHostname.
+	// The two differ whenever a request was queued and not yet stepped, and
+	// whenever the machine refused one — and a mirror of what was ASKED would
+	// report a name this client is not sending.
+	hostname string
+
 	// machine6 is the v6 machine, and it is non-nil exactly when machine is
 	// nil: one Manager runs one lease in one family. Every place that has to
 	// know which reads this field, so "which family is this" has one
@@ -225,6 +235,20 @@ type Manager struct {
 	// having produced counters that could be deleted with the suite still
 	// green.
 	stats Stats
+
+	// raOptionsIgnoredRing1 is how much of Stats.RouterAdvertOptionsIgnored
+	// has already been taken from ring 1.
+	//
+	// THE FIELD IS ONE NUMBER WITH TWO PRODUCERS, which is why this one
+	// exists. The decoder's half is ADDED at receive, so the public field
+	// cannot be assigned from ring 1's total without losing it; ring 1's own
+	// total is cumulative, so it cannot be added either without counting every
+	// earlier option again at every Step. What is added is the part of ring
+	// 1's total that has not been added yet, and this is that watermark. It is
+	// read and written only from the goroutine that runs Step, which is the
+	// same rule the mirrored table counters beside it follow: ring 1 is not
+	// concurrency-safe and this ring touches it in exactly one place.
+	raOptionsIgnoredRing1 uint64
 }
 
 // Stats are the counters this manager produces.
@@ -281,6 +305,24 @@ type Stats struct {
 	// server outside Params.Servers is invisible in either number alone, and
 	// on a LAN with two DHCP servers it is the number that explains the
 	// behaviour.
+	//
+	// THEY COUNT TWO DIFFERENT POPULATIONS ON THE v6 PATH, and NaksAccepted is
+	// the larger one. A DHCPv6 server refuses with RFC 9915 §21.13's Status
+	// Code option inside an ordinary Advertise or Reply, not with a message of
+	// its own, so there is no v6 message this manager can count on the wire:
+	// NaksSeen stays at zero on a v6 client while NaksAccepted counts every
+	// refusal ring 1 reported. The code that was sent is on the Failed event
+	// (Event.Status); these two say how often, not which.
+	//
+	// AND "HOW OFTEN" COUNTS MESSAGES, NOT ENDPOINTS, on both families. One
+	// DHCPNAK is one NaksAccepted and so is one refusing Advertise, and
+	// nothing bounds how many of either a server may send: RFC 9915 §18.2.1
+	// puts no retransmission limit on the Solicit, so a server with nothing
+	// to give refuses every retransmission and every refusal is counted.
+	// A caller asking "was this endpoint refused" reads whether a
+	// Failed{ReasonNak} arrived at all; only a caller asking "how much is
+	// this server refusing" reads the number.
+	// proto's TestEveryRefusingMessageIsReported drives that population.
 	NaksSeen     uint64
 	NaksAccepted uint64
 
@@ -348,8 +390,40 @@ type Stats struct {
 
 	// RouterSolicitsSent counts RFC 4861 section 6.3.7's solicitations that
 	// left the host; RouterAdvertsSeen the advertisements that reached ring 1.
-	RouterSolicitsSent uint64
-	RouterAdvertsSeen  uint64
+	//
+	// RouterAdvertsRefused counts frames that WERE Router Advertisements — the
+	// ICMPv6 type octet says so — and would not decode. It is separate from
+	// NDIgnored, which holds every frame this ring dropped, because their
+	// difference is the diagnostic: a link with no router and a link whose
+	// router is advertising something this decoder refuses are the same number
+	// in NDIgnored alone, and only one of them is a router to go and fix.
+	//
+	// RouterAdvertOptionsIgnored counts OPTIONS, not frames: a recognised
+	// option refused by its own standard's validity rule while the rest of the
+	// advertisement was read. It rises on advertisements that are otherwise
+	// fine, which is why it is not folded into the refusal count.
+	//
+	// TWO RINGS PUT OPTIONS IN IT. The decoder refuses an option it cannot
+	// read by that option's own rule; the state machine refuses a value it
+	// read and may not use, which today is an MTU outside the bounds RFC 4861
+	// §6.3.4 lets a host copy. Both are one option nobody could use out of an
+	// advertisement that was otherwise read, so both are this number. Neither
+	// is a full list, which is why neither is below.
+	//
+	// RouterTableEntriesDropped is ring 1's, mirrored here at each Step: an
+	// arrival a full list in the router table would not take.
+	// RouterTableEntriesEvicted is its pair, an entry a full list threw out to
+	// take an arrival, which is what RFC 8106 §6.2 (d) asks of the resolver
+	// and search lists. They are two counters because they ask for different
+	// next steps, and either above zero means the table's caps are in force,
+	// which on a quiet link means something is advertising more than a link
+	// has.
+	RouterSolicitsSent         uint64
+	RouterAdvertsSeen          uint64
+	RouterAdvertsRefused       uint64
+	RouterAdvertOptionsIgnored uint64
+	RouterTableEntriesDropped  uint64
+	RouterTableEntriesEvicted  uint64
 
 	// DADChecksStarted counts addresses handed to ring 3 for RFC 4862 section
 	// 5.4, and DADConflicts the ones that came back in use. Their difference
@@ -361,6 +435,36 @@ type Stats struct {
 
 	// ConfiguredEvents counts RFC 9915 section 18.2.6's stateless answers.
 	ConfiguredEvents uint64
+
+	// The stateless address autoconfiguration counters, RFC 4862 section
+	// 5.5.3 and 5.5.4. They are ring 1's and are mirrored here at each Step,
+	// like RouterTableEntriesDropped.
+	//
+	// SLAACAddressesFormed counts ADDRESSES and SLAACPrefixesIgnored counts
+	// OPTIONS, and their sum is not the number of options a router sent: an
+	// option that refreshed the lifetimes of an address this client already
+	// held is neither. SLAACPrefixesIgnored holds every reason together;
+	// which rule refused which option is in the journal line beside it and in
+	// proto.SLAACCounters, because one number for eight rules answers none of
+	// them.
+	//
+	// SLAACAddressesDeprecated counts section 5.5.4's first phase — "A
+	// preferred address becomes deprecated when its preferred lifetime
+	// expires" — and SLAACAddressesExpired its second. An address passes
+	// through both, so the two are not alternatives and their difference is
+	// how many held addresses are deprecated right now.
+	//
+	// SLAACFallbacks counts an auto-mode client that gave up on a silent
+	// DHCPv6 server and formed an address instead. It counts the fallback
+	// that FORMED something: a deadline that passed with no usable prefix
+	// ends the acquisition and leaves this where it was.
+	SLAACAddressesFormed     uint64
+	SLAACAddressesRefreshed  uint64
+	SLAACAddressesDeprecated uint64
+	SLAACAddressesExpired    uint64
+	SLAACAddressesConflicted uint64
+	SLAACPrefixesIgnored     uint64
+	SLAACFallbacks           uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -473,9 +577,17 @@ func NewManager(cfg Config) (*Manager, error) {
 		journal: cfg.Journal,
 		packets: cfg.Packets,
 		events:  make(chan Event, buf),
-		// Four is enough for every distinct request that can be outstanding
-		// at once and then some: the two kinds are idempotent, so a second
-		// copy of one already queued would change nothing.
+		// Seeded from the machine rather than from cfg.Params, so the mirror
+		// and its subject start out saying the same thing. Hostname is read
+		// before the first Step by any caller that asks early.
+		hostname: m.Hostname(),
+		// Four is enough for every distinct request that can be outstanding at
+		// once and then some. Release, ReportConflict, ReportAddressLost and
+		// ReportDADResult are idempotent, so a second copy of one already
+		// queued changes nothing; SetHostname is not, and does not need to be
+		// — the queue is FIFO, so two names applied in the order they were
+		// asked for leave the last one in force. A queue that refused one is
+		// the case SetHostname returns ErrRequestQueueFull for.
 		requests: make(chan proto.Event, 4),
 	}
 	if mg.journal == nil {
@@ -521,12 +633,37 @@ func newManager6(cfg Config) (*Manager, error) {
 		// The one crossing, taken ONCE from a single paired reading, for
 		// clockBridge's reason.
 		b := bridge(cfg.Clock)
+		// EVERY REMEMBERED ADDRESS COMES BACK, not only the first. A lease
+		// formed by RFC 4862 §5.5.3 holds one address per autonomous prefix,
+		// and a restart that remembered one of them would let the first
+		// advertisement after the restart form the others a SECOND time —
+		// §5.5.3 d only refuses a prefix "equal to the prefix of an address
+		// already in the list", and the list is what was just thrown away.
+		//
+		// Lease.Addrs is empty for every lease written before it existed and
+		// for a caller that fills only Addr, so the single address is the
+		// fallback and not the other way round.
+		resumed := []proto.Addr6{{
+			Addr:      addr,
+			Preferred: remaining(b, cfg.Resume6.Preferred),
+			Valid:     remaining(b, cfg.Resume6.Valid, cfg.Resume6.Expire),
+		}}
+		if len(cfg.Resume6.Addrs) > 0 {
+			resumed = resumed[:0]
+			for _, a := range cfg.Resume6.Addrs {
+				ip := a.Addr.Addr()
+				if !ip.Is6() || ip.Is4In6() || ip.IsUnspecified() {
+					return nil, ErrResume6NoAddr
+				}
+				resumed = append(resumed, proto.Addr6{
+					Addr:      ip,
+					Preferred: remaining(b, a.Preferred, cfg.Resume6.Preferred),
+					Valid:     remaining(b, a.Valid, cfg.Resume6.Valid, cfg.Resume6.Expire),
+				})
+			}
+		}
 		params.Resume = &proto.Resume6{
-			Addrs: []proto.Addr6{{
-				Addr:      addr,
-				Preferred: remaining(b, cfg.Resume6.Preferred),
-				Valid:     remaining(b, cfg.Resume6.Valid, cfg.Resume6.Expire),
-			}},
+			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
 			T2:         remaining(b, cfg.Resume6.Rebind),
@@ -610,9 +747,29 @@ func (mg *Manager) v6() bool { return mg.machine6 != nil }
 func (mg *Manager) Events() <-chan Event { return mg.events }
 
 // Lease returns a snapshot of the held lease.
+//
+// ON v6 IT CARRIES WHAT THE ROUTER ADVERTISED, exactly as an event's lease
+// does, and it is the reason this is not a bare field read. The two arrive on
+// two protocols with no ordering between them: an advertisement that lands
+// after the Reply cannot retroactively appear in an event that has already
+// been emitted, and this library emits no event of its own when the router's
+// view changes. Reading it here is how a caller that already holds a lease
+// sees the gateway, the MTU, the routes and the resolvers the router has
+// since advertised.
+//
+// THE ADVERTISED HALF IS AS OF THE LAST Step, NOT AS OF THIS CALL. The router
+// table is pruned from the now each Step is handed and this client arms no
+// timer for an entry's expiry, so a lifetime that ran out while the machine
+// was quiet is still reported here and is corrected by the next Step. The DHCP
+// half of the lease is not affected: its own deadlines are fields on the
+// returned value, which a caller compares against its own clock. See
+// proto.RouterObservation's doc for the size of the window.
 func (mg *Manager) Lease() (Lease, bool) {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
+	if mg.held && mg.v6() {
+		return withRouterAdvert(mg.lease, mg.router), true
+	}
 	return mg.lease, mg.held
 }
 
@@ -809,12 +966,104 @@ func (mg *Manager) ReportDADResult(addr netip.Addr, duplicate bool) {
 // treats it as a conflict.
 func (mg *Manager) ReportAddressLost() { mg.request(proto.Simple(proto.EvAddressLost)) }
 
-func (mg *Manager) request(ev proto.Event) {
+func (mg *Manager) request(ev proto.Event) { _ = mg.requestQueued(ev) }
+
+// requestQueued is request, reporting whether the event was taken.
+//
+// The verdict is returned rather than only counted so that ONE caller can know
+// its own call landed. Stats.RequestsDropped cannot say that — it is one
+// counter over every request kind and every goroutine, which its own doc at
+// Release spells out — and for a request whose whole point is that something
+// reaches the server, "it may or may not have been sent" is not a usable
+// answer. Release and ReportConflict keep the fire-and-forget shape: neither
+// message is answered, so neither had a receipt to give.
+func (mg *Manager) requestQueued(ev proto.Event) bool {
 	select {
 	case mg.requests <- ev:
+		return true
 	default:
 		mg.bump(func(s *Stats) { s.RequestsDropped++ })
+		return false
 	}
+}
+
+// Hostname is the name this client is putting in option 12 now, and the empty
+// string on a v6 manager, which sends no name option.
+//
+// It is Config.Params.Hostname until SetHostname changes it. A CALLER
+// PERSISTING CONFIGURATION ACROSS A RESTART PERSISTS THIS: proto.Params is the
+// value a journal replays against and deliberately does not move under the
+// run, so a name set while the client was running is not in it. The same split
+// as Params6 and Declined6.
+//
+// It follows the machine and not the setter: a call that has been queued and
+// not yet stepped is not visible here yet.
+func (mg *Manager) Hostname() string {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.hostname
+}
+
+// ErrHostnameV6 is returned by SetHostname on a DHCPv6 manager.
+var ErrHostnameV6 = errors.New("lease: this manager runs DHCPv6, which this library sends no name option for")
+
+// ErrHostnameFQDN is returned by SetHostname on a client configured with
+// option 81.
+var ErrHostnameFQDN = errors.New("lease: this client sends option 81, which RFC 4702 section 3.1 forbids the Host Name option beside")
+
+// ErrRequestQueueFull is returned by SetHostname when the request queue would
+// not take the call.
+var ErrRequestQueueFull = errors.New("lease: the request queue is full and the hostname was not delivered")
+
+// SetHostname gives a RUNNING client the name it should ask the server to
+// record in option 12, and makes it tell the server at once.
+//
+// THE NAME IS SENT, NOT STORED. A client holding a lease renews early to carry
+// it — RFC 2131 section 4.4.5, "A client MAY choose to renew or extend its
+// lease prior to T1" — so the server's table has the name within one exchange
+// instead of at T1. A client that holds nothing yet records the name and sends
+// it in its next message, and in the DHCPREQUEST that follows the bind if the
+// name arrived after that message had gone. proto.Machine.announceHostname has
+// the whole rule and what it costs.
+//
+// CALLING IT AGAIN WITH THE SAME NAME SENDS NOTHING. The question the client
+// asks itself is whether the server has been told, not whether the value
+// changed, so a caller that re-applies a name on every event produces no
+// traffic.
+//
+// THE ERROR IS ABOUT THIS CALL AND NOTHING LATER. Nil means the name was
+// validated and handed to the running client; it does not mean the server
+// answered, and nothing here waits for a DHCPACK. A non-nil error means
+// nothing was handed over: an unsendable name (proto.ErrBadHostname), a client
+// this library sends no name for (ErrHostnameV6, ErrHostnameFQDN), or a full
+// request queue (ErrRequestQueueFull) — which is the one case a caller should
+// retry.
+//
+// An empty name stops option 12 being sent from the next message on, and sends
+// no message of its own. It does not withdraw the name the server already
+// holds; DHCP has no message for that, so an exchange would change nothing
+// there.
+//
+// "AT ONCE" HAS ONE EXCEPTION, and nil is returned in it. A held lease whose
+// DHCPACK carried no server identifier cannot be renewed by unicast, so that
+// client stays in BOUND and the name goes out in the broadcast DHCPREQUEST at
+// T2 instead. The journal says so on the spot ("no message was sent"); the
+// return value cannot, because it is about the handover and this is decided
+// afterwards, inside the running client.
+func (mg *Manager) SetHostname(name string) error {
+	if mg.v6() {
+		return ErrHostnameV6
+	}
+	if mg.cfg.Params.FQDN.Name != "" {
+		return ErrHostnameFQDN
+	}
+	if err := proto.ValidateHostname(name); err != nil {
+		return err
+	}
+	if !mg.requestQueued(proto.SetHostname(name)) {
+		return ErrRequestQueueFull
+	}
+	return nil
 }
 
 // shutdown feeds Stop so the lease is reported lost and every timer is
@@ -901,6 +1150,25 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			// would be one fact derived twice, in two places that can be
 			// edited apart.
 			mg.router = mg.machine6.Router()
+			mg.stats.RouterTableEntriesDropped = mg.machine6.RouterTableDrops()
+			mg.stats.RouterTableEntriesEvicted = mg.machine6.RouterTableEvictions()
+			if n := mg.machine6.RouterOptionsIgnored(); n > mg.raOptionsIgnoredRing1 {
+				mg.stats.RouterAdvertOptionsIgnored += n - mg.raOptionsIgnoredRing1
+				mg.raOptionsIgnoredRing1 = n
+			}
+			// ONE DERIVATION, taken where the router observation is taken and
+			// for the same reason: the machine's own view after the Step. An
+			// arm per action kind would have counted a formed address in the
+			// arm that announced the lease, which is the arm a conflict on a
+			// second prefix never reaches.
+			sc := mg.machine6.SLAACCounters()
+			mg.stats.SLAACAddressesFormed = sc.Formed
+			mg.stats.SLAACAddressesRefreshed = sc.Refreshed
+			mg.stats.SLAACAddressesDeprecated = sc.Deprecated
+			mg.stats.SLAACAddressesExpired = sc.Expired
+			mg.stats.SLAACAddressesConflicted = sc.Conflicts
+			mg.stats.SLAACPrefixesIgnored = sc.IgnoredTotal()
+			mg.stats.SLAACFallbacks = sc.Fallbacks
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d
@@ -918,6 +1186,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.seq++
 			mg.stats.Steps++
 			mg.acd = mg.machine.ACDPhase()
+			mg.hostname = mg.machine.Hostname()
 			mg.mu.Unlock()
 
 			mg.journal.Append(proto.NewJournalEntry(seq, now, rnd, e, from, to, acts))
@@ -1122,7 +1391,7 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 					}
 				}
 			})
-			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})
+			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note, Status: a.Status})
 
 		case proto.ActJournal:
 			// Already in the journal entry's Actions. Nothing else to do —
@@ -1317,6 +1586,14 @@ func (mg *Manager) emit(ctx context.Context, e Event) {
 		e.Router = mg.machine6.Router()
 		if e.Kind != Configured {
 			e.Config = mg.config
+		}
+		switch e.Kind {
+		case Acquired, Changed, Renewed:
+			// The three kinds that carry a lease. A Lost or a Failed carries
+			// an empty one, and filling a gateway and a resolver into a lease
+			// that has no address would describe a configuration the caller
+			// must not install.
+			e.Lease = withRouterAdvert(e.Lease, e.Router)
 		}
 	} else {
 		e.Family = FamilyV4

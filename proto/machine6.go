@@ -140,8 +140,18 @@ type Machine6 struct {
 	// answered for by someone else — not the number one process saw. On a
 	// stable link that is zero or one and it never moves; on a link with a
 	// rotating pool and a persistent squatter it grows by one per distinct
-	// address, once each, because rememberDeclined deduplicates. Sixteen bytes
-	// an entry plus the slice, in the caller's own record.
+	// address, once each, because rememberDeclined deduplicates.
+	//
+	// WHAT AN ENTRY COSTS, MEASURED 2026-09-08 on go1.25.0/linux/amd64 rather
+	// than estimated, because the figure that stood here was sixteen and both
+	// halves of it were wrong. In memory, 24 bytes:
+	// unsafe.Sizeof(netip.Addr{}) is 24, which is the 16 bytes of address and
+	// an 8-byte zone handle, plus one 24-byte slice header for the whole set.
+	// In the caller's record, up to 41 bytes: netip.Addr marshals as a JSON
+	// string, the longest text form of an IPv6 address carrying no zone is 39
+	// characters, and the two quotes make 41, plus one byte for the comma
+	// between entries. json.Marshal of the all-ones address measures 41 and of
+	// 2001:db8::1 measures 13, so 41 is a bound and not a typical entry.
 	//
 	// This library does not cap it, and the reason is the one above: a cap is
 	// a set that forgets, and the first thing it forgets is the address that
@@ -156,12 +166,92 @@ type Machine6 struct {
 	// router is what router discovery has seen, and rsCount how many Router
 	// Solicitations have gone out.
 	router  RouterObservation
+	routers routerTable
 	rsCount int
 
 	// config is the last stateless configuration an Information-request
 	// produced, and refresh the §21.23 time it carries.
 	config  Config6
 	refresh Duration
+
+	// reconf is the RKAP state of every server that has sent this client a
+	// reconfigure key, keyed by that server's DUID. See reconfServer for why
+	// it is per server and what bounds it.
+	//
+	// IT DOES NOT SURVIVE A RESTART, and that is a bound rather than an
+	// oversight. Params6.Resume carries a lease across a process; nothing
+	// carries a reconfigure key, so a machine rebuilt from a Resume6 accepts
+	// no Reconfigure until its next Solicit/Reply, Request/Reply or
+	// Information-request/Reply hands it a new one (§20.4.2). The key is a
+	// shared secret, and the record a caller would have to write it into is
+	// the one this library asks callers to persist and hands to Journal6: a
+	// field that put it there would put the key in every operator's copy of
+	// that record. What the journal already keeps whole is the Reply the key
+	// arrived in, JournalEntry6.Raw, and that is the boundary a caller handing
+	// a journal out has to know. The
+	// cost is one refused Reconfigure per restart, which §18.2.11 already
+	// tolerates: a server whose Reconfigure is discarded falls back to the
+	// client's own T1.
+	reconf map[string]*reconfServer
+
+	// reconfDetour says the Information-request in flight was asked for by a
+	// Reconfigure while this machine was BOUND6, so its Reply returns to
+	// BOUND6 rather than leaving the lease behind in INFO-REQUESTING6.
+	reconfDetour bool
+	// reconfServerID is the Server Identifier §18.2.6 requires in an
+	// Information-request that answers a Reconfigure: "When responding to a
+	// Reconfigure, the client MUST include a Server Identifier option (see
+	// Section 21.3) with the identifier from the Reconfigure message to which
+	// the client is responding." It is cleared when that exchange ends.
+	reconfServerID []byte
+
+	// refreshOwed says §21.23's refresh time has elapsed and the
+	// Information-request it asks for has not yet produced a Reply.
+	//
+	// IT EXISTS BECAUSE BOUND6 NOW HAS TWO CLOCKS. Before §18.2.11 the
+	// refresh cycle ran in INFO-REQUESTING6, where a stateless client has no
+	// lease and therefore no T1 and no T2. A bound client that reaches the
+	// refresh arm has both, and the delay §21.23 asks for ("the client MUST
+	// delay sending the first Information-request by a random amount of time
+	// between 0 and INF_MAX_DELAY") is a window in which T1 can fall due.
+	// Without this flag the renewal would take the machine out of BOUND6 with
+	// the delay timer pending, RENEWING6 would ignore it, and nothing would
+	// ever arm the refresh again — §21.23's SHOULD would be dropped in
+	// silence. Found by the reviewer's pre-push read.
+	refreshOwed bool
+
+	// slaac is RFC 4862 §5.5.3's list of addresses this client configured by
+	// stateless autoconfiguration, and slaacPhases the §5.5.4 phase each of
+	// them was in when the lease was last announced.
+	//
+	// THE PHASES ARE REMEMBERED AND NOT RE-DERIVED, because what they are
+	// compared against is what the CALLER was last told: the table can say
+	// which addresses are deprecated now, and only a record of the last
+	// announcement can say whether that is news.
+	slaac       slaacTable
+	slaacPhases map[netip.Addr]bool
+
+	// autoDecided and dhcpCommitted are Mode6Auto's one decision: whether it
+	// has been taken, and which way. dhcpCommitted is cleared by the fallback
+	// and by a formed lease, and it is what awaitingAddress reads.
+	autoDecided   bool
+	dhcpCommitted bool
+
+	// deferredPrefixes is every autonomous prefix this machine has been told
+	// about while committed to DHCPv6, kept so that the fallback forms from
+	// what the ROUTER HAS SAID and not from what its most recent frame
+	// happened to carry. RouterObservation.Prefixes is the last advertisement's
+	// options by definition, and reading it at the fallback loses a prefix a
+	// router advertised once and then split out of a later advertisement.
+	deferredPrefixes []deferredPIO
+
+	// wantConfig is a router having said M or O in a mode that forms its own
+	// address, and askedConfig that the Information-request it asks for has
+	// been sent. Two fields because the two facts arrive in different Steps:
+	// the flag comes with an advertisement and the exchange waits for a state
+	// it can be started from.
+	wantConfig  bool
+	askedConfig bool
 }
 
 // New6 builds a Machine6 in State6Stopped.
@@ -256,6 +346,52 @@ func (m *Machine6) MaxRT() (sol, inf Duration) {
 // Router returns what router discovery has observed on this link.
 func (m *Machine6) Router() RouterObservation { return m.router }
 
+// RouterTableDrops is how many arrivals a full list in the router table would
+// not take, and RouterTableEvictions how many entries a full list threw out to
+// take one: the Default Router List and the route table refuse, the resolver
+// and search lists evict (RFC 8106 §6.2 (d)). Neither is part of the
+// observation: the observation is what the routers said, and these are what
+// this client could not hold, each with its cause.
+func (m *Machine6) RouterTableDrops() uint64 { return m.routers.refused }
+
+// RouterTableEvictions is the eviction half of RouterTableDrops's pair.
+func (m *Machine6) RouterTableEvictions() uint64 { return m.routers.evicted }
+
+// RouterOptionsIgnored is how many options this ring walked past because the
+// option's own standard says the value is not usable, while the rest of the
+// advertisement was read. Today that is the MTU option outside the bounds RFC
+// 4861 §6.3.4 lets a host copy.
+//
+// IT IS THE DECODER'S IgnoredOptions POPULATION AND NOT THE TABLE'S. Ring 0
+// refuses an option it cannot parse by its own standard's rule; this ring
+// refuses a value it parsed and may not use. Neither is a full list, so
+// neither belongs beside RouterTableDrops, and ring 2 adds the two into the
+// one number an operator reads.
+func (m *Machine6) RouterOptionsIgnored() uint64 { return m.routers.optIgnored }
+
+// SLAACCounters is what this machine did with the Prefix Information options
+// it was given, mirrored by ring 2 at every Step the way RouterTableDrops is.
+//
+// IT IS A COPY OF A VALUE AND NOT A POINTER: the array inside is the reason.
+// A caller holding a pointer to the machine's own counters would read a set of
+// numbers that moved between two of its own reads, and the whole use of them
+// is a comparison of one moment against another.
+func (m *Machine6) SLAACCounters() SLAACCounters { return m.slaac.counts }
+
+// SLAACAddrs is every address this machine has formed under RFC 4862 §5.5.3,
+// in the order their prefixes were first advertised.
+//
+// It is what the DAD-in-flight window has that Lease() does not: an address
+// this machine has formed and not yet announced is not a lease, and a caller
+// that needs to know what is being checked cannot read it anywhere else.
+func (m *Machine6) SLAACAddrs() []netip.Addr {
+	out := make([]netip.Addr, 0, len(m.slaac.entries))
+	for _, e := range m.slaac.entries {
+		out = append(out, e.addr)
+	}
+	return out
+}
+
 func (m *Machine6) takeActionID() ActionID {
 	id := m.nextAction
 	m.nextAction++
@@ -281,6 +417,17 @@ type advert6 struct {
 func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 	var out actions
 
+	// THE ROUTER TABLE IS AGED HERE, ON EVERY EVENT, and not only on an
+	// advertisement. Its entries expire on wall time the machine does not read
+	// — it is handed one now per Step and has no other clock — so ageing it
+	// where the advertisements arrive would mean a link whose router has gone
+	// quiet keeps reporting the gateway that timed out, forever, because the
+	// only thing that could have noticed is the advertisement that never came.
+	// It is not a transition and emits nothing; see RouterObservation's bound.
+	if m.router.Seen {
+		m.routers.fill(now, &m.router)
+	}
+
 	// Router discovery runs BESIDE the DHCP exchange, in every state, which is
 	// design §A.3.3 interlock 1 and lead ruling 7. It is handled before the
 	// state switch so that "every state reports what the RA said" is one arm
@@ -291,7 +438,19 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		m.observeRouter(now, rnd, ev, &out)
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6RouterSolicit:
-		m.routerSolicitTick(&out)
+		m.routerSolicitTick(now, rnd, &out)
+		return m.state, out.list
+	case ev.Kind == EvTimerFired && ev.Timer == Timer6SLAAC:
+		// RFC 4862 §5.5.4's two moments mean the same thing in every state,
+		// and they are handled here for the reason the expiry below is: a
+		// formed address is held across the states the machine passes through
+		// while it asks a router or a server for anything else, and an arm per
+		// state is how the state that forgot it comes to report an address
+		// that has been invalid for an hour.
+		m.slaacTick(now, rnd, &out)
+		return m.state, out.list
+	case ev.Kind == EvTimerFired && ev.Timer == Timer6AutoFallback:
+		m.autoFallbackFired(now, rnd, &out)
 		return m.state, out.list
 	case ev.Kind == EvTimerFired && ev.Timer == Timer6Expire:
 		// The valid lifetime running out means the same thing in every state,
@@ -311,6 +470,21 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		// the same thing in every state, and a per-state arm is how the state
 		// that forgot it comes to believe its message went out.
 		m.noteActionFailed(now, rnd, ev, &out)
+		return m.state, out.list
+	case ev.Kind == EvReceived && ev.MsgV6 != nil && ev.MsgV6.Type == wire.MsgReconfigure:
+		// §18.2.11: "A client receives Reconfigure messages sent to UDP port
+		// 546 on interfaces for which it has acquired configuration
+		// information through DHCP. These messages may be sent at any time."
+		//
+		// HERE FOR INTERLOCK 1's REASON AND ONE OF ITS OWN. "At any time" is
+		// every state, so a per-state arm would be ten arms of which the nine
+		// nobody drove would each be a Reconfigure discarded without a word.
+		// The other reason is admit: it opens with the transaction-id of the
+		// exchange in flight, and §18.2.11 says "The client ignores the
+		// 'transaction-id' field in the received Reconfigure message", so a
+		// Reconfigure that reached admit would be refused by a rule §16.11
+		// does not have.
+		m.takeReconfigure(now, rnd, ev, &out)
 		return m.state, out.list
 	case ev.Kind == EvARPReceived || ev.Kind == EvConflictDetected:
 		// The v4 machine's two conflict inputs. They reach this machine only
@@ -337,6 +511,8 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		m.stepInfoRequesting6(now, rnd, ev, &out)
 	case State6DAD:
 		m.stepDAD6(now, rnd, ev, &out)
+	case State6Discovering:
+		m.stepDiscovering6(now, rnd, ev, &out)
 	case State6Bound:
 		m.stepBound6(now, rnd, ev, &out)
 	case State6Renewing, State6Rebinding:
@@ -519,6 +695,12 @@ func (m *Machine6) stepConfirming6(now Instant, rnd uint64, ev Event, out *actio
 			// message, the client performs DHCP server discovery as described
 			// in Section 18."
 			out.journal(m, "Reply to the Confirm says NotOnLink: the remembered addresses are not on this link, restarting discovery (§18.2.10.3)")
+			// THE SAME REFUSAL AS THE REQUEST AND RENEW ARMS, for the same
+			// reason: a server answered and said no. This arm reached the
+			// caller as a silent restart while the two below reported, which
+			// would have made "was this endpoint refused" depend on which
+			// message the refusal answered.
+			out.refused(m, st.Code, "the server refused the remembered address for this link: "+st.String())
 			m.resume = nil
 			m.restartDiscovery(now, rnd, out)
 			return
@@ -571,6 +753,24 @@ func (m *Machine6) stepInfoRequesting6(now Instant, rnd uint64, ev Event, out *a
 			return
 		}
 		m.applyMaxRT(msg, out)
+		st, _, err := msg.Options.Status()
+		if err != nil {
+			out.journal(m, "Reply to the Information-request carries a malformed Status Code option: ignored, the exchange continues")
+			return
+		}
+		if code := refusalCode(st.Code); code != wire.StatusSuccess {
+			// §18.2.10 extracts the Status Code from a Reply "in response to a
+			// Solicit (with a Rapid Commit option), Request, Confirm, Renew,
+			// Rebind, or Information-request message" — this exchange is one
+			// of the six, and it is the only one where there is no address to
+			// be missing. Without this the caller is told it is configured
+			// when the server declined to configure it, which is #816's
+			// stateless row. The exchange stands, exactly as the UnspecFail
+			// arm of a Reply to a Request does.
+			out.journal(m, fmt.Sprintf("Reply to the Information-request says %s: no configuration was given (§18.2.10)", code))
+			out.refused(m, code, "the server refused the Information-request: "+st.String())
+			return
+		}
 		m.takeConfig(now, msg, out)
 	case EvTimerFired:
 		switch ev.Timer {
@@ -589,6 +789,28 @@ func (m *Machine6) stepInfoRequesting6(now Instant, rnd uint64, ev Event, out *a
 			out.set(m, Timer6Delay, d)
 		case Timer6Delay:
 			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
+		case Timer6Renew, Timer6Rebind:
+			// THE LEASE OUTRANKS THE STATELESS EXCHANGE, and this arm exists
+			// because §18.2.11 lets a Reconfigure move a BOUND6 client here:
+			// msg-type 11 is one of §21.19's three, and a bound client that
+			// answers it is in INFO-REQUESTING6 while T1 and T2 keep running
+			// underneath. Without these two arms that Information-request
+			// would swallow the renewal: T1 fires, "ignored", T2 fires,
+			// "ignored", and the lease runs to its valid lifetime and is
+			// withdrawn. Configuration data is refreshable at any time; an
+			// address that reached its valid lifetime is gone.
+			if !m.haveLse {
+				out.journal(m, fmt.Sprintf("timer %s fired in %s with no lease: ignored", ev.Timer, m.state))
+				return
+			}
+			m.reconfDetour = false
+			if ev.Timer == Timer6Renew {
+				out.journal(m, "T1 elapsed during an Information-request: the renewal takes precedence (§18.2.4)")
+				m.enterRenewing(now, rnd, out)
+				return
+			}
+			out.journal(m, "T2 elapsed during an Information-request: the rebind takes precedence (§18.2.5)")
+			m.enterRebinding(now, rnd, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -684,6 +906,27 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 			// recommendation produced no renewal time, or when a renewal was
 			// never armed.
 			m.enterRebinding(now, rnd, out)
+		case Timer6Refresh:
+			// Reachable from BOUND after §18.2.11's Information-request
+			// detour: takeConfig arms §21.23's refresh time and the detour
+			// returns the machine to BOUND6, so the refresh falls due here
+			// rather than in INFO-REQUESTING6. §21.23: "When the client
+			// detects that the refresh time has expired, it SHOULD try to
+			// update its configuration data by sending an
+			// Information-request as specified in Section 18.2.6, except
+			// that the client MUST delay sending the first
+			// Information-request by a random amount of time between 0 and
+			// INF_MAX_DELAY."
+			d := randomDelay(m.params.InfMaxDelay, rnd)
+			out.journal(m, "the information refresh time elapsed: another Information-request after "+d.String()+" (§21.23)")
+			m.refreshOwed = true
+			m.reconfDetour = true
+			m.pendingType = wire.MsgInformationRequest
+			out.set(m, Timer6Delay, d)
+		case Timer6Delay:
+			// The delay §21.23 asks for, armed by the arm above. The machine
+			// is still BOUND6 and the detour flag brings it back here.
+			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -784,10 +1027,17 @@ func (m *Machine6) stepRenewal6(now Instant, rnd uint64, ev Event, out *actions)
 // client that waited for an M flag would be silent on exactly the networks
 // where it is needed most.
 func (m *Machine6) begin(now Instant, rnd uint64, out *actions) {
+	if m.params.Mode.formsAddresses() && !m.dhcpCommitted {
+		// Mode6SLAAC never solicits a server, and Mode6Auto does not solicit
+		// one until a router has said M=1. Both wait in DISCOVERING6, which is
+		// where the advertisement their address comes from is waited for.
+		m.beginSLAAC(now, rnd, out)
+		return
+	}
 	m.adverts, m.windowDone, m.tried = nil, false, nil
 	m.sendFailures = 0
 	m.rsCount = 0
-	m.solicitRouter(out)
+	m.startRouterDiscovery(out)
 
 	t := wire.MsgSolicit
 	delay := m.params.SolMaxDelay
@@ -843,6 +1093,18 @@ func (m *Machine6) restartDiscovery(now Instant, rnd uint64, out *actions) {
 // had just started trying, and one that never reset it would saturate the
 // field within eleven minutes of the client's boot and stay there.
 func (m *Machine6) startExchange(now Instant, rnd uint64, t wire.MessageTypeV6, out *actions) {
+	m.startExchangeAnswering(now, rnd, t, nil, out)
+}
+
+// startExchangeAnswering is startExchange for an exchange that answers a
+// Reconfigure, carrying the Server Identifier §18.2.6 requires.
+//
+// EVERY OTHER EXCHANGE CLEARS IT, which is why the two are one function and
+// not a field somebody sets. The identifier belongs to one exchange; a field
+// that outlived it would put a Server Identifier §18.2.6 says SHOULD NOT be
+// there into the next Information-request the refresh timer starts.
+func (m *Machine6) startExchangeAnswering(now Instant, rnd uint64, t wire.MessageTypeV6, sid []byte, out *actions) {
+	m.reconfServerID = append([]byte(nil), sid...)
 	m.msgType = t
 	m.xid = uint32(rnd) & (wire.MaxXID6 - 1)
 	m.exchangeStart = now
@@ -945,6 +1207,20 @@ func (m *Machine6) halt(out *actions, r Reason) {
 	if m.haveLse {
 		m.loseLease(out, r)
 	}
+	// The formed set goes with the lease it was reported as. A machine that
+	// kept it would, on the next Start, find every prefix already "equal to
+	// the prefix of an address configured by stateless autoconfiguration"
+	// (§5.5.3 d) and form nothing at all, while announcing addresses nothing
+	// had checked since the stop.
+	m.slaac = slaacTable{counts: m.slaac.counts}
+	m.slaacPhases = nil
+	// The deferred union goes the same way and for the same reason. It is what
+	// a router said to a decision this stop has just thrown away, and a
+	// machine that kept it would form, on some later fallback, from an option
+	// whose lifetime has been running since before the stop.
+	m.deferredPrefixes = nil
+	m.autoDecided, m.dhcpCommitted = false, false
+	m.wantConfig, m.askedConfig = false, false
 	m.dropPending()
 	m.msgType = 0
 	m.declining = nil
@@ -1126,6 +1402,42 @@ func (m *Machine6) applyMaxRT(msg *wire.MessageV6, out *actions) {
 
 // ------------------------------------------------------------- selecting --
 
+// refusalCode is the code a server refused this exchange with, taken from the
+// places it can sit in order of precedence, or wire.StatusSuccess when the
+// server refused nothing.
+//
+// TWO VALUES MEAN "NO REFUSAL" AND BOTH ARE DROPPED HERE, which is the whole
+// reason this is one function rather than a comparison at each call site.
+// wire.StatusSuccess is §21.13's own verdict for an absent option — "If the
+// Status Code option does not appear in a message in which the option could
+// appear, the status of the message is assumed to be Success" — and
+// wire.StatusMalformed is this library's sentinel for an option it could not
+// decode, which no server sent and which must never be reported as though one
+// had. Every decode error is journalled where it is found; this decides only
+// what the caller is told a server said.
+//
+// The IA-scoped code takes precedence over the message-scoped one where a call
+// site passes both: §21.4 gives the inner option the narrower subject — "The
+// status of any operations involving this IA_NA is indicated in a Status Code
+// option" — and it is the address the caller is missing.
+//
+// THAT ORDER DECIDES ONE CALL SITE AND NOT THE FAMILY. The only caller that
+// passes both is takeReply's no-address arm, which is reached AFTER the
+// UnspecFail and NotOnLink arms have returned; so a Reply whose message level
+// says UnspecFail and whose IA_NA says NoAddrsAvail is reported as UnspecFail,
+// by the switch above this function and not by the order here. That is §18.2.10
+// deciding it: UnspecFail is the server stating it could not process the
+// message at all, which is the larger of the two subjects.
+func refusalCode(codes ...wire.StatusCode) wire.StatusCode {
+	for _, c := range codes {
+		if c == wire.StatusSuccess || c == wire.StatusMalformed {
+			continue
+		}
+		return c
+	}
+	return wire.StatusSuccess
+}
+
 // takeAdvertise applies §18.2.9 to one Advertise.
 func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, out *actions) {
 	m.applyMaxRT(msg, out)
@@ -1142,12 +1454,36 @@ func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, o
 	}
 	if st.Code != wire.StatusSuccess {
 		out.journal(m, fmt.Sprintf("Advertise says %s: ignored for selection, its SOL_MAX_RT was applied (§18.2.9)", st.Code))
+		// IGNORING IT AND REPORTING IT ARE TWO DECISIONS. §18.2.9 ignores any
+		// non-Success Advertise for selection, whatever the code; the report
+		// goes out only for a code a server can have sent, which is what
+		// refusalCode decides. The one value they part company over is this
+		// library's own malformed sentinel arriving as a literal from the
+		// wire: still ignored, never reported as something a server said.
+		if code := refusalCode(st.Code); code != wire.StatusSuccess {
+			out.refused(m, code, "the server answered the Solicit and offered nothing: "+st.String())
+		}
 		return
 	}
 
 	res, notes := readIA(msg.Options, m.params.IAID)
 	for _, n := range notes {
 		out.journal(m, n)
+	}
+	if code := refusalCode(res.status); code != wire.StatusSuccess {
+		// §18.3.9 is where a server that has nothing puts the refusal: "If the
+		// server will not assign any addresses to an IA_NA in subsequent
+		// Request messages from the client, the server MUST include the IA
+		// option in the Advertise message with no addresses in that IA and a
+		// Status Code option (see Section 21.13) encapsulated in the IA option
+		// containing status code NoAddrsAvail."
+		//
+		// The message level is read first because that is where dnsmasq puts
+		// it, and both are read because the MUST above is the one a conforming
+		// server follows.
+		out.journal(m, fmt.Sprintf("the IA_NA in the Advertise says %s: ignored for selection (§18.3.9)", code))
+		out.refused(m, code, "the server answered the Solicit and offered nothing for our IA_NA: "+code.String())
+		return
 	}
 	if len(res.addrs) == 0 {
 		// §18.2.9: "The client MUST ignore any Advertise message that contains
@@ -1260,6 +1596,7 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// that limit, and the §14.1 bucket in ring 2 is the other half; so the
 		// Reply is noted and nothing else changes.
 		out.journal(m, "Reply says UnspecFail: the retransmission schedule continues unchanged (§18.2.10)")
+		out.refused(m, st.Code, "the server answered and refused the exchange: "+st.String())
 		return
 	case wire.StatusNotOnLink:
 		// §18.2.10.1: "If the client receives a NotOnLink status from the
@@ -1285,6 +1622,10 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 			m.loseLease(out, ReasonNak)
 		}
 		out.journal(m, "Reply says NotOnLink: restarting discovery (§18.2.10.1)")
+		// After the loss and before the restart, which is v4's order for a
+		// DHCPNAK (D30): a caller tears the interface down when it sees the
+		// loss, and the fold counts the refusal at this event alone.
+		out.refused(m, st.Code, "the server refused the address for this link: "+st.String())
 		m.restartDiscovery(now, rnd, out)
 		return
 	}
@@ -1306,6 +1647,14 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 	if !ok {
 		if iaStatus == wire.StatusNoAddrsAvail {
 			out.journal(m, "the IA_NA says NoAddrsAvail: this server has nothing for us (§18.2.10.1)")
+		}
+		// THE REFUSAL IS REPORTED HERE AND NOWHERE EARLIER, because this is
+		// where it is known that the exchange produced no address for us. A
+		// server that states a failure and hands over a usable lease anyway
+		// has not refused this client, and a refusal event beside an Acquired
+		// would give the caller a refusal counter on a working endpoint.
+		if code := refusalCode(iaStatus, st.Code); code != wire.StatusSuccess {
+			out.refused(m, code, "the server answered and offered no address: "+code.String())
 		}
 		// §18.2.10.1: "If the Reply message contains any IAs but the client
 		// finds no usable addresses and/or delegated prefixes in any of these
@@ -1334,6 +1683,13 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 	m.pending, m.havePending, m.pendingRenewal = l, true, renewal
 	out.cancel(m, Timer6Retransmit)
 	m.msgType = 0
+	// §20.4.3: "The client will receive a reconfigure key from the server in
+	// an Authentication option (see Section 21.11) in the initial Reply
+	// message from the server." It is recorded HERE, on the accepted Reply,
+	// and not on every Reply that reaches this function: a Reply this client
+	// went on to reject is not one whose server it agreed to be reconfigured
+	// by.
+	m.noteReconfigureKey(msg, out)
 
 	// §18.2.10.1: "The client MUST perform duplicate address detection as per
 	// Section 5.4 of [RFC4862], which does list some exceptions, on each of the
@@ -1411,6 +1767,10 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	if len(m.dadWait) > 0 {
 		return
 	}
+	if m.pending.SLAAC {
+		m.finishSLAACDAD(now, rnd, out)
+		return
+	}
 	out.cancel(m, Timer6DAD)
 
 	if len(m.dadBad) == 0 {
@@ -1452,12 +1812,25 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	// ConflictsDetected, so a machine that emitted both would double-count.
 	held := m.haveLse
 	m.dropPending()
-	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
-		m.restartDiscovery(n, r, o)
-	})
+	// THE VERDICT IS STAMPED BEFORE THE DECLINE IS SENT, and the order is the
+	// whole content of this line.
+	//
+	// Ring 2 bumps its conflict counters in the arm that drains ActFailed, and
+	// it drains the actions in the order they are listed here. With the
+	// Decline listed first, the DHCPDECLINE reached the server — and the
+	// server's log, which is the only outside evidence a Decline leaves —
+	// while the counter had not moved yet, so every observer that waited on
+	// that log line and then read the counter was racing a ring boundary.
+	// MEASURED as a flake in TestADuplicateAddressOnTheLinkIsDeclined.
+	//
+	// It is also the right order on its own terms: §18.2.10.1's Decline is
+	// sent BECAUSE the acquisition failed, so the failure is the earlier fact.
 	if !held {
 		out.failed(m, ReasonConflict, note)
 	}
+	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
+		m.restartDiscovery(n, r, o)
+	})
 }
 
 // ---------------------------------------------------------- bound states --
@@ -1489,6 +1862,19 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 	m.armDeadline(now, Timer6Renew, d.Renew, d.HasRenew, out)
 	m.armDeadline(now, Timer6Rebind, d.Rebind, d.HasRebind, out)
 	m.armDeadline(now, Timer6Expire, d.Expire, d.HasExpire, out)
+
+	// §21.23's Information-request, owed since before the exchange that just
+	// ended and given up by abandonRefreshDelay so the lease could be renewed.
+	// The delay is drawn again rather than resumed: §21.23 fixes no phase, it
+	// asks for "a random amount of time between 0 and INF_MAX_DELAY" before
+	// the first Information-request, and a fresh draw satisfies that.
+	if m.refreshOwed {
+		dd := randomDelay(m.params.InfMaxDelay, rnd)
+		out.journal(m, "the lease is bound again and §21.23's refresh is still owed: Information-request after "+dd.String())
+		m.reconfDetour = true
+		m.pendingType = wire.MsgInformationRequest
+		out.set(m, Timer6Delay, dd)
+	}
 }
 
 // armDeadline arms t for ts, or cancels it when there is none.
@@ -1511,7 +1897,25 @@ func (m *Machine6) armDeadline(now Instant, t TimerID, ts Instant, has bool, out
 
 // enterRenewing is T1. §18.2.4: "At time T1, the client initiates a Renew/Reply
 // message exchange to extend the lifetimes on any leases in the IA."
+// abandonRefreshDelay gives up a pending §21.23 delay because a lease exchange
+// outranks it, and leaves the debt recorded so enterBound can arm it again.
+//
+// THE LEASE OUTRANKS THE REFRESH, for the reason the same rule has in
+// INFO-REQUESTING6: configuration data is refreshable at any time, and an
+// address that reached its valid lifetime is gone. What must not happen is the
+// silent third outcome — the delay pending in a state that ignores it and the
+// refresh never armed again.
+func (m *Machine6) abandonRefreshDelay(out *actions) {
+	if !m.refreshOwed || m.state != State6Bound {
+		return
+	}
+	m.reconfDetour = false
+	out.cancel(m, Timer6Delay)
+	out.journal(m, "a lease exchange starts while §21.23's refresh delay is pending: the delay is dropped and the Information-request is armed again when the lease is bound")
+}
+
 func (m *Machine6) enterRenewing(now Instant, rnd uint64, out *actions) {
+	m.abandonRefreshDelay(out)
 	if len(m.lease.ServerDUID) == 0 {
 		// §18.2.4: "The client MUST include a Server Identifier option (see
 		// Section 21.3) in the Renew message, identifying the server with
@@ -1532,6 +1936,7 @@ func (m *Machine6) enterRenewing(now Instant, rnd uint64, out *actions) {
 // responded), the client initiates a Rebind/Reply message exchange with any
 // available server."
 func (m *Machine6) enterRebinding(now Instant, rnd uint64, out *actions) {
+	m.abandonRefreshDelay(out)
 	m.server = nil
 	out.journal(m, "T2: rebinding")
 	m.startExchange(now, rnd, wire.MsgRebind, out)
@@ -1745,8 +2150,11 @@ func (m *Machine6) takeConfig(now Instant, msg *wire.MessageV6, out *actions) {
 	c.RefreshTime = m.refreshTime(c.RefreshTime, ok, out)
 	m.config = c
 	m.refresh = c.RefreshTime
+	m.refreshOwed = false
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
+	m.noteReconfigureKey(msg, out)
+	m.endReconfigureDetour(out)
 	out.stamp(m, Action{Kind: ActConfigured, Config: c})
 	if m.refresh.IsInfinite() {
 		// §21.23: "As per Section 7.7, the value 0xffffffff is taken to mean
@@ -1788,29 +2196,110 @@ func (m *Machine6) refreshTime(v Duration, present bool, out *actions) Duration 
 // §6.3.7: "To obtain Router Advertisements quickly, a host SHOULD transmit up
 // to MAX_RTR_SOLICITATIONS Router Solicitation messages, each separated by at
 // least RTR_SOLICITATION_INTERVAL seconds."
+// solicitRouter sends one Router Solicitation and arms the next moment of RFC
+// 4861 §6.3.7's schedule.
+//
+// THE LAST SOLICITATION IS FOLLOWED BY A WAIT AND NOT BY SILENCE when this
+// client's address can only come from an advertisement. §6.3.7: "If a host
+// sends MAX_RTR_SOLICITATIONS solicitations, and receives no Router
+// Advertisements after having waited MAX_RTR_SOLICITATION_DELAY seconds after
+// sending the last solicitation, the host concludes that there are no routers
+// on the link for the purpose of [ADDRCONF]." That conclusion is a verdict the
+// caller needs, so something has to be armed to reach it; a DHCPv6 client,
+// which has a server to talk to whatever the routers do, keeps today's
+// behaviour and arms nothing.
 func (m *Machine6) solicitRouter(out *actions) {
-	if m.router.Seen || m.rsCount >= m.params.routerSolicitations() {
+	if m.rsCount >= m.params.routerSolicitations() {
 		return
 	}
 	m.rsCount++
 	out.stamp(m, Action{Kind: ActSendRouterSolicit})
-	if m.rsCount < m.params.routerSolicitations() {
+	switch {
+	case m.rsCount < m.params.routerSolicitations():
 		out.set(m, Timer6RouterSolicit, m.params.routerSolicitInterval())
+	case m.awaitingAddress():
+		out.set(m, Timer6RouterSolicit, MaxRtrSolicitationDelay)
+	default:
+		out.cancel(m, Timer6RouterSolicit)
+	}
+}
+
+func (m *Machine6) routerSolicitTick(now Instant, rnd uint64, out *actions) {
+	if m.rsCount < m.params.routerSolicitations() {
+		if m.router.Seen && !m.awaitingAddress() {
+			// Unreachable while observeRouter cancels the timer, and handled
+			// anyway: a timer that had already fired when the RA arrived is
+			// still on its way here.
+			out.journal(m, "the router solicitation timer fired after a Router Advertisement had arrived: ignored")
+			out.cancel(m, Timer6RouterSolicit)
+			return
+		}
+		m.solicitRouter(out)
 		return
 	}
 	out.cancel(m, Timer6RouterSolicit)
-}
-
-func (m *Machine6) routerSolicitTick(out *actions) {
-	if m.router.Seen {
-		// Unreachable while observeRouter cancels the timer, and handled
-		// anyway: a timer that had already fired when the RA arrived is still
-		// on its way here.
-		out.journal(m, "the router solicitation timer fired after a Router Advertisement had arrived: ignored")
-		out.cancel(m, Timer6RouterSolicit)
+	if !m.awaitingAddress() {
+		out.journal(m, "router discovery is finished")
 		return
 	}
-	m.solicitRouter(out)
+	// §6.3.7's conclusion, in the two shapes a caller must tell apart: a link
+	// with no router at all, and a router that advertises nothing this client
+	// can form an address from. The SLAACIgnore counters say which rule
+	// refused what was advertised.
+	//
+	// THE MACHINE STAYS IN DISCOVERING6 rather than halting, because §6.3.7
+	// does not stop listening either: "However, the host continues to receive
+	// and process Router Advertisements messages in the event that routers
+	// appear on the link." The verdict is the caller's to act on.
+	if m.router.Seen {
+		// A ROUTER THAT SAID O=1 HAS STILL OFFERED SOMETHING, AND THIS IS THE
+		// auto ROW ONLY. RFC 4861 §4.2: "When set, it indicates that other
+		// configuration information is available via DHCPv6." The schedule has
+		// run out with no address, so there is no exchange in flight for
+		// §18.2.6's to take the state of, and this is the link the design's
+		// mode table calls "no PIO but O=1: configured without an address".
+		//
+		// THE slaac ROW OF THE SAME TABLE IS FATAL WITH NO O=1 EXCEPTION, and
+		// it is one of the two verdicts #816 exists to tell apart. A client
+		// told to form its own address and given none has failed, whatever
+		// else the router is offering, so the mode is part of this condition
+		// and not an accident of which flag arrived.
+		if m.params.Mode == Mode6Auto && m.wantConfig && !m.askedConfig && m.msgType == 0 {
+			m.askedConfig = true
+			out.journal(m, "router discovery formed no address and the router offers other configuration over DHCPv6: Information-request (§18.2.6)")
+			m.startExchange(now, rnd, wire.MsgInformationRequest, out)
+			return
+		}
+		out.failed(m, ReasonNoPrefix, fmt.Sprintf("a router advertises on this link and none of its prefixes formed an address (RFC 4862 §5.5.3); %d option(s) refused", m.slaac.counts.IgnoredTotal()))
+		return
+	}
+	out.failed(m, ReasonNoRouter, fmt.Sprintf("no Router Advertisement after %d solicitation(s) (RFC 4861 §6.3.7)", m.rsCount))
+}
+
+// stepDiscovering6 is the wait for an advertisement. Every input that matters
+// here — the advertisement, the solicitation schedule, the lifetimes of
+// anything already formed — is handled in Step's prologue, in every state, so
+// this state's own arms are the ones that end it.
+func (m *Machine6) stepDiscovering6(now Instant, rnd uint64, ev Event, out *actions) {
+	switch ev.Kind {
+	case EvStop:
+		m.halt(out, ReasonStopped)
+	case EvLinkDown:
+		m.halt(out, ReasonLinkDown)
+	case EvRelease:
+		// Nothing was granted by anybody, so there is nothing to give back.
+		m.halt(out, ReasonReleased)
+	case EvStart:
+		out.journal(m, "already waiting for a Router Advertisement")
+	case EvTimerFired:
+		if ev.Timer == Timer6Delay {
+			m.startExchange(now, rnd, m.pendingType, out)
+			return
+		}
+		out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
+	default:
+		out.journal(m, fmt.Sprintf("event %s in %s: ignored", ev.Kind, m.state))
+	}
 }
 
 // observeRouter reports every Router Advertisement and applies design §A.3.3
@@ -1826,14 +2315,47 @@ func (m *Machine6) observeRouter(now Instant, rnd uint64, ev Event, out *actions
 		return
 	}
 	first := !m.router.Seen
-	m.router = RouterObservation{Seen: true, Managed: ev.RA.Managed, Other: ev.RA.Other}
+	m.router = RouterObservation{
+		Seen:    true,
+		Managed: ev.RA.Managed,
+		Other:   ev.RA.Other,
+		Router:  ev.RA.Router,
+		// A COPY, not the decoded advertisement's own slice. The same
+		// *wire.RouterAdvert reaches ring 2's capture ring, and a machine
+		// holding its slices would share them with whatever reads that ring.
+		Prefixes: append([]wire.PrefixInfo(nil), ev.RA.Prefixes...),
+	}
+	if !m.routers.observe(now, ev.RA) {
+		out.journal(m, "Router Advertisement with no source address: its flags are read and it names no router, so it adds nothing to the router table (RFC 4861 §6.3.4 keys the list on the source address of the packet)")
+	}
+	m.routers.fill(now, &m.router)
+	if ev.RA.IgnoredOptions > 0 {
+		out.journal(m, fmt.Sprintf("Router Advertisement carried %d option(s) refused by their own standard's validity rule; the rest of the advertisement was read", ev.RA.IgnoredOptions))
+	}
 	out.stamp(m, Action{Kind: ActRouterObserved, Router: m.router})
-	if first {
+	if first && !m.awaitingAddress() {
 		// §6.3.7's schedule exists "To obtain Router Advertisements quickly".
 		// One has arrived, so the remaining solicitations would be asking a
 		// question that has been answered.
+		//
+		// IT IS NOT ANSWERED FOR A CLIENT THAT STILL HAS NO ADDRESS. An
+		// advertisement that carried no prefix this client could use has told
+		// it nothing it needed, and cancelling here would leave the schedule
+		// with nothing to reach §6.3.7's conclusion with — the machine would
+		// wait for a second advertisement that may never come, with no
+		// verdict either way.
 		out.cancel(m, Timer6RouterSolicit)
 	}
+
+	switch m.params.Mode {
+	case Mode6SLAAC:
+		m.observeSLAAC(now, rnd, ev.RA, out)
+		return
+	case Mode6Auto:
+		m.observeAuto(now, rnd, ev.RA, out)
+		return
+	}
+	m.countUnusedPrefixes(ev.RA, out)
 
 	switch {
 	case ev.RA.Managed:
@@ -1894,6 +2416,61 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 			Code: wire.OptV6ServerID,
 			Data: append([]byte(nil), m.server...),
 		})
+	case wire.MsgInformationRequest:
+		// §18.2.6: "When responding to a Reconfigure, the client MUST include
+		// a Server Identifier option (see Section 21.3) with the identifier
+		// from the Reconfigure message to which the client is responding."
+		//
+		// AND IN NO OTHER INFORMATION-REQUEST. §18.2.6 names the Client
+		// Identifier, the Elapsed Time and the Option Request options and
+		// says nothing about a Server Identifier outside that one sentence,
+		// so the option goes in when a Reconfigure asked for the exchange and
+		// stays out when nothing did. (RFC 3315 §18.1.5 carried a SHOULD NOT
+		// for the other case; RFC 9915 does not, and this comment said it
+		// did until a reviewer checked the text.)
+		//
+		// SO THE IDENTIFIER IS THE RECONFIGURE'S AND NOT m.server: a client
+		// that has only ever done Information-requests has no m.server at
+		// all, and one that holds a lease would name the server that granted
+		// the lease rather than the one that asked for this exchange.
+		if len(m.reconfServerID) > 0 {
+			msg.Options = append(msg.Options, wire.OptionV6{
+				Code: wire.OptV6ServerID,
+				Data: append([]byte(nil), m.reconfServerID...),
+			})
+		}
+	}
+
+	// §21.20's Reconfigure Accept option, in the three message kinds whose
+	// own sections allow it, and in no others.
+	//
+	// WHY THESE THREE AND NOT FIVE. §18.2.1 names it for the Solicit: "The
+	// client includes a Reconfigure Accept option (see Section 21.20) if the
+	// client is willing to accept Reconfigure messages from the server." —
+	// and in the same section, "The client MUST NOT include any other options
+	// in the Solicit message, except as specifically allowed in the
+	// definition of individual options." §18.2.2 carries the first sentence
+	// again, word for word, for the Request. No §18.2 section names the
+	// option for a Renew or a Rebind, and §20.4.2 says why: "The server
+	// selects a reconfigure key for a client during the Request/Reply,
+	// Solicit/Reply, or Information-request/Reply message exchange." — the
+	// three exchanges that can grant a key are the three that carry the
+	// announcement.
+	//
+	// The Information-request is the third of those three. §18.2.6 names no
+	// Reconfigure Accept option and places no MUST NOT on the message's
+	// options, and §21.20 is general about who may send it: "A client uses
+	// the Reconfigure Accept option to announce to the server whether the
+	// client is willing to accept Reconfigure messages". So the announcement
+	// rides the one remaining key-granting exchange; a stateless client that
+	// could never announce could never be reconfigured, which is exactly what
+	// msg-type 11 exists for.
+	if m.params.AcceptReconfigure {
+		switch t {
+		case wire.MsgSolicit, wire.MsgRequest6, wire.MsgInformationRequest:
+			// §21.20: "option-len: 0". The option IS the announcement.
+			msg.Options = append(msg.Options, wire.OptionV6{Code: wire.OptV6ReconfAccept})
+		}
 	}
 
 	if ia, ok, err := m.buildIA(t); err != nil {

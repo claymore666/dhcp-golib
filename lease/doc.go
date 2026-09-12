@@ -21,10 +21,60 @@
 //     process. Ring 2 owns the conversion and it is the only place the two
 //     meet.
 //
+// # A refusal is an event, not a silence
+//
+// A caller that gets no address wants to know which of two things happened,
+// and Event answers it in two fields rather than in Note's words. Failed with
+// Reason ReasonNak is a server that ANSWERED and said no — RFC 2131's DHCPNAK,
+// or RFC 9915 section 21.13's Status Code option, whose code is then in
+// Event.Status. Nobody answering at all is ReasonNoServer on the v4 path and,
+// on the v6 path, is still the caller's own deadline: this library keeps
+// soliciting for as long as it is run, because RFC 9915 section 18.2.1 gives
+// the Solicit no retransmission bound.
+//
+// The router observation is the other half of that question on a v6 link: a
+// link whose Router Advertisement says M=0 has no addresses to give out and
+// has refused nobody. READ IT LIVE, FROM Manager.Router, AND NOT FROM THE
+// COPY ON THE EVENT IN HAND. Event.Router is a snapshot stamped when the event
+// was emitted, and RFC 9915 section 18.2.1's Solicit does not wait for router
+// discovery: an event from early in the exchange can carry the zero
+// observation, which renders as "no router advertisement seen" and reads
+// exactly like a link with no router on it.
+//
+// WHICH OF THE TWO A REFUSAL CARRIES IS TIMING AND NOT A FACT ABOUT THE LINK,
+// and both ends of that are driven.
+// TestTheRouterObservationOnARefusalIsWhatHadBeenSeenByThen refuses before any
+// advertisement arrives and the refusal carries the zero; on the netns
+// stateless fixture, MEASURED over four runs on 2026-09-11, the advertisement
+// won the race every time and the refusals there carried M=0 O=1. So a caller
+// classifying "why is there no address here" asks Manager.Router at the point
+// its own deadline runs out, where the answer is the current one.
+//
+// # Giving a lease back with no client left
+//
+// BuildRelease is the second release path and it takes a Record. The managed
+// path in ring 1 releases a lease it still holds, from a client that is still
+// bound, on the link the lease was taken on. BuildRelease covers the other
+// case: the container is gone, the link went with it, and the record is all
+// that is left. It renders one datagram and the address to send it to, and it
+// knows nothing about the source address. runtime.SendRelease is the caller
+// facing half and takes the source from its caller.
+//
 // # The ports
 //
 // Every effect is an interface declared here and implemented in ring 3. That
 // is what lets the whole acquisition path be table-tested with no root, no
 // namespace and no network — the fake implementations in this package's tests
 // are the same shape as the real ones.
+//
+// # Two protocols, one lease
+//
+// On IPv6 the configuration arrives on two protocols at once, and the lease a
+// caller reads carries both. DHCPv6 has no gateway and no MTU at all; those
+// come from the Router Advertisement, along with resolvers and a search list
+// that DHCPv6 may also have sent. Where both sent the same kind of thing the
+// DHCP entries keep their places and the advertisement's are appended after
+// them, RFC 8106 section 5.3.1: "the DNS information from DHCP takes
+// precedence over that from RAs". Nothing is applied to the link here either;
+// a lease is a report.
 package lease

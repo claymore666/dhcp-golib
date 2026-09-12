@@ -245,8 +245,10 @@ func (c *Client6) Source() netip.Addr { return c.transport.Source() }
 // Stats returns the manager's counters.
 func (c *Client6) Stats() lease.Stats { return c.mgr.Stats() }
 
-// Router is the last Router Advertisement ring 1 saw, as RFC 4861 section
-// 4.2's two flags.
+// Router is what the routers on this link have advertised: RFC 4861 section
+// 4.2's two flags, the address each advertisement came from, the prefixes, the
+// link MTU, the resolvers, the search list and the routes, unioned across
+// routers and with each entry dropped when its own lifetime runs out.
 //
 // IT IS A DIAGNOSTIC AND NOT A GATE (design Q2). Nothing in this library waits
 // for an advertisement or refuses to run without one; what the observation
@@ -254,6 +256,12 @@ func (c *Client6) Stats() lease.Stats { return c.mgr.Stats() }
 // flags are set, this indicates that no information is available via DHCPv6"
 // — which is what separates a link with no DHCPv6 server from a server that is
 // present and not answering. The 1.9.0 plugin could not tell those apart.
+//
+// IT IS A SNAPSHOT AND NOT A LIVE VIEW. The table behind it is aged from the
+// clock each event carries, so an entry whose lifetime ran out disappears at
+// the next thing that happens on this client and not at the instant it
+// expired. Nothing here is applied to the link either; what to do with a
+// gateway or an MTU is the caller's.
 func (c *Client6) Router() proto.RouterObservation { return c.mgr.Router() }
 
 // TransportStats returns the DHCPv6 socket's counters. Separate from Stats for

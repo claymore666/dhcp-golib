@@ -683,15 +683,39 @@ type WireCounters struct {
 	// way: the record folds it from its own Configured events into
 	// RecordCounters.Configurations, so carrying it on the wire half too
 	// would be one fact derived twice.
-	RateLimited        uint64 `json:"rate_limited,omitempty"`
-	NDSeen             uint64 `json:"nd_seen,omitempty"`
-	NDIgnored          uint64 `json:"nd_ignored,omitempty"`
-	NDErrors           uint64 `json:"nd_errors,omitempty"`
-	NDSendFailures     uint64 `json:"nd_send_failures,omitempty"`
-	RouterSolicitsSent uint64 `json:"router_solicits_sent,omitempty"`
-	RouterAdvertsSeen  uint64 `json:"router_adverts_seen,omitempty"`
-	DADChecksStarted   uint64 `json:"dad_checks_started,omitempty"`
-	DADConflicts       uint64 `json:"dad_conflicts,omitempty"`
+	RateLimited                uint64 `json:"rate_limited,omitempty"`
+	NDSeen                     uint64 `json:"nd_seen,omitempty"`
+	NDIgnored                  uint64 `json:"nd_ignored,omitempty"`
+	NDErrors                   uint64 `json:"nd_errors,omitempty"`
+	NDSendFailures             uint64 `json:"nd_send_failures,omitempty"`
+	RouterSolicitsSent         uint64 `json:"router_solicits_sent,omitempty"`
+	RouterAdvertsSeen          uint64 `json:"router_adverts_seen,omitempty"`
+	RouterAdvertsRefused       uint64 `json:"router_adverts_refused,omitempty"`
+	RouterAdvertOptionsIgnored uint64 `json:"router_advert_options_ignored,omitempty"`
+	RouterTableEntriesDropped  uint64 `json:"router_table_entries_dropped,omitempty"`
+	RouterTableEntriesEvicted  uint64 `json:"router_table_entries_evicted,omitempty"`
+	DADChecksStarted           uint64 `json:"dad_checks_started,omitempty"`
+	DADConflicts               uint64 `json:"dad_conflicts,omitempty"`
+
+	// The stateless address autoconfiguration counters, RFC 4862 section
+	// 5.5.3 and 5.5.4. They are here and not in the folded half for the rule
+	// this type states: nothing in a record's own event stream counts a
+	// prefix. The record's Acquisitions rise once when the machine announces
+	// a set of addresses, and a link advertising four prefixes, a link
+	// advertising one, and a link advertising four of which three were
+	// refused all produce the same one event.
+	//
+	// SLAACAddressesConflicted is here beside DADConflicts and is NOT a
+	// subset of it in the sense that matters: both count an address the link
+	// already had, and this one counts the ones formed from a prefix, which
+	// are the ones no server can be asked for a different address.
+	SLAACAddressesFormed     uint64 `json:"slaac_addresses_formed,omitempty"`
+	SLAACAddressesRefreshed  uint64 `json:"slaac_addresses_refreshed,omitempty"`
+	SLAACAddressesDeprecated uint64 `json:"slaac_addresses_deprecated,omitempty"`
+	SLAACAddressesExpired    uint64 `json:"slaac_addresses_expired,omitempty"`
+	SLAACAddressesConflicted uint64 `json:"slaac_addresses_conflicted,omitempty"`
+	SLAACPrefixesIgnored     uint64 `json:"slaac_prefixes_ignored,omitempty"`
+	SLAACFallbacks           uint64 `json:"slaac_fallbacks,omitempty"`
 }
 
 // The seven Stats fields WireCounters deliberately does not carry, because the
@@ -1051,6 +1075,12 @@ func foldLease(rec Record, ev RecordEvent) (Record, error) {
 			// ReasonNak; counting both would report one refusal as two.
 			// Failed is the event the manager's own contract says reports the
 			// NAK counters.
+			//
+			// A REFUSAL AND NOT A MESSAGE TYPE: the v6 half of this number is
+			// a server that answered with RFC 9915 §21.13's Status Code option
+			// (Event.Status says which code), and the NotOnLink arm that costs
+			// a held lease produces the same Lost-then-Failed pair a DHCPNAK
+			// does, so the rule above is what keeps it at one there too.
 			rec.Counters.Naks++
 		case proto.ReasonNoServer:
 			rec.Counters.Timeouts++
@@ -1234,6 +1264,7 @@ func familyOf(ev RecordEvent, rec Record) Family {
 
 // CloneLease deep-copies a Lease for the same reason SnapshotParams exists.
 func CloneLease(l Lease) Lease {
+	l.Addrs = append([]Addr6(nil), l.Addrs...)
 	l.DNS = append([]netip.Addr(nil), l.DNS...)
 	l.Routes = append([]wire.Route(nil), l.Routes...)
 	l.DomainSearch = append([]string(nil), l.DomainSearch...)

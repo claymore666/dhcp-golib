@@ -105,6 +105,45 @@ type Lease struct {
 
 	// Options is every option from the ACK, unparsed.
 	Options wire.Options
+
+	// Addrs is EVERY address this v6 lease holds, in the order the protocol
+	// produced them, and Addr is the first of them. It is empty for v4 and
+	// for a v6 lease with no address.
+	//
+	// IT IS A LIST BECAUSE RFC 4862 §5.5.3 FORMS ONE ADDRESS PER AUTONOMOUS
+	// PREFIX, and a link with two prefixes is an ordinary link. A chassis
+	// reading Addr alone would install one of them and leave the rest
+	// unconfigured, with nothing anywhere saying so. DHCPv6 can carry several
+	// IA Address options in one IA_NA for the same reason (§21.6), so this is
+	// not a stateless-only shape.
+	//
+	// EACH CARRIES ITS OWN TWO DEADLINES. §5.5.3 e resets the lifetimes of
+	// one prefix at a time, so the addresses of one lease deprecate and
+	// expire independently and a single pair of deadlines on the lease can
+	// only be an aggregate. Lease.Preferred and Lease.Valid remain that
+	// aggregate, for a caller with no per-address handling.
+	Addrs []Addr6
+
+	// SLAAC says the addresses were FORMED from a Router Advertisement (RFC
+	// 4862 §5.5.3) rather than granted by a server.
+	//
+	// IT IS A FIELD AND NOT A DERIVATION. "ServerDUID is empty" and "IAID is
+	// zero" are both true of things that are not this, and a caller that
+	// guessed would send a Release for an address nobody granted. It is also
+	// what tells a caller that there is no renewal schedule to wait for: a
+	// formed address is kept alive by the router repeating its advertisement,
+	// so Renew and Rebind are zero on such a lease and their absence is not a
+	// server that forgot to send T1 and T2.
+	SLAAC bool
+}
+
+// Addr6 is one address of a v6 lease with its own two RFC 9915 §7.1
+// lifetimes, as wall-clock deadlines. A zero deadline is an infinite lifetime,
+// which is Lease.Expire's convention read for one address.
+type Addr6 struct {
+	Addr      netip.Prefix
+	Preferred time.Time
+	Valid     time.Time
 }
 
 func (l Lease) String() string {
@@ -262,14 +301,54 @@ type Event struct {
 	// whose address family disagreed with its address.
 	Family Family
 
+	// Status is the DHCPv6 status code the server refused this client with, on
+	// Failed with proto.ReasonNak and nowhere else.
+	//
+	// IT IS WHAT SEPARATES "THE SERVER REFUSED US" FROM "NOBODY ANSWERED",
+	// which a caller cannot otherwise tell apart: both end with no address.
+	// RFC 9915 §18.2.10, on the client's side of it: "The client MAY choose to
+	// report any status code or message from the Status Code option in the
+	// Reply message." This field is that report, typed, so the caller branches
+	// on a value rather than on Note's words.
+	//
+	// The zero is wire.StatusSuccess and means no status code refused this
+	// client — §21.13 makes absent and Success one verdict, and neither
+	// refuses anybody. Every v4 Failed carries the zero: RFC 2131's refusal is
+	// a DHCPNAK message and has no code to carry. proto.Action.Status states
+	// the rest, including why wire.StatusMalformed never appears here.
+	//
+	// IT IS A LIVE FIELD AND IS NOT DURABLE. The rebuilt record after a
+	// restart knows a refusal happened (RecordCounters.Naks) and not which
+	// code it carried, and that is deliberate: the consumer of the code is a
+	// caller deciding what to do with THIS exchange — the plugin's endpoint
+	// setup, which is running when the event arrives — while the consumer of
+	// the record is the next process, which has no refused exchange in front
+	// of it any more. A code in the record would be a number nobody acts on.
+	Status wire.StatusCode
+
 	// Router is the last Router Advertisement this client saw, on every v6
-	// event, and the zero value means it has seen none.
+	// event, and the zero value means it had seen none WHEN THIS EVENT WAS
+	// STAMPED.
+	//
+	// "WHEN THIS EVENT WAS STAMPED" IS THE WHOLE OF ITS USE. §18.2.1's
+	// Solicit goes out without waiting for router discovery, so an event
+	// stamped before the first advertisement arrives — a refusal early in the
+	// exchange, for one — carries the zero on a link that does have a router.
+	// A caller asking whether this link has one reads Manager.Router when it
+	// gives up, not the copy on an event it happens to be holding.
 	//
 	// It is a DIAGNOSTIC and never an instruction (design Q2). A caller whose
 	// own deadline ran out on a link whose router says M=0 and O=0 — RFC 4861
 	// section 4.2: "no information is available via DHCPv6" — has not hit a
 	// bug, and this is the only thing that tells it which of the two
 	// happened.
+	//
+	// IT ALSO CARRIES WHAT THE ROUTERS ADVERTISED, and on a Lost, a Failed or
+	// a Configured it is the ONLY place that view appears: the gateway, the
+	// MTU, the advertised resolvers, the search domains and the more-specific
+	// routes are merged into Lease on the three kinds that carry a lease, and
+	// an event with no lease has nowhere to put them. See
+	// proto.RouterObservation for what it is a snapshot of and when.
 	Router proto.RouterObservation
 }
 
@@ -405,6 +484,23 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	if pfx, ok := l.Prefix(); ok {
 		out.Addr = pfx
 	}
+	out.SLAAC = l.SLAAC
+	for _, a := range l.Addrs {
+		bits := a.PrefixLen
+		if bits <= 0 {
+			// A granted address has no prefix length of its own, so it is a
+			// host address. Only RFC 4862 §5.5.3's option carries one.
+			bits = a.Addr.BitLen()
+		}
+		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
+		if !a.Preferred.IsInfinite() {
+			e.Preferred = b.at(l.Start.Add(a.Preferred))
+		}
+		if !a.Valid.IsInfinite() {
+			e.Valid = b.at(l.Start.Add(a.Valid))
+		}
+		out.Addrs = append(out.Addrs, e)
+	}
 	// Domain is option 15's single name and has no DHCPv6 counterpart: RFC
 	// 3646 defines a search LIST (option 24) and no single-name option, so
 	// filling Domain from Search[0] would invent a fact the server did not
@@ -424,6 +520,90 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		out.Preferred = b.at(t)
 	}
 	return out
+}
+
+// withRouterAdvert merges what the routers on the link advertised into a v6
+// lease, RFC 4861 §6.3.4's union seen from the caller's side.
+//
+// THE LEASE IS THE SURFACE AND NOT A SECOND TYPE, which is D30 where a chassis
+// touches it: a caller that installs an address, sets a route, sets an MTU and
+// writes a resolver file reads the same five fields whichever family it asked
+// for. DHCPv6 has none of these five — there is no router option (RFC 9915 has
+// none), no MTU option and no link prefix — so for v6 they come from the
+// advertisement or from nowhere.
+//
+// WHAT DHCP SENT KEEPS ITS PLACE, STANDARD RFC 8106 §5.3.1: "The DNS options
+// from RAs and DHCP SHOULD be stored in the DNS Repository and Resolver
+// Repository so that information from DHCP appears there first and therefore
+// takes precedence. Thus, the DNS information from DHCP takes precedence over
+// that from RAs for DNS queries." So the advertised resolvers and search
+// domains are APPENDED to what the server sent, never substituted for it, and
+// a duplicate is not added twice. The same rule read for the single-valued
+// fields is why the gateway and the MTU are filled in only when the lease
+// carries none: there is nothing to take precedence over them today, and a
+// later option that does must win without this function being edited.
+//
+// EVERY LIST IS COPIED BEFORE IT IS APPENDED TO. The Lease passed in is a
+// value, but its slices are not: appending to one whose backing array has room
+// writes into the array the CALLER still holds, which is the manager's own
+// stored lease. This function is called once per event and once per Lease()
+// read, so the same held lease would grow a resolver every time anybody looked
+// at it.
+func withRouterAdvert(l Lease, r proto.RouterObservation) Lease {
+	if !l.Gateway.IsValid() && len(r.Routers) > 0 {
+		l.Gateway = r.Routers[0]
+	}
+	if l.MTU == 0 && r.MTU != 0 {
+		l.MTU = int(r.MTU)
+	}
+	for _, a := range r.DNS {
+		if !containsAddr(l.DNS, a) {
+			l.DNS = append(append([]netip.Addr(nil), l.DNS...), a)
+		}
+	}
+	for _, n := range r.Search {
+		if !containsString(l.DomainSearch, n) {
+			l.DomainSearch = append(append([]string(nil), l.DomainSearch...), n)
+		}
+	}
+	for _, rt := range r.Routes {
+		if !containsRoute(l.Routes, rt) {
+			l.Routes = append(append([]wire.Route(nil), l.Routes...), rt)
+		}
+	}
+	return l
+}
+
+func containsAddr(in []netip.Addr, a netip.Addr) bool {
+	for _, v := range in {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(in []string, s string) bool {
+	for _, v := range in {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// containsRoute compares the DESTINATION and not the whole route: two routers
+// offering the same prefix are one destination with two next hops, and a
+// caller installs one route to a destination. The first one wins, and the list
+// arrives most-preferred first (RFC 4191 §2.3's Prf), so the one that wins is
+// the one the routers said to prefer.
+func containsRoute(in []wire.Route, r wire.Route) bool {
+	for _, v := range in {
+		if v.Dest == r.Dest {
+			return true
+		}
+	}
+	return false
 }
 
 // toConfig converts ring 1's stateless configuration into the outward one.

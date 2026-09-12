@@ -1,0 +1,1270 @@
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+
+package proto
+
+import (
+	"fmt"
+	"net/netip"
+	"slices"
+	"testing"
+
+	"github.com/claymore666/dhcp-golib/wire"
+)
+
+// advert builds a decoded advertisement the way ring 2 hands one over: the
+// router's address already filled in from the frame's source, because the
+// decoder cannot know it.
+func advert(from string, routerLifetime uint16) *wire.RouterAdvert {
+	return &wire.RouterAdvert{
+		Managed:        true,
+		RouterLifetime: routerLifetime,
+		Router:         netip.MustParseAddr(from),
+	}
+}
+
+// withPref is advert with RFC 4191 §2.2's Default Router Preference filled in.
+func withPref(from string, life uint16, p wire.RoutePreference) *wire.RouterAdvert {
+	ra := advert(from, life)
+	ra.Preference = p
+	return ra
+}
+
+func observation(t *testing.T, tab *routerTable, now Instant) RouterObservation {
+	t.Helper()
+	var out RouterObservation
+	tab.fill(now, &out)
+	return out
+}
+
+func addrTexts(in []netip.Addr) []string {
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		out = append(out, a.String())
+	}
+	return out
+}
+
+func routesOf(in []wire.Route) []string {
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		out = append(out, r.Dest.String()+" via "+r.Router.String())
+	}
+	return out
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestTheTableTakesTheUnionOfWhatTwoRoutersSaid is RFC 4861 §6.3.4: "Hosts
+// accept the union of all received information; the receipt of a Router
+// Advertisement MUST NOT invalidate all information received in a previous
+// advertisement or from another source."
+//
+// A TABLE THAT OVERWRITES PASSES EVERY SINGLE-ROUTER TEST. That is why this is
+// two routers with disjoint contributions and an assertion on both halves
+// after the second advertisement: the second router's arrival is the moment a
+// snapshot-shaped table loses the first router's resolver.
+func TestTheTableTakesTheUnionOfWhatTwoRoutersSaid(t *testing.T) {
+	var tab routerTable
+
+	first := advert("fe80::1", 1800)
+	first.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+	first.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{"one.example"}}}
+	first.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8:1::/48"), Lifetime: 600}}
+	first.MTU = 1500
+	if !tab.observe(at(0), first) {
+		t.Fatal("the first advertisement contributed nothing")
+	}
+
+	second := advert("fe80::2", 1800)
+	second.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::54")}}}
+	second.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{"two.example"}}}
+	second.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8:2::/48"), Lifetime: 600}}
+	if !tab.observe(at(1), second) {
+		t.Fatal("the second advertisement contributed nothing")
+	}
+
+	obs := observation(t, &tab, at(2))
+	if want := []string{"fe80::1", "fe80::2"}; !equalStrings(addrTexts(obs.Routers), want) {
+		t.Errorf("default routers %v, want %v: neither advertised a preference, so the order is the order they were first heard", addrTexts(obs.Routers), want)
+	}
+	if want := []string{"fd00::53", "fd00::54"}; !equalStrings(addrTexts(obs.DNS), want) {
+		t.Errorf("resolvers %v, want %v", addrTexts(obs.DNS), want)
+	}
+	if want := []string{"one.example", "two.example"}; !equalStrings(obs.Search, want) {
+		t.Errorf("search list %v, want %v", obs.Search, want)
+	}
+	if want := []string{"2001:db8:1::/48 via fe80::1", "2001:db8:2::/48 via fe80::2"}; !equalStrings(routesOf(obs.Routes), want) {
+		t.Errorf("routes %v, want %v", routesOf(obs.Routes), want)
+	}
+	// §6.3.4's other half: the MTU the first router set is not cleared by a
+	// second advertisement that carries none. "In such cases, the parameter
+	// should be ignored and the host should continue using whatever value it
+	// is already using."
+	if obs.MTU != 1500 {
+		t.Errorf("MTU %d after an advertisement carrying no MTU option, want the one still in use", obs.MTU)
+	}
+}
+
+// TestTheSamePrefixFromTwoRoutersIsTwoRoutes drives RFC 4191 §2.3's own reason
+// for the preference field — "when multiple identical prefixes (for different
+// routers) have been received" — and the withdrawal that tells a table keyed on
+// the prefix alone from one keyed on the router and the prefix.
+func TestTheSamePrefixFromTwoRoutersIsTwoRoutes(t *testing.T) {
+	pfx := netip.MustParsePrefix("2001:db8:aa::/48")
+	for _, tc := range []struct {
+		name       string
+		withdrawer string
+		survivor   string
+	}{
+		{"the first router withdraws", "fe80::1", "fe80::2"},
+		{"the second router withdraws", "fe80::2", "fe80::1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tab routerTable
+			one := advert("fe80::1", 1800)
+			one.Routes = []wire.RouteInfo{{Prefix: pfx, Pref: wire.RoutePrefLow, Lifetime: 600}}
+			tab.observe(at(0), one)
+			two := advert("fe80::2", 1800)
+			two.Routes = []wire.RouteInfo{{Prefix: pfx, Pref: wire.RoutePrefHigh, Lifetime: 600}}
+			tab.observe(at(1), two)
+
+			if obs := observation(t, &tab, at(2)); len(obs.Routes) != 2 {
+				t.Fatalf("%v; one prefix from two routers is two routes", routesOf(obs.Routes))
+			}
+
+			gone := advert(tc.withdrawer, 1800)
+			gone.Routes = []wire.RouteInfo{{Prefix: pfx, Lifetime: 0}}
+			tab.observe(at(3), gone)
+
+			obs := observation(t, &tab, at(4))
+			if want := []string{pfx.String() + " via " + tc.survivor}; !equalStrings(routesOf(obs.Routes), want) {
+				t.Errorf("routes %v, want %v", routesOf(obs.Routes), want)
+			}
+		})
+	}
+}
+
+// TestTheRoutesAreOrderedMostPreferredFirst is what the signed preference is
+// for. The fixture advertises them in the wrong order on purpose, and the
+// medium pair pins the tie-break so the result does not depend on the sort
+// being stable by accident.
+func TestTheRoutesAreOrderedMostPreferredFirst(t *testing.T) {
+	var tab routerTable
+	ra := advert("fe80::1", 1800)
+	ra.Routes = []wire.RouteInfo{
+		{Prefix: netip.MustParsePrefix("2001:db8:10::/48"), Pref: wire.RoutePrefLow, Lifetime: 600},
+		{Prefix: netip.MustParsePrefix("2001:db8:20::/48"), Pref: wire.RoutePrefMedium, Lifetime: 600},
+		{Prefix: netip.MustParsePrefix("2001:db8:30::/48"), Pref: wire.RoutePrefHigh, Lifetime: 600},
+		{Prefix: netip.MustParsePrefix("2001:db8:40::/48"), Pref: wire.RoutePrefMedium, Lifetime: 600},
+	}
+	tab.observe(at(0), ra)
+	obs := observation(t, &tab, at(1))
+	want := []string{
+		"2001:db8:30::/48 via fe80::1",
+		"2001:db8:20::/48 via fe80::1",
+		"2001:db8:40::/48 via fe80::1",
+		"2001:db8:10::/48 via fe80::1",
+	}
+	if !equalStrings(routesOf(obs.Routes), want) {
+		t.Errorf("routes %v, want %v", routesOf(obs.Routes), want)
+	}
+}
+
+// TestAZeroLifetimeWithdrawsTheEntryItNames drives the three withdrawals,
+// each quoted where it is implemented: RFC 8106 §5.1 "A value of zero means
+// that the RDNSS addresses MUST no longer be used", §5.2's same semantics for
+// the search list, and RFC 4861 §6.3.4 "If the address is already present in
+// the host's Default Router List and the received Router Lifetime value is
+// zero, immediately time-out the entry".
+//
+// EACH ARM ASSERTS ITS SIBLINGS SURVIVED. A table that dropped everything on a
+// zero lifetime would pass every one of them read alone.
+func TestAZeroLifetimeWithdrawsTheEntryItNames(t *testing.T) {
+	build := func() *routerTable {
+		var tab routerTable
+		ra := advert("fe80::1", 1800)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+		ra.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{"lan"}}}
+		ra.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8::/48"), Lifetime: 600}}
+		ra.MTU = 1400
+		tab.observe(at(0), ra)
+		return &tab
+	}
+
+	t.Run("the resolver", func(t *testing.T) {
+		tab := build()
+		ra := advert("fe80::1", 1800)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 0, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+		tab.observe(at(1), ra)
+		obs := observation(t, tab, at(2))
+		if len(obs.DNS) != 0 {
+			t.Errorf("resolvers %v after a zero-lifetime RDNSS naming the only one", addrTexts(obs.DNS))
+		}
+		if len(obs.Routers) != 1 || len(obs.Search) != 1 || len(obs.Routes) != 1 || obs.MTU != 1400 {
+			t.Errorf("the withdrawal took its siblings with it: %s", obs)
+		}
+	})
+
+	t.Run("the search domain", func(t *testing.T) {
+		tab := build()
+		ra := advert("fe80::1", 1800)
+		ra.DNSSL = []wire.DNSSL{{Lifetime: 0, Names: []string{"lan"}}}
+		tab.observe(at(1), ra)
+		obs := observation(t, tab, at(2))
+		if len(obs.Search) != 0 {
+			t.Errorf("search list %v after a zero-lifetime DNSSL naming the only name", obs.Search)
+		}
+		if len(obs.Routers) != 1 || len(obs.DNS) != 1 || len(obs.Routes) != 1 {
+			t.Errorf("the withdrawal took its siblings with it: %s", obs)
+		}
+	})
+
+	t.Run("the route", func(t *testing.T) {
+		tab := build()
+		ra := advert("fe80::1", 1800)
+		ra.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8::/48"), Lifetime: 0}}
+		tab.observe(at(1), ra)
+		obs := observation(t, tab, at(2))
+		if len(obs.Routes) != 0 {
+			t.Errorf("routes %v after a zero-lifetime Route Information Option naming the only one", routesOf(obs.Routes))
+		}
+		if len(obs.Routers) != 1 || len(obs.DNS) != 1 || len(obs.Search) != 1 {
+			t.Errorf("the withdrawal took its siblings with it: %s", obs)
+		}
+	})
+
+	t.Run("the default router, which keeps its options", func(t *testing.T) {
+		tab := build()
+		tab.observe(at(1), advert("fe80::1", 0))
+		obs := observation(t, tab, at(2))
+		if len(obs.Routers) != 0 {
+			t.Errorf("default routers %v after Router Lifetime zero", addrTexts(obs.Routers))
+		}
+		// RFC 4861 §4.2: "The Router Lifetime applies only to the router's
+		// usefulness as a default router; it does not apply to information
+		// contained in other message fields or options."
+		if len(obs.DNS) != 1 || len(obs.Search) != 1 || len(obs.Routes) != 1 || obs.MTU != 1400 {
+			t.Errorf("a router that stopped being a default router took its own options with it: %s", obs)
+		}
+	})
+}
+
+// TestARouterNeverSeenBeforeWithLifetimeZeroIsNotADefaultRouter is §6.3.4's
+// first bullet read for what it does NOT say to do: "If the address is not
+// already present in the host's Default Router List, and the advertisement's
+// Router Lifetime is non-zero, create a new entry in the list". The options of
+// such an advertisement are still the link's.
+func TestARouterNeverSeenBeforeWithLifetimeZeroIsNotADefaultRouter(t *testing.T) {
+	var tab routerTable
+	ra := advert("fe80::9", 0)
+	ra.MTU = 1400
+	ra.RDNSS = []wire.RDNSS{{Lifetime: 1800, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+	ra.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8::/48"), Lifetime: 1800}}
+	tab.observe(at(0), ra)
+
+	obs := observation(t, &tab, at(1))
+	if len(obs.Routers) != 0 {
+		t.Errorf("default routers %v from an advertisement with Router Lifetime zero", addrTexts(obs.Routers))
+	}
+	if obs.MTU != 1400 || len(obs.DNS) != 1 || len(obs.Routes) != 1 {
+		t.Errorf("the options of a non-default router were dropped: %s", obs)
+	}
+}
+
+// TestEachEntryExpiresOnItsOwnLifetime is the pair that tells a per-entry timer
+// from one timer over the whole table, and it is driven in both directions for
+// that reason. RFC 4861 §4.2: "The Router Lifetime applies only to the router's
+// usefulness as a default router ... Options that need time limits for their
+// information include their own lifetime fields." RFC 8106 §6.1: "Note that the
+// DNS information for the RDNSS and DNSSL options need not be dropped if the
+// expiry of the RA router lifetime happens."
+func TestEachEntryExpiresOnItsOwnLifetime(t *testing.T) {
+	t.Run("a short resolver under a long router", func(t *testing.T) {
+		var tab routerTable
+		ra := advert("fe80::1", 1800)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 30, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+		ra.DNSSL = []wire.DNSSL{{Lifetime: 1800, Names: []string{"lan"}}}
+		tab.observe(at(0), ra)
+
+		if obs := observation(t, &tab, at(29)); len(obs.DNS) != 1 {
+			t.Fatalf("the resolver was gone at t+29 with a lifetime of 30: %s", obs)
+		}
+		obs := observation(t, &tab, at(31))
+		if len(obs.DNS) != 0 {
+			t.Errorf("resolvers %v at t+31 with a lifetime of 30", addrTexts(obs.DNS))
+		}
+		if len(obs.Routers) != 1 || len(obs.Search) != 1 {
+			t.Errorf("the resolver's expiry took the gateway or the search list with it: %s", obs)
+		}
+	})
+
+	t.Run("a short router under a long resolver", func(t *testing.T) {
+		var tab routerTable
+		ra := advert("fe80::1", 30)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 1800, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+		tab.observe(at(0), ra)
+
+		if obs := observation(t, &tab, at(29)); len(obs.Routers) != 1 {
+			t.Fatalf("the router was gone at t+29 with a lifetime of 30: %s", obs)
+		}
+		obs := observation(t, &tab, at(31))
+		if len(obs.Routers) != 0 {
+			t.Errorf("default routers %v at t+31 with a Router Lifetime of 30", addrTexts(obs.Routers))
+		}
+		if len(obs.DNS) != 1 {
+			t.Errorf("the router's expiry took the resolver with it: %s", obs)
+		}
+	})
+}
+
+// TestTheRouterLifetimeIsSixteenBitsAndHasNoInfinity is RFC 4861 §4.2's
+// "Router Lifetime 16-bit unsigned integer. ... The field can contain values up
+// to 65535 and receivers should handle any value", set against the 32-bit
+// options where "A value of all one bits (0xffffffff) represents infinity". The
+// boundary pair is the assertion: 65535 is eighteen hours and not eternity.
+func TestTheRouterLifetimeIsSixteenBitsAndHasNoInfinity(t *testing.T) {
+	var tab routerTable
+	ra := advert("fe80::1", 65535)
+	ra.RDNSS = []wire.RDNSS{{Lifetime: 0xFFFFFFFF, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+	ra.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix("2001:db8::/48"), Lifetime: 0xFFFFFFFF}}
+	tab.observe(at(0), ra)
+
+	if obs := observation(t, &tab, at(65534)); len(obs.Routers) != 1 {
+		t.Fatalf("the default router was gone one second before its lifetime ran out: %s", obs)
+	}
+	obs := observation(t, &tab, at(65535))
+	if len(obs.Routers) != 0 {
+		t.Errorf("the default router survived its whole 16-bit lifetime: %s", obs)
+	}
+	// The two entries that DO carry an infinity outlive it by definition.
+	if len(obs.DNS) != 1 || len(obs.Routes) != 1 {
+		t.Errorf("an infinite RDNSS or route lifetime expired: %s", obs)
+	}
+	// AND AT AN INSTANT PAST 0xffffffff SECONDS, which is what tells an
+	// infinite entry from one whose deadline is now plus that number: 1<<33
+	// seconds is about two hundred and seventy years, and 0xffffffff is about
+	// a hundred and thirty-six. It is also the largest power of two this
+	// clock can carry — an Instant is nanoseconds in an int64, so at(1<<40)
+	// overflows and the comparison it feeds means nothing. MEASURED: with
+	// at(1<<40) here, the mutant that reads 0xffffffff as an ordinary
+	// lifetime SURVIVED.
+	if obs := observation(t, &tab, at(1<<33)); len(obs.DNS) != 1 || len(obs.Routes) != 1 {
+		t.Errorf("an infinite lifetime expired eventually, which is not what infinity is: %s", obs)
+	}
+}
+
+// TestTheMTUIsBoundedBelowByTheMinimumLinkMTU drives RFC 4861 §6.3.4's "hosts
+// SHOULD copy the option's value into LinkMTU so long as the value is greater
+// than or equal to the minimum link MTU [IPv6]", whose value is RFC 8200 §5's,
+// and the surface bound above it. The 1279/1280 pair is the boundary; 1280
+// alone passes against a table with no lower bound at all.
+func TestTheMTUIsBoundedBelowByTheMinimumLinkMTU(t *testing.T) {
+	for _, tc := range []struct {
+		mtu  uint32
+		want uint32
+	}{
+		{0, 0},
+		{1, 0},
+		{1279, 0},
+		{1280, 1280},
+		{1500, 1500},
+		{9000, 9000},
+		{0xFFFFFFFF, 0},
+	} {
+		t.Run(fmt.Sprint(tc.mtu), func(t *testing.T) {
+			var tab routerTable
+			ra := advert("fe80::1", 1800)
+			ra.MTU = tc.mtu
+			tab.observe(at(0), ra)
+			obs := observation(t, &tab, at(1))
+			if obs.MTU != tc.want {
+				t.Errorf("an advertised MTU of %d was reported as %d, want %d", tc.mtu, obs.MTU, tc.want)
+			}
+			if int(obs.MTU) < 0 {
+				t.Errorf("the reported MTU is negative as an int: %d", int(obs.MTU))
+			}
+		})
+	}
+}
+
+// TestTheReportedResolversAndSearchDomainsAreInTheOrderTheyWereFirstHeard
+// drives the order of the two lists RFC 8106 owns, which is the only ordering
+// on this observation that used to go unstated while its two neighbours stated
+// theirs.
+//
+// FIRST HEARD, AND A REFRESH DOES NOT MOVE AN ENTRY. §6.2 stores the addresses
+// "(in order)" in the DNS Server List, and step (c) refreshes an existing entry
+// by updating its Expiration-time and nothing else, so a resolver heard again
+// keeps the place it had. Only an entry that left the list and came back is
+// last, because coming back is step (d) and step (d) registers it.
+//
+// THE REPOSITORY'S RULE IS NOT ASSERTED HERE BECAUSE THIS IS NOT THE
+// REPOSITORY. Step (d) also says to "insert the RDNSS address as the first one
+// in the Resolver Repository", newest first; the repository is the structure
+// that resolves names and this library resolves nothing. A caller that keeps
+// one applies that rule to its own when it reads this list, and the boundary
+// is stated on RouterObservation beside the field.
+func TestTheReportedResolversAndSearchDomainsAreInTheOrderTheyWereFirstHeard(t *testing.T) {
+	var tab routerTable
+	for i, a := range []string{"fd00::1", "fd00::2", "fd00::3"} {
+		ra := advert("fe80::1", 1800)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr(a)}}}
+		ra.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{fmt.Sprintf("d%d.example", i+1)}}}
+		tab.observe(at(int64(i)), ra)
+	}
+
+	want := []string{"fd00::1", "fd00::2", "fd00::3"}
+	wantD := []string{"d1.example", "d2.example", "d3.example"}
+	obs := observation(t, &tab, at(4))
+	if got := addrTexts(obs.DNS); !slices.Equal(got, want) {
+		t.Fatalf("resolvers %v, want %v: the order is the order they were first heard", got, want)
+	}
+	if !slices.Equal(obs.Search, wantD) {
+		t.Fatalf("search domains %v, want %v", obs.Search, wantD)
+	}
+
+	// A REFRESH OF THE FIRST ONE. Step (c) updates the Expiration-time; it does
+	// not re-register, so nothing moves.
+	again := advert("fe80::1", 1800)
+	again.RDNSS = []wire.RDNSS{{Lifetime: 900, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}}}
+	again.DNSSL = []wire.DNSSL{{Lifetime: 900, Names: []string{"d1.example"}}}
+	tab.observe(at(5), again)
+	obs = observation(t, &tab, at(6))
+	if got := addrTexts(obs.DNS); !slices.Equal(got, want) {
+		t.Errorf("resolvers %v after refreshing the first, want %v unchanged", got, want)
+	}
+	if !slices.Equal(obs.Search, wantD) {
+		t.Errorf("search domains %v after refreshing the first, want %v unchanged", obs.Search, wantD)
+	}
+
+	// WITHDRAWN AND HEARD AGAIN IS A NEW REGISTRATION, so it is last.
+	gone := advert("fe80::1", 1800)
+	gone.RDNSS = []wire.RDNSS{{Lifetime: 0, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}}}
+	gone.DNSSL = []wire.DNSSL{{Lifetime: 0, Names: []string{"d1.example"}}}
+	tab.observe(at(7), gone)
+	tab.observe(at(8), again)
+	obs = observation(t, &tab, at(9))
+	wantBack := []string{"fd00::2", "fd00::3", "fd00::1"}
+	wantDBack := []string{"d2.example", "d3.example", "d1.example"}
+	if got := addrTexts(obs.DNS); !slices.Equal(got, wantBack) {
+		t.Errorf("resolvers %v after one was withdrawn and heard again, want %v", got, wantBack)
+	}
+	if !slices.Equal(obs.Search, wantDBack) {
+		t.Errorf("search domains %v after one was withdrawn and heard again, want %v", obs.Search, wantDBack)
+	}
+}
+
+// TestAnUnusableMTUIsAnIgnoredOptionAndNotAFullList names WHICH counter an MTU
+// this ring will not copy moves, and which two it leaves alone.
+//
+// THE COUNTER ONE FIELD UP DEFINES THE POPULATION. refused and evicted are
+// about a LIST BEING FULL: one says an arrival could not get in, the other
+// says something held was thrown out to let an arrival in, and either above
+// zero is read as the table's caps being in force. An MTU outside RFC 4861
+// §6.3.4's bounds has no list, no cap and no entry, so on a quiet link with
+// one such advertisement both of those must stay at zero and the option count
+// must move by exactly one. That is the assertion; the reported MTU beside it
+// is what TestTheMTUIsBoundedBelowByTheMinimumLinkMTU already drives, and it
+// is repeated here because a version that simply stopped counting would pass
+// half of this test.
+func TestAnUnusableMTUIsAnIgnoredOptionAndNotAFullList(t *testing.T) {
+	for _, mtu := range []uint32{1, 1279, 0xFFFFFFFF} {
+		t.Run(fmt.Sprint(mtu), func(t *testing.T) {
+			var tab routerTable
+			ra := advert("fe80::1", 1800)
+			ra.MTU = mtu
+			tab.observe(at(0), ra)
+
+			if tab.optIgnored != 1 {
+				t.Errorf("an MTU of %d moved the ignored-option count by %d, want 1",
+					mtu, tab.optIgnored)
+			}
+			if tab.refused != 0 {
+				t.Errorf("an MTU of %d raised the refusal count to %d: nothing was full",
+					mtu, tab.refused)
+			}
+			if tab.evicted != 0 {
+				t.Errorf("an MTU of %d raised the eviction count to %d: nothing was thrown out",
+					mtu, tab.evicted)
+			}
+			if obs := observation(t, &tab, at(1)); obs.MTU != 0 {
+				t.Errorf("an MTU of %d was reported as %d, want 0", mtu, obs.MTU)
+			}
+			if n := len(tab.routers); n != 1 {
+				t.Errorf("the router list holds %d entr(ies), want the one router: nothing here is near a cap", n)
+			}
+		})
+	}
+}
+
+// TestAnMTUInsideTheBoundsCountsNothing is the preservation control for the
+// test above: a widening that counted every MTU option, or every
+// advertisement, would satisfy every assertion there and be wrong.
+func TestAnMTUInsideTheBoundsCountsNothing(t *testing.T) {
+	for _, mtu := range []uint32{0, 1280, 1500, 9000} {
+		t.Run(fmt.Sprint(mtu), func(t *testing.T) {
+			var tab routerTable
+			ra := advert("fe80::1", 1800)
+			ra.MTU = mtu
+			tab.observe(at(0), ra)
+			if tab.optIgnored != 0 || tab.refused != 0 || tab.evicted != 0 {
+				t.Errorf("an MTU of %d moved a counter: ignored=%d refused=%d evicted=%d",
+					mtu, tab.optIgnored, tab.refused, tab.evicted)
+			}
+		})
+	}
+}
+
+// TestAnAdvertisementWithNoSourceAddressNamesNoRouter pins the key the whole
+// table is built on, RFC 4861 §6.3.4: "On receipt of a valid Router
+// Advertisement, a host extracts the source address of the packet". An
+// advertisement that reaches ring 1 without one is a caller that did not fill
+// it in; taking the zero address would merge every such advertisement into one
+// router that does not exist.
+func TestAnAdvertisementWithNoSourceAddressNamesNoRouter(t *testing.T) {
+	var tab routerTable
+	ra := &wire.RouterAdvert{Managed: true, RouterLifetime: 1800}
+	ra.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+	if tab.observe(at(0), ra) {
+		t.Fatal("an advertisement with no source address was accepted into the table")
+	}
+	if tab.observe(at(0), nil) {
+		t.Fatal("a nil advertisement was accepted into the table")
+	}
+	obs := observation(t, &tab, at(1))
+	if len(obs.Routers) != 0 || len(obs.DNS) != 0 {
+		t.Errorf("the table holds %s from an advertisement that named no router", obs)
+	}
+}
+
+// TestTheTableCapsHoldAtLeastWhatTheStandardsRequire is the floor under the
+// caps, derived from the standards rather than from today's values: RFC 4861
+// §6.3.4 "a host MUST retain at least two router addresses and SHOULD retain
+// more" and RFC 8106 §5.3.1 "the ability to store a total of at least three
+// RDNSS addresses (or DNSSL domain names) from the multiple sources is
+// RECOMMENDED".
+func TestTheTableCapsHoldAtLeastWhatTheStandardsRequire(t *testing.T) {
+	if maxRouters < minRoutersFloor {
+		t.Errorf("maxRouters is %d, under RFC 4861 §6.3.4's floor of %d", maxRouters, minRoutersFloor)
+	}
+	if maxRouterDNS < minDNSFloor {
+		t.Errorf("maxRouterDNS is %d, under RFC 8106 §5.3.1's floor of %d", maxRouterDNS, minDNSFloor)
+	}
+	if maxRouterSearch < minSearchFloor {
+		t.Errorf("maxRouterSearch is %d, under RFC 8106 §5.3.1's floor of %d", maxRouterSearch, minSearchFloor)
+	}
+	if maxRouterRoutes < 1 {
+		t.Errorf("maxRouterRoutes is %d", maxRouterRoutes)
+	}
+}
+
+// TestTheTableIsBoundedAndSaysSoWhenItRefuses floods the table from more
+// sources than a link has and asserts the three things a bound has to have:
+// a size that stops, the entries that survive, and a count of what was lost.
+//
+// THE TWO POLICIES ARE VISIBLE IN ONE FLOOD. The Default Router List refuses,
+// so it holds the routers heard FIRST; the resolver list follows RFC 8106 §6.2
+// step (d) and evicts what expires first, so it holds the resolvers heard
+// LAST. Both are asserted here, because a table that had one policy everywhere
+// would pass whichever half matched it.
+//
+// THE FLOOD IS REPEATED, which is the arm that tells a table keyed on the
+// source address from one that appends: the second pass adds nothing at all,
+// and a table without a key would double.
+func TestTheTableIsBoundedAndSaysSoWhenItRefuses(t *testing.T) {
+	var tab routerTable
+	flood := func(base int64) {
+		for i := range 500 {
+			ra := advert(fmt.Sprintf("fe80::%x", i+1), 1800)
+			ra.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr(fmt.Sprintf("fd00::%x", i+1))}}}
+			ra.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{fmt.Sprintf("n%d.example", i)}}}
+			ra.Routes = []wire.RouteInfo{{Prefix: netip.MustParsePrefix(fmt.Sprintf("2001:db8:%x::/48", i+1)), Lifetime: 600}}
+			tab.observe(at(base+int64(i)), ra)
+		}
+	}
+	flood(0)
+	afterOne := observation(t, &tab, at(500))
+	switch {
+	case len(afterOne.Routers) != maxRouters:
+		t.Fatalf("%d default routers after 500 advertisements, want the cap %d", len(afterOne.Routers), maxRouters)
+	case len(afterOne.DNS) != maxRouterDNS:
+		t.Fatalf("%d resolvers, want the cap %d", len(afterOne.DNS), maxRouterDNS)
+	case len(afterOne.Search) != maxRouterSearch:
+		t.Fatalf("%d search domains, want the cap %d", len(afterOne.Search), maxRouterSearch)
+	case len(afterOne.Routes) != maxRouterRoutes:
+		t.Fatalf("%d routes, want the cap %d", len(afterOne.Routes), maxRouterRoutes)
+	}
+	// The router that survives is the one that arrived FIRST, and the join
+	// order is what decides whether that is the router the client wants: on a
+	// link the client was already on, its own router is in the table before
+	// the flood starts; on a link that was already flooding when the client
+	// joined, the flood is what arrived first and the real router is the entry
+	// refused. Neither policy wins that link — RA-Guard and SEND are what do,
+	// and neither is this library's — so what is asserted here is the order,
+	// not a defence.
+	if afterOne.Routers[0] != netip.MustParseAddr("fe80::1") {
+		t.Errorf("the first router heard is not the first one held: %v", addrTexts(afterOne.Routers))
+	}
+	// The resolver that survives is the one that arrived LAST, because each
+	// arrival evicted the entry due to expire first and every entry in this
+	// flood carries the same lifetime from an earlier now.
+	dnsHeld := addrTexts(afterOne.DNS)
+	var haveFirst, haveLast bool
+	for _, a := range dnsHeld {
+		switch a {
+		case "fd00::1":
+			haveFirst = true
+		case fmt.Sprintf("fd00::%x", 500):
+			haveLast = true
+		}
+	}
+	if haveFirst {
+		t.Errorf("the resolver heard first survived 500 advertisements into a list of %d: %v", maxRouterDNS, dnsHeld)
+	}
+	if !haveLast {
+		t.Errorf("the resolver heard last was refused by the full list: %v", dnsHeld)
+	}
+	if tab.refused == 0 {
+		t.Error("500 advertisements filled the router list and no arrival was counted as refused")
+	}
+	if tab.evicted == 0 {
+		t.Error("500 advertisements filled the resolver list and nothing was counted as evicted")
+	}
+
+	refused, evicted := tab.refused, tab.evicted
+	flood(500)
+	afterTwo := observation(t, &tab, at(1000))
+	if len(afterTwo.Routers) != len(afterOne.Routers) || len(afterTwo.Routes) != len(afterOne.Routes) {
+		t.Errorf("the same 500 advertisements a second time changed the table size from %d/%d to %d/%d",
+			len(afterOne.Routers), len(afterOne.Routes), len(afterTwo.Routers), len(afterTwo.Routes))
+	}
+	if !equalStrings(addrTexts(afterTwo.Routers), addrTexts(afterOne.Routers)) {
+		t.Errorf("the second pass replaced the routers held: %v then %v", addrTexts(afterOne.Routers), addrTexts(afterTwo.Routers))
+	}
+	if tab.refused <= refused || tab.evicted <= evicted {
+		t.Errorf("the second flood lost entries silently: refused %d then %d, evicted %d then %d",
+			refused, tab.refused, evicted, tab.evicted)
+	}
+}
+
+// TestAnExpiredEntryMakesRoomForANewOne is the other direction of the cap: it
+// bounds what is HELD, not how many advertisements a link may ever send.
+func TestAnExpiredEntryMakesRoomForANewOne(t *testing.T) {
+	var tab routerTable
+	for i := range maxRouters {
+		tab.observe(at(0), advert(fmt.Sprintf("fe80::%x", i+1), 30))
+	}
+	if obs := observation(t, &tab, at(1)); len(obs.Routers) != maxRouters {
+		t.Fatalf("%d default routers, want the cap %d", len(obs.Routers), maxRouters)
+	}
+	// Every one of them has gone, so the table is empty and the next router is
+	// taken rather than refused.
+	tab.observe(at(31), advert("fe80::ffff", 1800))
+	obs := observation(t, &tab, at(32))
+	if want := []string{"fe80::ffff"}; !equalStrings(addrTexts(obs.Routers), want) {
+		t.Errorf("default routers %v after every earlier entry expired, want %v", addrTexts(obs.Routers), want)
+	}
+}
+
+// TestTheObservationHoldsNoSliceOfTheAdvertisement is the aliasing rule at the
+// ring boundary: the same *wire.RouterAdvert reaches ring 2's capture ring, so
+// a machine holding its slices would share them with whatever reads that ring.
+func TestTheObservationHoldsNoSliceOfTheAdvertisement(t *testing.T) {
+	m := newMachine6(t, testParams6())
+	ra := advert("fe80::1", 1800)
+	ra.Prefixes = []wire.PrefixInfo{{PrefixLen: 64, Prefix: netip.MustParseAddr("fd00:98::"), Autonomous: true}}
+	m.Step(at(0), 1, RouterAdvert(ra))
+
+	ra.Prefixes[0].Prefix = netip.MustParseAddr("2001:db8::")
+	ra.Prefixes[0].Autonomous = false
+
+	got := m.Router()
+	if len(got.Prefixes) != 1 {
+		t.Fatalf("%d prefix(es) in the observation", len(got.Prefixes))
+	}
+	if got.Prefixes[0].Prefix != netip.MustParseAddr("fd00:98::") || !got.Prefixes[0].Autonomous {
+		t.Errorf("the observation followed a later edit of the advertisement it was built from: %s", got.Prefixes[0])
+	}
+}
+
+// TestTheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement is the bound
+// RouterObservation states, driven rather than asserted in prose: the table is
+// pruned from the now every Step is handed, so a link whose router has gone
+// quiet stops reporting the gateway that timed out.
+func TestTheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement(t *testing.T) {
+	m := newMachine6(t, testParams6())
+	ra := advert("fe80::1", 30)
+	ra.RDNSS = []wire.RDNSS{{Lifetime: 1800, Addrs: []netip.Addr{netip.MustParseAddr("fd00::53")}}}
+	m.Step(at(0), 1, RouterAdvert(ra))
+	if got := m.Router(); len(got.Routers) != 1 {
+		t.Fatalf("the advertisement named no default router: %s", got)
+	}
+
+	// Any event at all, with no further advertisement.
+	m.Step(at(31), 2, TimerFired(Timer6Retransmit))
+	got := m.Router()
+	if len(got.Routers) != 0 {
+		t.Errorf("the gateway of a router whose lifetime ran out is still reported: %s", got)
+	}
+	if !got.Seen || got.Router != netip.MustParseAddr("fe80::1") {
+		t.Errorf("ageing the table forgot that a router was ever seen: %s", got)
+	}
+	if len(got.DNS) != 1 {
+		t.Errorf("ageing took the resolver, whose own lifetime has not run out: %s", got)
+	}
+}
+
+// raWithOptions is raManaged followed by one RDNSS option and one Route
+// Information option, built from RFC 8106 §5.1's and RFC 4191 §2.3's field
+// diagrams so a journal test drives real bytes rather than a struct literal
+// the decoder never saw.
+func raWithOptions(resolver string, prefix netip.Prefix) []byte {
+	out := append([]byte(nil), raManaged...)
+	rdnss := make([]byte, 24)
+	rdnss[0], rdnss[1] = 25, 3
+	rdnss[4], rdnss[5], rdnss[6], rdnss[7] = 0, 0, 2, 88 // lifetime 600
+	copy(rdnss[8:], netip.MustParseAddr(resolver).AsSlice())
+	rio := make([]byte, 24)
+	rio[0], rio[1], rio[2] = 24, 3, uint8(prefix.Bits())
+	rio[4], rio[5], rio[6], rio[7] = 0, 0, 2, 88
+	copy(rio[8:], prefix.Addr().AsSlice())
+	return append(append(out, rdnss...), rio...)
+}
+
+// TestAReplayedAdvertisementKeepsTheRouterItCameFrom is defeat row D-8 and the
+// M7a carried-row shape: the source address is NOT in the ICMPv6 bytes, so a
+// journal that stores only the bytes replays every advertisement as coming
+// from nowhere and the replayed table is not the table that ran.
+//
+// THE TWO ROUTERS ARE THE ASSERTION. A replay that dropped the address would
+// still reproduce one router's resolvers; it is the union, keyed on two
+// different sources, that a zero-address replay collapses.
+func TestAReplayedAdvertisementKeepsTheRouterItCameFrom(t *testing.T) {
+	p := testParams6()
+	r := newRecord6(t, p)
+	r.step(at(0), 0, Simple(EvStart))
+
+	for i, from := range []string{"fe80::1", "fe80::2"} {
+		raw := raWithOptions(
+			fmt.Sprintf("fd00::5%d", i+3),
+			netip.MustParsePrefix(fmt.Sprintf("2001:db8:%d::/48", i+1)),
+		)
+		ra := mustRA(t, raw)
+		ra.Router = netip.MustParseAddr(from)
+		r.step(at(int64(i+1)), 0, RouterAdvertRaw(ra, raw))
+	}
+
+	live := r.m.Router()
+	if len(live.Routers) != 2 || len(live.DNS) != 2 || len(live.Routes) != 2 {
+		t.Fatalf("the recorded run did not build the table it was supposed to: %s", live)
+	}
+
+	if _, err := Replay6(p, r.entries); err != nil {
+		t.Fatalf("Replay6: %v", err)
+	}
+
+	// Replay6 compares states and actions; the table is not part of either, so
+	// it is rebuilt here from the journal's own reconstructed events and
+	// compared against the run that produced them.
+	again := newMachine6(t, p)
+	for _, e := range r.entries {
+		ev, err := e.Event()
+		if err != nil {
+			t.Fatalf("entry %d: %v", e.Seq, err)
+		}
+		again.Step(e.Now, e.Rnd, ev)
+	}
+	replayed := again.Router()
+	if replayed.String() != live.String() {
+		t.Errorf("the replayed observation is\n  %s\nand the recorded one is\n  %s", replayed, live)
+	}
+	if !equalStrings(addrTexts(replayed.Routers), []string{"fe80::1", "fe80::2"}) {
+		t.Errorf("the replayed default routers are %v", addrTexts(replayed.Routers))
+	}
+	if !equalStrings(routesOf(replayed.Routes), []string{"2001:db8:1::/48 via fe80::1", "2001:db8:2::/48 via fe80::2"}) {
+		t.Errorf("the replayed routes are %v", routesOf(replayed.Routes))
+	}
+}
+
+// TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut is the cost of the
+// refuse-the-new policy, driven rather than left for a caller to find.
+//
+// THE PRUNE REMOVES WHAT HAS EXPIRED, NOT WHAT HAS GONE QUIET. A router that
+// advertised the sending rules' maximum of 9000 seconds and then vanished holds
+// its seat for two and a half hours, and a table full of those refuses a router
+// that is real and is advertising now. It is the same bound from the other
+// side as TestAnExpiredEntryMakesRoomForANewOne: room is made by time running
+// out and by nothing else.
+func TestARouterThatWentAwayKeepsItsSeatUntilItsLifetimeRunsOut(t *testing.T) {
+	var tab routerTable
+	for i := range maxRouters {
+		tab.observe(at(0), advert(fmt.Sprintf("fe80::%x", i+1), 9000))
+	}
+	refused := tab.refused
+
+	// Every one of the eight has been silent since, and every one of them is
+	// still inside the lifetime it advertised.
+	tab.observe(at(8000), advert("fe80::ffff", 1800))
+	obs := observation(t, &tab, at(8001))
+	if len(obs.Routers) != maxRouters {
+		t.Fatalf("%d default routers, want the cap %d", len(obs.Routers), maxRouters)
+	}
+	for _, a := range obs.Routers {
+		if a.String() == "fe80::ffff" {
+			t.Fatalf("the ninth router was taken: %v", addrTexts(obs.Routers))
+		}
+	}
+	if tab.refused <= refused {
+		t.Error("the router the table refused was not counted")
+	}
+
+	// Past their lifetimes it is taken, which is what says the refusal above
+	// was the cap and not the address.
+	tab.observe(at(9001), advert("fe80::ffff", 1800))
+	after := observation(t, &tab, at(9002))
+	if want := []string{"fe80::ffff"}; !equalStrings(addrTexts(after.Routers), want) {
+		t.Errorf("default routers %v once every seat expired, want %v", addrTexts(after.Routers), want)
+	}
+}
+
+// TestAWithdrawnResolverFreesItsSlotInTheSameAdvertisement is the observer the
+// round-1 read found missing, and the case it is built for is the only one in
+// which the property is visible.
+//
+// A ZERO LIFETIME MUST REMOVE THE ENTRY, NOT EXPIRE IT. RFC 8106 §6.2 step (b)
+// says "delete the corresponding RDNSS entry from both the DNS Server List and
+// the Resolver Repository", and setting the entry's deadline to now instead
+// reads the same everywhere except HERE: with the list at its cap, a
+// withdrawal and a new resolver in ONE advertisement are processed before any
+// prune runs, so an entry that is merely dead still holds its slot and a live
+// entry is evicted to make room for the new resolver. The earlier observer
+// could not see this — it asserted against a mutant that refreshed to a REAL
+// lifetime, which is dead on arrival and pruned before the view is filled.
+func TestAWithdrawnResolverFreesItsSlotInTheSameAdvertisement(t *testing.T) {
+	var tab routerTable
+	full := advert("fe80::1", 1800)
+	for i := range maxRouterDNS {
+		full.RDNSS = append(full.RDNSS, wire.RDNSS{
+			Lifetime: 600,
+			Addrs:    []netip.Addr{netip.MustParseAddr(fmt.Sprintf("fd00::%x", i+1))},
+		})
+	}
+	tab.observe(at(0), full)
+	if obs := observation(t, &tab, at(1)); len(obs.DNS) != maxRouterDNS {
+		t.Fatalf("%d resolver(s) before the withdrawal, want the cap %d", len(obs.DNS), maxRouterDNS)
+	}
+	evicted := tab.evicted
+
+	// One advertisement: withdraw fd00::1, offer fd00::ff. The withdrawal is
+	// first, which is the order §6.2 walks the options in.
+	swap := advert("fe80::1", 1800)
+	swap.RDNSS = []wire.RDNSS{
+		{Lifetime: 0, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}},
+		{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::ff")}},
+	}
+	tab.observe(at(2), swap)
+
+	obs := observation(t, &tab, at(3))
+	got := addrTexts(obs.DNS)
+	if len(got) != maxRouterDNS {
+		t.Errorf("%d resolver(s) after one swapped for another, want the cap %d: %v", len(got), maxRouterDNS, got)
+	}
+	var haveNew, haveOld bool
+	for _, a := range got {
+		switch a {
+		case "fd00::ff":
+			haveNew = true
+		case "fd00::1":
+			haveOld = true
+		}
+	}
+	if !haveNew {
+		t.Errorf("the resolver offered beside the withdrawal never arrived: %v", got)
+	}
+	if haveOld {
+		t.Errorf("the withdrawn resolver is still held: %v", got)
+	}
+	if tab.evicted != evicted {
+		t.Errorf("the eviction counter moved by %d; the withdrawal freed the slot and nothing held should have been thrown out", tab.evicted-evicted)
+	}
+}
+
+// TestAWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement is the DNSSL
+// twin of the test above, and it is here because the two halves are the same
+// six lines with one covered and one not: the RDNSS withdrawal had an observer
+// and the DNSSL withdrawal had none, so a version that refreshed the entry
+// instead of removing it was a change nothing on this tree could see.
+//
+// THE TWO LIFETIMES ARE THE SAME LIFETIME. RFC 8106 §5.2 says the DNSSL
+// Lifetime "value has the same semantics as the semantics for the RDNSS
+// option", and §6.3 says it of the processing as a whole: "The processing of
+// DNSSL option(s) is the same as the processing of RDNSS option(s) as
+// described in Section 6.2." With the list at its cap that is visible, because
+// the slot the withdrawal frees is the slot the new domain takes and nothing
+// has to be evicted to hold it.
+//
+// THE COUNTER IS THE ASSERTION THAT SEES THE OTHER SPELLING. A withdrawal
+// written as a refresh with the option's own zero lifetime leaves an entry
+// that is dead and not gone: it is pruned before the view is filled, so the
+// domains read exactly right, and the only trace left is that the arriving
+// domain had to evict something to get in. The count of what the table could
+// not hold is that trace.
+func TestAWithdrawnSearchDomainFreesItsSlotInTheSameAdvertisement(t *testing.T) {
+	var tab routerTable
+	full := advert("fe80::1", 1800)
+	for i := range maxRouterSearch {
+		full.DNSSL = append(full.DNSSL, wire.DNSSL{
+			Lifetime: 600,
+			Names:    []string{fmt.Sprintf("n%d.example", i+1)},
+		})
+	}
+	tab.observe(at(0), full)
+	if obs := observation(t, &tab, at(1)); len(obs.Search) != maxRouterSearch {
+		t.Fatalf("%d search domain(s) before the withdrawal, want the cap %d", len(obs.Search), maxRouterSearch)
+	}
+	evicted := tab.evicted
+
+	// One advertisement: withdraw n1.example, offer new.example. The
+	// withdrawal is first, which is the order the options are walked in.
+	swap := advert("fe80::1", 1800)
+	swap.DNSSL = []wire.DNSSL{
+		{Lifetime: 0, Names: []string{"n1.example"}},
+		{Lifetime: 600, Names: []string{"new.example"}},
+	}
+	tab.observe(at(2), swap)
+
+	got := observation(t, &tab, at(3)).Search
+	if len(got) != maxRouterSearch {
+		t.Errorf("%d search domain(s) after one swapped for another, want the cap %d: %v", len(got), maxRouterSearch, got)
+	}
+	var haveNew, haveOld bool
+	for _, n := range got {
+		switch n {
+		case "new.example":
+			haveNew = true
+		case "n1.example":
+			haveOld = true
+		}
+	}
+	if !haveNew {
+		t.Errorf("the domain offered beside the withdrawal never arrived: %v", got)
+	}
+	if haveOld {
+		t.Errorf("the withdrawn domain is still held: %v", got)
+	}
+	if tab.evicted != evicted {
+		t.Errorf("the eviction counter moved by %d; the withdrawal freed the slot and nothing held should have been thrown out", tab.evicted-evicted)
+	}
+}
+
+// TestAFullListEvictsTheEntryThatExpiresFirst is RFC 8106 §6.2 step (d), which
+// is the bullet after the two observeRDNSS quotes and the one that says what a
+// FULL list does: "In the case where the data structure for the DNS Server
+// List is full of RDNSS entries (that is, has more RDNSSes than the sufficient
+// number discussed in Section 5.3.1), delete from the DNS Server List the
+// entry with the shortest Expiration-time (i.e., the entry that will expire
+// first)." §6.3 makes it the search list's rule too.
+//
+// THE ENTRY WITH NO EXPIRATION IS NEVER THE ONE THAT EXPIRES FIRST, which is
+// the arm that separates "shortest lifetime" from "first deadline": an entry
+// advertised with 0xffffffff has no deadline at all, and a comparison that
+// read its zero deadline as the soonest would evict the one entry the link
+// said to keep forever.
+func TestAFullListEvictsTheEntryThatExpiresFirst(t *testing.T) {
+	t.Run("resolvers", func(t *testing.T) {
+		var tab routerTable
+		full := advert("fe80::1", 1800)
+		full.RDNSS = []wire.RDNSS{
+			{Lifetime: 60, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}},
+			{Lifetime: 0xffffffff, Addrs: []netip.Addr{netip.MustParseAddr("fd00::2")}},
+		}
+		for i := 3; i <= maxRouterDNS; i++ {
+			full.RDNSS = append(full.RDNSS, wire.RDNSS{
+				Lifetime: uint32(600 + i),
+				Addrs:    []netip.Addr{netip.MustParseAddr(fmt.Sprintf("fd00::%x", i))},
+			})
+		}
+		tab.observe(at(0), full)
+		if obs := observation(t, &tab, at(1)); len(obs.DNS) != maxRouterDNS {
+			t.Fatalf("%d resolver(s), want the cap %d", len(obs.DNS), maxRouterDNS)
+		}
+		refused, evicted := tab.refused, tab.evicted
+
+		// Nothing has expired yet, so the list is full when fd00::ff arrives.
+		arrive := advert("fe80::1", 1800)
+		arrive.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr("fd00::ff")}}}
+		tab.observe(at(2), arrive)
+
+		got := addrTexts(observation(t, &tab, at(3)).DNS)
+		if len(got) != maxRouterDNS {
+			t.Errorf("%d resolver(s) after one more arrived, want the cap %d: %v", len(got), maxRouterDNS, got)
+		}
+		var haveNew, haveEvicted, haveForever bool
+		for _, a := range got {
+			switch a {
+			case "fd00::ff":
+				haveNew = true
+			case "fd00::1":
+				haveEvicted = true
+			case "fd00::2":
+				haveForever = true
+			}
+		}
+		if !haveNew {
+			t.Errorf("the arriving resolver was refused by a full list: %v", got)
+		}
+		if haveEvicted {
+			t.Errorf("the resolver that expires first is still held: %v", got)
+		}
+		if !haveForever {
+			t.Errorf("the resolver with no expiration was evicted: %v", got)
+		}
+		if tab.evicted != evicted+1 {
+			t.Errorf("the eviction counter moved by %d, want 1", tab.evicted-evicted)
+		}
+		if tab.refused != refused {
+			t.Errorf("the refusal counter moved by %d; this list evicts, it does not refuse", tab.refused-refused)
+		}
+	})
+
+	t.Run("search domains", func(t *testing.T) {
+		var tab routerTable
+		full := advert("fe80::1", 1800)
+		full.DNSSL = []wire.DNSSL{
+			{Lifetime: 60, Names: []string{"first.example"}},
+			{Lifetime: 0xffffffff, Names: []string{"forever.example"}},
+		}
+		for i := 3; i <= maxRouterSearch; i++ {
+			full.DNSSL = append(full.DNSSL, wire.DNSSL{
+				Lifetime: uint32(600 + i),
+				Names:    []string{fmt.Sprintf("n%d.example", i)},
+			})
+		}
+		tab.observe(at(0), full)
+		if obs := observation(t, &tab, at(1)); len(obs.Search) != maxRouterSearch {
+			t.Fatalf("%d search domain(s), want the cap %d", len(obs.Search), maxRouterSearch)
+		}
+		refused, evicted := tab.refused, tab.evicted
+
+		arrive := advert("fe80::1", 1800)
+		arrive.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{"new.example"}}}
+		tab.observe(at(2), arrive)
+
+		got := observation(t, &tab, at(3)).Search
+		if len(got) != maxRouterSearch {
+			t.Errorf("%d search domain(s) after one more arrived, want the cap %d: %v", len(got), maxRouterSearch, got)
+		}
+		var haveNew, haveEvicted, haveForever bool
+		for _, n := range got {
+			switch n {
+			case "new.example":
+				haveNew = true
+			case "first.example":
+				haveEvicted = true
+			case "forever.example":
+				haveForever = true
+			}
+		}
+		if !haveNew {
+			t.Errorf("the arriving domain was refused by a full list: %v", got)
+		}
+		if haveEvicted {
+			t.Errorf("the domain that expires first is still held: %v", got)
+		}
+		if !haveForever {
+			t.Errorf("the domain with no expiration was evicted: %v", got)
+		}
+		if tab.evicted != evicted+1 {
+			t.Errorf("the eviction counter moved by %d, want 1", tab.evicted-evicted)
+		}
+		if tab.refused != refused {
+			t.Errorf("the refusal counter moved by %d; this list evicts, it does not refuse", tab.refused-refused)
+		}
+	})
+}
+
+// TestAFullListOfEqualsEvictsTheOneHeardLast is the half of RFC 8106 §6.2 step
+// (d) the RFC does not decide. It orders the held entries by Expiration-time
+// and says nothing about two that share one, and sharing one is not a corner:
+// every entry a single advertisement carries under one lifetime has the same
+// deadline, and entries advertised 0xffffffff have no deadline at all.
+//
+// THE FLOOD ARGUMENT HAS NO CONTENT WITHOUT THIS. The caps comment says an
+// eviction "holds what expires LAST, so a flood displaces the real resolver,
+// and the real resolver comes back on its router's next advertisement", and a
+// flood of entries that never expire makes every candidate equal. What decides
+// it then is this rule and nothing else: the entry heard LAST goes, so a link's
+// own resolvers keep their seats and a flood costs one seat however long it
+// runs. Evicting the oldest of the equals instead would empty the list of
+// everything held before the flood, one arrival at a time, which is the outcome
+// the caps comment claims this policy avoids.
+func TestAFullListOfEqualsEvictsTheOneHeardLast(t *testing.T) {
+	t.Run("none of them expires", func(t *testing.T) {
+		var tab routerTable
+		full := advert("fe80::1", 1800)
+		for i := range maxRouterDNS {
+			full.RDNSS = append(full.RDNSS, wire.RDNSS{
+				Lifetime: 0xffffffff,
+				Addrs:    []netip.Addr{netip.MustParseAddr(fmt.Sprintf("fd00::%x", i+1))},
+			})
+		}
+		tab.observe(at(0), full)
+		evicted := tab.evicted
+
+		arrive := advert("fe80::1", 1800)
+		arrive.RDNSS = []wire.RDNSS{{Lifetime: 0xffffffff, Addrs: []netip.Addr{netip.MustParseAddr("fd00::ff")}}}
+		tab.observe(at(2), arrive)
+
+		got := addrTexts(observation(t, &tab, at(3)).DNS)
+		want := []string{"fd00::1", "fd00::2", "fd00::3", "fd00::4", "fd00::5", "fd00::6", "fd00::7", "fd00::ff"}
+		if !equalStrings(got, want) {
+			t.Errorf("resolvers %v, want %v: none of the eight expires, so the one heard last is the one that goes", got, want)
+		}
+		if tab.evicted != evicted+1 {
+			t.Errorf("the eviction counter moved by %d, want 1", tab.evicted-evicted)
+		}
+	})
+
+	t.Run("they share one deadline", func(t *testing.T) {
+		var tab routerTable
+		full := advert("fe80::1", 1800)
+		for i := range maxRouterSearch {
+			full.DNSSL = append(full.DNSSL, wire.DNSSL{
+				Lifetime: 600,
+				Names:    []string{fmt.Sprintf("n%d.example", i+1)},
+			})
+		}
+		tab.observe(at(0), full)
+
+		arrive := advert("fe80::1", 1800)
+		arrive.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{"new.example"}}}
+		tab.observe(at(1), arrive)
+
+		got := observation(t, &tab, at(2)).Search
+		want := []string{"n1.example", "n2.example", "n3.example", "n4.example",
+			"n5.example", "n6.example", "n7.example", "new.example"}
+		if !equalStrings(got, want) {
+			t.Errorf("search domains %v, want %v: one advertisement gave all eight the same deadline, so the one heard last is the one that goes", got, want)
+		}
+	})
+}
+
+// TestTheDefaultRouterListIsOrderedByTheAdvertisedPreference is RFC 4191 §2.2,
+// which was decoded nowhere before this round while §2.3's route preference
+// was decoded and sorted on.
+//
+// THE GATEWAY IS THE FIRST ENTRY, so arrival order was the whole of the
+// answer: a backup router that booted first took the gateway away from the one
+// that advertises High, for as long as both were up. §3.2 is what decides it
+// for a host with a Default Router List and no reachability information of its
+// own: "it primarily prefers reachable routers over non-reachable routers and
+// secondarily uses the router preference values. If the host has no
+// information about the router's reachability, then the host assumes the
+// router is reachable."
+func TestTheDefaultRouterListIsOrderedByTheAdvertisedPreference(t *testing.T) {
+	t.Run("the backup arrives first and does not keep the gateway", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::b", 1800, wire.RoutePrefMedium))
+		tab.observe(at(1), withPref("fe80::a", 1800, wire.RoutePrefHigh))
+		want := []string{"fe80::a", "fe80::b"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: High outranks Medium whichever was heard first", got, want)
+		}
+	})
+
+	t.Run("low sorts below medium", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::10", 1800, wire.RoutePrefLow))
+		tab.observe(at(1), withPref("fe80::20", 1800, wire.RoutePrefMedium))
+		want := []string{"fe80::20", "fe80::10"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v", got, want)
+		}
+	})
+
+	t.Run("equal preference keeps arrival order", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::1", 1800, wire.RoutePrefHigh))
+		tab.observe(at(1), withPref("fe80::2", 1800, wire.RoutePrefHigh))
+		want := []string{"fe80::1", "fe80::2"}
+		if got := addrTexts(observation(t, &tab, at(2)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: §6.3.4's arrival order is the tie-break", got, want)
+		}
+	})
+
+	// §2.2's own ignore rule, at the ring that stores it: a router that
+	// withdraws itself may not leave a preference behind for the next
+	// advertisement that does not carry one.
+	t.Run("a withdrawal does not leave its preference behind", func(t *testing.T) {
+		var tab routerTable
+		tab.observe(at(0), withPref("fe80::a", 1800, wire.RoutePrefHigh))
+		tab.observe(at(1), withPref("fe80::b", 1800, wire.RoutePrefMedium))
+		tab.observe(at(2), withPref("fe80::a", 0, wire.RoutePrefMedium))
+		if got := addrTexts(observation(t, &tab, at(3)).Routers); !equalStrings(got, []string{"fe80::b"}) {
+			t.Fatalf("default routers %v after fe80::a withdrew, want only fe80::b", got)
+		}
+		// It comes back at Medium, which is what it now advertises.
+		tab.observe(at(4), withPref("fe80::a", 1800, wire.RoutePrefMedium))
+		want := []string{"fe80::b", "fe80::a"}
+		if got := addrTexts(observation(t, &tab, at(5)).Routers); !equalStrings(got, want) {
+			t.Errorf("default routers %v, want %v: the returning router carries the preference it sent this time", got, want)
+		}
+	})
+}
+
+// TestARouterThatChangesItsPreferenceMovesInTheDefaultRouterList is RFC 4191
+// §2.2 on the SECOND advertisement a router sends, which is the half of the
+// field that the test above cannot see: every router there is heard once, so
+// an implementation that read the preference only when it created the entry
+// would order all four sub-tests correctly and still pin every router to
+// whatever it advertised the first time anybody heard it.
+//
+// A ROUTER'S PREFERENCE IS A FACT ABOUT NOW. §2.2 puts it in the flags octet
+// of every advertisement and not in an option that a router may omit, so the
+// value in the frame in hand is the value that applies: an operator lowering a
+// router before maintenance, or raising the one that has just come back, is a
+// re-advertisement from a router that is already in the list. The assertion is
+// the ORDER of the list rather than the field, because the order is what a
+// caller reads and the field is not on the surface at all.
+func TestARouterThatChangesItsPreferenceMovesInTheDefaultRouterList(t *testing.T) {
+	var tab routerTable
+	// fe80::a is heard first, so it holds the tie-break, and fe80::b outranks
+	// it on preference alone.
+	tab.observe(at(0), withPref("fe80::a", 1800, wire.RoutePrefMedium))
+	tab.observe(at(1), withPref("fe80::b", 1800, wire.RoutePrefHigh))
+	if got, want := addrTexts(observation(t, &tab, at(2)).Routers), []string{"fe80::b", "fe80::a"}; !equalStrings(got, want) {
+		t.Fatalf("default routers %v, want %v before anything changed", got, want)
+	}
+
+	// fe80::a raises itself. It is now equal to fe80::b on preference and
+	// ahead of it on arrival order, so it takes the gateway.
+	tab.observe(at(3), withPref("fe80::a", 1800, wire.RoutePrefHigh))
+	if got, want := addrTexts(observation(t, &tab, at(4)).Routers), []string{"fe80::a", "fe80::b"}; !equalStrings(got, want) {
+		t.Errorf("default routers %v, want %v: the router already in the list raised itself to High", got, want)
+	}
+
+	// And lowers itself past where it started, which says the assignment above
+	// was the new value and not a one-way ratchet.
+	tab.observe(at(5), withPref("fe80::a", 1800, wire.RoutePrefLow))
+	if got, want := addrTexts(observation(t, &tab, at(6)).Routers), []string{"fe80::b", "fe80::a"}; !equalStrings(got, want) {
+		t.Errorf("default routers %v, want %v: the router already in the list lowered itself to Low", got, want)
+	}
+	// fe80::b lowers itself too, to Low, which leaves the two equal and the
+	// tie-break the only thing left to order them. A list that had kept either
+	// router's first value would have High somewhere in it and would not put
+	// the first-heard router first.
+	tab.observe(at(7), withPref("fe80::b", 1800, wire.RoutePrefLow))
+	if got, want := addrTexts(observation(t, &tab, at(8)).Routers), []string{"fe80::a", "fe80::b"}; !equalStrings(got, want) {
+		t.Errorf("default routers %v, want %v: both are Low now and arrival order is the tie-break", got, want)
+	}
+}

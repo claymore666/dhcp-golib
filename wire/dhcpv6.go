@@ -18,18 +18,20 @@ import (
 //
 // WHAT THIS SPEAKS, AND WHAT IT REFUSES. Only the client half: the messages a
 // client sends (§7.3's SOLICIT, REQUEST, CONFIRM, RENEW, REBIND, RELEASE,
-// DECLINE, INFORMATION-REQUEST) and the two it accepts (ADVERTISE, REPLY). A
-// Relay-forward, a Relay-reply or a Reconfigure is refused BY NAME rather than
-// parsed, because their headers are not this one — a Relay message carries a
-// hop-count, a link-address and a peer-address before its options (§9), so a
-// decoder that walked its options from offset 4 would read the link address as
-// an option code and terminate on whatever it found.
+// DECLINE, INFORMATION-REQUEST) and the three it accepts (ADVERTISE, REPLY,
+// RECONFIGURE). A Relay-forward or a Relay-reply is refused BY NAME rather
+// than parsed, because their headers are not this one — a Relay message
+// carries a hop-count, a link-address and a peer-address before its options
+// (§9), so a decoder that walked its options from offset 4 would read the link
+// address as an option code and terminate on whatever it found. A Reconfigure
+// has THIS header (§8) and is decoded here; whether one is obeyed is §16.11's
+// and §18.2.11's question, which proto.Machine6 answers.
 //
-// D25 keeps IA_PD, IA_TA, Reconfigure, Rapid Commit and RDNSS out of the 2.0
-// line. They are not implemented and not special-cased: an option this codec
-// does not name survives decoding as bytes under its numeric code, which is
-// what §16 requires of everyone ("Clients, relay agents, and servers MUST NOT
-// discard messages that contain unknown options").
+// D25 keeps IA_PD, IA_TA and Rapid Commit out of the 2.0 line. They are not
+// implemented and not special-cased: an option this codec does not name
+// survives decoding as bytes under its numeric code, which is what §16
+// requires of everyone ("Clients, relay agents, and servers MUST NOT discard
+// messages that contain unknown options").
 //
 // The Server Unicast option (§21.12) and the UseMulticast status code (§21.13)
 // are OBSOLETE, §16: "The Server Unicast option (see Section 21.12) and
@@ -94,9 +96,16 @@ func (m MessageTypeV6) String() string {
 }
 
 // ForClient reports whether a message of this type belongs to the client
-// exchange this codec speaks: §7.3's types 1-9 and 11.
+// exchange this codec speaks: §7.3's types 1-11.
+//
+// RECONFIGURE (10) IS IN THE SET AND WAS NOT BEFORE #925. It is not a message
+// a client sends; it is one a client receives and, under §16.11's conditions,
+// obeys — §18.2.11: "A client receives Reconfigure messages sent to UDP port
+// 546 on interfaces for which it has acquired configuration information
+// through DHCP." What stays outside is the relay pair, whose HEADER is not
+// this one.
 func (m MessageTypeV6) ForClient() bool {
-	return (m >= MsgSolicit && m <= MsgDecline6) || m == MsgInformationRequest
+	return m >= MsgSolicit && m <= MsgInformationRequest
 }
 
 // OptionCodeV6 is the 2-octet option-code of §21.1.
@@ -129,6 +138,9 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6Preference:   "preference",
 	OptV6ElapsedTime:  "elapsed-time",
 	OptV6StatusCode:   "status-code",
+	OptV6Auth:         "auth",
+	OptV6ReconfMsg:    "reconf-msg",
+	OptV6ReconfAccept: "reconf-accept",
 	OptV6DNSServers:   "dns-servers",
 	OptV6DomainList:   "domain-list",
 	OptV6InfoRefresh:  "info-refresh-time",
@@ -150,8 +162,9 @@ func (c OptionCodeV6) String() string {
 var (
 	// ErrV6Short is a datagram shorter than §8's four-octet header.
 	ErrV6Short = errors.New("wire: DHCPv6 message shorter than the 4-octet header")
-	// ErrV6NotForClient is a Relay-forward, Relay-reply or Reconfigure: a
-	// well-formed DHCPv6 message that this client neither sends nor accepts.
+	// ErrV6NotForClient is a Relay-forward or a Relay-reply: a well-formed
+	// DHCPv6 message that this client neither sends nor accepts, and whose
+	// header is not §8's.
 	ErrV6NotForClient = errors.New("wire: DHCPv6 message is not one a client sends or accepts")
 	// ErrV6UnknownType is §16's "A client or server MUST discard any received
 	// DHCP messages with an unknown message type."
@@ -256,7 +269,7 @@ func DecodeV6(b []byte) (*MessageV6, error) {
 	t := MessageTypeV6(b[0])
 	switch {
 	case t.ForClient():
-	case t == MsgReconfigure || t == MsgRelayForw || t == MsgRelayRepl:
+	case t == MsgRelayForw || t == MsgRelayRepl:
 		return nil, fmt.Errorf("%w: %s", ErrV6NotForClient, t)
 	default:
 		return nil, fmt.Errorf("%w: %d", ErrV6UnknownType, uint8(b[0]))
@@ -726,7 +739,7 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 	var out []string
 	for _, v := range o.All(OptV6DomainList) {
 		for i := 0; i < len(v); {
-			name, next, err := readNameUncompressed(v, i)
+			name, next, err := readNameUncompressed(v, i, "option 24")
 			if err != nil {
 				return nil, err
 			}
@@ -743,24 +756,33 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 // offset just past it. It has no jump budget and no pointer target resolution
 // because it refuses the pointer form outright, which is also why it cannot
 // loop.
-func readNameUncompressed(v []byte, off int) (string, int, error) {
+//
+// what NAMES THE BLOCK IN THE ERROR AND IS THE ONLY THING THAT VARIES. RFC
+// 8106 section 5.2's DNS Search List option carries the same encoding under
+// the same prohibition — "the domain names MUST NOT be encoded in the
+// compressed form described in Section 4.1.4 of [RFC1035]" — so the ICMPv6
+// codec reads its names with this function rather than with a second copy of
+// it. Two readers would be two answers to "is a pointer a name here", and the
+// one that said yes would be reached by whichever option was decoded by the
+// copy nobody attacked.
+func readNameUncompressed(v []byte, off int, what string) (string, int, error) {
 	var labels []string
 	for {
 		if off >= len(v) {
-			return "", 0, fmt.Errorf("%w: option 24 ends mid-name", ErrV6Name)
+			return "", 0, fmt.Errorf("%w: %s ends mid-name", ErrV6Name, what)
 		}
 		n := int(v[off])
 		switch {
 		case n == 0:
 			return strings.Join(labels, "."), off + 1, nil
 		case n&0xC0 == 0xC0:
-			return "", 0, fmt.Errorf("%w: option 24 carries an RFC 1035 section 4.1.4 compression pointer at offset %d, which RFC 9915 section 10 says MUST NOT be used",
-				ErrV6Name, off)
+			return "", 0, fmt.Errorf("%w: %s carries an RFC 1035 section 4.1.4 compression pointer at offset %d, which RFC 9915 section 10 says MUST NOT be used",
+				ErrV6Name, what, off)
 		case n&0xC0 != 0:
-			return "", 0, fmt.Errorf("%w: option 24 label length octet %#02x uses a reserved form", ErrV6Name, n)
+			return "", 0, fmt.Errorf("%w: %s label length octet %#02x uses a reserved form", ErrV6Name, what, n)
 		default:
 			if off+1+n > len(v) {
-				return "", 0, fmt.Errorf("%w: option 24 label of %d octet(s) runs past the block", ErrV6Name, n)
+				return "", 0, fmt.Errorf("%w: %s label of %d octet(s) runs past the block", ErrV6Name, what, n)
 			}
 			labels = append(labels, string(v[off+1:off+1+n]))
 			off += 1 + n

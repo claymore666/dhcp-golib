@@ -324,6 +324,12 @@ func TestRouterAdvertLifetimesComeFromTheirOwnOffsets(t *testing.T) {
 }
 
 // TestRouterAdvertRefusesWhatItCannotWalk is A-7's ICMPv6 half and B-6.
+//
+// THE WRONG-LENGTH PREFIX INFORMATION OPTION USED TO BE A ROW HERE AND IS NOT
+// ANY MORE. It is a deliberate inversion and not a weakening: the row asserted
+// the whole message was refused, and that verdict threw away the M and O flags
+// of a router that was advertising. It now has its own test one screen down,
+// asserting the option level, and every other row in this table is untouched.
 func TestRouterAdvertRefusesWhatItCannotWalk(t *testing.T) {
 	full := func() []byte {
 		b := make([]byte, raFixedLen)
@@ -342,7 +348,6 @@ func TestRouterAdvertRefusesWhatItCannotWalk(t *testing.T) {
 		{"a one-octet option tail", append(full(), 0x01), ErrNDOption},
 		{"an option of length zero", append(full(), 0x01, 0x00, 0, 0, 0, 0, 0, 0), ErrNDOption},
 		{"an option running past the end", append(full(), 0x01, 0x02, 0, 0), ErrNDOption},
-		{"a prefix option of the wrong length", append(full(), NDOptPrefixInfo, 0x01, 0, 0, 0, 0, 0, 0), ErrNDOption},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ra, err := DecodeRouterAdvert(tc.body)
@@ -370,6 +375,76 @@ func TestRouterAdvertRefusesWhatItCannotWalk(t *testing.T) {
 	}
 	if len(ra.Prefixes) != 1 {
 		t.Errorf("%d prefix option(s) after walking past an unknown one, want 1", len(ra.Prefixes))
+	}
+}
+
+// TestAPrefixInformationOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot is
+// row D-9 closed, and the fixture is the shape the address-formation row met
+// on a real link: one advertisement carrying a usable prefix, a second prefix
+// option whose Length is not 4, and a resolver, from a router that is
+// advertising.
+//
+// THE ASSERTION IS EVERYTHING THAT IS NOT THE BAD OPTION. The old verdict for
+// this frame was ErrNDOption and nothing at all: no flags, no router lifetime,
+// no prefix, no resolver, which is the same answer this decoder gives for a
+// link with no router on it. What must survive is the message's own header —
+// the M and O flags a caller reads to tell a managed link from a stateless one
+// — and both of the options that are well formed, with exactly one option
+// counted as ignored.
+func TestAPrefixInformationOptionOfTheWrongLengthIsIgnoredAndItsSiblingsAreNot(t *testing.T) {
+	b := make([]byte, raFixedLen)
+	b[0] = ICMPv6RouterAdvert
+	b[5] = raFlagManaged | raFlagOther
+	b[6], b[7] = 0x07, 0x08 // Router Lifetime 1800
+
+	good := make([]byte, pioLen)
+	good[0], good[1], good[2], good[3] = NDOptPrefixInfo, pioLen/8, 64, pioFlagOnLink|pioFlagAuto
+	copy(good[16:32], addr(t, "2001:db8:1::").AsSlice())
+	b = append(b, good...)
+
+	// Length 3 where §4.6.2 gives 4: a legal ND length, and not this option's.
+	bad := make([]byte, 24)
+	bad[0], bad[1], bad[2] = NDOptPrefixInfo, 3, 64
+	b = append(b, bad...)
+
+	rdnss := make([]byte, 24)
+	rdnss[0], rdnss[1] = NDOptRDNSS, 3
+	rdnss[7] = 0x3C
+	copy(rdnss[8:24], addr(t, "fd00:99::53").AsSlice())
+	b = append(b, rdnss...)
+
+	ra, err := DecodeRouterAdvert(b)
+	if err != nil {
+		t.Fatalf("one malformed Prefix Information option refused the whole message: %v", err)
+	}
+	if !ra.Managed || !ra.Other {
+		t.Errorf("M=%t O=%t; the flags are in the header and no option may take them away", ra.Managed, ra.Other)
+	}
+	if ra.RouterLifetime != 1800 {
+		t.Errorf("Router Lifetime %d, want 1800", ra.RouterLifetime)
+	}
+	if len(ra.Prefixes) != 1 {
+		t.Fatalf("%d prefix(es), want the one that is well formed: %v", len(ra.Prefixes), ra.Prefixes)
+	}
+	if ra.Prefixes[0].Prefix != addr(t, "2001:db8:1::") || ra.Prefixes[0].PrefixLen != 64 {
+		t.Errorf("the surviving prefix is %s, want 2001:db8:1::/64", ra.Prefixes[0])
+	}
+	if len(ra.RDNSS) != 1 || len(ra.RDNSS[0].Addrs) != 1 || ra.RDNSS[0].Addrs[0] != addr(t, "fd00:99::53") {
+		t.Errorf("the resolver behind the bad option is %v", ra.RDNSS)
+	}
+	if ra.IgnoredOptions != 1 {
+		t.Errorf("IgnoredOptions = %d, want exactly the one option that was refused", ra.IgnoredOptions)
+	}
+
+	// The packet-level rule is untouched, and this is the row that says so: a
+	// Prefix Information option of length ZERO still discards the message,
+	// because §4.6 names that case in those words and it is the case in which
+	// there is no next option to walk to.
+	z := make([]byte, raFixedLen)
+	z[0] = ICMPv6RouterAdvert
+	z = append(z, NDOptPrefixInfo, 0x00, 0, 0, 0, 0, 0, 0)
+	if _, err := DecodeRouterAdvert(z); !errors.Is(err, ErrNDOption) {
+		t.Errorf("a Prefix Information option of length zero decoded as %v, want %v", err, ErrNDOption)
 	}
 }
 
@@ -907,9 +982,10 @@ func TestNeighborSolicitRefusesWhatSection711Refuses(t *testing.T) {
 
 	t.Run("an option this package cannot read is walked past", func(t *testing.T) {
 		// RFC 7527's Nonce is one such option and the kernel sends it; so is
-		// anything a future RFC adds. §4.6: "Future versions of this protocol
-		// may define new option types.  Receivers MUST silently ignore any
-		// options they do not recognize and continue processing the message."
+		// anything a future RFC adds. §4.3, the Neighbor Solicitation's own
+		// Possible options block: "Future versions of this protocol may define
+		// new option types.  Receivers MUST silently ignore any options they
+		// do not recognize and continue processing the message."
 		body := append(good(), 0xFE, 1, 0, 0, 0, 0, 0, 0)
 		ns, err := DecodeNeighborSolicit(body)
 		if err != nil {
@@ -922,4 +998,66 @@ func TestNeighborSolicitRefusesWhatSection711Refuses(t *testing.T) {
 			t.Errorf("HasSourceLinkAddr = true, but the only option present is type 0xFE")
 		}
 	})
+}
+
+// TestTheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules is RFC 4191 §2.2,
+// whose two bits sit in the flags octet beside M and O: "|M|O|H|Prf|Resvd|".
+//
+// THE FIELD IS NOT WHAT THE SENDER WROTE, and that is the whole of the test.
+// §2.2 gives two cases where the receiver MUST NOT use the bits — "If the
+// Router Lifetime is zero, the preference value MUST be set to (00) by the
+// sender and MUST be ignored by the receiver. If the Reserved (10) value is
+// received, the receiver MUST treat the value as if it were (00)." — and a
+// decoder that returned the raw bits would push both rules onto every reader.
+func TestTheDefaultRouterPreferenceAppliesBothOfItsIgnoreRules(t *testing.T) {
+	ra := func(flags uint8, lifetime uint16) []byte {
+		b := make([]byte, raFixedLen)
+		b[0] = ICMPv6RouterAdvert
+		b[5] = flags
+		b[6], b[7] = byte(lifetime>>8), byte(lifetime)
+		return b
+	}
+	const (
+		prfHigh uint8 = 0x08 // 01 in bits 3-4
+		prfLow  uint8 = 0x18 // 11
+		prfRsvd uint8 = 0x10 // 10, which §2.1 says MUST NOT be sent
+	)
+	for _, tc := range []struct {
+		name     string
+		flags    uint8
+		lifetime uint16
+		want     RoutePreference
+	}{
+		{"high", prfHigh, 1800, RoutePrefHigh},
+		{"low", prfLow, 1800, RoutePrefLow},
+		{"medium is the zero of the field", 0x00, 1800, RoutePrefMedium},
+		{"high beside M and O", raFlagManaged | raFlagOther | prfHigh, 1800, RoutePrefHigh},
+		{"the reserved encoding is treated as medium", prfRsvd, 1800, RoutePrefMedium},
+		{"a zero Router Lifetime ignores the field", prfHigh, 0, RoutePrefMedium},
+		{"a zero Router Lifetime ignores a low one too", prfLow, 0, RoutePrefMedium},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeRouterAdvert(ra(tc.flags, tc.lifetime))
+			if err != nil {
+				t.Fatalf("DecodeRouterAdvert: %v", err)
+			}
+			if got.Preference != tc.want {
+				t.Errorf("Preference = %s, want %s", got.Preference, tc.want)
+			}
+		})
+	}
+
+	// The two-bit field shares its octet with M and O, so a decoder reading
+	// the wrong bits would make a preference out of them. This is the arm that
+	// says it does not: M and O set, no preference bits.
+	got, err := DecodeRouterAdvert(ra(raFlagManaged|raFlagOther, 1800))
+	if err != nil {
+		t.Fatalf("DecodeRouterAdvert: %v", err)
+	}
+	if !got.Managed || !got.Other {
+		t.Fatalf("M=%t O=%t", got.Managed, got.Other)
+	}
+	if got.Preference != RoutePrefMedium {
+		t.Errorf("Preference = %s with only M and O set, want medium: the flags are not the preference", got.Preference)
+	}
 }

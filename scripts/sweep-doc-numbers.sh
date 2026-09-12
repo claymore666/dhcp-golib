@@ -23,12 +23,21 @@
 # Usage:
 #   sweep-doc-numbers.sh            enumerate the population, one line each
 #   sweep-doc-numbers.sh --check    exit 1 if a removed number came back
+#   sweep-doc-numbers.sh --files    print the domain, one existing file per line
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-FILES=(README.md docs/*.md)
+# THE POPULATION RULE, and it is stated in one more place: the marker line in
+# verify.manifest.sh names this same set beside the number measured over it,
+# and internal/manifest holds the two to each other. A domain that can drift
+# from the page that records it is a count of an unnamed population.
+#
+# 2026-09-08: SECURITY.md joined. It is a prose page of this repository, it was
+# outside the sweep for no recorded reason, and MEASURED at the head of this
+# round it contributes zero lines, so the number below does not move for it.
+FILES=(README.md SECURITY.md docs/*.md)
 
 # A line carries a bare number if, once the tokens that legitimately contain
 # digits are blanked, a run of digits survives with a non-identifier character
@@ -49,6 +58,12 @@ population() {
 			# the line — the round-10 lesson holds, and a derived number
 			# sharing a line with "round 11" stays visible.
 			gsub(/[Rr]ound [0-9]+/, "", s)
+			# 2026-09-08. A URL is an address and its digits are part of the
+			# address: an issue number, a run id, a line anchor. No instrument
+			# recomputes one and none can go stale against a run. Blanked as a
+			# TOKEN like the four above, so a derived number sharing a line
+			# with a link stays visible.
+			gsub(/https?:\/\/[^ )]+/, "", s)
 			if (s ~ /^ *[0-9]+\. /) next
 			if (s ~ /[^A-Za-z0-9_.-][0-9]{1,6}( |$|[),.;:\/])/) printf "%s:%d: %s\n", F, NR, $0
 		}' "$f"
@@ -128,22 +143,30 @@ case "${1:-}" in
 		printf 'DOC NUMBERS: %d prose line(s) carry a bare number, over the ceiling of %d in verify.manifest.sh.\n' "$n" "$DOC_NUMBER_CEILING" >&2
 		printf 'A derived number no pattern here recognises is the shape this ceiling exists to catch. The whole population:\n' >&2
 		population >&2
-		printf 'Delete the number and name the instrument that prints it, or raise DOC_NUMBER_CEILING deliberately.\n' >&2
+		printf 'Delete the number and name the instrument that prints it. To accept the population instead, set the DOC-NUMBER POPULATION marker in verify.manifest.sh to %d and DOC_NUMBER_CEILING=%d, which is marker + margin %d: internal/manifest refuses any other pair.\n' "$n" "$((n + DOC_NUMBER_MARGIN))" "$DOC_NUMBER_MARGIN" >&2
 		exit 1
 	fi
 	if [ "$n" -lt "$((DOC_NUMBER_CEILING - DOC_NUMBER_MARGIN))" ]; then
 		printf 'DOC NUMBERS: %d prose line(s) carry a bare number against a ceiling of %d (margin %d) in verify.manifest.sh.\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN" >&2
-		printf 'The population fell and the ceiling did not: the difference is how many bare numbers may enter the prose with nothing red. Set DOC_NUMBER_CEILING=%d.\n' "$n" >&2
+		printf 'The population fell and the ceiling did not: the difference is how many bare numbers may enter the prose with nothing red. Set the DOC-NUMBER POPULATION marker in verify.manifest.sh to %d and DOC_NUMBER_CEILING=%d, which is marker + margin %d: internal/manifest refuses any other pair.\n' "$n" "$((n + DOC_NUMBER_MARGIN))" "$DOC_NUMBER_MARGIN" >&2
 		exit 1
 	fi
 	printf 'doc-numbers: %d prose line(s) carry a bare number (ceiling %d, margin %d); none is a shape round 9 removed\n' "$n" "$DOC_NUMBER_CEILING" "$DOC_NUMBER_MARGIN"
+	;;
+--files)
+	# The domain, printed so that verify.sh can count it instead of spelling it
+	# a second time in a `find`. The row's step count is this number, and an
+	# empty domain is what makes the row FAIL rather than pass vacuously.
+	for f in "${FILES[@]}"; do
+		[ -f "$f" ] && printf '%s\n' "$f"
+	done
 	;;
 "")
 	population
 	printf -- '--- %d line(s)\n' "$(population | grep -c . || true)"
 	;;
 *)
-	printf 'usage: %s [--check]\n' "$0" >&2
+	printf 'usage: %s [--check|--files]\n' "$0" >&2
 	exit 2
 	;;
 esac

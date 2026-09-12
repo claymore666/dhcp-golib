@@ -8,51 +8,54 @@ Report it **privately**, through this repository's advisory form:
 
 Please do not open a public issue for something you believe is exploitable.
 This is a solo-maintained library: expect an initial answer within a few days,
-and allow a reasonable window for a fix before disclosing — ninety days is a
-fine default, and a shorter one is a conversation rather than a refusal.
+and allow a reasonable window for a fix before disclosing. Ninety days is a
+fine default. Ask for a shorter one and it is a conversation.
 
 **What happens next.** The report is triaged and confirmed or refuted against
 the tree; a confirmed one is fixed, the fix ships in a tagged release with a
 test that fails without it, and a GitHub Security Advisory is published.
-**Reporters are credited** in the advisory and in the release notes unless they
+Reporters are credited in the advisory and in the release notes unless they
 ask not to be.
 
-## Scope — what this library is, and what it is not
+## Scope and attack surface
 
 `dhcp-golib` is a DHCP client you embed in a Go program. It takes a lease on an
 interface, keeps it renewed, and tells the caller what changed.
 
-**What it does not do** is most of the answer to "how bad could this be":
+What it does not do is most of the answer to "how bad could this be":
 
 - **it applies nothing to the link.** No address is added, no route is
   installed, no resolver file is written. The library hands the caller a lease;
   what to do with it is the caller's code and the caller's privileges;
 - **it needs no root.** The packets that must be sent before an address exists
-  go over an `AF_PACKET` socket, which needs `CAP_NET_RAW` — the test suite
-  holds it inside an unprivileged user namespace — and the library asks for
-  nothing beyond that;
-- **it holds no secret, reads no configuration file, and starts no
-  subprocess.** There is no `dhcpcd`, no `dhclient`, no shell.
+  go over an `AF_PACKET` socket, which needs `CAP_NET_RAW`. The test suite
+  holds that capability inside an unprivileged user namespace, and the library
+  asks for nothing beyond it;
+- **it holds no secret of its own, reads no configuration file, and starts no
+  subprocess.** There is no `dhcpcd`, no `dhclient`, no shell. One secret does
+  reach it: the reconfigure key a DHCPv6 server sends. That key is held in the
+  state machine, and the Reply that delivered it stays in the journal and in
+  the packet capture, so a journal handed to somebody else carries the key.
 
-**The attack surface is the wire.** A DHCP reply is written by whoever answers
+The attack surface is the wire. A DHCP reply is written by whoever answers
 first on the link, and the library decodes it before anything has authenticated
-anybody: `wire/` parses the message and its options, `proto/` decides what to
+anybody: [`wire/`](wire) parses the message and its options, [`proto/`](proto) decides what to
 do about it, and both are reachable by any host that can put a frame on the
 interface. Findings there are the ones this project most wants to hear about:
 
 - a message, option or ND packet that makes the decoders read, allocate or loop
-  out of proportion to its size — a length field trusted, a slice taken past
-  its bound, a message that never terminates a state;
+  out of proportion to its size: a length field trusted, a slice taken past its
+  bound, a message that never terminates a state;
 - a reply from one server accepted where the state machine's own rules say it
   must not be, including across a rebind, a decline or a restart;
 - an option value that reaches the caller in a form the caller cannot tell from
-  something it chose itself — a hostname, a resolver address or a route that
+  something it chose itself: a hostname, a resolver address or a route that
   arrived from the wire and looks local.
 
-A **hostile DHCP server** is only partly in scope: a client necessarily trusts
-the server for addressing, so a server that hands out an address or a route
-you did not want is a network-design problem and not a defect here. Handling
-its bytes unsafely is a defect here.
+A **hostile DHCP server** is only partly in scope. A client necessarily trusts
+the server for addressing, so a server that hands out an address or a route you
+did not want is a network-design problem and not a defect here. Handling its
+bytes unsafely is a defect here.
 
 ## Supported versions
 
@@ -60,18 +63,17 @@ The latest tagged release. There is no backport policy.
 
 ## The checks that run on every change
 
-`./verify.sh` is the arbiter, and `docs/verifying.md` says what each of its
+[`./verify.sh`](verify.sh) is the arbiter, and [`docs/verifying.md`](docs/verifying.md) says what each of its
 rows measures and what it cannot see. Beside it, on GitHub-hosted machines:
 CodeQL over the Go source and over the workflows, `govulncheck` for advisories
 reachable from code this module calls, and `actionlint` over the workflows.
 The workflows themselves are held to five published properties, each stated
-once in `docs/verifying.md` and checked by the unit suite: The word `secrets`
+once in [`docs/verifying.md`](docs/verifying.md) and checked by the unit suite: The word `secrets`
 does not appear anywhere under `.github/`. Every file under `.github/` is text,
 in UTF-8. No job on a runner of ours is reachable from a fork's pull request.
 No workflow grants a permission these checks do not need. No workflow here is
 triggered by `pull_request_target`.
 
-Those sentences are quoted from that page rather than restated here, and a test
-refuses a disagreement between the two — the count, and each sentence word for
-word. A security page that undercounts what runs is worse than one that says
-nothing, because a reporter reads it to decide what is already covered.
+Those sentences are quoted from that page. A test refuses a disagreement
+between the two: the count, and each sentence word for word. A reporter reads
+this page to decide what is already covered.
