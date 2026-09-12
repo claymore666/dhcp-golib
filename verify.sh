@@ -320,6 +320,12 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # inserted into #816's table, and the run is taken on the MERGE PRODUCT so that
 # no figure here comes from a tree that never existed.
 #
+# AND AGAIN AT L1 (#814, Router Advertisement options), over the back-merge of
+# #925: the roster is 38 with TestTheOptionsARealRouterAdvertisesReachTheCaller,
+# which has dnsmasq advertise an MTU, a resolver and a search domain on a real
+# link and reads them off the lease. One run on the merge product, not a line
+# inserted into the table above.
+#
 # MEASURED 2026-09-12 on the session box at this branch's head, exactly as this
 # file runs the row (-race -count=1 -v -timeout 180s, -run over the roster),
 # taking the OUTER (re-exec parent) figure per test. The lane itself now runs on
