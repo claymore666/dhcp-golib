@@ -1152,8 +1152,12 @@ func TestRestartFiresAFreshTransaction(t *testing.T) {
 // hold. This holds the OTHER half, which is not in the message at all: the
 // datagram is unicast to the server FROM that address, and ring 3 cannot
 // derive it — the transport is a packet socket on a link the kernel has no
-// address on. If the machine does not say, the release goes out from 0.0.0.0,
-// which no server can answer and none can match.
+// address on. If the machine does not say, the release goes out from 0.0.0.0:
+// a source this host does not own, which is what a reverse-path filter drops
+// on the way out. It is NOT about matching — a server matches the binding on
+// 'ciaddr' and the client-identifier, which is the measured premise
+// lease.BuildRelease's host-sourced path rests on — and nothing is answered,
+// so there is no return path to lose.
 //
 // The DHCPDECLINE is the control: section 4.4.4 broadcasts it and section 4.1
 // requires the source to be 0 for a client that is giving the address up.
