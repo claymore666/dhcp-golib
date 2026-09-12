@@ -5,6 +5,7 @@ package proto
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/wire"
@@ -391,6 +392,134 @@ func TestTheMTUIsBoundedBelowByTheMinimumLinkMTU(t *testing.T) {
 			}
 			if int(obs.MTU) < 0 {
 				t.Errorf("the reported MTU is negative as an int: %d", int(obs.MTU))
+			}
+		})
+	}
+}
+
+// TestTheReportedResolversAndSearchDomainsAreInTheOrderTheyWereFirstHeard
+// drives the order of the two lists RFC 8106 owns, which is the only ordering
+// on this observation that used to go unstated while its two neighbours stated
+// theirs.
+//
+// FIRST HEARD, AND A REFRESH DOES NOT MOVE AN ENTRY. §6.2 stores the addresses
+// "(in order)" in the DNS Server List, and step (c) refreshes an existing entry
+// by updating its Expiration-time and nothing else, so a resolver heard again
+// keeps the place it had. Only an entry that left the list and came back is
+// last, because coming back is step (d) and step (d) registers it.
+//
+// THE REPOSITORY'S RULE IS NOT ASSERTED HERE BECAUSE THIS IS NOT THE
+// REPOSITORY. Step (d) also says to "insert the RDNSS address as the first one
+// in the Resolver Repository", newest first; the repository is the structure
+// that resolves names and this library resolves nothing. A caller that keeps
+// one applies that rule to its own when it reads this list, and the boundary
+// is stated on RouterObservation beside the field.
+func TestTheReportedResolversAndSearchDomainsAreInTheOrderTheyWereFirstHeard(t *testing.T) {
+	var tab routerTable
+	for i, a := range []string{"fd00::1", "fd00::2", "fd00::3"} {
+		ra := advert("fe80::1", 1800)
+		ra.RDNSS = []wire.RDNSS{{Lifetime: 600, Addrs: []netip.Addr{netip.MustParseAddr(a)}}}
+		ra.DNSSL = []wire.DNSSL{{Lifetime: 600, Names: []string{fmt.Sprintf("d%d.example", i+1)}}}
+		tab.observe(at(int64(i)), ra)
+	}
+
+	want := []string{"fd00::1", "fd00::2", "fd00::3"}
+	wantD := []string{"d1.example", "d2.example", "d3.example"}
+	obs := observation(t, &tab, at(4))
+	if got := addrTexts(obs.DNS); !slices.Equal(got, want) {
+		t.Fatalf("resolvers %v, want %v: the order is the order they were first heard", got, want)
+	}
+	if !slices.Equal(obs.Search, wantD) {
+		t.Fatalf("search domains %v, want %v", obs.Search, wantD)
+	}
+
+	// A REFRESH OF THE FIRST ONE. Step (c) updates the Expiration-time; it does
+	// not re-register, so nothing moves.
+	again := advert("fe80::1", 1800)
+	again.RDNSS = []wire.RDNSS{{Lifetime: 900, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}}}
+	again.DNSSL = []wire.DNSSL{{Lifetime: 900, Names: []string{"d1.example"}}}
+	tab.observe(at(5), again)
+	obs = observation(t, &tab, at(6))
+	if got := addrTexts(obs.DNS); !slices.Equal(got, want) {
+		t.Errorf("resolvers %v after refreshing the first, want %v unchanged", got, want)
+	}
+	if !slices.Equal(obs.Search, wantD) {
+		t.Errorf("search domains %v after refreshing the first, want %v unchanged", obs.Search, wantD)
+	}
+
+	// WITHDRAWN AND HEARD AGAIN IS A NEW REGISTRATION, so it is last.
+	gone := advert("fe80::1", 1800)
+	gone.RDNSS = []wire.RDNSS{{Lifetime: 0, Addrs: []netip.Addr{netip.MustParseAddr("fd00::1")}}}
+	gone.DNSSL = []wire.DNSSL{{Lifetime: 0, Names: []string{"d1.example"}}}
+	tab.observe(at(7), gone)
+	tab.observe(at(8), again)
+	obs = observation(t, &tab, at(9))
+	wantBack := []string{"fd00::2", "fd00::3", "fd00::1"}
+	wantDBack := []string{"d2.example", "d3.example", "d1.example"}
+	if got := addrTexts(obs.DNS); !slices.Equal(got, wantBack) {
+		t.Errorf("resolvers %v after one was withdrawn and heard again, want %v", got, wantBack)
+	}
+	if !slices.Equal(obs.Search, wantDBack) {
+		t.Errorf("search domains %v after one was withdrawn and heard again, want %v", obs.Search, wantDBack)
+	}
+}
+
+// TestAnUnusableMTUIsAnIgnoredOptionAndNotAFullList names WHICH counter an MTU
+// this ring will not copy moves, and which two it leaves alone.
+//
+// THE COUNTER ONE FIELD UP DEFINES THE POPULATION. refused and evicted are
+// about a LIST BEING FULL: one says an arrival could not get in, the other
+// says something held was thrown out to let an arrival in, and either above
+// zero is read as the table's caps being in force. An MTU outside RFC 4861
+// §6.3.4's bounds has no list, no cap and no entry, so on a quiet link with
+// one such advertisement both of those must stay at zero and the option count
+// must move by exactly one. That is the assertion; the reported MTU beside it
+// is what TestTheMTUIsBoundedBelowByTheMinimumLinkMTU already drives, and it
+// is repeated here because a version that simply stopped counting would pass
+// half of this test.
+func TestAnUnusableMTUIsAnIgnoredOptionAndNotAFullList(t *testing.T) {
+	for _, mtu := range []uint32{1, 1279, 0xFFFFFFFF} {
+		t.Run(fmt.Sprint(mtu), func(t *testing.T) {
+			var tab routerTable
+			ra := advert("fe80::1", 1800)
+			ra.MTU = mtu
+			tab.observe(at(0), ra)
+
+			if tab.optIgnored != 1 {
+				t.Errorf("an MTU of %d moved the ignored-option count by %d, want 1",
+					mtu, tab.optIgnored)
+			}
+			if tab.refused != 0 {
+				t.Errorf("an MTU of %d raised the refusal count to %d: nothing was full",
+					mtu, tab.refused)
+			}
+			if tab.evicted != 0 {
+				t.Errorf("an MTU of %d raised the eviction count to %d: nothing was thrown out",
+					mtu, tab.evicted)
+			}
+			if obs := observation(t, &tab, at(1)); obs.MTU != 0 {
+				t.Errorf("an MTU of %d was reported as %d, want 0", mtu, obs.MTU)
+			}
+			if n := len(tab.routers); n != 1 {
+				t.Errorf("the router list holds %d entr(ies), want the one router: nothing here is near a cap", n)
+			}
+		})
+	}
+}
+
+// TestAnMTUInsideTheBoundsCountsNothing is the preservation control for the
+// test above: a widening that counted every MTU option, or every
+// advertisement, would satisfy every assertion there and be wrong.
+func TestAnMTUInsideTheBoundsCountsNothing(t *testing.T) {
+	for _, mtu := range []uint32{0, 1280, 1500, 9000} {
+		t.Run(fmt.Sprint(mtu), func(t *testing.T) {
+			var tab routerTable
+			ra := advert("fe80::1", 1800)
+			ra.MTU = mtu
+			tab.observe(at(0), ra)
+			if tab.optIgnored != 0 || tab.refused != 0 || tab.evicted != 0 {
+				t.Errorf("an MTU of %d moved a counter: ignored=%d refused=%d evicted=%d",
+					mtu, tab.optIgnored, tab.refused, tab.evicted)
 			}
 		})
 	}

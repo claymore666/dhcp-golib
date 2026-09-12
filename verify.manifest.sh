@@ -717,7 +717,24 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # both, and replayEvent's signature carries all three. Every hunk was resolved
 # by keeping every field, and the observer that sees a dropped one is named in
 # this branch's list above.
-MIN_DECLARED_TESTS=799
+#
+# ROUND 4 ADDS SIX, all of them answers to one pre-push read, and 799 becomes
+# 805:
+#
+#   proto/router6_test.go        (3)  AnUnusableMTUIsAnIgnoredOptionAndNotA
+#     FullList, AnMTUInsideTheBoundsCountsNothing, TheReportedResolversAnd
+#     SearchDomainsAreInTheOrderTheyWereFirstHeard
+#   proto/machine6_test.go       (1)  TheExportedRingOneCountersNameTheirOwn
+#     Cause
+#   lease/router6_test.go        (2)  AnUnusableMTUReachesTheOperatorAsAn
+#     IgnoredOptionAndNotACapInForce, TheDecodersIgnoredOptionsAndRingOnesAre
+#     OneNumber
+#
+# The first five are one finding: an MTU outside what a host may copy was
+# counted as a full list refusing an arrival, on a link where no list was full
+# and nothing was refused. The sixth states an order that was the only one on
+# the observation left unstated.
+MIN_DECLARED_TESTS=805
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

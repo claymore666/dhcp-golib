@@ -661,9 +661,24 @@ type RouterObservation struct {
 	MTU uint32
 
 	// DNS and Search are RFC 8106's two lists, unioned across routers, each
-	// entry held until its own lifetime runs out. Routes are RFC 4191's
-	// more-specific routes with the router that advertised each one as the next
-	// hop, most preferred first.
+	// entry held until its own lifetime runs out, IN THE ORDER THEY WERE FIRST
+	// HEARD. A resolver refreshed by a later advertisement keeps the place it
+	// had; only an entry that was withdrawn or expired and then heard again is
+	// last.
+	//
+	// THAT IS THE DNS SERVER LIST'S ORDER AND NOT THE RESOLVER REPOSITORY'S.
+	// §6.2 keeps two structures and gives them different rules: it stores the
+	// addresses "(in order) in both the DNS Server List and the Resolver
+	// Repository", and its step (d) then says to "register the RDNSS address
+	// and Lifetime with the DNS Server List and then insert the RDNSS address
+	// as the first one in the Resolver Repository". Newest-first is the
+	// repository's rule, and the repository is the thing that resolves names.
+	// This library resolves nothing and installs nothing, so what it reports
+	// is the list, and a caller that keeps a repository applies (d) to its own
+	// when it reads this one. §6.3 gives the search list the same processing.
+	//
+	// Routes are RFC 4191's more-specific routes with the router that
+	// advertised each one as the next hop, most preferred first.
 	DNS    []netip.Addr
 	Search []string
 	Routes []wire.Route

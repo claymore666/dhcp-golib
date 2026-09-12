@@ -321,6 +321,18 @@ func (m *Machine6) RouterTableDrops() uint64 { return m.routers.refused }
 // RouterTableEvictions is the eviction half of RouterTableDrops's pair.
 func (m *Machine6) RouterTableEvictions() uint64 { return m.routers.evicted }
 
+// RouterOptionsIgnored is how many options this ring walked past because the
+// option's own standard says the value is not usable, while the rest of the
+// advertisement was read. Today that is the MTU option outside the bounds RFC
+// 4861 §6.3.4 lets a host copy.
+//
+// IT IS THE DECODER'S IgnoredOptions POPULATION AND NOT THE TABLE'S. Ring 0
+// refuses an option it cannot parse by its own standard's rule; this ring
+// refuses a value it parsed and may not use. Neither is a full list, so
+// neither belongs beside RouterTableDrops, and ring 2 adds the two into the
+// one number an operator reads.
+func (m *Machine6) RouterOptionsIgnored() uint64 { return m.routers.optIgnored }
+
 func (m *Machine6) takeActionID() ActionID {
 	id := m.nextAction
 	m.nextAction++

@@ -701,9 +701,17 @@ func TestEveryWireCounterSurvivesTheRecordsEncoding(t *testing.T) {
 	// added with no tag at all visible, since Go would then encode it under
 	// its Go name.
 	//
-	// A name given TWICE is a different class and is not this test's: the
-	// toolchain refuses it, vet reporting the repeated tag, so no build
-	// carrying it ever reaches a test.
+	// A name given TWICE is the same class and IS this test's. vet reports a
+	// repeated json tag, but vet is not what runs here: go test builds and
+	// runs this package with a subset of vet that does not include the
+	// struct-tag analyser, so a tree carrying two fields under one name
+	// compiles, runs, and fails on these assertions. MEASURED, by spelling the
+	// eviction counter's tag as the refusal counter's and running go test:
+	// five lines fail, two from the round trip and three from the names. An
+	// earlier version of this comment claimed the toolchain refused it before
+	// a test could see it; that was read off a mutation harness whose syntax
+	// check happened to be go vet, which is a fact about the harness and not
+	// about this tree.
 	var outer struct {
 		Wire map[string]json.RawMessage `json:"wire"`
 	}

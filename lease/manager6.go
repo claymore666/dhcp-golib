@@ -102,6 +102,9 @@ func (mg *Manager) onND(ctx context.Context, in NDInbound) {
 	mg.bump(func(s *Stats) {
 		s.NDSeen++
 		s.RouterAdvertsSeen++
+		// The decoder's half only. Ring 1 refuses options of its own and adds
+		// them to this same number at the Step that follows, from the one
+		// place that is allowed to read ring 1.
 		s.RouterAdvertOptionsIgnored += ignored
 	})
 	mg.packets6.Record(CapturedPacketV6{

@@ -27,7 +27,7 @@ and it needs no root.
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
 | Tell a server that refused apart from one that never answered, and say which code it sent | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/816) |
-| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers and the search list | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
+| Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/814) |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
 | Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |

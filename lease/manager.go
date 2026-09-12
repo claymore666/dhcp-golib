@@ -235,6 +235,20 @@ type Manager struct {
 	// having produced counters that could be deleted with the suite still
 	// green.
 	stats Stats
+
+	// raOptionsIgnoredRing1 is how much of Stats.RouterAdvertOptionsIgnored
+	// has already been taken from ring 1.
+	//
+	// THE FIELD IS ONE NUMBER WITH TWO PRODUCERS, which is why this one
+	// exists. The decoder's half is ADDED at receive, so the public field
+	// cannot be assigned from ring 1's total without losing it; ring 1's own
+	// total is cumulative, so it cannot be added either without counting every
+	// earlier option again at every Step. What is added is the part of ring
+	// 1's total that has not been added yet, and this is that watermark. It is
+	// read and written only from the goroutine that runs Step, which is the
+	// same rule the mirrored table counters beside it follow: ring 1 is not
+	// concurrency-safe and this ring touches it in exactly one place.
+	raOptionsIgnoredRing1 uint64
 }
 
 // Stats are the counters this manager produces.
@@ -388,6 +402,13 @@ type Stats struct {
 	// option refused by its own standard's validity rule while the rest of the
 	// advertisement was read. It rises on advertisements that are otherwise
 	// fine, which is why it is not folded into the refusal count.
+	//
+	// TWO RINGS PUT OPTIONS IN IT. The decoder refuses an option it cannot
+	// read by that option's own rule; the state machine refuses a value it
+	// read and may not use, which today is an MTU outside the bounds RFC 4861
+	// §6.3.4 lets a host copy. Both are one option nobody could use out of an
+	// advertisement that was otherwise read, so both are this number. Neither
+	// is a full list, which is why neither is below.
 	//
 	// RouterTableEntriesDropped is ring 1's, mirrored here at each Step: an
 	// arrival a full list in the router table would not take.
@@ -1076,6 +1097,10 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.router = mg.machine6.Router()
 			mg.stats.RouterTableEntriesDropped = mg.machine6.RouterTableDrops()
 			mg.stats.RouterTableEntriesEvicted = mg.machine6.RouterTableEvictions()
+			if n := mg.machine6.RouterOptionsIgnored(); n > mg.raOptionsIgnoredRing1 {
+				mg.stats.RouterAdvertOptionsIgnored += n - mg.raOptionsIgnoredRing1
+				mg.raOptionsIgnoredRing1 = n
+			}
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d

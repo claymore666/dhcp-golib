@@ -129,6 +129,42 @@ var raOtherOnly = []byte{
 	0, 0, 0, 0,
 }
 
+// TestTheExportedRingOneCountersNameTheirOwnCause drives the three counters
+// this ring exports through Machine6 and not through the table's fields, which
+// is the surface ring 2 mirrors onto Stats and serialises into a record.
+//
+// ONE ADVERTISEMENT, ONE UNUSABLE MTU, A QUIET LINK. Nothing here is near a
+// cap: one router, no routes, no resolvers, no search domains. The MTU is
+// below RFC 8200 §5's minimum link MTU, so this ring will not copy it, and the
+// question the test asks is which of the three numbers an operator reads that
+// moves. The refusal and the eviction are about a list being FULL, and a
+// version that raised either of them here told an operator the table's caps
+// were in force on a link that had one bad option.
+func TestTheExportedRingOneCountersNameTheirOwnCause(t *testing.T) {
+	p := testParams6()
+	m, _ := solicit6(t, p)
+
+	raw := append([]byte(nil), raOtherOnly...)
+	// RFC 4861 §4.6.4: Type 5, Length 1, two reserved octets, then the MTU.
+	raw = append(raw, 5, 1, 0, 0, 0, 0, 0x03, 0xE8) // 1000
+	ra := mustRA(t, raw)
+	ra.Router = netip.MustParseAddr("fe80::1")
+	m.Step(at(2), 3, RouterAdvertRaw(ra, raw))
+
+	if got := m.RouterOptionsIgnored(); got != 1 {
+		t.Errorf("RouterOptionsIgnored is %d, want 1: the MTU option was walked past", got)
+	}
+	if got := m.RouterTableDrops(); got != 0 {
+		t.Errorf("RouterTableDrops is %d, want 0: no list was full and nothing was refused entry", got)
+	}
+	if got := m.RouterTableEvictions(); got != 0 {
+		t.Errorf("RouterTableEvictions is %d, want 0: nothing held was thrown out", got)
+	}
+	if obs := m.Router(); obs.MTU != 0 {
+		t.Errorf("an MTU of 1000 was reported as %d, want 0", obs.MTU)
+	}
+}
+
 // raManaged has M set.
 var raManaged = []byte{
 	134, 0, 0, 0,

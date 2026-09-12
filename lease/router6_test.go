@@ -176,6 +176,113 @@ func TestAnOptionThisLibraryRefusesIsCountedAndItsSiblingsAreNot(t *testing.T) {
 	}
 }
 
+// TestAnUnusableMTUReachesTheOperatorAsAnIgnoredOptionAndNotACapInForce is the
+// ring-2 half: the same advertisement read through Stats and through the
+// record's own field, which is where an operator actually meets these numbers.
+//
+// THE LINK IS QUIET AND NOTHING IS FULL. One router, one MTU option below RFC
+// 8200 §5's minimum link MTU, no routes, resolvers or search domains. Stats
+// documents RouterTableEntriesDropped as an arrival a full list would not take
+// and says either it or its eviction pair above zero means the caps are in
+// force, so on this link both must stay where they were and the option count
+// must move by one. The record's serialised field is asserted beside them,
+// because that is the copy that outlives the process.
+func TestAnUnusableMTUReachesTheOperatorAsAnIgnoredOptionAndNotACapInForce(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.acquire6(t)
+	before := r.mgr.Stats()
+
+	ra := []byte{
+		134, 0, 0, 0,
+		64, 0x40, 0x07, 0x08,
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+	}
+	// RFC 4861 §4.6.4: Type 5, Length 1, two reserved octets, then the MTU.
+	ra = append(ra, 5, 1, 0, 0, 0, 0, 0x03, 0xE8) // 1000
+	r.nd.injectFrom(ra, raRouter)
+	waitRA(t, r, "the advertisement carrying one unusable MTU")
+	after := r.mgr.Stats()
+
+	if got := after.RouterAdvertOptionsIgnored - before.RouterAdvertOptionsIgnored; got != 1 {
+		t.Errorf("RouterAdvertOptionsIgnored moved by %d, want 1: the MTU was walked past", got)
+	}
+	if got := after.RouterTableEntriesDropped - before.RouterTableEntriesDropped; got != 0 {
+		t.Errorf("RouterTableEntriesDropped moved by %d: no list was full", got)
+	}
+	if got := after.RouterTableEntriesEvicted - before.RouterTableEntriesEvicted; got != 0 {
+		t.Errorf("RouterTableEntriesEvicted moved by %d: nothing held was thrown out", got)
+	}
+	if got := after.RouterAdvertsRefused - before.RouterAdvertsRefused; got != 0 {
+		t.Errorf("RouterAdvertsRefused moved by %d: the message decoded", got)
+	}
+	if obs := r.mgr.Router(); obs.MTU != 0 {
+		t.Errorf("an MTU of 1000 was reported as %d, want 0", obs.MTU)
+	}
+
+	w := statsIntoWire(after)
+	b := statsIntoWire(before)
+	if got := w.RouterAdvertOptionsIgnored - b.RouterAdvertOptionsIgnored; got != 1 {
+		t.Errorf("the record carries %d ignored option(s), want 1", got)
+	}
+	if got := w.RouterTableEntriesDropped - b.RouterTableEntriesDropped; got != 0 {
+		t.Errorf("the record serialises %d table drop(s) for one bad MTU", got)
+	}
+	if got := w.RouterTableEntriesEvicted - b.RouterTableEntriesEvicted; got != 0 {
+		t.Errorf("the record serialises %d eviction(s) for one bad MTU", got)
+	}
+}
+
+// TestTheDecodersIgnoredOptionsAndRingOnesAreOneNumber is the control on the
+// sum: the field has TWO producers now, and a version that dropped either half
+// or counted one of them twice is what this drives. One advertisement carries
+// an option the DECODER refuses by its own standard's length rule and an MTU
+// RING ONE refuses by its value, so the operator's number must move by exactly
+// two.
+func TestTheDecodersIgnoredOptionsAndRingOnesAreOneNumber(t *testing.T) {
+	r := newRig6(t, testParams6(), answerNormally6(t))
+	r.acquire6(t)
+	before := r.mgr.Stats()
+
+	ra := []byte{
+		134, 0, 0, 0,
+		64, 0x40, 0x07, 0x08,
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+	}
+	// An MTU option whose length is 2 units, which RFC 4861 §4.6.4 fixes at 1:
+	// the decoder's half.
+	ra = append(ra, 5, 2, 0, 0, 0, 0, 5, 0xDC, 0, 0, 0, 0, 0, 0, 0, 0)
+	// And a well-formed MTU option whose value this ring may not copy.
+	ra = append(ra, 5, 1, 0, 0, 0, 0, 0x03, 0xE8) // 1000
+	r.nd.injectFrom(ra, raRouter)
+	waitRA(t, r, "the advertisement carrying one of each refusal")
+	after := r.mgr.Stats()
+
+	if got := after.RouterAdvertOptionsIgnored - before.RouterAdvertOptionsIgnored; got != 2 {
+		t.Errorf("RouterAdvertOptionsIgnored moved by %d, want 2: one option per ring", got)
+	}
+	if got := after.RouterTableEntriesDropped - before.RouterTableEntriesDropped; got != 0 {
+		t.Errorf("RouterTableEntriesDropped moved by %d: no list was full", got)
+	}
+
+	// AND THE SECOND ADVERTISEMENT ADDS ONE, NOT ITS PREDECESSOR AGAIN. Ring
+	// one's counter is a cumulative TOTAL and this field is an accumulator, so
+	// a version that added the total at every Step would read three after two
+	// advertisements: one, then one plus two. One advertisement can never see
+	// that, which is why a second one is here.
+	r.nd.injectFrom(ra, raRouter)
+	waitRA(t, r, "the second advertisement carrying the same two refusals")
+	third := r.mgr.Stats()
+	if got := third.RouterAdvertOptionsIgnored - after.RouterAdvertOptionsIgnored; got != 2 {
+		t.Errorf("the second advertisement moved RouterAdvertOptionsIgnored by %d, want 2: "+
+			"ring one's total is cumulative and only the new part is added", got)
+	}
+	if got := third.RouterAdvertOptionsIgnored - before.RouterAdvertOptionsIgnored; got != 4 {
+		t.Errorf("two advertisements of two refused options each came to %d, want 4", got)
+	}
+}
+
 // awaitRAStep blocks until the machine has finished with the nth Router
 // Advertisement injected into the port, whatever it decided: either Step
 // recorded it in the journal, or the port refused the frame before Step ever

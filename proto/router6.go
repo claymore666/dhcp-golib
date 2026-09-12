@@ -301,6 +301,20 @@ type routerTable struct {
 	refused uint64
 	evicted uint64
 
+	// optIgnored counts an OPTION this ring would not use because the option's
+	// own standard says its value is not usable, while the rest of the
+	// advertisement was read. It is the SAME POPULATION as the decoder's
+	// RouterAdvert.IgnoredOptions one ring down, and ring 2 reports the two as
+	// one number for that reason: an operator asking "did this router send an
+	// option nobody could use" does not care which ring noticed.
+	//
+	// IT IS NOT A TABLE COUNTER AND THAT IS THE WHOLE POINT. refused and
+	// evicted are about a LIST BEING FULL, and their population sentence says
+	// so; an MTU outside the bounds RFC 4861 §6.3.4 lets a host copy has no
+	// list, no cap and no entry, and counting it as a refusal made a quiet
+	// link with one bad MTU read as a link whose caps are in force.
+	optIgnored uint64
+
 	seq int
 }
 
@@ -381,7 +395,7 @@ func (t *routerTable) observeMTU(ra *wire.RouterAdvert) {
 		return
 	}
 	if ra.MTU < minLinkMTU || ra.MTU > maxReportableMTU {
-		t.refused++
+		t.optIgnored++
 		return
 	}
 	t.mtu = ra.MTU
