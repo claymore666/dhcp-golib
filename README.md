@@ -29,7 +29,7 @@ and it needs no root.
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
 | Tell a server that refused apart from one that never answered, and say which code it sent | yes | yes |
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
+| Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
 | Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
@@ -39,7 +39,6 @@ and it needs no root.
 
 - **yes**: in the tree today, with a test that drives it, against a real
   server or through the state machine.
-- **v1.0.0**: in the tree at v1.0.0. The roadmap below names the scope.
 - **planned**: intended. No release names it yet, and the linked issue holds
   the plan.
 - **unsupported**: the protocol has it, this library deliberately does not.
@@ -52,17 +51,16 @@ A mark that is a link points at the issue that holds the plan.
 
 IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its flags and for the options
-it carries, and every one of those is reported and none of it is applied. No
-address is formed from a prefix. There is no prefix delegation. A server that
-holds the reconfigure key it gave the client can make it renew, rebind or ask
-for configuration again, and a Reconfigure that is not signed with that key is
-discarded. Nothing on DHCPv4 is planned for a later release.
+it carries, an address is formed from an advertised prefix, and every one of
+those is reported and none of it is applied. There is no prefix delegation. A
+server that holds the reconfigure key it gave the client can make it renew,
+rebind or ask for configuration again, and a Reconfigure that is not signed
+with that key is discarded. Nothing on DHCPv4 is planned for a later release.
 
-v1.0.0 is the DHCPv6 release. What it has shipped is in the tree and says
-`yes` above: the Router Advertisement read for everything it carries, a
-refusal told apart from a silence, a reconfiguration the server starts, and a
-lease given back from its record alone. What is left of it is the row that
-still says `v1.0.0`.
+v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
+Advertisement read for everything it carries, an address formed from one of
+its prefixes, a refusal told apart from a silence, a reconfiguration the
+server starts, and a lease given back from its record alone.
 
 This library is the DHCP engine of docker-net-dhcp 2.x. The API is not stable.
 It moves between tags and without a deprecation cycle. Releases are tagged on

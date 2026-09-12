@@ -190,6 +190,45 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   is correct as of the last `Step` and not as of the read. That bound is
   driven and not only written down
   (`TestTheRouterViewOnTheLeaseIsAsOfTheLastStep`).
+- **An address formed from an advertised prefix.** RFC 4862 §5.5.3 d forms it
+  by "combining the advertised prefix with an interface identifier of the
+  link", and RFC 4291 Appendix A's modified EUI-64 is the identifier. The
+  option is refused where the two do not fit: "If the sum of the prefix length
+  and interface identifier length does not equal 128 bits, the Prefix
+  Information option MUST be ignored." Every §5.5.3 rule that refuses an option
+  is charged under its own name and counted
+  (`TestEachIgnoreRuleIsChargedByName`,
+  `TestEveryIgnoreReasonIsDeclaredCountedAndNamed`), and the formation is
+  checked against RFC 4291 Appendix A's own octets
+  (`TestTheFormedAddressIsRFC4291AppendixAsOwnOctets`). A link with two
+  autonomous prefixes ends with two addresses, each with its own pair of
+  lifetimes and its own expiry (`TestTwoAutonomousPrefixesFormTwoAddresses`,
+  `TestEachAddressKeepsItsOwnLifetimeOrigin`), and §5.5.3 e's two-hour rule is
+  driven at its boundary against the kernel's own numbers
+  (`TestTheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers`). A formed
+  address goes through the same duplicate address detection an address from an
+  IA_NA does, and a duplicate costs that one address and not the set
+  (`TestANewlyFormedAddressGoesThroughDuplicateAddressDetection`,
+  `TestADuplicateCostsOneAddressAndNotTheSet`). §5.5.4 gives the two phases
+  their consequences: "A preferred address becomes deprecated when its
+  preferred lifetime expires. A deprecated address SHOULD continue to be used
+  as a source address in existing communications, but SHOULD NOT be used to
+  initiate new communications." So a deprecated address is kept and reported as
+  a change, and only an invalid one is dropped
+  (`TestDeprecationKeepsTheAddressAndReportsAChange`,
+  `TestOneAddressExpiringIsNotTheLeaseExpiring`). Which source an endpoint gets
+  its address from is `Params6.Mode`: DHCPv6 alone, autoconfiguration alone, or
+  the first advertisement deciding once and not again
+  (`TestTheAutoModeDecisionIsTakenOnceOnTheFirstAdvertisement`,
+  `TestAutoDoesNotFallBackIntoFormingAfterItCommittedToDHCPv6`). The lease a
+  caller reads carries the formed set
+  (`TestAnAddressFormedFromAnAdvertisementReachesTheCaller`) and a resumed
+  client does not form it a second time
+  (`TestAResumedFormedLeaseIsNotFormedASecondTime`).
+  BOUND, and it is the one thing on this list that has it: this claim is driven
+  at ring 1 and ring 2 against tables and decoded options. There is no run
+  against a router advertising on a real link yet, which is the only entry here
+  whose outside evidence is still owed.
 - **A server that refuses, told apart from one that never answered.** dnsmasq
   is given a pool of one address, a first client takes it, and a second client
   on the same link is answered and not ignored: the refusal reaches the
