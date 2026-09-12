@@ -213,6 +213,25 @@ func (c *Client) Release() { c.mgr.Release() }
 // stays available in that mode too. See Manager.ReportConflict.
 func (c *Client) ReportConflict() { c.mgr.ReportConflict() }
 
+// SetHostname gives this running client the name to put in option 12 and makes
+// it tell the server at once: a client holding a lease renews early to carry
+// the name (RFC 2131 section 4.4.5), so the server's table has it within one
+// exchange rather than at T1.
+//
+// It is the call for a name that is not known when the client starts — a
+// container's name that arrives from an API after the interface already needs
+// a lease. See lease.Manager.SetHostname for what the error means, for what a
+// repeated call does, and for what it costs.
+func (c *Client) SetHostname(name string) error { return c.mgr.SetHostname(name) }
+
+// Hostname is the name this client is currently putting in option 12.
+//
+// It is ClientConfig.Params.Hostname until SetHostname changes it. A caller
+// persisting configuration across a restart persists THIS, not the Params it
+// started with: proto.Params is the value a journal replays against and it
+// deliberately does not move under the run. See proto.Machine.Hostname.
+func (c *Client) Hostname() string { return c.mgr.Hostname() }
+
 // ACDPhase reports where RFC 5227's conflict check stands, and is
 // proto.ACDIdle for a client running with proto.ConflictOff.
 func (c *Client) ACDPhase() proto.ACDPhase { return c.mgr.ACDPhase() }

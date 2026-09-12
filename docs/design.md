@@ -109,6 +109,13 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestASquatterAfterBoundTakesSection24sPath`), and a client built with
   detection off puts no ARP frame on the link at all
   (`TestAnOffClientPutsNoARPOnTheWire`).
+- **A name given to a client that is already running, in the server's own
+  table.** The client starts with no name, is handed one while it holds a lease,
+  and dnsmasq's `--dhcp-leasefile` carries it against that client's address and
+  hardware address: the field is `*` before the call and the name after it. The
+  message is RFC 2131 §4.4.5's early renewal, and two further calls with the
+  same name produce no further exchange
+  (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
