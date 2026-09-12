@@ -27,6 +27,21 @@ const (
 	MaxRtrSolicitations     = 3
 )
 
+// MaxRtrSolicitationDelay is the third of §10's "Host constants" this client
+// uses, "MAX_RTR_SOLICITATION_DELAY 1 second".
+//
+// It is §6.3.7's VERDICT DELAY here and not §6.3.7's initial jitter. The
+// section uses the constant twice; this client uses it for the second: "If a
+// host sends MAX_RTR_SOLICITATIONS solicitations, and receives no Router
+// Advertisements after having waited MAX_RTR_SOLICITATION_DELAY seconds after
+// sending the last solicitation, the host concludes that there are no routers
+// on the link for the purpose of [ADDRCONF]." The first use — delaying the
+// FIRST solicitation to "alleviate congestion when many hosts start up on a
+// link at the same time" — is a SHOULD this client does not take, because its
+// endpoints do not start up on a link at the same time and the delay would be
+// spent on every container start.
+const MaxRtrSolicitationDelay = 1 * Second
+
 // The RFC 4861 §10 node constants the DAD deadline is computed from:
 // "MAX_MULTICAST_SOLICIT 3 transmissions", "RETRANS_TIMER 1,000
 // milliseconds".
@@ -64,6 +79,25 @@ const DupAddrDetectTransmits = 1
 // ring runs: ring 1 sends no Neighbor Solicitation, and every duration it
 // waits is one it must be able to justify without a clock of its own.
 const DefaultDADTimeout = (DupAddrDetectTransmits + MaxMulticastSolicit) * RetransTimer
+
+// DefaultAutoFallback is how long Mode6Auto keeps trying DHCPv6 after a router
+// said M=1, when the caller names no value of its own.
+//
+// IT IS HALF OF THIS RING'S OWN WINDOW AND NOT HALF OF THE CALLER'S, and the
+// difference is stated rather than glossed. The decision this implements is
+// "half the window"; the window it names is the chassis's endpoint-start
+// budget, which ring 1 does not know and has no way to derive — it is handed
+// one Instant per Step and nothing else. What this ring DOES own is RFC 4861
+// §6.3.7's router discovery schedule, MAX_RTR_SOLICITATIONS transmissions
+// RTR_SOLICITATION_INTERVAL apart, and half of that is the value here. A
+// chassis with a longer window passes half of its own in Params6.AutoFallback
+// and this default is never reached.
+//
+// IT IS THE VALUE FOR A Params6 THAT SETS NEITHER SCHEDULE FIELD. autoFallback
+// takes half of the schedule the machine will actually run, so a caller that
+// lengthens RouterSolicitations or RouterSolicitInterval and leaves
+// AutoFallback at zero gets half of ITS window and not half of this constant.
+const DefaultAutoFallback = (MaxRtrSolicitations * RtrSolicitationInterval) / 2
 
 // DefaultMaxSendFailures6 is the consecutive-ActSendV6-failure budget. It
 // matches the v4 machine's default for the reason D30 gives: the failure is
@@ -170,6 +204,22 @@ var (
 // otherwise emit its first Action — a Solicit with no Client Identifier, which
 // §18.2.1 makes a MUST — before anything could tell the caller.
 func (p Params6) validate() error {
+	// THE MODE IS CHECKED FIRST because it decides which of the checks below
+	// apply: a link address is required in two of the four modes and
+	// meaningless in the others, and a mode outside the set would make that
+	// question unanswerable.
+	switch p.Mode {
+	case Mode6DHCP, Mode6SLAAC, Mode6Auto:
+	case Mode6Off:
+		return ErrMode6Off
+	default:
+		return fmt.Errorf("%w: %s", ErrBadMode6, p.Mode)
+	}
+	if p.Mode.formsAddresses() {
+		if _, err := ModifiedEUI64(p.LinkAddr); err != nil {
+			return fmt.Errorf("%w: %s", ErrNoLinkAddr, err)
+		}
+	}
 	if len(p.DUID) == 0 {
 		return ErrNoDUID
 	}
@@ -233,6 +283,34 @@ func (p Params6) routerSolicitInterval() Duration {
 		return RtrSolicitationInterval
 	}
 	return p.RouterSolicitInterval
+}
+
+// autoFallback is AutoFallback with the two sentinels applied: zero is the
+// default, negative is "never", and "never" is reported as the second value
+// rather than as a duration nothing can arm.
+func (p Params6) autoFallback() (Duration, bool) {
+	switch {
+	case p.AutoFallback < 0:
+		return 0, false
+	case p.AutoFallback == 0:
+		// HALF OF THE SCHEDULE THIS MACHINE WILL ACTUALLY RUN, not half of
+		// the constants. A caller that lengthens router discovery through
+		// RouterSolicitations or RouterSolicitInterval and leaves this at zero
+		// was otherwise given a fallback measured against a window it had
+		// replaced. DefaultAutoFallback is what this returns for a Params6
+		// that sets neither.
+		// HALF OF NOTHING IS NOT A BUDGET. A caller that turns router
+		// solicitation off (a negative RouterSolicitations) has said nothing
+		// about how long a DHCPv6 server may take, and a zero here would arm
+		// the fallback at the instant of the advertisement, so an M=1 link
+		// would form an address without this client ever having solicited.
+		if w := Duration(p.routerSolicitations()) * p.routerSolicitInterval() / 2; w > 0 {
+			return w, true
+		}
+		return DefaultAutoFallback, true
+	default:
+		return p.AutoFallback, true
+	}
 }
 
 func (p Params6) maxSendFailures() int {

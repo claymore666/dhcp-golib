@@ -435,6 +435,36 @@ type Stats struct {
 
 	// ConfiguredEvents counts RFC 9915 section 18.2.6's stateless answers.
 	ConfiguredEvents uint64
+
+	// The stateless address autoconfiguration counters, RFC 4862 section
+	// 5.5.3 and 5.5.4. They are ring 1's and are mirrored here at each Step,
+	// like RouterTableEntriesDropped.
+	//
+	// SLAACAddressesFormed counts ADDRESSES and SLAACPrefixesIgnored counts
+	// OPTIONS, and their sum is not the number of options a router sent: an
+	// option that refreshed the lifetimes of an address this client already
+	// held is neither. SLAACPrefixesIgnored holds every reason together;
+	// which rule refused which option is in the journal line beside it and in
+	// proto.SLAACCounters, because one number for eight rules answers none of
+	// them.
+	//
+	// SLAACAddressesDeprecated counts section 5.5.4's first phase — "A
+	// preferred address becomes deprecated when its preferred lifetime
+	// expires" — and SLAACAddressesExpired its second. An address passes
+	// through both, so the two are not alternatives and their difference is
+	// how many held addresses are deprecated right now.
+	//
+	// SLAACFallbacks counts an auto-mode client that gave up on a silent
+	// DHCPv6 server and formed an address instead. It counts the fallback
+	// that FORMED something: a deadline that passed with no usable prefix
+	// ends the acquisition and leaves this where it was.
+	SLAACAddressesFormed     uint64
+	SLAACAddressesRefreshed  uint64
+	SLAACAddressesDeprecated uint64
+	SLAACAddressesExpired    uint64
+	SLAACAddressesConflicted uint64
+	SLAACPrefixesIgnored     uint64
+	SLAACFallbacks           uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -603,12 +633,37 @@ func newManager6(cfg Config) (*Manager, error) {
 		// The one crossing, taken ONCE from a single paired reading, for
 		// clockBridge's reason.
 		b := bridge(cfg.Clock)
+		// EVERY REMEMBERED ADDRESS COMES BACK, not only the first. A lease
+		// formed by RFC 4862 §5.5.3 holds one address per autonomous prefix,
+		// and a restart that remembered one of them would let the first
+		// advertisement after the restart form the others a SECOND time —
+		// §5.5.3 d only refuses a prefix "equal to the prefix of an address
+		// already in the list", and the list is what was just thrown away.
+		//
+		// Lease.Addrs is empty for every lease written before it existed and
+		// for a caller that fills only Addr, so the single address is the
+		// fallback and not the other way round.
+		resumed := []proto.Addr6{{
+			Addr:      addr,
+			Preferred: remaining(b, cfg.Resume6.Preferred),
+			Valid:     remaining(b, cfg.Resume6.Valid, cfg.Resume6.Expire),
+		}}
+		if len(cfg.Resume6.Addrs) > 0 {
+			resumed = resumed[:0]
+			for _, a := range cfg.Resume6.Addrs {
+				ip := a.Addr.Addr()
+				if !ip.Is6() || ip.Is4In6() || ip.IsUnspecified() {
+					return nil, ErrResume6NoAddr
+				}
+				resumed = append(resumed, proto.Addr6{
+					Addr:      ip,
+					Preferred: remaining(b, a.Preferred, cfg.Resume6.Preferred),
+					Valid:     remaining(b, a.Valid, cfg.Resume6.Valid, cfg.Resume6.Expire),
+				})
+			}
+		}
 		params.Resume = &proto.Resume6{
-			Addrs: []proto.Addr6{{
-				Addr:      addr,
-				Preferred: remaining(b, cfg.Resume6.Preferred),
-				Valid:     remaining(b, cfg.Resume6.Valid, cfg.Resume6.Expire),
-			}},
+			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
 			T2:         remaining(b, cfg.Resume6.Rebind),
@@ -1101,6 +1156,19 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 				mg.stats.RouterAdvertOptionsIgnored += n - mg.raOptionsIgnoredRing1
 				mg.raOptionsIgnoredRing1 = n
 			}
+			// ONE DERIVATION, taken where the router observation is taken and
+			// for the same reason: the machine's own view after the Step. An
+			// arm per action kind would have counted a formed address in the
+			// arm that announced the lease, which is the arm a conflict on a
+			// second prefix never reaches.
+			sc := mg.machine6.SLAACCounters()
+			mg.stats.SLAACAddressesFormed = sc.Formed
+			mg.stats.SLAACAddressesRefreshed = sc.Refreshed
+			mg.stats.SLAACAddressesDeprecated = sc.Deprecated
+			mg.stats.SLAACAddressesExpired = sc.Expired
+			mg.stats.SLAACAddressesConflicted = sc.Conflicts
+			mg.stats.SLAACPrefixesIgnored = sc.IgnoredTotal()
+			mg.stats.SLAACFallbacks = sc.Fallbacks
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d

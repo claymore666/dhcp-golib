@@ -104,6 +104,11 @@ func machine6In(t *testing.T, s State6) *Machine6 {
 		m.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
 		m.Step(at(3), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr))
 		return m
+	case State6Discovering:
+		// The one state only a mode that forms addresses reaches, so its
+		// fixture is the only one with a different Params6. It sits BEFORE the
+		// advertisement: a machine waiting for the RA its address comes from.
+		return newMachine6WithStart(t, testParams6SLAAC())
 	case State6Bound:
 		return bind6(t, p, dnsmasqLeasedAddr)
 	case State6Renewing:
@@ -627,4 +632,13 @@ func TestAllDADPhasesIsEveryDeclaredPhase(t *testing.T) {
 			return
 		}
 	}
+}
+
+// newMachine6WithStart is machine6In's helper for the states a mode that forms
+// addresses reaches: EvStart and nothing else.
+func newMachine6WithStart(t *testing.T, p Params6) *Machine6 {
+	t.Helper()
+	m := newMachine6(t, p)
+	m.Step(at(0), 0, Simple(EvStart))
+	return m
 }

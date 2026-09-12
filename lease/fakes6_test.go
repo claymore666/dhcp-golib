@@ -524,7 +524,12 @@ func newRig6On(t *testing.T, clk *fakeClock, p proto.Params6, behaviour server6B
 	// timers never fire on their own. The rig fires it, so every test below
 	// starts from a client that has begun talking; the delay itself is ring
 	// 1's to assert, and proto's suite does.
-	if r.timers.waitArmed(proto.Timer6Delay) {
+	//
+	// A MODE THAT FORMS ADDRESSES ARMS NO SUCH TIMER. begin() goes straight to
+	// DISCOVERING6 and arms RFC 4861 §6.3.7's solicitation schedule instead,
+	// so waiting for Timer6Delay in those modes would wait until the rig's
+	// own teardown.
+	if p.Mode == proto.Mode6DHCP && r.timers.waitArmed(proto.Timer6Delay) {
 		r.timers.fire(proto.Timer6Delay)
 	}
 

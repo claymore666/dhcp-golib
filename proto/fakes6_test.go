@@ -4,6 +4,7 @@ package proto
 
 import (
 	"encoding/hex"
+	"net"
 	"net/netip"
 	"testing"
 
@@ -318,4 +319,100 @@ func confirming6(t *testing.T, p Params6) (*Machine6, []Action) {
 		t.Fatalf("a live resume left the machine in %s, want %s (§18.2.12)", s, State6Confirming)
 	}
 	return m, acts
+}
+
+// ------------------------------------------------- stateless autoconfig --
+
+// testLinkAddr6 is the link address every stateless autoconfiguration fixture
+// forms its interface identifier from. It is a LOCALLY ADMINISTERED address —
+// bit 0x02 of the first octet is set — because that is what a container
+// runtime hands out, and because RFC 4291 Appendix A says "inverting" and not
+// "setting": a fixture whose u bit is already 0 cannot tell the two apart.
+var testLinkAddr6 = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02}
+
+// testParams6SLAAC is testParams6 in the mode that forms addresses.
+func testParams6SLAAC() Params6 {
+	p := testParams6()
+	p.Mode = Mode6SLAAC
+	p.LinkAddr = append(net.HardwareAddr(nil), testLinkAddr6...)
+	return p
+}
+
+// testParams6Auto is testParams6 in the mode the router decides.
+func testParams6Auto() Params6 {
+	p := testParams6SLAAC()
+	p.Mode = Mode6Auto
+	return p
+}
+
+// pio renders one Prefix Information option from RFC 4861 §4.6.2's field
+// diagram, so that every rule of RFC 4862 §5.5.3 is driven through the bytes a
+// router puts on the wire and through this library's own decoder.
+func pio(prefix string, plen uint8, auto bool, valid, preferred uint32) []byte {
+	o := make([]byte, 32)
+	o[0], o[1], o[2] = 3, 4, plen
+	o[3] = 0x80 // L, the on-link flag, which §5.5.3 has nothing to say about
+	if auto {
+		o[3] |= 0x40
+	}
+	be32(o[4:8], valid)
+	be32(o[8:12], preferred)
+	copy(o[16:32], netip.MustParseAddr(prefix).AsSlice())
+	return o
+}
+
+func be32(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v>>24), byte(v>>16), byte(v>>8), byte(v)
+}
+
+// ra6 is a Router Advertisement carrying opts, with the M and O flags given.
+func ra6(managed, other bool, opts ...[]byte) []byte {
+	out := []byte{134, 0, 0, 0, 64, 0x00, 0x07, 0x08, 0, 0, 0, 0, 0, 0, 0, 0}
+	if managed {
+		out[5] |= 0x80
+	}
+	if other {
+		out[5] |= 0x40
+	}
+	for _, o := range opts {
+		out = append(out, o...)
+	}
+	return out
+}
+
+// raEvent6 is the event one such advertisement arrives as, decoded by the
+// library's own decoder and carrying a router address, because RFC 4861
+// §6.3.4 keys the router table on the source address of the packet.
+func raEvent6(t *testing.T, raw []byte) Event {
+	t.Helper()
+	ra := mustRA(t, raw)
+	ra.Router = netip.MustParseAddr("fe80::1")
+	return RouterAdvertRaw(ra, raw)
+}
+
+// testSLAACPrefix is the prefix the fixtures form from, and testSLAACAddr is
+// the address RFC 4291 Appendix A forms from it and testLinkAddr6.
+const (
+	testSLAACPrefix = "2001:db8:1::"
+	testSLAACAddr   = "2001:db8:1::42:acff:fe11:2"
+)
+
+// slaacBound6 takes a machine in a mode that forms addresses all the way to
+// BOUND6 on one prefix, through the advertisement and the duplicate address
+// detection that gates it.
+func slaacBound6(t *testing.T, p Params6, valid, preferred uint32) *Machine6 {
+	t.Helper()
+	m := newMachine6(t, p)
+	if s, _ := m.Step(at(0), 0, Simple(EvStart)); s != State6Discovering {
+		t.Fatalf("EvStart in %s left the machine in %s, want %s", p.Mode, s, State6Discovering)
+	}
+	s, _ := m.Step(at(1), 0, raEvent6(t, ra6(false, false, pio(testSLAACPrefix, 64, true, valid, preferred))))
+	if s != State6DAD {
+		t.Fatalf("an autonomous prefix left the machine in %s, want %s", s, State6DAD)
+	}
+	s, _ = m.Step(at(2), 0, DADResult(netip.MustParseAddr(testSLAACAddr), false))
+	if s != State6Bound {
+		t.Fatalf("a clean DAD result left the machine in %s, want %s", s, State6Bound)
+	}
+	return m
 }
