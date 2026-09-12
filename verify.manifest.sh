@@ -603,7 +603,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     AReconfigureIsIgnoredWhereTheClientHoldsNothing,
 #     TheReconfigureAcceptOptionGoesWhereTheRFCAllowsIt,
 #     AcceptReconfigureOffIsOffInBothDirections,
-#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal,
+#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal
+#     (renamed in the v1.0.0 docs round to
+#     NoActionNoteOrReasonCarriesTheReconfigureKey, because the old name
+#     asserted a universal its body does not check; this record keeps the name
+#     the round it describes added),
 #     AReconfigureReplaysWithItsDestination,
 #     OnlyRKAPTypeOneIsStoredAsTheReconfigureKey,
 #     TheAnsweringServerIdentifierDiesWithItsExchange,

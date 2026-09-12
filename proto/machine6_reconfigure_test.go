@@ -857,10 +857,13 @@ func TestDefaultParams6AcceptsReconfigure(t *testing.T) {
 
 // ------------------------------------------------------------- the key --
 
-// TestTheReconfigureKeyNeverReachesTheJournal is the secret's own rule: this
-// library hands the caller its journal, and a shared key in a log is a shared
-// key.
-func TestTheReconfigureKeyNeverReachesTheJournal(t *testing.T) {
+// TestNoActionNoteOrReasonCarriesTheReconfigureKey is the secret's own rule at
+// the one place this test can see it: every action the machine emitted over a
+// session that received a key, note and reason both. The recorded datagram is
+// another record and it DOES keep the key, which proto/doc.go states beside the
+// key's own bound; what this drives is that nothing the machine writes about
+// the key carries it.
+func TestNoActionNoteOrReasonCarriesTheReconfigureKey(t *testing.T) {
 	m := newMachine6(t, testParams6())
 	var seen []Action
 	record := func(acts []Action) { seen = append(seen, acts...) }

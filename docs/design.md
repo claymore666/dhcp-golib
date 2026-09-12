@@ -289,7 +289,7 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestTheReplayDetectionValueIsPerServerAndMustIncrease`,
   `TestAFailedReconfigureDoesNotRaiseTheReplayFloor`), and no action and no
   journal note carries the key: what those record is that a key arrived and
-  how long it was (`TestTheReconfigureKeyNeverReachesTheJournal`). The
+  how long it was (`TestNoActionNoteOrReasonCarriesTheReconfigureKey`). The
   boundary is the recorded datagram, MEASURED on this tree: the Reply that
   delivered the key keeps it verbatim in `proto.JournalEntry6.Raw`, where a
   replay needs the octets, and in the packet capture `Client6.Packets`
