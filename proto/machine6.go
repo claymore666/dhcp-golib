@@ -184,8 +184,11 @@ type Machine6 struct {
 	// no Reconfigure until its next Solicit/Reply, Request/Reply or
 	// Information-request/Reply hands it a new one (§20.4.2). The key is a
 	// shared secret, and the record a caller would have to write it into is
-	// the one this library asks callers to persist and hands to Journal6; a
-	// field that put it there would put it in every operator's log. The
+	// the one this library asks callers to persist and hands to Journal6: a
+	// field that put it there would put the key in every operator's copy of
+	// that record. What the journal already keeps whole is the Reply the key
+	// arrived in, JournalEntry6.Raw, and that is the boundary a caller handing
+	// a journal out has to know. The
 	// cost is one refused Reconfigure per restart, which §18.2.11 already
 	// tolerates: a server whose Reconfigure is discarded falls back to the
 	// client's own T1.

@@ -131,8 +131,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   not be the address being given back, RFC 9915 §18.2.7: "The client MUST NOT
   use any of the addresses it is releasing as the source address in the Release
   message or in any subsequently transmitted message." `SendRelease` refuses
-  that shape itself and does not trust the caller for it: a server accepts the
-  datagram either way, so no outside evidence would ever show the violation
+  that shape itself and does not trust the caller for it: the one server the
+  fixture runs accepts the datagram either way, so no outside evidence from it
+  would show the violation. That is a fact about that server, not about every
+  server
   (`TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing`).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
@@ -213,7 +215,9 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   their consequences: "A preferred address becomes deprecated when its
   preferred lifetime expires. A deprecated address SHOULD continue to be used
   as a source address in existing communications, but SHOULD NOT be used to
-  initiate new communications." So a deprecated address is kept and reported as
+  initiate new communications if an alternate (non-deprecated) address of
+  sufficient scope can easily be used instead." So a deprecated address is kept
+  and reported as
   a change, and only an invalid one is dropped
   (`TestDeprecationKeepsTheAddressAndReportsAChange`,
   `TestOneAddressExpiringIsNotTheLeaseExpiring`). Which source an endpoint gets
@@ -283,9 +287,14 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestEveryReconfigureDiscardRuleFiresOnItsOwn`), the §20.3 replay floor is
   per server and rises only where the client acted
   (`TestTheReplayDetectionValueIsPerServerAndMustIncrease`,
-  `TestAFailedReconfigureDoesNotRaiseTheReplayFloor`), and the key appears
-  in no journal line and in no action a caller could log
-  (`TestTheReconfigureKeyNeverReachesTheJournal`).
+  `TestAFailedReconfigureDoesNotRaiseTheReplayFloor`), and no action and no
+  journal note carries the key: what those record is that a key arrived and
+  how long it was (`TestTheReconfigureKeyNeverReachesTheJournal`). The
+  boundary is the recorded datagram, MEASURED on this tree: the Reply that
+  delivered the key keeps it verbatim in `proto.JournalEntry6.Raw`, where a
+  replay needs the octets, and in the packet capture `Client6.Packets`
+  returns. A caller that hands a journal or a capture to somebody else hands
+  the key over with it.
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

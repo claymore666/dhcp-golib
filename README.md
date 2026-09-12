@@ -50,17 +50,19 @@ A mark that is a link points at the issue that holds the plan.
 ## Status and roadmap
 
 IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
-it stops. The Router Advertisement is read for its flags and for the options
-it carries, an address is formed from an advertised prefix, and every one of
-those is reported and none of it is applied. There is no prefix delegation. A
+it stops. The Router Advertisement is read for its flags and for its
+prefixes, its routes, its link MTU, its resolvers and its search list, an
+address is formed from an advertised prefix, and every one of those is reported
+and none of it is applied. There is no prefix delegation. A
 server that holds the reconfigure key it gave the client can make it renew,
 rebind or ask for configuration again, and a Reconfigure that is not signed
 with that key is discarded. Nothing on DHCPv4 is planned for a later release.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
-Advertisement read for everything it carries, an address formed from one of
-its prefixes, a refusal told apart from a silence, a reconfiguration the
-server starts, and a lease given back from its record alone.
+Advertisement read for the five options the row above names, an address formed
+from one of its prefixes, a refusal told apart from a silence, a
+reconfiguration the server starts, and a lease given back from its record
+alone.
 
 This library is the DHCP engine of docker-net-dhcp 2.x. The API is not stable.
 It moves between tags and without a deprecation cycle. Releases are tagged on

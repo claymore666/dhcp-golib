@@ -24,14 +24,20 @@
 // Four things this does NOT do, stated here because a default that is on
 // makes all of them reachable:
 //
-// No reconfigure key survives a restart. The key lives in the Machine6 and in
-// nothing else — not in Resume6, not in the lease record a caller persists —
-// because it is a shared secret and that record is the one callers log and
-// hand to Journal6. A machine rebuilt after a restart therefore discards every
+// No reconfigure key survives a restart. A key is held in the Machine6 alone:
+// not in Resume6, and not in the lease record a caller persists, because it is
+// a shared secret and that record is the one callers log and hand to Journal6.
+// A machine rebuilt after a restart therefore discards every
 // Reconfigure from its server until the next Solicit/Reply, Request/Reply or
 // Information-request/Reply hands it a new key (§20.4.2). The cost is one
 // refused Reconfigure per restart; the server falls back to the client's own
 // T1.
+//
+// The recorded datagram is the exception to that, and a caller handing out a
+// journal needs it: the Reply that delivered the key keeps it verbatim in
+// JournalEntry6.Raw and in the packet capture, because a replay needs the
+// octets. The sentence above is about what a rebuilt machine holds, and not
+// about what a saved journal contains.
 //
 // Half of §16.11's first bullet is somebody else's. "the message was not
 // unicast to the client" is a fact about the datagram, and this package

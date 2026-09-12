@@ -31,8 +31,11 @@ What it does not do is most of the answer to "how bad could this be":
   go over an `AF_PACKET` socket, which needs `CAP_NET_RAW`. The test suite
   holds that capability inside an unprivileged user namespace, and the library
   asks for nothing beyond it;
-- **it holds no secret, reads no configuration file, and starts no
-  subprocess.** There is no `dhcpcd`, no `dhclient`, no shell.
+- **it holds no secret of its own, reads no configuration file, and starts no
+  subprocess.** There is no `dhcpcd`, no `dhclient`, no shell. One secret does
+  reach it: the reconfigure key a DHCPv6 server sends. That key is held in the
+  state machine, and the Reply that delivered it stays in the journal and in
+  the packet capture, so a journal handed to somebody else carries the key.
 
 The attack surface is the wire. A DHCP reply is written by whoever answers
 first on the link, and the library decodes it before anything has authenticated
