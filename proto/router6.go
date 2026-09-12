@@ -208,6 +208,16 @@ func expiresBefore(a, b timedEntry) bool {
 // had before the flood, entry by entry, which is the outcome the caps comment
 // says the eviction policy avoids. Driven by
 // TestAFullListOfEqualsEvictsTheOneHeardLast.
+//
+// THE KEY IS THE ENTRY'S seq AND NOT ITS POSITION, AND ON EVERY STATE THIS
+// TABLE REACHES THOSE ARE THE SAME ORDER. seq is handed out only where an
+// entry is appended and rises at each, every removal here is an
+// order-preserving splice, and the two sorts in this file are on copies. So a
+// version of this loop keyed on the slice index is a NO-OP that no fixture can
+// tell from this one, and a mutant spelling it that way survives for that
+// reason and not for want of an observer. It is written on seq because seq is
+// the entry's own and the index is the container's: the day anything reorders
+// a stored list, this rule still says what it means.
 func evictShortest[T any](in []T, key func(T) (timedEntry, int)) []T {
 	idx := 0
 	for i := range in {

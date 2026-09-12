@@ -641,7 +641,23 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # merge product: 775 declared and 38 netns, against 727 and 36 on this branch
 # and 725 and 37 on dev. NETNS_CEILING_SECONDS is #925's 170 and the netns row
 # on the merge product is measured against it in this round's record.
-MIN_DECLARED_TESTS=775
+#
+# TWO MORE ARE THE MERGE'S OWN, which is why they are named here and not in
+# either round's list above, and 775 becomes 777:
+#
+#   proto/machine6_replay_test.go      (1)  OneJournalCarriesBothTheRouter
+#     SourceAndTheDestination
+#   lease/record_test.go               (1)  EveryWireCounterSurvivesThe
+#     RecordsEncoding
+#
+# The first is the collision itself: JournalEntry6 gained a field on each side
+# of the merge, each round's tests pass on a product that kept only its own
+# half, and a diff shows nothing because the text that collides is text neither
+# side wrote. One journal that carries both is the only fixture that sees it.
+# The second is this round's new wire counter taking the second of the two
+# routes a counter reaches a file by, the struct tags, where a name given twice
+# is answered by writing neither.
+MIN_DECLARED_TESTS=777
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

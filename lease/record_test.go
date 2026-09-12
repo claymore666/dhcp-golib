@@ -3,6 +3,7 @@
 package lease
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"reflect"
@@ -656,3 +657,39 @@ func TestEveryWireCounterSurvivesTheArithmetic(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestEveryWireCounterSurvivesTheRecordsEncoding drives every field of
+// WireCounters through the encoding a record is stored in, with a value unique
+// to that field.
+//
+// A COUNTER REACHES THE WIRE HALF AND THE FILE BY TWO DIFFERENT ROUTES. The
+// test above drives the first, which is reflective and would show a field
+// skipped; this drives the second, which is the struct tags, and the ways that
+// one loses a counter are quiet: a field with no tag at all, or two fields
+// given one name, which encoding/json answers by writing neither. Either reads
+// back as a zero from a client that counted.
+func TestEveryWireCounterSurvivesTheRecordsEncoding(t *testing.T) {
+	wt := reflect.TypeOf(WireCounters{})
+	var w WireCounters
+	wv := reflect.ValueOf(&w).Elem()
+	for i := range wt.NumField() {
+		wv.Field(i).SetUint(uint64(i + 1))
+	}
+
+	b, err := json.Marshal(RecordCounters{Wire: w})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var back RecordCounters
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	gv := reflect.ValueOf(back.Wire)
+	for i := range wt.NumField() {
+		if want := uint64(i + 1); gv.Field(i).Uint() != want {
+			t.Errorf("%s came back as %d, want %d: the record's encoding lost it",
+				wt.Field(i).Name, gv.Field(i).Uint(), want)
+		}
+	}
+}
