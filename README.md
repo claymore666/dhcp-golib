@@ -21,6 +21,7 @@ and it needs no root.
 | Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
+| Give a running client a name for the server's table, and send it at once (RFC 2132's Host Name option) | yes | unsupported |
 | Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
 | Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
@@ -230,6 +231,9 @@ The bounds below are written down so that nobody has to infer them.
   bound client with no exchange in flight is discarded, RFC 3203's
   DHCPFORCERENEW included. DHCPv6's Reconfigure is served and is a `v1.0.0`
   row above.
+- No name option on DHCPv6. IPv4 sends RFC 2132's Host Name option, and a
+  running client's name can be changed. DHCPv6's counterpart, RFC 4704's Client
+  FQDN option, is not sent and there is no call that sets one.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.

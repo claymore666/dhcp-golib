@@ -255,6 +255,12 @@ func TestJournalEntryEventRoundTrips(t *testing.T) {
 				ev = RouterAdvertRaw(mustRA(t, raBytes), raBytes)
 			case EvDADResult:
 				ev = DADResult(netip.MustParseAddr("fd00:99::183"), true)
+			case EvSetHostname:
+				// Built WITH a name, for the reason the arm above it says:
+				// an arm that built `Simple(k)` here would agree with a
+				// journal that dropped the payload, which is exactly what
+				// M7a's carried row 2 was.
+				ev = SetHostname("a-name-the-default-arm-would-drop")
 			default:
 				ev = Simple(k)
 			}
@@ -270,6 +276,10 @@ func TestJournalEntryEventRoundTrips(t *testing.T) {
 			case EvTimerFired:
 				if back.Timer != ev.Timer {
 					t.Fatalf("timer %s round-tripped to %s", ev.Timer, back.Timer)
+				}
+			case EvSetHostname:
+				if back.Hostname != ev.Hostname {
+					t.Fatalf("hostname %q round-tripped to %q", ev.Hostname, back.Hostname)
 				}
 			case EvActionFailed:
 				if back.Action != ev.Action || back.Reason != ev.Reason {

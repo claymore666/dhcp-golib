@@ -37,6 +37,16 @@ type JournalEntry struct {
 	// two places instead of one — the shape that let the RA payload be dropped
 	// in the first place (M7a carried row 2).
 	RA []byte
+	// Hostname is the name an EvSetHostname carried.
+	//
+	// A FIELD OF ITS OWN, beside Reason and not inside it. The default arm of
+	// replayEvent reconstructs a bare kind, so a payload that is not recorded
+	// and not given an arm replays as an empty value — here, as a client that
+	// never changed its name. Rendered actions cannot catch it: a send is
+	// rendered by wire.Message.Summary, which prints the option COUNT and not
+	// the contents, so a replay that dropped the name agrees with the journal
+	// line for line and differs only in the bytes.
+	Hostname string
 	// DAD is the outcome for EvDADResult. It is a VALUE and not bytes because
 	// there are no bytes: EvDADResult is ring 3 reporting a verdict it reached
 	// from frames this ring never saw, so there is nothing to re-decode and
@@ -70,7 +80,7 @@ type JournalEntry struct {
 func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
 	return JournalEntry{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, DAD: ev.DAD,
+		Raw: ev.Raw, RA: ev.RARaw, DAD: ev.DAD, Hostname: ev.Hostname,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
@@ -81,7 +91,7 @@ func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to Sta
 // A Received entry is re-DECODED here, so a corrupt or unparseable Raw is
 // reported rather than silently replayed as a nil message.
 func (e JournalEntry) Event() (Event, error) {
-	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason); done {
+	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason, e.Hostname); done {
 		return ev, err
 	}
 	msg, err := wire.Decode(e.Raw)
@@ -101,7 +111,7 @@ func (e JournalEntry) Event() (Event, error) {
 // dropped, which is the defect M7a's carried row 2 recorded: the default arm
 // reconstructed EvRouterAdvert and EvDADResult as bare kinds, and the test
 // that was supposed to catch it built them as bare kinds too.
-func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer TimerID, action ActionID, reason string) (Event, bool, error) {
+func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer TimerID, action ActionID, reason, hostname string) (Event, bool, error) {
 	switch kind {
 	case EvReceived:
 		return Event{}, false, nil
@@ -126,6 +136,8 @@ func replayEvent(seq uint64, kind EventKind, ra []byte, dad DADOutcome, timer Ti
 		return RouterAdvertRaw(adv, ra), true, nil
 	case EvDADResult:
 		return DADResult(dad.Addr, dad.Duplicate), true, nil
+	case EvSetHostname:
+		return SetHostname(hostname), true, nil
 	default:
 		return Simple(kind), true, nil
 	}

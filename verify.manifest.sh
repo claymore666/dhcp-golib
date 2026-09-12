@@ -552,7 +552,51 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # early return on a refused Information-request sits in front of the call that
 # ends this branch's Reconfigure detour, and a clean textual merge answers
 # nothing about what becomes of the detour.
-MIN_DECLARED_TESTS=725
+#
+# THE HOSTNAME SETTER, #961, AND ITS BACK-MERGE INTO THIS BATCH: this branch
+# moved the pin 654 -> 676 and then 678 without writing its set down, which is
+# what this block repays. 725 -> 747, MEASURED here, one testroster run over
+# dev at the back-merge base and one over the merge product, the difference
+# taken as a SET and not added up: twenty-two added, none removed, none
+# renamed, in three files:
+#
+#   proto/hostname_test.go                 (18)
+#     AHostnameArrivingBeforeTheLeaseGoesOutAtTheBind,
+#     AHostnameArrivingWhileProbingGoesOutAtTheAnnouncement,
+#     AHostnameDuringARenewalResendsTheOpenTransaction,
+#     AHostnameInBoundIsSentAsAnEarlyRenewal,
+#     AHostnameOnALeaseWithNoServerIdentifierWaitsForT2,
+#     AHostnameRenewalThatIsNAKedLosesTheLease,
+#     AHostnameSetAfterStartReplaysFromTheStartParams,
+#     AHostnameSetBeforeTheClientStartsGoesOutInTheFirstDiscover,
+#     AHostnameSetDuringTheDesyncWaitGoesOutInTheDiscover,
+#     AHostnameSetTwiceSendsOneMessage,
+#     AHostnameSetWhileRebootingGoesOutInTheNextRequest,
+#     AMachineRefusesAnUnsendableHostnameAtRuntime,
+#     AnEmptyHostnameStopsTheOptionAndSendsNothing,
+#     AnFqdnClientIgnoresAHostname, AnOrdinaryAcquisitionSendsNoExtraMessage,
+#     NewRefusesAnUnsendableHostname, ParamsIsNotMovedByASetter,
+#     TheRenewTimerLeftOverByAnEarlyRenewalIsIgnored
+#
+#   lease/hostname_test.go                 (3)
+#     SetHostnameOnARunningManagerReachesTheServer,
+#     SetHostnameRefusesWhatCannotBeSent, SetHostnameReportsAFullRequestQueue
+#
+#   runtime/hostname_dnsmasq_linux_test.go (1)
+#     AHostnameSetAfterStartReachesTheServersLeaseFile
+#
+# No TEST file is touched by both sides, which is what makes the set a union
+# with nothing to reconcile inside it. Three files did need a hand resolution
+# and none of them declares a test: this pin, README.md's out-of-scope list,
+# and JournalEntry6, where #925's Dst and this branch's Hostname are two new
+# fields on one struct.
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 37 over
+# dev and 38 on the merge product, so the population the unit-suite row hands
+# to the netns row moves here. It is derived at run time in verify.sh, so there
+# is no second number to patch; NETNS_CEILING_SECONDS is this batch's 170 and
+# is not moved by one more namespaced test.
+MIN_DECLARED_TESTS=747
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

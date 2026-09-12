@@ -57,7 +57,15 @@ type Params struct {
 	// its own, so it cannot freeze D10 by accident.
 	ClientID []byte
 
-	// Hostname is option 12. Empty means the option is not sent.
+	// Hostname is option 12, the name the client asks the server to record.
+	// Empty means the option is not sent, which is RFC 2132 section 3.14's
+	// "its minimum length is 1" and not a value.
+	//
+	// ValidateHostname is what New refuses it by, and it is the SAME rule the
+	// running client's setter applies: see Machine.Hostname and
+	// lease.Manager.SetHostname. One rule rather than two, because a name a
+	// caller may start with and may not switch to would be a distinction
+	// nothing in the protocol makes.
 	Hostname string
 
 	// VendorClass is option 60. Empty means the option is not sent.
@@ -471,6 +479,51 @@ func (p Params) validate() error {
 	if p.FQDN.Name != "" {
 		if _, err := wire.EncodeFQDN(p.FQDN.flags(), p.FQDN.Name); err != nil {
 			return fmt.Errorf("%w: %w", ErrBadFQDN, err)
+		}
+	}
+	if err := ValidateHostname(p.Hostname); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ErrBadHostname is returned for a name option 12 cannot carry.
+var ErrBadHostname = errors.New("proto: hostname cannot be sent in option 12")
+
+// ValidateHostname is the one rule for a name this client will put in option
+// 12, and it is applied at New and again by the setter on a running client.
+//
+// IT REFUSES WHAT CANNOT BE CARRIED OR CANNOT BE CONSUMED, AND NOTHING ELSE.
+// Two rules, and the second is a choice this comment owes an escape for:
+//
+//   - Over 255 octets does not fit. MEASURED 2026-09-11 against wire.Encode: a
+//     256-octet option 12 returns ErrOptionTooLong, a 255-octet one encodes.
+//     Refused here rather than there, because a name refused at the encoder is
+//     refused on EVERY message the client ever builds — the client then looks
+//     like a broken transport once the send budget runs out, which is the
+//     defect wire/values.go's length bound was moved out of encodeName to fix
+//     for option 81 and which survived in option 12 until this rule.
+//
+//   - Every octet must be a printable ASCII character other than space, 0x21
+//     to 0x7E. RFC 2132 section 3.14 says only "See RFC 1035 for character set
+//     restrictions", and RFC 1035 section 2.3.1's preferred syntax is letters,
+//     digits and the hyphen — which this library does NOT enforce, because a
+//     container named with an underscore is a name real servers accept and
+//     refusing it would refuse names a deployment already uses. THE ESCAPE:
+//     a name this rule accepts can still be one RFC 1035 would not prefer.
+//     What it refuses is the part with a consequence outside this process — a
+//     NUL, a newline or a space goes into the line the server writes in its
+//     lease file and into the name it serves in DNS.
+func ValidateHostname(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 255 {
+		return fmt.Errorf("%w: %d octets, over the 255 a single option carries", ErrBadHostname, len(name))
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] < 0x21 || name[i] > 0x7E {
+			return fmt.Errorf("%w: octet %d is 0x%02x, outside the printable ASCII a host name may use", ErrBadHostname, i, name[i])
 		}
 	}
 	return nil

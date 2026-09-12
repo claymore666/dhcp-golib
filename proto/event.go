@@ -89,6 +89,19 @@ const (
 	// address already in use; this is the answer to a question the client
 	// asked.
 	EvDADResult
+	// EvSetHostname carries a name for option 12, supplied after the client
+	// started. Event.Hostname is the name; empty means the option stops being
+	// sent.
+	//
+	// It is an INPUT rather than a method for the reason EvRelease is one:
+	// ring 1 is pure and a name that changed under a Step would make a replay
+	// depend on when the caller called. Recorded in the journal WITH the name,
+	// so a replay of a run whose name changed sends what the run sent.
+	//
+	// No v6 arm. There is no name option on the DHCPv6 side of this library at
+	// all, so lease.Manager.SetHostname refuses on a v6 manager rather than
+	// storing a value nothing would send.
+	EvSetHostname
 )
 
 func (k EventKind) String() string {
@@ -119,6 +132,8 @@ func (k EventKind) String() string {
 		return "RouterAdvert"
 	case EvDADResult:
 		return "DADResult"
+	case EvSetHostname:
+		return "SetHostname"
 	default:
 		return fmt.Sprintf("event(%d)", uint8(k))
 	}
@@ -129,7 +144,7 @@ func AllEventKinds() []EventKind {
 	return []EventKind{
 		EvStart, EvStop, EvReceived, EvTimerFired, EvLinkDown, EvLinkUp,
 		EvConflictDetected, EvAddressLost, EvActionFailed, EvRelease,
-		EvARPReceived, EvRouterAdvert, EvDADResult,
+		EvARPReceived, EvRouterAdvert, EvDADResult, EvSetHostname,
 	}
 }
 
@@ -208,6 +223,16 @@ type Event struct {
 
 	// DAD is set when Kind is EvDADResult.
 	DAD DADOutcome
+
+	// Hostname is set when Kind is EvSetHostname: the name option 12 is to
+	// carry from now on.
+	//
+	// A FIELD RATHER THAN Reason, which already carries a string. Reason "is
+	// never parsed" by its own doc and exists for the journal; this value
+	// decides what goes on the wire, and putting it in a field nothing is
+	// allowed to read would be the two meanings that the journal's default arm
+	// drops one of.
+	Hostname string
 
 	// Timer is set when Kind is EvTimerFired.
 	Timer TimerID
@@ -294,6 +319,9 @@ func DADResult(addr netip.Addr, duplicate bool) Event {
 	return Event{Kind: EvDADResult, DAD: DADOutcome{Addr: addr, Duplicate: duplicate}}
 }
 
+// SetHostname builds an EvSetHostname event.
+func SetHostname(name string) Event { return Event{Kind: EvSetHostname, Hostname: name} }
+
 // Simple builds an event that carries nothing but its kind.
 func Simple(k EventKind) Event { return Event{Kind: k} }
 
@@ -323,6 +351,8 @@ func (e Event) String() string {
 		return "RouterAdvert " + e.RA.String()
 	case EvDADResult:
 		return "DADResult " + e.DAD.String()
+	case EvSetHostname:
+		return "SetHostname " + e.Hostname
 	default:
 		return e.Kind.String()
 	}

@@ -28,13 +28,18 @@ type JournalEntry6 struct {
 	Rnd  uint64
 	Kind EventKind
 
-	Raw    []byte
-	RA     []byte
-	Dst    netip.Addr
-	DAD    DADOutcome
-	Timer  TimerID
-	Action ActionID
-	Reason string
+	Raw []byte
+	RA  []byte
+	Dst netip.Addr
+	DAD DADOutcome
+	// Hostname is carried for the reason JournalEntry.Hostname is: replayEvent
+	// is ONE reconstruction for both families, and the copy that did not
+	// record a payload is the copy where the payload is dropped. The v6
+	// machine has no name option and never produces the event.
+	Hostname string
+	Timer    TimerID
+	Action   ActionID
+	Reason   string
 
 	From State6
 	To   State6
@@ -67,7 +72,7 @@ type JournalEntry6 struct {
 func NewJournalEntry6(seq uint64, now Instant, rnd uint64, ev Event, from, to State6, acts []Action) JournalEntry6 {
 	return JournalEntry6{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, Dst: ev.Dst, DAD: ev.DAD,
+		Raw: ev.Raw, RA: ev.RARaw, Dst: ev.Dst, DAD: ev.DAD, Hostname: ev.Hostname,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
@@ -76,7 +81,7 @@ func NewJournalEntry6(seq uint64, now Instant, rnd uint64, ev Event, from, to St
 // Event reconstructs the Step input this entry records, re-decoding a received
 // message through wire.DecodeV6.
 func (e JournalEntry6) Event() (Event, error) {
-	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason); done {
+	if ev, done, err := replayEvent(e.Seq, e.Kind, e.RA, e.DAD, e.Timer, e.Action, e.Reason, e.Hostname); done {
 		return ev, err
 	}
 	msg, err := wire.DecodeV6(e.Raw)
