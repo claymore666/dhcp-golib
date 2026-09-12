@@ -7,6 +7,7 @@ package runtime
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -69,6 +70,11 @@ const relHostAddr4 = "192.168.99.2"
 // locally administered so that its lease line can be told from the released
 // one in the server's own file.
 var relControlMAC = net.HardwareAddr{0x02, 0x00, 0x5e, 0x96, 0x20, 0x01}
+
+// relProbeMAC is the ordering probe's hardware address. Its lease is taken
+// once and then re-acquired whenever an observer needs to know that dnsmasq
+// has finished with what came before. See relBound.
+var relProbeMAC = net.HardwareAddr{0x02, 0x00, 0x5e, 0x96, 0x20, 0x02}
 
 // relClientID is the option 61 the released lease is acquired WITH.
 //
@@ -133,6 +139,15 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	}
 	t.Logf("the negative control lease, never released: %s", control.Addr.Addr())
 
+	// -------------------------------------------- the ordering probe's lease --
+	// A THIRD CLIENT, TAKEN NOW SO THAT NOTHING BELOW HAS TO ALLOCATE. What it
+	// is for is in relBound.
+	probe, _ := relAcquire(t, relProbeMAC, nil)
+	if probe.Addr.Addr() == released.Addr.Addr() || probe.Addr.Addr() == control.Addr.Addr() {
+		t.Fatalf("the ordering probe leased %s, which another client in this test already holds", probe.Addr)
+	}
+	t.Logf("the ordering probe's lease, never released: %s", probe.Addr.Addr())
+
 	rec := lease.Record{
 		ID: "rec-released", Scope: "net-a", Family: lease.FamilyV4,
 		CHAddr:   append([]byte(nil), releasedMAC...),
@@ -155,17 +170,18 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 		t.Fatalf("the wrong-identity release was not sent: %v", err)
 	}
 	srv.waitCount(t, "DHCPRELEASE("+testServerIf+")", before+1,
-		"dnsmasq logs a DHCPRELEASE before it decides whether it knows the binding")
+		"dnsmasq writes one line per release it has already decided about")
 
 	// DNSMASQ'S OWN VERDICT, AND IT IS WHAT ORDERS THIS OBSERVER. Presence in
 	// the lease file cannot say the release was refused: the lease is there
 	// from the acquisition until dnsmasq's main loop rewrites the file, so a
 	// read taken in that window returns "still there" whether the release was
-	// acted on or not. The refusal string is written on the decision itself,
-	// so waiting for it fails closed and needs no ordering of its own.
-	// MEASURED, dnsmasq 2.91: "DHCPRELEASE(srv0) 192.168.99.146
-	// 5e:ab:73:97:bb:a9 unknown lease".
-	srv.waitFor(t, "unknown lease")
+	// acted on or not. The verdict is written on the decision itself, so the
+	// line above is the whole barrier and this reads it.
+	// MEASURED, dnsmasq 2.91 rfc2131.c: the DHCPRELEASE arm prunes the binding
+	// or sets message to "unknown lease", and only then calls log_packet, so
+	// "DHCPRELEASE(srv0) 192.168.99.146 5e:ab:73:97:bb:a9 unknown lease" is
+	// one line carrying both.
 	if !relLineHas(srv, "DHCPRELEASE("+testServerIf+") "+addr.String(), "unknown lease") {
 		t.Fatalf("dnsmasq said \"unknown lease\" about some other datagram, not about %s.\nLog:\n%s",
 			addr, strings.Join(srv.lines(), "\n"))
@@ -174,13 +190,28 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	t.Logf("dnsmasq called the wrong-identity release an unknown lease and left %s in place", addr)
 
 	// ----------------------------------------- observers 1 and 2, default port --
+	// Counted before the send, because observer 4 already put one line about
+	// this address in the log and a test that asked only whether SOME line
+	// names it would read that one.
+	line := "DHCPRELEASE(" + testServerIf + ") " + addr.String()
+	sent := relCountLine(srv, line)
+	refused := relCountLine(srv, line, "unknown lease")
+
 	if err := SendRelease(rec, ReleaseConfig{
 		Interface: testClientIf,
 		Source:    netip.MustParseAddr(relHostAddr4),
 	}); err != nil {
 		t.Fatalf("SendRelease: %v", err)
 	}
-	srv.waitFor(t, "DHCPRELEASE("+testServerIf+") "+addr.String())
+	relBound(t, srv, probe)
+	if got := relCountLine(srv, line); got != sent+1 {
+		t.Fatalf("dnsmasq answered an exchange begun after the release and holds %d line(s) %q, want %d: nothing was sent.\nLog:\n%s",
+			got, line, sent+1, strings.Join(srv.lines(), "\n"))
+	}
+	if got := relCountLine(srv, line, "unknown lease"); got != refused {
+		t.Fatalf("dnsmasq refused the release of %s as an unknown lease; it looked the binding up on a key the acquisition never used.\nLog:\n%s",
+			addr, strings.Join(srv.lines(), "\n"))
+	}
 	relWaitGone(t, srv.leasefile, addr)
 	t.Logf("dnsmasq closed %s on a release sourced from %s, which never held it", addr, relHostAddr4)
 
@@ -194,6 +225,15 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	rec2 := rec
 	rec2.Lease = again
 	addr2 := again.Addr.Addr()
+
+	// Counted the same way and for a sharper version of the same reason: the
+	// address freed a moment ago is the one dnsmasq hands back first, so
+	// MEASURED here addr2 is usually addr itself and the log already holds two
+	// lines naming it.
+	line2 := "DHCPRELEASE(" + testServerIf + ") " + addr2.String()
+	sent2 := relCountLine(srv, line2)
+	refused2 := relCountLine(srv, line2, "unknown lease")
+
 	if err := SendRelease(rec2, ReleaseConfig{
 		Interface:  testClientIf,
 		Source:     netip.MustParseAddr(relHostAddr4),
@@ -201,12 +241,29 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SendRelease from an ephemeral source port: %v", err)
 	}
-	srv.waitCount(t, "DHCPRELEASE("+testServerIf+") "+addr2.String(), 1,
-		"the release sent from an ephemeral source port")
+	relBound(t, srv, probe)
+	if got := relCountLine(srv, line2); got != sent2+1 {
+		t.Fatalf("dnsmasq answered an exchange begun after the release and holds %d line(s) %q, want %d: the release from an ephemeral source port named another address or was never sent.\nLog:\n%s",
+			got, line2, sent2+1, strings.Join(srv.lines(), "\n"))
+	}
+	if got := relCountLine(srv, line2, "unknown lease"); got != refused2 {
+		t.Fatalf("dnsmasq refused the release of %s, sent from source port 34567, as an unknown lease.\nLog:\n%s",
+			addr2, strings.Join(srv.lines(), "\n"))
+	}
 	relWaitGone(t, srv.leasefile, addr2)
 	t.Logf("a release from source port 34567 closed %s", addr2)
 
 	// -------------------------------------------------------- observer 3, last --
+	// THE LOG DECIDES AND THE FILE CORROBORATES, in that order. dnsmasq writes
+	// one line per release it acted on, and every release this test sent is
+	// followed by a bound that says the log has caught up, so a control
+	// address named in none of those lines was never released. Reading the
+	// file first would leave a release of this lease to be noticed as an
+	// absence, which has no bound of its own.
+	if n := relCountLine(srv, "DHCPRELEASE("+testServerIf+") "+control.Addr.Addr().String()); n != 0 {
+		t.Fatalf("dnsmasq logged %d DHCPRELEASE line(s) for the control lease %s, which this test never released.\nLog:\n%s",
+			n, control.Addr.Addr(), strings.Join(srv.lines(), "\n"))
+	}
 	relWaitHolds(t, srv.leasefile, control.Addr.Addr())
 
 	// -------------------------------------- ReleaseConfig.Interface is applied --
@@ -325,10 +382,109 @@ func relWaitHolds(t *testing.T, path string, addr netip.Addr) {
 	}
 }
 
+// relV6XID reads the transaction id dnsmasq stamps on every option line of one
+// exchange. rfc3315.c logs "<xid> sent|nest size:… option:… <name>  <value>",
+// and the token before "sent" or "nest" is that id whatever prefix the log
+// facility puts in front.
+func relV6XID(line string) (string, string, bool) {
+	for _, desc := range []string{" sent ", " nest "} {
+		i := strings.Index(line, desc)
+		if i <= 0 {
+			continue
+		}
+		f := strings.Fields(line[:i])
+		if len(f) == 0 {
+			continue
+		}
+		return f[len(f)-1], strings.TrimSpace(desc), true
+	}
+	return "", "", false
+}
+
+// relAssertV6RefusedThisIA reads dnsmasq's refusal as a statement ABOUT THIS
+// BINDING and not as a string that appeared somewhere.
+//
+// "no binding found" on its own is satisfied by any per-IA status 3 the
+// fixture ever emits, including one for another client, another IA or another
+// exchange. RFC 9915 section 21.13 puts the Status Code INSIDE the IA it is
+// about, so the refusal, the IAID and the address are three options of one
+// reply and share one transaction id in the log. This reads all three: the
+// refusal must be a nested status, and the reply it is nested in must name
+// this IAID and this address.
+func relAssertV6RefusedThisIA(t *testing.T, srv *dnsmasqServer, addr netip.Addr, iaid uint32) {
+	t.Helper()
+	lines := srv.lines()
+	for _, line := range lines {
+		if !strings.Contains(line, "no binding found") {
+			continue
+		}
+		xid, desc, ok := relV6XID(line)
+		if !ok || desc != "nest" {
+			continue
+		}
+		var named, addressed bool
+		for _, other := range lines {
+			x, _, ok := relV6XID(other)
+			if !ok || x != xid {
+				continue
+			}
+			if strings.Contains(other, "ia-na") && strings.Contains(other, fmt.Sprintf("IAID=%d", iaid)) {
+				named = true
+			}
+			if strings.Contains(other, "iaaddr") && strings.Contains(other, addr.String()) {
+				addressed = true
+			}
+		}
+		if named && addressed {
+			return
+		}
+	}
+	t.Fatalf("dnsmasq logged no per-IA \"no binding found\" naming IAID=%d and %s; a Release it acted on looks exactly like this too.\nLog:\n%s",
+		iaid, addr, strings.Join(lines, "\n"))
+}
+
 // relLineHas reports whether one dnsmasq log line carries all of want. Two
 // substrings in two different lines are two events, and this observer is about
 // one.
-func relLineHas(srv *dnsmasqServer, want ...string) bool {
+// relBound blocks until dnsmasq has answered an exchange begun AFTER the
+// caller's release, which is what lets the observers around it decide instead
+// of wait.
+//
+// WITHOUT IT THE ONLY BOUND IS go test's own deadline. A release that was
+// never sent produces no line, and an observer waiting for that line ends in
+// the timeout panic: the test does go red, but it goes red on a clock, and a
+// mutant killed by a clock is a mutant nobody adjudicated. Three moves against
+// this test hung for that reason before this existed.
+//
+// The premise is dnsmasq's, MEASURED in 2.91: it reads its DHCP socket in
+// arrival order, and rfc2131.c's DHCPRELEASE arm prunes the binding or names
+// it unknown and only then calls log_packet, so the line is the decision
+// rather than a note that one is coming. A datagram written to the wire before
+// the probe's own exchange is therefore either in the log once the probe holds
+// an address, or was never sent.
+//
+// The probe RE-ACQUIRES A STANDING LEASE and so allocates nothing. A probe
+// that took a freed address could put back the lease the test had just
+// released, and one that renewed the control lease would repair the very
+// damage observer 3 exists to see.
+//
+// The last wait is about this process and not about dnsmasq: the log is read
+// from the child's stderr by another goroutine, so the probe's own DHCPACK is
+// what says every earlier line has arrived here.
+func relBound(t *testing.T, srv *dnsmasqServer, probe lease.Lease) {
+	t.Helper()
+	want := "DHCPACK(" + testServerIf + ") " + probe.Addr.Addr().String()
+	seen := srv.count(want)
+	again, _ := relAcquire(t, relProbeMAC, nil)
+	if again.Addr.Addr() != probe.Addr.Addr() {
+		t.Fatalf("the ordering probe took %s and not its own standing lease %s: it allocated an address, so it cannot bound anything", again.Addr, probe.Addr)
+	}
+	srv.waitCount(t, want, seen+1, "the probe's own acknowledgement is what says the log has caught up")
+}
+
+// relCountLine counts the log lines that contain every one of want.
+func relCountLine(srv *dnsmasqServer, want ...string) int {
+	n := 0
 	for _, line := range srv.lines() {
 		all := true
 		for _, w := range want {
@@ -338,10 +494,14 @@ func relLineHas(srv *dnsmasqServer, want ...string) bool {
 			}
 		}
 		if all {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
+}
+
+func relLineHas(srv *dnsmasqServer, want ...string) bool {
+	return relCountLine(srv, want...) > 0
 }
 
 // relWaitLease spins until dnsmasq's lease file names addr and returns the
@@ -469,17 +629,24 @@ func v6ReleaseByRecordAgainstDnsmasq(t *testing.T) {
 	wrong.Identity = append([]byte(nil), rec.Identity...)
 	wrong.Identity[len(wrong.Identity)-5] ^= 0xFF
 	before := srv.count("DHCPRELEASE(" + test6ServerIf + ")")
+	replies := srv.count("release received")
 	if err := SendRelease(wrong, cfg); err != nil {
 		t.Fatalf("the wrong-DUID release was not sent: %v", err)
 	}
 	srv.waitCount(t, "DHCPRELEASE("+test6ServerIf+")", before+1,
 		"dnsmasq logs a DHCPRELEASE before it decides whether it knows the binding")
 
-	// The v4 half's reason, in this family's spelling. RFC 9915 section 21.13
-	// gives the Release its per-IA Status Code and dnsmasq writes it into the
-	// log. MEASURED, dnsmasq 2.91: "option: 13 status  3 no binding found"
-	// against "option: 13 status  0 release received" for one it acts on.
-	srv.waitFor(t, "no binding found")
+	// THE BARRIER IS THE REPLY, NOT THE REFUSAL, so that a Release dnsmasq
+	// ACTS on fails here in a second instead of at the child's deadline. RFC
+	// 9915 section 21.13's Status Code is per IA for the refusal and
+	// message-level for the reply as a whole, and dnsmasq 2.91 writes the
+	// message-level one last: rfc3315.c appends "release received" after the
+	// IA it refused, and log6_opts walks the reply in packet order. So once
+	// that line is in the log this reply is in the log whole, and the per-IA
+	// refusal is either there or was never sent.
+	srv.waitCount(t, "release received", replies+1,
+		"every Reply to a Release carries the message-level success status, and it is written after the IA options")
+	relAssertV6RefusedThisIA(t, srv, addr, ev.Lease.IAID)
 	relWaitHolds(t, srv.leasefile, addr)
 	t.Logf("dnsmasq found no binding for the wrong-DUID Release and left %s in place", addr)
 
@@ -539,8 +706,8 @@ var (
 	relIdentifiedMAC = net.HardwareAddr{0x02, 0x00, 0x5e, 0x96, 0x20, 0x04}
 )
 
-// TestAnInventedIdentifierWouldCloseAnotherClientsLease is the outside
-// evidence for the half of RFC 2131 section 3.1(6) that has none on its own.
+// TestAReleaseIsLookedUpOnTheKeyTheAcquisitionUsed is the outside evidence for
+// the half of RFC 2131 section 3.1(6) that has none on its own.
 //
 // "If the client used a 'client identifier' when it obtained the lease, it
 // MUST use the same 'client identifier' in the DHCPRELEASE message." The
@@ -549,16 +716,22 @@ var (
 // dnsmasq falls back to the hardware address, finds the same binding and
 // closes it, so the datagram's bytes are the only witness.
 //
-// A SECOND LEASE MAKES IT VISIBLE. The invention that a builder reaches for is
-// RFC 2132 section 9.14's type-1 form, one octet of hardware type followed by
-// the hardware address. So the fixture gives that exact string to somebody
-// else: one client acquires with no identifier, a second acquires with
-// 01 followed by the FIRST client's hardware address, and dnsmasq now keys a
-// different binding on the bytes the invention would produce. Releasing the
-// first client's record must close the first client's lease. A release that
-// invented an identifier closes the second one instead, and both halves are
-// lines in dnsmasq's own file.
-func TestAnInventedIdentifierWouldCloseAnotherClientsLease(t *testing.T) {
+// A SECOND LEASE MAKES IT VISIBLE. The invention a builder reaches for is RFC
+// 2132 section 9.14's type-1 form, one octet of hardware type followed by the
+// hardware address. So the fixture gives that exact string to somebody else:
+// one client acquires with no identifier, a second acquires with 01 followed
+// by the FIRST client's hardware address, and dnsmasq now keys a different
+// binding on the bytes the invention would produce.
+//
+// WHAT DNSMASQ 2.91 THEN DOES, MEASURED HERE AND NOT ASSUMED: the lookup lands
+// on the neighbour's binding, rfc2131.c compares that binding's address with
+// the datagram's ciaddr, they differ, and the release is refused with "unknown
+// lease". So an invented identifier does not close the neighbour's lease, and
+// it does not close the released client's lease either: the address stays
+// leased until it expires while the caller is told it was given back. The
+// observer is dnsmasq's own decision line for this address, which is written
+// at the decision and carries the refusal or does not.
+func TestAReleaseIsLookedUpOnTheKeyTheAcquisitionUsed(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		inventedIdentifierAgainstDnsmasq(t)
 		return
@@ -615,7 +788,16 @@ func inventedIdentifierAgainstDnsmasq(t *testing.T) {
 		t.Fatalf("SendRelease: %v", err)
 	}
 
+	// DNSMASQ'S OWN DECISION, AND NOT A DEADLINE. The line naming this address
+	// is written when the release is adjudicated and carries "unknown lease"
+	// when the lookup missed. Reading it here is what makes an invented
+	// identifier fail in a second: the refusal is present, rather than the
+	// lease still sitting in the file until the child's clock runs out.
 	srv.waitFor(t, "DHCPRELEASE("+testServerIf+") "+plainAddr.String())
+	if relLineHas(srv, "DHCPRELEASE("+testServerIf+") "+plainAddr.String(), "unknown lease") {
+		t.Fatalf("dnsmasq refused the release of %s as an unknown lease; it looked the binding up on a key the acquisition never used.\nLog:\n%s",
+			plainAddr, strings.Join(srv.lines(), "\n"))
+	}
 	relWaitGone(t, srv.leasefile, plainAddr)
 	relWaitHolds(t, srv.leasefile, otherAddr)
 	t.Logf("the release with no option 61 closed %s and left %s alone", plainAddr, otherAddr)

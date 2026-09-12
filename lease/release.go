@@ -164,16 +164,21 @@ func buildRelease4(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	msg.Options[wire.OptServerID] = sv[:]
 	msg.Options[wire.OptMessage] = []byte(releaseMessage)
 
-	// THE IDENTITY IS REPLAYED INCLUDING ITS ABSENCE, and the absence is the
-	// half that has no outside evidence. RFC 2131 section 3.1(6): "If the
-	// client used a 'client identifier' when it obtained the lease, it MUST
-	// use the same 'client identifier' in the DHCPRELEASE message." The
+	// THE IDENTITY IS REPLAYED INCLUDING ITS ABSENCE. RFC 2131 section 3.1(6):
+	// "If the client used a 'client identifier' when it obtained the lease, it
+	// MUST use the same 'client identifier' in the DHCPRELEASE message." The
 	// condition is the operative word. A server looks the binding up by
 	// client-identifier first and falls back to chaddr for a lease that has
-	// none, so an option 61 invented here is a lookup that succeeds on the
-	// wrong key — and MEASURED against dnsmasq 2.91 it closes the lease
-	// anyway, which is why no fixture can catch it and the encoded bytes are
-	// the only observer there is.
+	// none, so an option 61 invented here is a lookup on a key the acquisition
+	// never used.
+	//
+	// THE ABSENCE HAS OUTSIDE EVIDENCE, and it took a fixture built for it.
+	// MEASURED against dnsmasq 2.91 in TestAReleaseIsLookedUpOnTheKeyTheAcquisitionUsed:
+	// a neighbour holds a lease under exactly the identifier an invention
+	// would produce, dnsmasq's lookup then lands on the neighbour's binding,
+	// that binding's address is not the released one, and dnsmasq answers
+	// "unknown lease" and gives nothing back. The encoded bytes are the first
+	// observer and that test is the second.
 	if len(rec.Identity) > 0 {
 		msg.Options[wire.OptClientID] = rec.Identity
 	}
