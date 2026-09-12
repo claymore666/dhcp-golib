@@ -177,6 +177,16 @@ type Manager struct {
 	params6   proto.Params6
 	declined6 []netip.Addr
 
+	// hostname mirrors the v4 machine's live option-12 name, for Hostname, and
+	// is refreshed after every Step for the reason acd is: the machine belongs
+	// to Run's goroutine and a caller reading it directly would race.
+	//
+	// IT IS THE MACHINE'S VALUE AND NOT THE LAST NAME PASSED TO SetHostname.
+	// The two differ whenever a request was queued and not yet stepped, and
+	// whenever the machine refused one — and a mirror of what was ASKED would
+	// report a name this client is not sending.
+	hostname string
+
 	// machine6 is the v6 machine, and it is non-nil exactly when machine is
 	// nil: one Manager runs one lease in one family. Every place that has to
 	// know which reads this field, so "which family is this" has one
@@ -491,9 +501,17 @@ func NewManager(cfg Config) (*Manager, error) {
 		journal: cfg.Journal,
 		packets: cfg.Packets,
 		events:  make(chan Event, buf),
-		// Four is enough for every distinct request that can be outstanding
-		// at once and then some: the two kinds are idempotent, so a second
-		// copy of one already queued would change nothing.
+		// Seeded from the machine rather than from cfg.Params, so the mirror
+		// and its subject start out saying the same thing. Hostname is read
+		// before the first Step by any caller that asks early.
+		hostname: m.Hostname(),
+		// Four is enough for every distinct request that can be outstanding at
+		// once and then some. Release, ReportConflict, ReportAddressLost and
+		// ReportDADResult are idempotent, so a second copy of one already
+		// queued changes nothing; SetHostname is not, and does not need to be
+		// — the queue is FIFO, so two names applied in the order they were
+		// asked for leave the last one in force. A queue that refused one is
+		// the case SetHostname returns ErrRequestQueueFull for.
 		requests: make(chan proto.Event, 4),
 	}
 	if mg.journal == nil {
@@ -827,12 +845,104 @@ func (mg *Manager) ReportDADResult(addr netip.Addr, duplicate bool) {
 // treats it as a conflict.
 func (mg *Manager) ReportAddressLost() { mg.request(proto.Simple(proto.EvAddressLost)) }
 
-func (mg *Manager) request(ev proto.Event) {
+func (mg *Manager) request(ev proto.Event) { _ = mg.requestQueued(ev) }
+
+// requestQueued is request, reporting whether the event was taken.
+//
+// The verdict is returned rather than only counted so that ONE caller can know
+// its own call landed. Stats.RequestsDropped cannot say that — it is one
+// counter over every request kind and every goroutine, which its own doc at
+// Release spells out — and for a request whose whole point is that something
+// reaches the server, "it may or may not have been sent" is not a usable
+// answer. Release and ReportConflict keep the fire-and-forget shape: neither
+// message is answered, so neither had a receipt to give.
+func (mg *Manager) requestQueued(ev proto.Event) bool {
 	select {
 	case mg.requests <- ev:
+		return true
 	default:
 		mg.bump(func(s *Stats) { s.RequestsDropped++ })
+		return false
 	}
+}
+
+// Hostname is the name this client is putting in option 12 now, and the empty
+// string on a v6 manager, which sends no name option.
+//
+// It is Config.Params.Hostname until SetHostname changes it. A CALLER
+// PERSISTING CONFIGURATION ACROSS A RESTART PERSISTS THIS: proto.Params is the
+// value a journal replays against and deliberately does not move under the
+// run, so a name set while the client was running is not in it. The same split
+// as Params6 and Declined6.
+//
+// It follows the machine and not the setter: a call that has been queued and
+// not yet stepped is not visible here yet.
+func (mg *Manager) Hostname() string {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.hostname
+}
+
+// ErrHostnameV6 is returned by SetHostname on a DHCPv6 manager.
+var ErrHostnameV6 = errors.New("lease: this manager runs DHCPv6, which this library sends no name option for")
+
+// ErrHostnameFQDN is returned by SetHostname on a client configured with
+// option 81.
+var ErrHostnameFQDN = errors.New("lease: this client sends option 81, which RFC 4702 section 3.1 forbids the Host Name option beside")
+
+// ErrRequestQueueFull is returned by SetHostname when the request queue would
+// not take the call.
+var ErrRequestQueueFull = errors.New("lease: the request queue is full and the hostname was not delivered")
+
+// SetHostname gives a RUNNING client the name it should ask the server to
+// record in option 12, and makes it tell the server at once.
+//
+// THE NAME IS SENT, NOT STORED. A client holding a lease renews early to carry
+// it — RFC 2131 section 4.4.5, "A client MAY choose to renew or extend its
+// lease prior to T1" — so the server's table has the name within one exchange
+// instead of at T1. A client that holds nothing yet records the name and sends
+// it in its next message, and in the DHCPREQUEST that follows the bind if the
+// name arrived after that message had gone. proto.Machine.announceHostname has
+// the whole rule and what it costs.
+//
+// CALLING IT AGAIN WITH THE SAME NAME SENDS NOTHING. The question the client
+// asks itself is whether the server has been told, not whether the value
+// changed, so a caller that re-applies a name on every event produces no
+// traffic.
+//
+// THE ERROR IS ABOUT THIS CALL AND NOTHING LATER. Nil means the name was
+// validated and handed to the running client; it does not mean the server
+// answered, and nothing here waits for a DHCPACK. A non-nil error means
+// nothing was handed over: an unsendable name (proto.ErrBadHostname), a client
+// this library sends no name for (ErrHostnameV6, ErrHostnameFQDN), or a full
+// request queue (ErrRequestQueueFull) — which is the one case a caller should
+// retry.
+//
+// An empty name stops option 12 being sent from the next message on, and sends
+// no message of its own. It does not withdraw the name the server already
+// holds; DHCP has no message for that, so an exchange would change nothing
+// there.
+//
+// "AT ONCE" HAS ONE EXCEPTION, and nil is returned in it. A held lease whose
+// DHCPACK carried no server identifier cannot be renewed by unicast, so that
+// client stays in BOUND and the name goes out in the broadcast DHCPREQUEST at
+// T2 instead. The journal says so on the spot ("no message was sent"); the
+// return value cannot, because it is about the handover and this is decided
+// afterwards, inside the running client.
+func (mg *Manager) SetHostname(name string) error {
+	if mg.v6() {
+		return ErrHostnameV6
+	}
+	if mg.cfg.Params.FQDN.Name != "" {
+		return ErrHostnameFQDN
+	}
+	if err := proto.ValidateHostname(name); err != nil {
+		return err
+	}
+	if !mg.requestQueued(proto.SetHostname(name)) {
+		return ErrRequestQueueFull
+	}
+	return nil
 }
 
 // shutdown feeds Stop so the lease is reported lost and every timer is
@@ -936,6 +1046,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.seq++
 			mg.stats.Steps++
 			mg.acd = mg.machine.ACDPhase()
+			mg.hostname = mg.machine.Hostname()
 			mg.mu.Unlock()
 
 			mg.journal.Append(proto.NewJournalEntry(seq, now, rnd, e, from, to, acts))
