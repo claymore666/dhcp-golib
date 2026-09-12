@@ -174,6 +174,34 @@ type Params6 struct {
 	RouterSolicitations   int
 	RouterSolicitInterval Duration
 
+	// AcceptReconfigure is whether this client announces, and then honours, a
+	// server-initiated Reconfigure: RFC 9915 §21.20's option going out, and
+	// §16.11's and §18.2.11's rules coming in.
+	//
+	// §21.20: "In the absence of this option, the default behavior is that the
+	// client is unwilling to accept Reconfigure messages." So the announcement
+	// and the acceptance are one switch: a client that did not say it was
+	// willing must not obey a Reconfigure it receives anyway, or the option it
+	// withheld meant nothing.
+	//
+	// DEFAULT ON. DefaultParams6 sets it true (maintainer decision, Q5 of the
+	// v2.2 IPv6 design round, 2026-09-11). A Params6 assembled field by field
+	// does not reach this default, and that is not a trap: validate() refuses
+	// every zero retransmission parameter, so no caller gets a working machine
+	// out of a Params6 it did not build from DefaultParams6.
+	//
+	// WHAT ELSE THE DEFAULT SWITCHES ON, stated because it is this field's
+	// consequence and not a pre-existing gap. §18.2.4: "A client MUST also
+	// initiate a Renew/Reply message exchange before time T1 if the client's
+	// link-local address used in previous interactions with the server is no
+	// longer valid and it is willing to receive Reconfigure messages." That
+	// conditional MUST is UNIMPLEMENTED here: ring 1 is never told the
+	// client's own source address, so it cannot see one stop being valid. The
+	// machine notices the consequence rather than the cause — a Renew that
+	// goes unanswered ends at T2 and then at the valid lifetime — and a caller
+	// that must have the MUST watches its own address and stops the client.
+	AcceptReconfigure bool
+
 	// MaxSendFailures is how many consecutive ActSendV6 failures end the
 	// acquisition with ReasonTransport. It is Params.MaxSendFailures's
 	// counterpart and exists for R2's reason: a machine whose every send
@@ -220,6 +248,7 @@ func DefaultParams6() Params6 {
 
 		MaxWaitTime: 60 * Second,
 
+		AcceptReconfigure:     true,
 		DADTimeout:            DefaultDADTimeout,
 		RouterSolicitations:   MaxRtrSolicitations,
 		RouterSolicitInterval: RtrSolicitationInterval,

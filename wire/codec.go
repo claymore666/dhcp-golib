@@ -218,6 +218,20 @@ func ube32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
+func be64(dst []byte, v uint64) {
+	for i := range 8 {
+		dst[i] = byte(v >> (56 - 8*i))
+	}
+}
+
+func ube64(b []byte) uint64 {
+	var v uint64
+	for i := range 8 {
+		v = v<<8 | uint64(b[i])
+	}
+	return v
+}
+
 func putAddr(dst []byte, a netip.Addr) {
 	if !a.Is4() {
 		dst[0], dst[1], dst[2], dst[3] = 0, 0, 0, 0

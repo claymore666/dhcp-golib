@@ -26,6 +26,7 @@ and it needs no root.
 | Report the gateway, the static routes and the link MTU | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/821) |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
+| Tell a server that refused apart from one that never answered, and say which code it sent | yes | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/816) |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/818) |
 | Prefix delegation (IA_PD) | n/a | [v1.0.0](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
@@ -50,7 +51,9 @@ A mark that is a link points at the issue that holds the plan.
 IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its two flags, and nothing else
 is taken from it. No address is formed from a prefix. There is no prefix
-delegation. A server cannot reconfigure a client that already holds a lease.
+delegation. A server that holds the reconfigure key it gave the client can
+make it renew, rebind or ask for configuration again, and a Reconfigure that
+is not signed with that key is discarded.
 Nothing on DHCPv4 is planned for a later release.
 
 The library is pre-1.0 and the API is not stable. It moves without a
@@ -226,7 +229,8 @@ The bounds below are written down so that nobody has to infer them.
   another host's messages.
 - No server-initiated reconfiguration on IPv4. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is a `v1.0.0` row above.
+  DHCPFORCERENEW included. DHCPv6's Reconfigure is served and is a `v1.0.0`
+  row above.
 - No name option on DHCPv6. IPv4 sends RFC 2132's Host Name option, and a
   running client's name can be changed. DHCPv6's counterpart, RFC 4704's Client
   FQDN option, is not sent and there is no call that sets one.

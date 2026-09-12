@@ -170,7 +170,42 @@ type Event struct {
 	// Raw is the bytes Msg was decoded from, when available. The journal
 	// stores it so a replay re-decodes rather than trusting an already-decoded
 	// struct, which puts ring 0 back inside the replay.
+	//
+	// IT IS ALSO WHAT RFC 9915 §20.4.3 AUTHENTICATES. The RKAP digest covers
+	// "the Reconfigure message" as it arrived, so the v6 machine hashes these
+	// octets and never a re-encoding of MsgV6: a digest over this library's
+	// canonical form would refuse a server whose option order differs and
+	// would let two messages that re-encode alike share one signature.
 	Raw []byte
+
+	// Dst is the IP destination the datagram carrying MsgV6 was addressed to,
+	// as the transport read it off the frame. The zero Addr means the
+	// transport did not report one.
+	//
+	// IT EXISTS FOR ONE RULE. §16.11's first bullet makes a client discard a
+	// Reconfigure that "was not unicast to the client", and that is a fact
+	// about the datagram rather than about the message: nothing inside the
+	// DHCP payload carries the address it was sent to.
+	//
+	// THE BULLET IS SPLIT ACROSS TWO RINGS, and neither half is the whole.
+	// Ring 1 refuses a destination that is multicast, unspecified or absent.
+	// Whether a unicast destination is THIS client's address is ring 3's to
+	// know — ring 1 is never told the client's own addresses — and
+	// runtime.PacketTransportV6 decides it, dropping every datagram whose
+	// destination is not the address it bound — MEASURED on a real link by
+	// runtime.TestAV6ClientDiscardsAnotherClientsReplyAtTheTransport, which
+	// puts a second client on the segment and reads the drop counter, so the
+	// pair of halves is a pair of measured cases. A caller that supplies its own
+	// lease.TransportV6 TAKES ON that half: a transport that hands up
+	// datagrams addressed to other nodes will have their Reconfigure messages
+	// obeyed, because the ring-1 arm cannot tell them apart.
+	//
+	// SO THE RING-1 RULE IS UNREACHABLE THROUGH THE SHIPPED TRANSPORT, and
+	// saying so is the point of saying it here. It holds for a caller that
+	// supplies its own lease.TransportV6 — the port is an interface — and for
+	// a journal replayed from a capture. A rule whose domain a neighbour
+	// empties is still a rule; one that nobody can state is not.
+	Dst netip.Addr
 
 	// ARP is set when Kind is EvARPReceived, and may be nil even then, for
 	// the reason Msg may: Step is total, and ring 1 does not panic.
@@ -217,9 +252,22 @@ func Received(m *wire.Message, raw []byte) Event {
 	return Event{Kind: EvReceived, Msg: m, Raw: raw}
 }
 
-// ReceivedV6 builds an EvReceived event carrying a DHCPv6 message.
+// ReceivedV6 builds an EvReceived event carrying a DHCPv6 message, with no
+// destination reported.
+//
+// A RECONFIGURE BUILT THIS WAY IS DROPPED, and that is fail-closed rather than
+// an oversight: §16.11's first bullet cannot be satisfied by a datagram whose
+// destination nobody recorded, and the bullet that would be skipped is the one
+// standing between a client and an off-link sender. Transports that read the
+// destination use ReceivedV6To.
 func ReceivedV6(m *wire.MessageV6, raw []byte) Event {
 	return Event{Kind: EvReceived, MsgV6: m, Raw: raw}
+}
+
+// ReceivedV6To is ReceivedV6 with the datagram's IP destination, which is what
+// §16.11's unicast bullet is decided on.
+func ReceivedV6To(m *wire.MessageV6, raw []byte, dst netip.Addr) Event {
+	return Event{Kind: EvReceived, MsgV6: m, Raw: raw, Dst: dst}
 }
 
 // TimerFired builds an EvTimerFired event.

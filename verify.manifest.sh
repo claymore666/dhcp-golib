@@ -439,7 +439,164 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # Neither is a netns test, MEASURED with testroster -netns at 34 over the base
 # and 34 here, so the netns enumeration in verify.sh does not move and is not
 # re-measured.
-MIN_DECLARED_TESTS=678
+#
+# L4 OF THE v2.2.0 IPv6 BATCH, #816: 654 -> 674, measured the same way, one
+# testroster run over a clean worktree at the base and one over this head, the
+# difference taken as a SET and not as two numbers. Twenty added, none removed,
+# in three files:
+#
+#   proto/machine6_status_test.go  (18)  AReplyThatRefusesIsReportedWithThe
+#     ServersOwnCode, AReplyThatSaysSuccessIsNotARefusal, AReplyWithNoAddress
+#     AndNoStatusIsNotARefusal, AnAdvertiseThatRefusesIsReportedAndTheSchedule
+#     Stands, ARefusedRenewKeepsTheLeaseAndSaysWhy, ANoBindingRenewIsA
+#     RecoveryAndNotARefusal, NotOnLinkCostsTheLeaseAndIsCountedOnce,
+#     AMalformedStatusCodeIsNeverReportedAsARefusal, AStatusInsideAnIAAddress
+#     IsNotRead, AnIAThatRefusesAndOffersGivesNoAddress, ARefusedInformation
+#     RequestIsNotAConfiguration, ALaterFailureCarriesNoEarlierStatus,
+#     AV4NakCarriesNoStatusCode, EveryRefusingMessageIsReported, AMessageLevel
+#     RefusalBesideAUsableAddressIsNotARefusal, AnAdvertiseThatRefusesAndOffers
+#     IsNotSelected, AConfirmRefusedForThisLinkIsReported, AFailedAction
+#     RendersTheCodeItCarries
+#   lease/manager6_test.go          (1)  TheCallerIsToldWhichCodeTheServer
+#     RefusedWith
+#   runtime/dnsmasq6_linux_test.go  (1)  AV6ClientIsToldTheServerRefused
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 34 over
+# the base and 35 here, so the netns enumeration in verify.sh moves in this
+# round and is re-measured there as one run rather than patched with a line.
+#
+# #816 ROUND 2, THE REVIEW ROUND: 674 -> 676, measured the same way. Two added,
+# in two files, and each is an observer a round-2 finding asked for:
+#
+#   proto/machine6_status_test.go   (1)  AnIAThatFailsForAnotherReasonStill
+#     HandsOverItsAddress
+#   lease/manager6_test.go          (1)  TheRouterObservationOnARefusalIsWhat
+#     HadBeenSeenByThen
+#
+# The first is the PRESERVATION direction of §18.2.10.1: the rule was observed
+# only where it fires, so widening it to any failure code left the suite green.
+# The second pins what Event.Router carries on a refusal stamped before any
+# Router Advertisement has arrived, which is the ordering the advice beside
+# that field is written against.
+#
+# NEITHER IS A NETNS TEST, measured with testroster -netns at 35 on both sides
+# of this round, so the netns enumeration in verify.sh is not re-measured here.
+# NETNS_CEILING_SECONDS did move, 140 -> 160, and the derivation is in that
+# block: at 108s the old headroom sat exactly on its 32s floor, and this round
+# is the one the block named as having to move the number.
+#
+# THE BACK-MERGE OF THE PIN ROUND INTO #816: the two rounds above are disjoint
+# — different files, no test renamed or removed in either — so the merge
+# product carries both, 656 + 22 and 674 + 2 reaching the same number. It is
+# MEASURED on the merge product and not added up: one testroster run here.
+#
+# L5, #925 (DHCPv6 Reconfigure), over the back-merge of #816 and the pin round:
+# 678 -> 725, measured the same way — one testroster run over the merge base and
+# one over the merge product, the difference taken as a set and not added up.
+# Forty-seven added, in four files, none removed:
+#
+#   wire/dhcpv6_reconfigure_test.go     (13) TheReconfigureMessageOptionReads
+#     AllThreeMsgTypes, TheReconfigureMessageOptionRefusesEveryOtherMsgType,
+#     TheReconfigureAcceptOptionIsZeroLength, TheAuthenticationOptionRoundTrips,
+#     TheAuthenticationOptionRefusesWhatIsNotRKAP,
+#     RKAPVerifyAcceptsTheSpanRFC9915Defines, RKAPVerifyRefusesAWrongZeroedSpan,
+#     RKAPVerifyCoversTheWholeMessage, RKAPVerifyReadsTheOctetsThatArrived,
+#     RKAPVerifyRefusesAKeyThatIsNotOneHundredAndTwentyEightBits,
+#     RKAPVerifyRefusesAMessageWithNoAuthenticationOption,
+#     RKAPVerifyRefusesASecondAuthenticationOption,
+#     RKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets
+#   wire/hmacmd5_test.go                (7)  MD5MatchesRFC1321sOwnVectors,
+#     HMACMD5MatchesRFC2202sOwnVectors,
+#     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
+#     HMACMD5AgreesWithTheStandardLibrary,
+#     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
+#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
+#     AReconfigureNamingRebindStartsARebind,
+#     AReconfigureNamingInformationRequestKeepsTheLease,
+#     TheLeaseOutranksAReconfiguresInformationRequest,
+#     TheRefreshTimerIsHonouredAfterTheDetour,
+#     EveryReconfigureDiscardRuleFiresOnItsOwn,
+#     AReconfigureFromAServerThatSentNoKeyIsDiscarded,
+#     TheReplayDetectionValueIsPerServerAndMustIncrease,
+#     TheReplayFloorIsPerServer, AFailedReconfigureDoesNotRaiseTheReplayFloor,
+#     AReconfigureIsIgnoredWhileTheExchangeItAskedForIsInFlight,
+#     AReconfiguresTransactionIdIsIgnored,
+#     AReconfigureIsIgnoredWhereTheClientHoldsNothing,
+#     TheReconfigureAcceptOptionGoesWhereTheRFCAllowsIt,
+#     AcceptReconfigureOffIsOffInBothDirections,
+#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal,
+#     AReconfigureReplaysWithItsDestination,
+#     OnlyRKAPTypeOneIsStoredAsTheReconfigureKey,
+#     TheAnsweringServerIdentifierDiesWithItsExchange,
+#     ALaterReplysKeyReplacesTheOldOneAndAKeylessReplyKeepsIt,
+#     AReconfigureRefusedForStateDoesNotBurnItsReplayValue,
+#     ARingOneRuleCannotSeeWhoseUnicastAddressItIs,
+#     ARenewalDuringTheRefreshDelayDoesNotLoseTheRefresh,
+#     AReconfiguresInformationRequestRefusedKeepsTheDetourOpen
+#   runtime/reconfigure6_linux_test.go  (2)  AnAuthenticatedReconfigureMakesThe
+#     ClientRenew,
+#     AClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing
+#
+# The last two ARE netns tests, so the netns enumeration in verify.sh moves in
+# this round and is re-measured there — MEASURED with testroster -netns at 35
+# over the merge base and 37 over the merge product, and the whole table is one
+# run on the merge product rather than #816's table with two lines inserted.
+# NETNS_CEILING_SECONDS moves with it, 160 -> 170: #816's paragraph named the
+# round that adds a netns test as the one that has to move the number rather
+# than re-check it, this is that round, and 170 is 117s of measured wall plus
+# 53s of derived headroom. The derivation is in that block.
+#
+# AReconfiguresInformationRequestRefusedKeepsTheDetourOpen is the one test here
+# that exists because of the merge rather than because of either side: #816's
+# early return on a refused Information-request sits in front of the call that
+# ends this branch's Reconfigure detour, and a clean textual merge answers
+# nothing about what becomes of the detour.
+#
+# THE HOSTNAME SETTER, #961, AND ITS BACK-MERGE INTO THIS BATCH: this branch
+# moved the pin 654 -> 676 and then 678 without writing its set down, which is
+# what this block repays. 725 -> 747, MEASURED here, one testroster run over
+# dev at the back-merge base and one over the merge product, the difference
+# taken as a SET and not added up: twenty-two added, none removed, none
+# renamed, in three files:
+#
+#   proto/hostname_test.go                 (18)
+#     AHostnameArrivingBeforeTheLeaseGoesOutAtTheBind,
+#     AHostnameArrivingWhileProbingGoesOutAtTheAnnouncement,
+#     AHostnameDuringARenewalResendsTheOpenTransaction,
+#     AHostnameInBoundIsSentAsAnEarlyRenewal,
+#     AHostnameOnALeaseWithNoServerIdentifierWaitsForT2,
+#     AHostnameRenewalThatIsNAKedLosesTheLease,
+#     AHostnameSetAfterStartReplaysFromTheStartParams,
+#     AHostnameSetBeforeTheClientStartsGoesOutInTheFirstDiscover,
+#     AHostnameSetDuringTheDesyncWaitGoesOutInTheDiscover,
+#     AHostnameSetTwiceSendsOneMessage,
+#     AHostnameSetWhileRebootingGoesOutInTheNextRequest,
+#     AMachineRefusesAnUnsendableHostnameAtRuntime,
+#     AnEmptyHostnameStopsTheOptionAndSendsNothing,
+#     AnFqdnClientIgnoresAHostname, AnOrdinaryAcquisitionSendsNoExtraMessage,
+#     NewRefusesAnUnsendableHostname, ParamsIsNotMovedByASetter,
+#     TheRenewTimerLeftOverByAnEarlyRenewalIsIgnored
+#
+#   lease/hostname_test.go                 (3)
+#     SetHostnameOnARunningManagerReachesTheServer,
+#     SetHostnameRefusesWhatCannotBeSent, SetHostnameReportsAFullRequestQueue
+#
+#   runtime/hostname_dnsmasq_linux_test.go (1)
+#     AHostnameSetAfterStartReachesTheServersLeaseFile
+#
+# No TEST file is touched by both sides, which is what makes the set a union
+# with nothing to reconcile inside it. Three files did need a hand resolution
+# and none of them declares a test: this pin, README.md's out-of-scope list,
+# and JournalEntry6, where #925's Dst and this branch's Hostname are two new
+# fields on one struct.
+#
+# The runtime one IS a netns test, MEASURED with testroster -netns at 37 over
+# dev and 38 on the merge product, so the population the unit-suite row hands
+# to the netns row moves here. It is derived at run time in verify.sh, so there
+# is no second number to patch; NETNS_CEILING_SECONDS is this batch's 170 and
+# is not moved by one more namespaced test.
+MIN_DECLARED_TESTS=747
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -1021,7 +1178,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:140|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:170|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"
