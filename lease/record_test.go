@@ -692,4 +692,58 @@ func TestEveryWireCounterSurvivesTheRecordsEncoding(t *testing.T) {
 				wt.Field(i).Name, gv.Field(i).Uint(), want)
 		}
 	}
+
+	// AND THE NAME IS PART OF THE FORMAT. A round trip is blind to a rename,
+	// because both halves of it read the same tag: a counter written under a
+	// new key and read back from that key survives the trip and still breaks
+	// every reader holding the old name. The key is therefore derived from
+	// the field's own name and compared, which is also what makes a field
+	// added with no tag at all visible, since Go would then encode it under
+	// its Go name.
+	//
+	// A name given TWICE is a different class and is not this test's: the
+	// toolchain refuses it, vet reporting the repeated tag, so no build
+	// carrying it ever reaches a test.
+	var outer struct {
+		Wire map[string]json.RawMessage `json:"wire"`
+	}
+	if err := json.Unmarshal(b, &outer); err != nil {
+		t.Fatalf("json.Unmarshal into a map: %v", err)
+	}
+	raw := outer.Wire
+	for i := range wt.NumField() {
+		f := wt.Field(i)
+		want := snakeCase(f.Name)
+		if got := f.Tag.Get("json"); got != want+",omitempty" {
+			t.Errorf("%s carries the json tag %q, want %q: the wire name is "+
+				"part of the record's format", f.Name, got, want+",omitempty")
+		}
+		if _, ok := raw[want]; !ok {
+			t.Errorf("%s did not reach the encoding as %q", f.Name, want)
+		}
+	}
+}
+
+// snakeCase spells a Go field name the way this record's wire names are
+// spelled: a break before an upper-case letter that follows a lower-case one,
+// and before the last upper-case letter of a run that begins a word, so
+// ARPSendFailures is arp_send_failures and not a_r_p_send_failures.
+func snakeCase(name string) string {
+	var out []rune
+	r := []rune(name)
+	for i, c := range r {
+		upper := c >= 'A' && c <= 'Z'
+		if upper && i > 0 {
+			prevLower := r[i-1] >= 'a' && r[i-1] <= 'z'
+			nextLower := i+1 < len(r) && r[i+1] >= 'a' && r[i+1] <= 'z'
+			if prevLower || nextLower {
+				out = append(out, '_')
+			}
+		}
+		if upper {
+			c += 'a' - 'A'
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
