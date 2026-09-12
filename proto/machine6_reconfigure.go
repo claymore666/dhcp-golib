@@ -63,9 +63,16 @@ type reconfServer struct {
 // among them, so a client that erased the key on every keyless Reply would
 // lose it at T1 and accept no Reconfigure again.
 //
-// NO JOURNAL LINE CARRIES THE KEY. The value is the secret the whole mechanism
-// rests on, and this library hands a caller its journal, its counters and its
-// error strings. What is recorded is that a key arrived and how long it was.
+// NO NOTE, ACTION OR ERROR STRING CARRIES THE KEY. The value is the secret the
+// whole mechanism rests on, and this library hands a caller its journal, its
+// counters and its error strings. What this records is that a key arrived and
+// how long it was.
+//
+// THE RECORDED DATAGRAM IS WHERE IT DOES APPEAR. The Reply the key arrived in
+// is kept whole, in JournalEntry6.Raw because a replay needs the octets and in
+// the packet capture, so the key is in both. A caller that hands either one to
+// somebody else hands the key over with it, and a replay of that journal puts
+// the key back into the fresh machine.
 func (m *Machine6) noteReconfigureKey(msg *wire.MessageV6, out *actions) {
 	a, ok, err := msg.Options.Auth()
 	if !ok {

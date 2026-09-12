@@ -603,7 +603,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     AReconfigureIsIgnoredWhereTheClientHoldsNothing,
 #     TheReconfigureAcceptOptionGoesWhereTheRFCAllowsIt,
 #     AcceptReconfigureOffIsOffInBothDirections,
-#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal,
+#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal
+#     (renamed in the v1.0.0 docs round to
+#     NoActionNoteOrReasonCarriesTheReconfigureKey, because the old name
+#     asserted a universal its body does not check; this record keeps the name
+#     the round it describes added),
 #     AReconfigureReplaysWithItsDestination,
 #     OnlyRKAPTypeOneIsStoredAsTheReconfigureKey,
 #     TheAnsweringServerIdentifierDiesWithItsExchange,
@@ -1033,6 +1037,36 @@ SELF_DRIVE_SURVIVES_N=5
 # the sentence about the old two-core figure now sits on a line of its own.
 # Both are reflow. No number was added to the prose and none was deleted.
 #
+# WHAT MOVED IT IN THE v1.0.0 DOCS ROUND, 2026-09-12, 72 to 78, and every line
+# is enumerated because a bump without the list is a ratchet nobody earned.
+# ONE of the six was already standing on dev and is what the margin bought,
+# MEASURED by running the sweep over the tree at 41ac6b8, where the marker was
+# set, and over dev: docs/design.md's refusal bullet says "RFC 9915 section
+# 21.13's status code", and a section number written out in words is not the
+# token the sweep blanks. The other five arrive with this round:
+#   README.md       "the DHCP engine of docker-net-dhcp 2.x", the product line
+#   docs/design.md  "decoded in ring 0"
+#   docs/design.md  "kept in ring 1 as a table"
+#   docs/design.md  RFC 9915 section 18.2.11 quoted verbatim, and the quoted
+#                   text itself says "(see Section 21.19)"
+#   docs/design.md  "the 2.91 sources", the dnsmasq version the Reconfigure
+#                   fixture's claim about that server is measured against
+# Not one of them is a number an instrument here prints: two are ring numbers,
+# one is a product line, one is inside a quotation that may not be edited, and
+# one is a version. That took the marker to 78 with the ceiling at 79, the pair
+# scripts/sweep-doc-numbers.sh --check printed for the population it counted,
+# and the block below then moved it again in the same round.
+#
+# WHAT MOVED IT WHEN THE SLAAC ROW LANDED, 2026-09-12, 78 to 80, both lines
+# enumerated for the same reason as the block above:
+#   docs/design.md  RFC 4862 section 5.5.3 d quoted verbatim, and the quoted
+#                   text itself says "does not equal 128 bits"
+#   docs/design.md  "driven at ring 1 and ring 2", the bound on the one entry
+#                   of that list with no run against a real link behind it
+# One is inside a quotation that may not be edited and one is a pair of ring
+# numbers. The pair below is the pair scripts/sweep-doc-numbers.sh --check
+# printed for the population it counted.
+#
 # THE POPULATION RULE, stated in the marker line below and nowhere else here.
 # The domain is the prose pages of the repository: README.md, SECURITY.md and
 # docs/*.md, which is the FILES array in scripts/sweep-doc-numbers.sh.
@@ -1056,8 +1090,8 @@ SELF_DRIVE_SURVIVES_N=5
 # runs on every run and which refuses a population under the marker or over the
 # ceiling. Marker = population follows, with each leg made once. Re-measuring
 # is a one-line edit to the marker, and forgetting the marker is red.
-# DOC-NUMBER POPULATION MEASURED 2026-09-08 over README.md SECURITY.md docs/*.md: 72
-DOC_NUMBER_CEILING=73
+# DOC-NUMBER POPULATION MEASURED 2026-09-12 over README.md SECURITY.md docs/*.md: 80
+DOC_NUMBER_CEILING=81
 
 # How far UNDER the ceiling the population may sit before the row refuses.
 #
