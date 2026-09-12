@@ -126,7 +126,7 @@ type releaseSender func(src, dst netip.AddrPort, iface string, payload []byte) e
 func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) error {
 	// ONE SPELLING, DECIDED BEFORE ANYTHING IS ASKED ABOUT IT. A v4 address
 	// has two forms in netip and the two answer differently: IsUnspecified is
-	// false for ::ffff:0.0.0.0 and Is4 is false for ::ffff:192.168.0.2, while
+	// false for ::ffff:0.0.0.0 and Is4 is false for ::ffff:192.168.99.2, while
 	// net.UDPAddrFromAddrPort turns both back into the 4-octet form on the way
 	// to the socket. Three guards below and a bind afterwards would each be
 	// reading a different fact about the same address. Unmapping first means

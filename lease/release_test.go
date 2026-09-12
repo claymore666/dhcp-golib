@@ -264,7 +264,7 @@ func TestTheReleasedAddressIsTheHostAddressAndNotTheSubnet(t *testing.T) {
 		t.Fatalf("the datagram does not decode: %v", err)
 	}
 	if msg.CIAddr.String() != "192.168.99.84" {
-		t.Errorf("ciaddr = %s, want the host address; the /16's base is 192.168.0.0", msg.CIAddr)
+		t.Errorf("ciaddr = %s, want the host address %s and not the base Masked() would give", msg.CIAddr, relAddr4)
 	}
 }
 
