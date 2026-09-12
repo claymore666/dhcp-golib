@@ -489,7 +489,70 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # — different files, no test renamed or removed in either — so the merge
 # product carries both, 656 + 22 and 674 + 2 reaching the same number. It is
 # MEASURED on the merge product and not added up: one testroster run here.
-MIN_DECLARED_TESTS=678
+#
+# L5, #925 (DHCPv6 Reconfigure), over the back-merge of #816 and the pin round:
+# 678 -> 725, measured the same way — one testroster run over the merge base and
+# one over the merge product, the difference taken as a set and not added up.
+# Forty-seven added, in four files, none removed:
+#
+#   wire/dhcpv6_reconfigure_test.go     (13) TheReconfigureMessageOptionReads
+#     AllThreeMsgTypes, TheReconfigureMessageOptionRefusesEveryOtherMsgType,
+#     TheReconfigureAcceptOptionIsZeroLength, TheAuthenticationOptionRoundTrips,
+#     TheAuthenticationOptionRefusesWhatIsNotRKAP,
+#     RKAPVerifyAcceptsTheSpanRFC9915Defines, RKAPVerifyRefusesAWrongZeroedSpan,
+#     RKAPVerifyCoversTheWholeMessage, RKAPVerifyReadsTheOctetsThatArrived,
+#     RKAPVerifyRefusesAKeyThatIsNotOneHundredAndTwentyEightBits,
+#     RKAPVerifyRefusesAMessageWithNoAuthenticationOption,
+#     RKAPVerifyRefusesASecondAuthenticationOption,
+#     RKAPVerifyRefusesADigestThatIsRightInItsLeadingOctets
+#   wire/hmacmd5_test.go                (7)  MD5MatchesRFC1321sOwnVectors,
+#     HMACMD5MatchesRFC2202sOwnVectors,
+#     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
+#     HMACMD5AgreesWithTheStandardLibrary,
+#     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
+#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
+#     AReconfigureNamingRebindStartsARebind,
+#     AReconfigureNamingInformationRequestKeepsTheLease,
+#     TheLeaseOutranksAReconfiguresInformationRequest,
+#     TheRefreshTimerIsHonouredAfterTheDetour,
+#     EveryReconfigureDiscardRuleFiresOnItsOwn,
+#     AReconfigureFromAServerThatSentNoKeyIsDiscarded,
+#     TheReplayDetectionValueIsPerServerAndMustIncrease,
+#     TheReplayFloorIsPerServer, AFailedReconfigureDoesNotRaiseTheReplayFloor,
+#     AReconfigureIsIgnoredWhileTheExchangeItAskedForIsInFlight,
+#     AReconfiguresTransactionIdIsIgnored,
+#     AReconfigureIsIgnoredWhereTheClientHoldsNothing,
+#     TheReconfigureAcceptOptionGoesWhereTheRFCAllowsIt,
+#     AcceptReconfigureOffIsOffInBothDirections,
+#     DefaultParams6AcceptsReconfigure, TheReconfigureKeyNeverReachesTheJournal,
+#     AReconfigureReplaysWithItsDestination,
+#     OnlyRKAPTypeOneIsStoredAsTheReconfigureKey,
+#     TheAnsweringServerIdentifierDiesWithItsExchange,
+#     ALaterReplysKeyReplacesTheOldOneAndAKeylessReplyKeepsIt,
+#     AReconfigureRefusedForStateDoesNotBurnItsReplayValue,
+#     ARingOneRuleCannotSeeWhoseUnicastAddressItIs,
+#     ARenewalDuringTheRefreshDelayDoesNotLoseTheRefresh,
+#     AReconfiguresInformationRequestRefusedKeepsTheDetourOpen
+#   runtime/reconfigure6_linux_test.go  (2)  AnAuthenticatedReconfigureMakesThe
+#     ClientRenew,
+#     AClientThatDoesNotAcceptReconfigureAnnouncesNothingAndAnswersNothing
+#
+# The last two ARE netns tests, so the netns enumeration in verify.sh moves in
+# this round and is re-measured there — MEASURED with testroster -netns at 35
+# over the merge base and 37 over the merge product, and the whole table is one
+# run on the merge product rather than #816's table with two lines inserted.
+# NETNS_CEILING_SECONDS moves with it, 160 -> 170: #816's paragraph named the
+# round that adds a netns test as the one that has to move the number rather
+# than re-check it, this is that round, and 170 is 117s of measured wall plus
+# 53s of derived headroom. The derivation is in that block.
+#
+# AReconfiguresInformationRequestRefusedKeepsTheDetourOpen is the one test here
+# that exists because of the merge rather than because of either side: #816's
+# early return on a refused Information-request sits in front of the call that
+# ends this branch's Reconfigure detour, and a clean textual merge answers
+# nothing about what becomes of the detour.
+MIN_DECLARED_TESTS=725
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -1071,7 +1134,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:160|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:170|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

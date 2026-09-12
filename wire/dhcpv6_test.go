@@ -233,7 +233,6 @@ func TestDecodeV6RefusesWhatIsNotAClientMessage(t *testing.T) {
 	}{
 		{"three octets", mustHex("011a2b"), ErrV6Short},
 		{"empty", nil, ErrV6Short},
-		{"reconfigure", mustHex("0a1a2b3c" + body), ErrV6NotForClient},
 		{"relay-forward", mustHex("0c1a2b3c" + body), ErrV6NotForClient},
 		{"relay-reply", mustHex("0d1a2b3c" + body), ErrV6NotForClient},
 		{"type 0", mustHex("001a2b3c" + body), ErrV6UnknownType},
@@ -254,11 +253,15 @@ func TestDecodeV6RefusesWhatIsNotAClientMessage(t *testing.T) {
 
 // TestDecodeV6AcceptsEveryClientMessageType is the other direction of the row
 // above: a refusal that refuses everything passes it. Every type §16 lists as
-// one a client sends or accepts must decode.
+// one a client sends or accepts must decode, RECONFIGURE included since #925 —
+// §18.2.11: "A client receives Reconfigure messages sent to UDP port 546 on
+// interfaces for which it has acquired configuration information through
+// DHCP."
 func TestDecodeV6AcceptsEveryClientMessageType(t *testing.T) {
 	for _, typ := range []MessageTypeV6{
 		MsgSolicit, MsgAdvertise, MsgRequest6, MsgConfirm, MsgRenew,
-		MsgRebind, MsgReply, MsgRelease6, MsgDecline6, MsgInformationRequest,
+		MsgRebind, MsgReply, MsgRelease6, MsgDecline6, MsgReconfigure,
+		MsgInformationRequest,
 	} {
 		if !typ.ForClient() {
 			t.Errorf("%s reports ForClient() false", typ)
