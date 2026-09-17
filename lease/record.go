@@ -716,6 +716,14 @@ type WireCounters struct {
 	SLAACAddressesConflicted uint64 `json:"slaac_addresses_conflicted,omitempty"`
 	SLAACPrefixesIgnored     uint64 `json:"slaac_prefixes_ignored,omitempty"`
 	SLAACFallbacks           uint64 `json:"slaac_fallbacks,omitempty"`
+
+	// The server-initiated reconfiguration counters. They are here and not in
+	// the folded half for the rule this type states: nothing in a record's own
+	// event stream counts a Reconfigure. An accepted one becomes a Renewed, a
+	// Changed or a Configured that the fold cannot tell from the ones the
+	// client's own T1 produced, and a refused one produces no event at all.
+	ReconfiguresAccepted uint64 `json:"reconfigures_accepted,omitempty"`
+	ReconfiguresRefused  uint64 `json:"reconfigures_refused,omitempty"`
 }
 
 // The seven Stats fields WireCounters deliberately does not carry, because the

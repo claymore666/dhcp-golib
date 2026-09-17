@@ -294,7 +294,33 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   delivered the key keeps it verbatim in `proto.JournalEntry6.Raw`, where a
   replay needs the octets, and in the packet capture `Client6.Packets`
   returns. A caller that hands a journal or a capture to somebody else hands
-  the key over with it.
+  the key over with it. Every Reconfigure the machine is handed is COUNTED as
+  well as journalled: one cell per rule in `proto.ReconfigureCounters`, and
+  `lease.Stats.ReconfiguresAccepted` and `ReconfiguresRefused` beside it, which
+  partition what reached the state machine
+  (`TestEveryReconfigureRefusalArmRaisesItsOwnCounter`,
+  `TestEveryReconfigureAcceptArmRaisesTheAcceptedCounter`,
+  `TestAcceptedAndRefusedPartitionEveryReconfigure`,
+  `TestEveryReconfigureRefusalIsDeclaredCountedAndNamed`,
+  `TestAnAcceptedReconfigureReachesStatsAndTheCounters`,
+  `TestARefusedReconfigureReachesStatsWithTheRuleThatRefusedIt`). A refusal is
+  not a fault: a client that RESUMED a lease holds no reconfigure key and
+  refuses its server's Reconfigures one after another, because RFC 9915
+  Appendix B Table 5 gives the Reconfigure Accept option no mark for Confirm
+  and §20.4.2 says "The server selects a reconfigure key for a client during
+  the Request/Reply, Solicit/Reply, or Information-request/Reply message
+  exchange." The span ends at the first ACCEPTED Reply that carries a key,
+  whichever exchange it answers: §20.4.2 binds the server's choice, not what
+  the client records, so a key in the Reply to the Renew at T1 ends it there.
+  A Reply the client does not act on does not, and §18.2.10's UnspecFail and
+  NotOnLink arms, a malformed Status Code option and a Reply with no usable
+  address are all of those.
+  `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
+  Renew's Reply that ends it, and the exchanges §20.4.2 does name;
+  `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
+  boundary. A Reconfigure discarded before the state
+  machine — a datagram that would not decode, or one the transport dropped as
+  addressed to another node — is in neither counter.
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

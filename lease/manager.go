@@ -158,6 +158,10 @@ type Manager struct {
 	journal Journal
 	packets PacketRing
 
+	// reconfCounts mirrors the v6 machine's Reconfigure counters for
+	// ReconfigureCounters, taken where the router observation is taken.
+	reconfCounts proto.ReconfigureCounters
+
 	// params6 mirrors the v6 machine's configuration for Params6, and
 	// declined6 the set it has declined for Declined6. Both are read under mu
 	// from a caller's goroutine, because the machine itself belongs to Run's.
@@ -465,6 +469,32 @@ type Stats struct {
 	SLAACAddressesConflicted uint64
 	SLAACPrefixesIgnored     uint64
 	SLAACFallbacks           uint64
+
+	// The server-initiated reconfiguration counters, RFC 9915 §16.11, §18.2.11
+	// and §20.4. They are ring 1's and are mirrored here at each Step, like
+	// the SLAAC counters above.
+	//
+	// THEY PARTITION WHAT RING 1 WAS HANDED: every Reconfigure that reaches
+	// the machine raises exactly one of the two, so their sum is how many
+	// arrived and their ratio is whether this client and that server have a
+	// working reconfigure key between them.
+	//
+	// A RECONFIGURE DISCARDED BEFORE RING 1 IS IN NEITHER. A datagram that
+	// would not decode is DecodeFailures and never became an event, and one
+	// addressed to another node is dropped by the transport — the other half
+	// of §16.11's first bullet — and is counted nowhere. The population here
+	// is what the state machine was given.
+	//
+	// ReconfiguresRefused IS NOT A FAULT COUNT, and reading it as one is the
+	// mistake it is easiest to make. A client that resumed a lease holds no
+	// reconfigure key, a client built with Params6.AcceptReconfigure off is
+	// unwilling by §21.20, and both refuse every Reconfigure while working
+	// exactly as asked. WHICH rule refused is in the journal line beside it
+	// and in Manager.ReconfigureCounters, because one number for eighteen
+	// rules answers none of them — the reason RouterAdvertsRefused is not
+	// folded into NDIgnored.
+	ReconfiguresAccepted uint64
+	ReconfiguresRefused  uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -1169,6 +1199,16 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.stats.SLAACAddressesConflicted = sc.Conflicts
 			mg.stats.SLAACPrefixesIgnored = sc.IgnoredTotal()
 			mg.stats.SLAACFallbacks = sc.Fallbacks
+			// ONE DERIVATION, in the same place and for the same reason as the
+			// SLAAC counters above. An arm per action kind would have counted
+			// an acceptance in the arm that renewed the lease, which is the
+			// arm a Reconfigure asking for an Information-request never
+			// reaches, and would have counted no refusal at all: a refused
+			// Reconfigure produces no action.
+			rc := mg.machine6.ReconfigureCounters()
+			mg.reconfCounts = rc
+			mg.stats.ReconfiguresAccepted = rc.Accepted
+			mg.stats.ReconfiguresRefused = rc.RefusedTotal()
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d
@@ -1495,6 +1535,21 @@ func (mg *Manager) Router() proto.RouterObservation {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	return mg.router
+}
+
+// ReconfigureCounters is what the v6 machine did with the Reconfigure messages
+// it was handed, rule by rule. The zero value is what a v4 manager reports.
+//
+// IT IS THE SPLIT BEHIND Stats.ReconfiguresAccepted AND Stats.ReconfiguresRefused,
+// and it is exported because those two totals cannot answer the question an
+// operator asks of them. A client that resumed a lease refuses every
+// Reconfigure for want of a key and is healthy; a wrong digest on the wire and
+// a replayed detection value are a segment to go and look at. The total holds
+// all three and separates none of them.
+func (mg *Manager) ReconfigureCounters() proto.ReconfigureCounters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.reconfCounts
 }
 
 // Params6 is the configuration the v6 machine RAN WITH, and the second value
