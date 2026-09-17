@@ -313,8 +313,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   whichever exchange it answers: §20.4.2 binds the server's choice, not what
   the client records, so a key in the Reply to the Renew at T1 ends it there.
   A Reply the client does not act on does not, and §18.2.10's UnspecFail and
-  NotOnLink arms, a malformed Status Code option and a Reply with no usable
-  address are all of those.
+  NotOnLink arms, an IA_NA that says NoBinding, a malformed Status Code option
+  and a Reply with no usable address are among them. The rule is the call site,
+  `takeReply` recording the key where the Reply is acted on, and not this
+  list.
   `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
   Renew's Reply that ends it, and the exchanges §20.4.2 does name;
   `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
