@@ -29,9 +29,22 @@
 // a shared secret and that record is the one callers log and hand to Journal6.
 // A machine rebuilt after a restart therefore discards every
 // Reconfigure from its server until the next Solicit/Reply, Request/Reply or
-// Information-request/Reply hands it a new key (§20.4.2). The cost is one
-// refused Reconfigure per restart; the server falls back to the client's own
-// T1.
+// Information-request/Reply hands it a new key (§20.4.2).
+//
+// That span is not one message, and it is not bounded by the resume. A
+// resumed client's first message is §18.2.3's Confirm, which Appendix B Table
+// 5 does not allow the Reconfigure Accept option in, so the resume itself
+// reaches no exchange §20.4.2 hands a key to, and each Reconfigure that
+// arrives meanwhile is reported as ReconfigureRefusalNoKey. What ends the span
+// is the first ACCEPTED Reply carrying a key, whichever exchange it answers:
+// §20.4.2 binds the server's selection and not the client's record, and a key
+// in the Reply to the Renew at T1 is recorded like any other. Accepted is the
+// word that carries the bound. §18.2.10's UnspecFail arm, its NotOnLink arm, a
+// malformed Status Code option and a Reply with no usable address all return
+// before the key is recorded, so a Reply this client does not act on leaves
+// the span where it was. Where a server sends a key nowhere but the three
+// exchanges §20.4.2 names, the span is the whole
+// life of the resumed lease.
 //
 // The recorded datagram is the exception to that, and a caller handing out a
 // journal needs it: the Reply that delivered the key keeps it verbatim in
