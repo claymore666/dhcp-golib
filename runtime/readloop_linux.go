@@ -75,7 +75,7 @@ func (r readLoop) run() {
 			r.fail(fmt.Errorf("runtime: %s: %w", r.what, err))
 			return
 		}
-		if boundLinkGone(rc, r.ifIndex) {
+		if r.linkGone(rc) {
 			gone := fmt.Errorf("%w: %s", ErrLinkGone, r.what)
 			if !tick {
 				gone = fmt.Errorf("%w: %w", gone, err)
@@ -138,8 +138,8 @@ func retryableReadErr(err error) bool {
 	return false
 }
 
-// boundLinkGone reports whether the socket is no longer bound to ifIndex.
-func boundLinkGone(rc syscall.RawConn, ifIndex int) bool {
+// linkGone reports whether the socket is no longer bound to its link.
+func (r readLoop) linkGone(rc syscall.RawConn) bool {
 	// getsockname answers from the socket's own namespace, which the reader
 	// goroutine's thread need not be in. Linux sets the bound index to -1 on
 	// NETDEV_UNREGISTER, which a delete and a move to another namespace both
@@ -149,8 +149,10 @@ func boundLinkGone(rc syscall.RawConn, ifIndex int) bool {
 		gerr error
 	)
 	if err := rc.Control(func(fd uintptr) { sa, gerr = syscall.Getsockname(int(fd)) }); err != nil || gerr != nil {
-		return true
+		// Close sets closed before it closes the file, so a look that fails
+		// because Close ran first is not a gone link (#23).
+		return !r.closed.Load()
 	}
 	ll, ok := sa.(*syscall.SockaddrLinklayer)
-	return !ok || ll.Ifindex != ifIndex
+	return !ok || ll.Ifindex != r.ifIndex
 }

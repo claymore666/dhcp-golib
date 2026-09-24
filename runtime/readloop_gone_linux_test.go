@@ -11,6 +11,7 @@ import (
 	goruntime "runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -315,5 +316,32 @@ func TestAReaderWaitingOutABackoffLeavesWhenTheSocketCloses(t *testing.T) {
 	close(done)
 	if (readLoop{done: done}).wait(time.Hour) {
 		t.Fatal("a reader waiting out a backoff went on reading after its socket closed")
+	}
+}
+
+// TestALookThatFailsBecauseTheSocketClosedIsNotAGoneLink: Close can land
+// between the reader's closed check and its look at the binding, which then
+// fails on the closed file.
+func TestALookThatFailsBecauseTheSocketClosedIsNotAGoneLink(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close()
+	rc, err := pr.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closed atomic.Bool
+	r := readLoop{f: pr, ifIndex: 1, closed: &closed}
+	if err := pr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.linkGone(rc) {
+		t.Fatal("a look that failed on a socket nobody closed did not read as a gone link")
+	}
+	closed.Store(true)
+	if r.linkGone(rc) {
+		t.Fatal("a look that failed because the socket closed read as a gone link")
 	}
 }

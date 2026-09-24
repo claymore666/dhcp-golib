@@ -66,7 +66,8 @@ type Transport interface {
 }
 
 // ARPInbound is one ARP frame that arrived on the link, or a read error, after
-// which the stream goes on only while the link is down and not gone (#23).
+// which the stream goes on if the error can pass, such as the link going down,
+// and ends if it cannot or the link is gone (#23).
 // Frame and Err are mutually exclusive, for the reason Inbound gives.
 type ARPInbound struct {
 	Frame []byte
