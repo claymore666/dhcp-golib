@@ -4,6 +4,7 @@ package lease
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -146,13 +147,96 @@ func TestSetHostnameRefusesWhatCannotBeSent(t *testing.T) {
 		}
 	})
 
-	t.Run("a DHCPv6 manager", func(t *testing.T) {
+	// Since claymore666/docker-net-dhcp#1029 a v6 manager sends option 39,
+	// so its refusal is the name option 39 cannot carry.
+	t.Run("a name option 39 cannot carry, on a DHCPv6 manager", func(t *testing.T) {
 		r := newRig6(t, testParams6(), answerNormally6(t))
-		if err := r.mgr.SetHostname("ignored"); !errors.Is(err, ErrHostnameV6) {
-			t.Fatalf("SetHostname on a v6 manager returned %v, want ErrHostnameV6", err)
+		for _, name := range []string{"has a space", strings.Repeat("a", 64) + ".example."} {
+			if err := r.mgr.SetHostname(name); !errors.Is(err, proto.ErrBadHostname6) {
+				t.Fatalf("SetHostname(%q) on a v6 manager returned %v, want proto.ErrBadHostname6", name, err)
+			}
 		}
 		if got := r.mgr.Hostname(); got != "" {
-			t.Fatalf("a v6 manager reports the name %q", got)
+			t.Fatalf("a v6 manager reports the refused name %q", got)
+		}
+		if _, err := proto.New6(func() proto.Params6 {
+			p := testParams6()
+			p.Hostname = "has a space"
+			return p
+		}()); !errors.Is(err, proto.ErrBadHostname6) {
+			t.Fatalf("proto.New6 returned %v for a name the setter refuses; the two are not one rule", err)
 		}
 	})
+}
+
+// TestSetHostnameOnARunningV6ManagerReachesTheServer is #961's shape on v6
+// (claymore666/docker-net-dhcp#1029): a name set after the bind reaches the
+// fake server in option 39 of an early Renew, with 39 in the ORO (RFC 4704
+// section 5), and the server's option 39 is reported on the Renewed lease.
+// The assertions read what the server decoded off the wire.
+func TestSetHostnameOnARunningV6ManagerReachesTheServer(t *testing.T) {
+	// The server answers N=1 O=1: it will do no DNS update and overrode S.
+	answer := answerNormally6(t)
+	fqdnServer := func(req *wire.MessageV6, n int) []*wire.MessageV6 {
+		out := answer(req, n)
+		if f, ok, _ := req.Options.ClientFQDN(); ok {
+			for _, m := range out {
+				v, err := wire.EncodeClientFQDN(0, f.Name+".example.test.")
+				if err != nil {
+					t.Errorf("EncodeClientFQDN: %v", err)
+					continue
+				}
+				v[0] = wire.ClientFQDNFlagN | wire.ClientFQDNFlagO
+				m.Options = append(m.Options, optV6(wire.OptV6ClientFQDN, v))
+			}
+		}
+		return out
+	}
+	r := newRig6(t, testParams6(), fqdnServer)
+	if ev := r.acquire6(t); ev.Lease.HasFQDN {
+		t.Fatalf("a client that sent no name was told of a server name %+v", ev.Lease.FQDN)
+	}
+	for _, m := range r.server.sentMessages() {
+		if _, ok := m.Options.First(wire.OptV6ClientFQDN); ok {
+			t.Fatalf("a %s carried option 39 before any name was set", m.Type)
+		}
+	}
+
+	if err := r.mgr.SetHostname("named-after-start"); err != nil {
+		t.Fatalf("SetHostname: %v", err)
+	}
+	var ev Event
+	for {
+		if ev = r.nextEvent(t); ev.Kind == Renewed {
+			break
+		}
+		if ev.Kind == Lost || ev.Kind == Failed {
+			t.Fatalf("the early Renew ended in %s", ev)
+		}
+	}
+
+	sent := r.server.sentMessages()
+	renew := sent[len(sent)-1]
+	if renew.Type != wire.MsgRenew {
+		t.Fatalf("the last message the server saw is %s, want a Renew", renew.Type)
+	}
+	f, ok, err := renew.Options.ClientFQDN()
+	if err != nil || !ok || f.Flags != wire.ClientFQDNFlagS || f.Name != "named-after-start" {
+		t.Fatalf("the Renew's option 39 = %+v, %v, %v; want S=1 O=0 N=0 and the partial name", f, ok, err)
+	}
+	oro, _ := renew.Options.First(wire.OptV6ORO)
+	asked := false
+	for i := 0; i+1 < len(oro); i += 2 {
+		asked = asked || wire.OptionCodeV6(oro[i])<<8|wire.OptionCodeV6(oro[i+1]) == wire.OptV6ClientFQDN
+	}
+	if !asked {
+		t.Fatalf("the Renew's ORO %x does not request option 39, which RFC 4704 section 5 requires", oro)
+	}
+	if !ev.Lease.HasFQDN || ev.Lease.FQDN.Flags != wire.ClientFQDNFlagN|wire.ClientFQDNFlagO ||
+		ev.Lease.FQDN.Name != "named-after-start.example.test." {
+		t.Fatalf("the Renewed lease reports %v %+v; want the server's N|O and its full name", ev.Lease.HasFQDN, ev.Lease.FQDN)
+	}
+	if got := r.mgr.Hostname(); got != "named-after-start" {
+		t.Fatalf("Manager.Hostname() = %q after the step", got)
+	}
 }

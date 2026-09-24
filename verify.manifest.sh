@@ -836,7 +836,57 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # NONE OF THE FIFTY-FIVE IS A NETNS TEST, MEASURED with testroster -netns at
 # 42 over the base and 42 here, so the netns enumeration in verify.sh does not
 # move in this round and is not re-measured.
-MIN_DECLARED_TESTS=880
+
+# AND THIS CHANGE ON TOP OF THAT.
+# RECONFIGURE COUNTERS (claymore666/docker-net-dhcp#925): 880 -> 897, measured
+# the same way, one testroster run over the base and one over this head,
+# differenced as a set. Seventeen added, in three files:
+#
+#   proto/machine6_reconfigure_counters_test.go  (7)
+#     EveryReconfigureRefusalArmRaisesItsOwnCounter,
+#     EveryReconfigureRefusalIsDeclaredCountedAndNamed,
+#     AnUndefinedReconfigureMessageTypeIsCounted,
+#     EveryReconfigureAcceptArmRaisesTheAcceptedCounter,
+#     AcceptedAndRefusedPartitionEveryReconfigure,
+#     AResumedClientIsKeylessUntilAReplyCarriesAKey,
+#     AKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan
+#   lease/reconfigure6_test.go                   (3)
+#     AnAcceptedReconfigureReachesStatsAndTheCounters,
+#     ARefusedReconfigureReachesStatsWithTheRuleThatRefusedIt,
+#     AV4ManagerReportsNoReconfigureCounters
+#
+#   lease/mirror6_test.go                        (7)
+#     ARepeatedAdvertisementRefreshesAnAddressWhereTheCallerCanSeeIt,
+#     APreferredLifetimeRunningOutReachesTheCaller,
+#     AValidLifetimeRunningOutReachesTheCaller,
+#     AFormedAddressAnotherNodeHoldsReachesTheCaller,
+#     FallingBackToTheRoutersPrefixReachesTheCaller,
+#     ARouterAFullListCannotTakeReachesTheCaller,
+#     AResolverAFullListThrowsOutReachesTheCaller
+#
+# THE SEVEN IN mirror6_test.go ARE NOT THIS ISSUE'S SUBJECT and they are here
+# for the reason the first list above gives: the mirror block in
+# Manager.dispatch had nine assignments and only two of them were observed at
+# this ring. MEASURED by discarding each assignment one at a time: seven
+# survived the whole package. Every test that named one of the seven asserted
+# it had NOT moved, and a discarded assignment answers zero too. Each of the
+# seven now drives its counter off zero and reads it back through Stats.
+#
+# NONE OF THE SEVENTEEN IS A NETNS TEST, MEASURED with testroster -netns at 42
+# over the base and 42 here, so the netns enumeration in verify.sh does not
+# move and is not re-measured.
+#
+# DHCPv6 CLIENT FQDN, claymore666/docker-net-dhcp#1029: eighteen added, none
+# removed, MEASURED 2026-09-24 as a set difference of two testroster runs, base
+# and head. wire/dhcpv6_test.go 4, proto/machine6_hostname_test.go 12,
+# lease/hostname_test.go 1, runtime/hostname6_dnsmasq_linux_test.go 1. The
+# runtime one is a netns test: testroster -netns reads 42 on the base, 43 here.
+#
+# RAW SOCKETS READ ON AFTER A LINK COMES UP, #23: eleven added, none removed,
+# MEASURED 2026-09-24 as testroster runs, 915 on the base and 926 here.
+# runtime/readloop_linux_test.go 4, runtime/readloop_gone_linux_test.go 7.
+# Seven are netns tests: testroster -netns reads 43 on the base, 50 here.
+MIN_DECLARED_TESTS=926
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

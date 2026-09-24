@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.0.0
+## Coverage by claim, through v1.1.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -117,6 +117,19 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
+- **A DHCPv6 name given to a client that is already running, in the server's
+  own table.** The client holds a lease with no name and dnsmasq's lease file
+  shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
+  bit set in a Renew at once, and the lease file then carries the name against
+  its address. The server's own Client FQDN option is reported on the lease,
+  and three further calls with the same name produce no Renew
+  (`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). The Renew before
+  T1 is this library's choice: RFC 4704 §5.4 lets a client send new name data
+  "when it communicates with the server again" and RFC 9915 names no early
+  Renew for it (`TestAV6NameSetWhileBoundIsSentInAnEarlyRenew`). The option
+  rides only Solicit, Request, Renew and Rebind (RFC 4704 §5)
+  (`TestAV6NameAtStartRidesSolicitRequestRenewAndRebind`,
+  `TestOption39StaysOutOfEveryOtherV6Message`).
 - **A lease given back with no client and no interface left.**
   `lease.BuildRelease` renders the datagram out of a `Record` alone and
   `runtime.SendRelease` writes it, on both families, from a source address the
@@ -141,6 +154,16 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   and the client leases from a server that exists only in there. The goroutine
   running it cannot even see the interface. That is what lets one process lease
   on many containers' links at once.
+- **A link that is down for a while, and one that goes away.** Each of the
+  four raw sockets (the IPv4 and DHCPv6 transports, ARP and Neighbor
+  Discovery) is opened on a veth whose end is down, reports the one "network
+  is down" Linux gives it, and reads the peer's frames on the same socket once
+  the link comes up. The same sockets on a link that is deleted, while up,
+  after coming up, after frames queued before a down and while still down,
+  report an error wrapping `ErrLinkGone` and stop, and `ReadErrors` counts
+  exactly the errors the consumer received ([#23](https://github.com/claymore666/dhcp-golib/issues/23),
+  `TestTheV4TransportReadsOnAfterTheLinkComesUp`,
+  `TestALinkThatGoesAwayStillReachesEachSocketAsAnError`).
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
@@ -294,7 +317,35 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   delivered the key keeps it verbatim in `proto.JournalEntry6.Raw`, where a
   replay needs the octets, and in the packet capture `Client6.Packets`
   returns. A caller that hands a journal or a capture to somebody else hands
-  the key over with it.
+  the key over with it. Every Reconfigure the machine is handed is COUNTED as
+  well as journalled: one cell per rule in `proto.ReconfigureCounters`, and
+  `lease.Stats.ReconfiguresAccepted` and `ReconfiguresRefused` beside it, which
+  partition what reached the state machine
+  (`TestEveryReconfigureRefusalArmRaisesItsOwnCounter`,
+  `TestEveryReconfigureAcceptArmRaisesTheAcceptedCounter`,
+  `TestAcceptedAndRefusedPartitionEveryReconfigure`,
+  `TestEveryReconfigureRefusalIsDeclaredCountedAndNamed`,
+  `TestAnAcceptedReconfigureReachesStatsAndTheCounters`,
+  `TestARefusedReconfigureReachesStatsWithTheRuleThatRefusedIt`). A refusal is
+  not a fault: a client that RESUMED a lease holds no reconfigure key and
+  refuses its server's Reconfigures one after another, because RFC 9915
+  Appendix B Table 5 gives the Reconfigure Accept option no mark for Confirm
+  and §20.4.2 says "The server selects a reconfigure key for a client during
+  the Request/Reply, Solicit/Reply, or Information-request/Reply message
+  exchange." The span ends at the first ACCEPTED Reply that carries a key,
+  whichever exchange it answers: §20.4.2 binds the server's choice, not what
+  the client records, so a key in the Reply to the Renew at T1 ends it there.
+  A Reply the client does not act on does not, and §18.2.10's UnspecFail and
+  NotOnLink arms, an IA_NA that says NoBinding, a malformed Status Code option
+  and a Reply with no usable address are among them. The rule is the two call
+  sites, `takeReply` and `takeConfig` (the Reply to an Information-request),
+  each recording the key where the Reply is acted on, and not this list.
+  `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
+  Renew's Reply that ends it, and the exchanges §20.4.2 does name;
+  `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
+  boundary. A Reconfigure discarded before the state
+  machine — a datagram that would not decode, or one the transport dropped as
+  addressed to another node — is in neither counter.
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

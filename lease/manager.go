@@ -158,6 +158,10 @@ type Manager struct {
 	journal Journal
 	packets PacketRing
 
+	// reconfCounts mirrors the v6 machine's Reconfigure counters for
+	// ReconfigureCounters, taken where the router observation is taken.
+	reconfCounts proto.ReconfigureCounters
+
 	// params6 mirrors the v6 machine's configuration for Params6, and
 	// declined6 the set it has declined for Declined6. Both are read under mu
 	// from a caller's goroutine, because the machine itself belongs to Run's.
@@ -465,6 +469,32 @@ type Stats struct {
 	SLAACAddressesConflicted uint64
 	SLAACPrefixesIgnored     uint64
 	SLAACFallbacks           uint64
+
+	// The server-initiated reconfiguration counters, RFC 9915 §16.11, §18.2.11
+	// and §20.4. They are ring 1's and are mirrored here at each Step, like
+	// the SLAAC counters above.
+	//
+	// THEY PARTITION WHAT RING 1 WAS HANDED: every Reconfigure that reaches
+	// the machine raises exactly one of the two, so their sum is how many
+	// arrived and their ratio is whether this client and that server have a
+	// working reconfigure key between them.
+	//
+	// A RECONFIGURE DISCARDED BEFORE RING 1 IS IN NEITHER. A datagram that
+	// would not decode is DecodeFailures and never became an event, and one
+	// addressed to another node is dropped by the transport — the other half
+	// of §16.11's first bullet — and is counted nowhere. The population here
+	// is what the state machine was given.
+	//
+	// ReconfiguresRefused IS NOT A FAULT COUNT, and reading it as one is the
+	// mistake it is easiest to make. A client that resumed a lease holds no
+	// reconfigure key, a client built with Params6.AcceptReconfigure off is
+	// unwilling by §21.20, and both refuse every Reconfigure while working
+	// exactly as asked. WHICH rule refused is in the journal line beside it
+	// and in Manager.ReconfigureCounters, because one number for eighteen
+	// rules answers none of them — the reason RouterAdvertsRefused is not
+	// folded into NDIgnored.
+	ReconfiguresAccepted uint64
+	ReconfiguresRefused  uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -687,6 +717,7 @@ func newManager6(cfg Config) (*Manager, error) {
 		cfg:       cfg,
 		machine6:  m,
 		params6:   m.Params(),
+		hostname:  m.Hostname(),
 		declined6: m.Declined(),
 		journal:   cfg.Journal,
 		journal6:  cfg.Journal6,
@@ -987,8 +1018,8 @@ func (mg *Manager) requestQueued(ev proto.Event) bool {
 	}
 }
 
-// Hostname is the name this client is putting in option 12 now, and the empty
-// string on a v6 manager, which sends no name option.
+// Hostname is the name this client is putting in option 12 (v4) or option 39
+// (v6, RFC 4704) now.
 //
 // It is Config.Params.Hostname until SetHostname changes it. A CALLER
 // PERSISTING CONFIGURATION ACROSS A RESTART PERSISTS THIS: proto.Params is the
@@ -1004,8 +1035,11 @@ func (mg *Manager) Hostname() string {
 	return mg.hostname
 }
 
-// ErrHostnameV6 is returned by SetHostname on a DHCPv6 manager.
-var ErrHostnameV6 = errors.New("lease: this manager runs DHCPv6, which this library sends no name option for")
+// ErrHostnameV6 was SetHostname's refusal on a DHCPv6 manager through v1.0.0.
+//
+// Deprecated: SetHostname sends option 39 on v6 and never returns this; kept
+// so callers that name it still build (claymore666/docker-net-dhcp#1029).
+var ErrHostnameV6 = errors.New("lease: ErrHostnameV6 is deprecated and never returned; SetHostname sends a name on DHCPv6")
 
 // ErrHostnameFQDN is returned by SetHostname on a client configured with
 // option 81.
@@ -1016,9 +1050,10 @@ var ErrHostnameFQDN = errors.New("lease: this client sends option 81, which RFC 
 var ErrRequestQueueFull = errors.New("lease: the request queue is full and the hostname was not delivered")
 
 // SetHostname gives a RUNNING client the name it should ask the server to
-// record in option 12, and makes it tell the server at once.
+// record in option 12, and makes it tell the server at once. DHCPv6 differs;
+// its paragraph is below.
 //
-// THE NAME IS SENT, NOT STORED. A client holding a lease renews early to carry
+// THE NAME IS SENT, NOT STORED. A DHCPv4 client holding a lease renews early to carry
 // it — RFC 2131 section 4.4.5, "A client MAY choose to renew or extend its
 // lease prior to T1" — so the server's table has the name within one exchange
 // instead of at T1. A client that holds nothing yet records the name and sends
@@ -1034,25 +1069,40 @@ var ErrRequestQueueFull = errors.New("lease: the request queue is full and the h
 // THE ERROR IS ABOUT THIS CALL AND NOTHING LATER. Nil means the name was
 // validated and handed to the running client; it does not mean the server
 // answered, and nothing here waits for a DHCPACK. A non-nil error means
-// nothing was handed over: an unsendable name (proto.ErrBadHostname), a client
-// this library sends no name for (ErrHostnameV6, ErrHostnameFQDN), or a full
-// request queue (ErrRequestQueueFull) — which is the one case a caller should
-// retry.
+// nothing was handed over: an unsendable name (proto.ErrBadHostname, or
+// proto.ErrBadHostname6 on v6), a client this library sends no name for
+// (ErrHostnameFQDN), or a full request queue (ErrRequestQueueFull) — which is
+// the one case a caller should retry.
 //
-// An empty name stops option 12 being sent from the next message on, and sends
+// An empty name stops option 12 (39 on v6) being sent from the next message on, and sends
 // no message of its own. It does not withdraw the name the server already
 // holds; DHCP has no message for that, so an exchange would change nothing
 // there.
 //
-// "AT ONCE" HAS ONE EXCEPTION, and nil is returned in it. A held lease whose
+// "AT ONCE" HAS ONE EXCEPTION ON v4, and nil is returned in it. A lease whose
 // DHCPACK carried no server identifier cannot be renewed by unicast, so that
 // client stays in BOUND and the name goes out in the broadcast DHCPREQUEST at
 // T2 instead. The journal says so on the spot ("no message was sent"); the
 // return value cannot, because it is about the handover and this is decided
 // afterwards, inside the running client.
+//
+// ON DHCPv6 the name goes in option 39 with S=1 (RFC 4704), checked by
+// proto.ValidateHostname6. A server-granted lease is renewed before T1 to
+// carry it, a decision of 2026-09-24 (claymore666/docker-net-dhcp#1029): RFC
+// 4704 section 5.4 only says the client MAY send it "when it communicates
+// with the server again". A lease naming no server goes to a Rebind at once.
+// A binding formed by SLAAC, or a client that only sends Information-request,
+// sends no message that may carry option 39: nil is returned, the name is
+// kept, and nothing goes out. proto.Machine6.announceHostname6 has the rule.
 func (mg *Manager) SetHostname(name string) error {
 	if mg.v6() {
-		return ErrHostnameV6
+		if err := proto.ValidateHostname6(name); err != nil {
+			return err
+		}
+		if !mg.requestQueued(proto.SetHostname(name)) {
+			return ErrRequestQueueFull
+		}
+		return nil
 	}
 	if mg.cfg.Params.FQDN.Name != "" {
 		return ErrHostnameFQDN
@@ -1169,7 +1219,18 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.stats.SLAACAddressesConflicted = sc.Conflicts
 			mg.stats.SLAACPrefixesIgnored = sc.IgnoredTotal()
 			mg.stats.SLAACFallbacks = sc.Fallbacks
+			// ONE DERIVATION, in the same place and for the same reason as the
+			// SLAAC counters above. An arm per action kind would have counted
+			// an acceptance in the arm that renewed the lease, which is the
+			// arm a Reconfigure asking for an Information-request never
+			// reaches, and would have counted no refusal at all: a refused
+			// Reconfigure produces no action.
+			rc := mg.machine6.ReconfigureCounters()
+			mg.reconfCounts = rc
+			mg.stats.ReconfiguresAccepted = rc.Accepted
+			mg.stats.ReconfiguresRefused = rc.RefusedTotal()
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
+			mg.hostname = mg.machine6.Hostname()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
 				mg.declined6 = d
 			}
@@ -1495,6 +1556,21 @@ func (mg *Manager) Router() proto.RouterObservation {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	return mg.router
+}
+
+// ReconfigureCounters is what the v6 machine did with the Reconfigure messages
+// it was handed, rule by rule. The zero value is what a v4 manager reports.
+//
+// IT IS THE SPLIT BEHIND Stats.ReconfiguresAccepted AND Stats.ReconfiguresRefused,
+// and it is exported because those two totals cannot answer the question an
+// operator asks of them. A client that resumed a lease refuses every
+// Reconfigure for want of a key and is healthy; a wrong digest on the wire and
+// a replayed detection value are a segment to go and look at. The total holds
+// all three and separates none of them.
+func (mg *Manager) ReconfigureCounters() proto.ReconfigureCounters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.reconfCounts
 }
 
 // Params6 is the configuration the v6 machine RAN WITH, and the second value

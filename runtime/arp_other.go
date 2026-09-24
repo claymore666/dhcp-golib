@@ -17,10 +17,11 @@ import (
 // is TestTransportStatsDeclarationsAgree's ARP counterpart, which parses both
 // files.
 type ARPStats struct {
-	Present bool
-	Reads   uint64
-	Sends   uint64
-	Dropped uint64
+	Present    bool
+	Reads      uint64
+	Sends      uint64
+	Dropped    uint64
+	ReadErrors uint64
 }
 
 // ARPSocket is not available on this platform. Every method below fails or is

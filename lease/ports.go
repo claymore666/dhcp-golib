@@ -65,9 +65,10 @@ type Transport interface {
 	Close() error
 }
 
-// ARPInbound is one ARP frame that arrived on the link, or the error that
-// ended the stream. Frame and Err are mutually exclusive, for the reason
-// Inbound gives.
+// ARPInbound is one ARP frame that arrived on the link, or a read error, after
+// which the stream goes on if the error can pass, such as the link going down,
+// and ends if it cannot or the link is gone (#23).
+// Frame and Err are mutually exclusive, for the reason Inbound gives.
 type ARPInbound struct {
 	Frame []byte
 	Err   error
@@ -257,8 +258,8 @@ type TransportV6 interface {
 }
 
 // NDInbound is one ICMPv6 Neighbor Discovery frame that arrived on the link,
-// or the error that ended the stream. Frame and Err are mutually exclusive,
-// for the reason Inbound gives.
+// or a read error, after which the stream goes on as ARPInbound's does.
+// Frame and Err are mutually exclusive, for the reason Inbound gives.
 type NDInbound struct {
 	Frame []byte
 	// Src is the IPv6 source address the frame arrived from.

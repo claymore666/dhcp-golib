@@ -222,6 +222,16 @@ func (c *Client6) Lease() (lease.Lease, bool) { return c.mgr.Lease() }
 // Release gives the binding back (RFC 9915 section 18.2.7).
 func (c *Client6) Release() { c.mgr.Release() }
 
+// SetHostname gives this running client the name to put in option 39. A
+// server-granted lease sends it at once in a Renew or Rebind (decision
+// 2026-09-24, claymore666/docker-net-dhcp#1029); a SLAAC binding or an
+// Information-request-only client keeps it and sends nothing. See
+// lease.Manager.SetHostname.
+func (c *Client6) SetHostname(name string) error { return c.mgr.SetHostname(name) }
+
+// Hostname is the name this client is currently putting in option 39.
+func (c *Client6) Hostname() string { return c.mgr.Hostname() }
+
 // ReportAddressLost tells the client that an address it holds has been
 // withdrawn from the interface — RFC 4429 section 3.3's case, where the
 // kernel's own duplicate address detection removed an optimistic address under

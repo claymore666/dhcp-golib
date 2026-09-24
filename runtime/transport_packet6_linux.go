@@ -153,9 +153,11 @@ type PacketTransportV6 struct {
 	zeroChecksum atomic.Uint64
 	badChecksum  atomic.Uint64
 	foreign      atomic.Uint64
+	readErrors   atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	done      chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -207,6 +209,8 @@ type TransportStatsV6 struct {
 	// the consumer had not drained the channel. Not Skipped, for
 	// TransportStats.Dropped's reason.
 	Dropped uint64
+	// ReadErrors is TransportStats.ReadErrors.
+	ReadErrors uint64
 }
 
 // NewPacketTransportV6 opens an ETH_P_IPV6 AF_PACKET socket bound to ifName.
@@ -243,6 +247,7 @@ func NewPacketTransportV6(ifName string) (*PacketTransportV6, error) {
 		src:     src,
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
 		inbound: make(chan lease.Inbound, inboundBuffer),
+		done:    make(chan struct{}),
 	}
 	t.wg.Add(1)
 	go t.read()
@@ -320,6 +325,7 @@ func (t *PacketTransportV6) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.closed.Store(true)
+		close(t.done)
 		err = closeSocket(t.f, t.ifName)
 		t.wg.Wait()
 		close(t.inbound)
@@ -338,6 +344,7 @@ func (t *PacketTransportV6) Stats() TransportStatsV6 {
 		BadChecksum:  t.badChecksum.Load(),
 		Foreign:      t.foreign.Load(),
 		Dropped:      t.dropped.Load(),
+		ReadErrors:   t.readErrors.Load(),
 	}
 }
 
@@ -351,39 +358,18 @@ func (t *PacketTransportV6) Stats() TransportStatsV6 {
 // is no unicast destination to address.
 func (t *PacketTransportV6) read() {
 	defer t.wg.Done()
-	buf := make([]byte, maxFrame)
-	rc, err := t.f.SyscallConn()
-	if err != nil {
-		t.fail(fmt.Errorf("runtime: syscallconn: %w", err))
-		return
-	}
-	for {
-		var (
-			n    int
-			rerr error
-		)
-		cerr := rc.Read(func(fd uintptr) bool {
-			n, _, rerr = syscall.Recvfrom(int(fd), buf, 0)
-			return rerr != syscall.EAGAIN
-		})
-		if err := firstErr(cerr, rerr); err != nil {
-			if t.closed.Load() {
-				return
-			}
-			t.fail(fmt.Errorf("runtime: v6 read: %w", err))
-			return
-		}
-		t.deliver(buf[:n])
-	}
+	readLoop{
+		f: t.f, ifIndex: t.ifIndex, closed: &t.closed, done: t.done, errs: &t.readErrors, what: "v6 read",
+		report:  t.fail,
+		deliver: func(frame []byte, _ syscall.Sockaddr) { t.deliver(frame) },
+	}.run()
 }
 
-// fail reports a read error on the port, best-effort. A read error on a live
-// socket is reported and not swallowed, for PacketTransport.read's reason: an
-// interface going away is exactly this.
+// fail reports a read error on the port as ARPSocket.fail does.
 func (t *PacketTransportV6) fail(err error) {
 	select {
 	case t.inbound <- lease.Inbound{Err: err}:
-	default:
+	case <-t.done:
 	}
 }
 

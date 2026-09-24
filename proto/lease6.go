@@ -109,6 +109,13 @@ type Lease6 struct {
 	// than gone.
 	Options wire.OptionsV6
 
+	// FQDN is the server's option 39 from the Reply and HasFQDN whether it
+	// sent one: its flags byte as received, O and any reserved bits included,
+	// and the name (RFC 4704 section 6). Reported, never acted on. Equal ignores both, since they
+	// configure nothing on the interface.
+	FQDN    wire.ClientFQDN
+	HasFQDN bool
+
 	// SLAAC says this lease was formed from Router Advertisements under RFC
 	// 4862 §5.5.3 and not granted by a server.
 	//
@@ -434,6 +441,11 @@ func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []s
 	} else {
 		l.Search = s
 	}
+	f, ok, note := serverFQDN(m.Options)
+	l.FQDN, l.HasFQDN = f, ok
+	if note != "" {
+		notes = append(notes, note)
+	}
 	return l, notes, res.status, len(l.Addrs) > 0
 }
 
@@ -523,4 +535,25 @@ func readIA(o wire.OptionsV6, iaid uint32) (iaResult, []string) {
 		notes = append(notes, fmt.Sprintf("no IA_NA with our IAID %d in the message", iaid))
 	}
 	return out, notes
+}
+
+// serverFQDN reads a server's option 39 and the journal line that reports it.
+// A malformed one is a note and not a refusal: the name is information about
+// the server's DNS work, and the lease stands without it.
+func serverFQDN(o wire.OptionsV6) (wire.ClientFQDN, bool, string) {
+	f, ok, err := o.ClientFQDN()
+	switch {
+	case err != nil:
+		return wire.ClientFQDN{}, false, "Client FQDN option: " + err.Error() + "; ignored"
+	case !ok:
+		return wire.ClientFQDN{}, false, ""
+	}
+	bit := func(b uint8) int {
+		if f.Flags&b != 0 {
+			return 1
+		}
+		return 0
+	}
+	return f, true, fmt.Sprintf("the server's Client FQDN option: S=%d O=%d N=%d name %q (RFC 4704 section 6)",
+		bit(wire.ClientFQDNFlagS), bit(wire.ClientFQDNFlagO), bit(wire.ClientFQDNFlagN), f.Name)
 }

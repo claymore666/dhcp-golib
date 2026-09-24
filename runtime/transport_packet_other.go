@@ -33,6 +33,7 @@ type TransportStats struct {
 	Uncompleted uint64
 	Absent      uint64
 	Dropped     uint64
+	ReadErrors  uint64
 }
 
 // PacketTransport is not available on this platform. Every method below fails

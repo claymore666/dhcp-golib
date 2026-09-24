@@ -35,8 +35,8 @@ type JournalEntry6 struct {
 	DAD   DADOutcome
 	// Hostname is carried for the reason JournalEntry.Hostname is: replayEvent
 	// is ONE reconstruction for both families, and the copy that did not
-	// record a payload is the copy where the payload is dropped. The v6
-	// machine has no name option and never produces the event.
+	// record a payload is the copy where the payload is dropped. On v6 it is
+	// the name option 39 carries (RFC 4704).
 	Hostname string
 	Timer    TimerID
 	Action   ActionID

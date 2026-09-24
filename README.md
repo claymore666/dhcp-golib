@@ -22,7 +22,7 @@ and it needs no root.
 | Come back after a restart still holding the same address (INIT-REBOOT / Confirm) | yes | yes |
 | A durable lease record, a torn tail repaired, the exchange replayable offline | yes | yes |
 | Report the address, the DNS servers and the search list | yes | yes |
-| Give a running client a name for the server's table, and send it at once (RFC 2132's Host Name option) | yes | unsupported |
+| Give a running client a name for the server's table, and send it at once (RFC 2132's Host Name option, RFC 4704's Client FQDN option) | yes | yes |
 | Report the preferred and the valid lifetime as separate deadlines | n/a | yes |
 | Report the gateway, the static routes and the link MTU | yes | yes |
 | Serve a caller that wants the configuration and no lease (DHCPINFORM / Information-request) | unsupported | yes |
@@ -56,7 +56,15 @@ address is formed from an advertised prefix, and every one of those is reported
 and none of it is applied. There is no prefix delegation. A
 server that holds the reconfigure key it gave the client can make it renew,
 rebind or ask for configuration again, and a Reconfigure that is not signed
-with that key is discarded. Nothing on DHCPv4 is planned for a later release.
+with that key is discarded. A DHCPv6 client sends its name in RFC 4704's
+Client FQDN option. A name set on a client that holds a lease goes out
+straight away in a Renew, or in a Rebind when the lease names no server or the
+client is already rebinding, and lands in the server's lease file
+(`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). A client bound to
+a SLAAC address or holding no lease sends nothing, a client not yet bound
+sends the name in its next Solicit or Request, or as above once it is bound,
+and an empty name is never sent. Nothing on DHCPv4 is planned for a later
+release.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -69,7 +77,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v100).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v110).
 
 ## Usage
 
@@ -233,9 +241,6 @@ The bounds below are written down so that nobody has to infer them.
   bound client with no exchange in flight is discarded, RFC 3203's
   DHCPFORCERENEW included. DHCPv6's Reconfigure is served, which is a `yes`
   row above.
-- No name option on DHCPv6. IPv4 sends RFC 2132's Host Name option, and a
-  running client's name can be changed. DHCPv6's counterpart, RFC 4704's Client
-  FQDN option, is not sent and there is no call that sets one.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.
