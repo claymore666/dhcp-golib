@@ -875,7 +875,13 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # NONE OF THE SEVENTEEN IS A NETNS TEST, MEASURED with testroster -netns at 42
 # over the base and 42 here, so the netns enumeration in verify.sh does not
 # move and is not re-measured.
-MIN_DECLARED_TESTS=897
+#
+# DHCPv6 CLIENT FQDN, claymore666/docker-net-dhcp#1029: eighteen added, none
+# removed, MEASURED 2026-09-24 as a set difference of two testroster runs, base
+# and head. wire/dhcpv6_test.go 4, proto/machine6_hostname_test.go 12,
+# lease/hostname_test.go 1, runtime/hostname6_dnsmasq_linux_test.go 1. The
+# runtime one is a netns test: testroster -netns reads 42 on the base, 43 here.
+MIN_DECLARED_TESTS=915
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

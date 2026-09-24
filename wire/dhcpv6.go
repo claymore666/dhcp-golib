@@ -125,6 +125,7 @@ const (
 	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
 	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
 	OptV6InfoRefresh  OptionCodeV6 = 32 // §21.23
+	OptV6ClientFQDN   OptionCodeV6 = 39 // RFC 4704 section 4
 	OptV6SolMaxRTCode OptionCodeV6 = 82 // §21.24
 	OptV6InfMaxRTCode OptionCodeV6 = 83 // §21.25
 )
@@ -144,6 +145,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6DNSServers:   "dns-servers",
 	OptV6DomainList:   "domain-list",
 	OptV6InfoRefresh:  "info-refresh-time",
+	OptV6ClientFQDN:   "client-fqdn",
 	OptV6SolMaxRTCode: "sol-max-rt",
 	OptV6InfMaxRTCode: "inf-max-rt",
 }
@@ -643,6 +645,110 @@ func (o OptionsV6) Preference() (uint8, bool, error) {
 		return 0, true, fmt.Errorf("%w: Preference is %d octet(s), §21.8 says 1", ErrV6BadOption, len(v))
 	}
 	return v[0], true, nil
+}
+
+// ------------------------------------------------------------ Client FQDN --
+
+// Option 39's flag bits, RFC 4704 section 4.1: "|  MBZ    |N|O|S|", S the
+// least significant. Not the v4 FQDNFlag values: RFC 4702 puts E at 0x04.
+const (
+	ClientFQDNFlagS   uint8 = 0x01
+	ClientFQDNFlagO   uint8 = 0x02
+	ClientFQDNFlagN   uint8 = 0x04
+	ClientFQDNFlagMBZ uint8 = 0xF8
+)
+
+// ClientFQDN is option 39's value. Name ends in a dot when the option carried
+// RFC 4704 section 4.2's "terminating zero-length label" (a full name) and
+// not when it did not (a partial name). Flags is as received, MBZ included.
+type ClientFQDN struct {
+	Flags uint8
+	Name  string
+}
+
+// EncodeClientFQDN builds option 39's value (RFC 4704 section 4). A trailing
+// dot sends a full name, none a partial one (section 4.2). The O and MBZ bits
+// and N with S are refused, per section 4.1's client MUSTs.
+func EncodeClientFQDN(flags uint8, name string) ([]byte, error) {
+	switch {
+	case flags&ClientFQDNFlagO != 0:
+		return nil, fmt.Errorf("%w: RFC 4704 section 4.1 says a client MUST set the O bit to 0", ErrV6Encode)
+	case flags&ClientFQDNFlagN != 0 && flags&ClientFQDNFlagS != 0:
+		return nil, fmt.Errorf("%w: RFC 4704 section 4.1 says if the N bit is 1, the S bit MUST be 0", ErrV6Encode)
+	case flags&ClientFQDNFlagMBZ != 0:
+		return nil, fmt.Errorf("%w: RFC 4704 section 4.1 says a client MUST clear the MBZ bits, got %#02x", ErrV6Encode, flags&ClientFQDNFlagMBZ)
+	}
+	full := strings.HasSuffix(name, ".")
+	trimmed := strings.TrimSuffix(name, ".")
+	if full && trimmed == "" {
+		return nil, fmt.Errorf("%w: %q is the root alone, not a client's name", ErrV6Name, name)
+	}
+	out := []byte{flags}
+	if trimmed != "" {
+		for _, label := range strings.Split(trimmed, ".") {
+			if label == "" {
+				return nil, fmt.Errorf("%w: %q has an empty label", ErrV6Name, name)
+			}
+			if len(label) > 63 {
+				return nil, fmt.Errorf("%w: label %q is %d octet(s), RFC 1035 section 3.1 allows 63", ErrV6Name, label, len(label))
+			}
+			out = append(out, byte(len(label)))
+			out = append(out, label...)
+		}
+	}
+	if full {
+		out = append(out, 0)
+	}
+	if len(out)-1 > MaxNameLen {
+		return nil, fmt.Errorf("%w: %q is %d octet(s) on the wire, RFC 1035 section 2.3.4 allows %d", ErrV6Name, name, len(out)-1, MaxNameLen)
+	}
+	return out, nil
+}
+
+// DecodeClientFQDN reads option 39's value. The MBZ bits are kept, not refused:
+// RFC 4704 section 4.1 says a receiver "MUST ignore these bits". A zero label
+// ends a full name and must be the last octet; running out at a label boundary
+// is a partial name (section 4.2). Pointers are refused (RFC 9915 section 10),
+// and so is a label holding a dot, which Name could not tell from two labels.
+func DecodeClientFQDN(v []byte) (ClientFQDN, error) {
+	if len(v) < 1 {
+		return ClientFQDN{}, fmt.Errorf("%w: Client FQDN is empty, RFC 4704 section 4 needs the flags octet", ErrV6BadOption)
+	}
+	var labels []string
+	off := 1
+	for off < len(v) {
+		n := int(v[off])
+		switch {
+		case n == 0:
+			if off+1 != len(v) {
+				return ClientFQDN{}, fmt.Errorf("%w: Client FQDN has %d octet(s) after its root label", ErrV6Name, len(v)-off-1)
+			}
+			return ClientFQDN{Flags: v[0], Name: strings.Join(labels, ".") + "."}, nil
+		case n&0xC0 == 0xC0:
+			return ClientFQDN{}, fmt.Errorf("%w: Client FQDN carries a compression pointer at offset %d, which RFC 9915 section 10 says MUST NOT be used", ErrV6Name, off)
+		case n&0xC0 != 0:
+			return ClientFQDN{}, fmt.Errorf("%w: Client FQDN label length octet %#02x uses a reserved form", ErrV6Name, n)
+		case off+1+n > len(v):
+			return ClientFQDN{}, fmt.Errorf("%w: Client FQDN label of %d octet(s) runs past the option", ErrV6Name, n)
+		}
+		// A dot inside a label would read back as a label boundary.
+		if strings.IndexByte(string(v[off+1:off+1+n]), '.') >= 0 {
+			return ClientFQDN{}, fmt.Errorf("%w: Client FQDN label at offset %d holds a dot, which the dotted Name cannot carry", ErrV6Name, off)
+		}
+		labels = append(labels, string(v[off+1:off+1+n]))
+		off += 1 + n
+	}
+	return ClientFQDN{Flags: v[0], Name: strings.Join(labels, ".")}, nil
+}
+
+// ClientFQDN decodes the first option 39. ok is false when there is none.
+func (o OptionsV6) ClientFQDN() (ClientFQDN, bool, error) {
+	v, ok := o.First(OptV6ClientFQDN)
+	if !ok {
+		return ClientFQDN{}, false, nil
+	}
+	f, err := DecodeClientFQDN(v)
+	return f, true, err
 }
 
 // ----------------------------------------------------------- Elapsed Time --

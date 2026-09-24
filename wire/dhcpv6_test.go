@@ -901,6 +901,138 @@ func TestDUIDShapes(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------------------ Client FQDN --
+
+// TestClientFQDNRoundTripsFullAndPartialNames pins RFC 4704 section 4's
+// octets: S is 0x01, and a trailing dot is the zero label that makes a full
+// name (section 4.2), so "host." and "host" differ on the wire.
+func TestClientFQDNRoundTripsFullAndPartialNames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags uint8
+		in    string
+		hex   string
+	}{
+		{"partial, S", ClientFQDNFlagS, "host", "0104686f7374"},
+		{"full, S", ClientFQDNFlagS, "host.example.", "0104686f7374076578616d706c6500"},
+		{"partial two labels", ClientFQDNFlagS, "host.example", "0104686f7374076578616d706c65"},
+		{"N alone", ClientFQDNFlagN, "host", "0404686f7374"},
+		{"no flags", 0, "host.", "0004686f737400"},
+		{"empty name, section 4.2", ClientFQDNFlagS, "", "01"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := EncodeClientFQDN(tc.flags, tc.in)
+			if err != nil {
+				t.Fatalf("EncodeClientFQDN: %v", err)
+			}
+			if want := mustHex(tc.hex); !bytes.Equal(got, want) {
+				t.Fatalf("encoded %x, want %x", got, want)
+			}
+			back, err := DecodeClientFQDN(got)
+			if err != nil {
+				t.Fatalf("DecodeClientFQDN: %v", err)
+			}
+			if back.Flags != tc.flags || back.Name != tc.in {
+				t.Fatalf("decoded %+v, want flags %#02x name %q", back, tc.flags, tc.in)
+			}
+		})
+	}
+	o := OptionsV6{{Code: OptV6ClientFQDN, Data: mustHex("0304686f737400")}}
+	f, ok, err := o.ClientFQDN()
+	if err != nil || !ok || f.Flags != ClientFQDNFlagS|ClientFQDNFlagO || f.Name != "host." {
+		t.Fatalf("OptionsV6.ClientFQDN = %+v, %v, %v; want the server's S|O and a full name", f, ok, err)
+	}
+	if _, ok, err := (OptionsV6{}).ClientFQDN(); ok || err != nil {
+		t.Fatalf("an absent option 39 reads as present=%v err=%v", ok, err)
+	}
+}
+
+// TestClientFQDNIgnoresReservedBitsOnReceive: RFC 4704 section 4.1 says
+// receivers "MUST ignore these bits", so a server setting them still decodes.
+func TestClientFQDNIgnoresReservedBitsOnReceive(t *testing.T) {
+	for in, name := range map[string]string{"f904686f7374": "host", "f904686f737400": "host."} {
+		f, err := DecodeClientFQDN(mustHex(in))
+		if err != nil {
+			t.Fatalf("MBZ bits set by a server made %s fail: %v", in, err)
+		}
+		// Kept as received, so a caller logging them sees what the server sent.
+		if f.Flags != 0xf9 || f.Name != name {
+			t.Fatalf("decoded %+v from %s, want flags 0xf9 and the name %q", f, in, name)
+		}
+	}
+}
+
+// TestEncodeClientFQDNRefusesWhatAClientMayNotSend: section 4.1's client
+// MUSTs on flags, and RFC 1035's 63-octet label and 255-octet name.
+func TestEncodeClientFQDNRefusesWhatAClientMayNotSend(t *testing.T) {
+	label63 := strings.Repeat("a", 63)
+	// Four 63-octet labels are 256 octets with length bytes, one past 255.
+	over := strings.Join([]string{label63, label63, label63, label63}, ".")
+	fits := strings.Join([]string{label63, label63, label63, strings.Repeat("a", 62)}, ".")
+	for _, tc := range []struct {
+		name  string
+		flags uint8
+		in    string
+		want  error
+	}{
+		{"O bit", ClientFQDNFlagS | ClientFQDNFlagO, "host", ErrV6Encode},
+		{"N with S", ClientFQDNFlagS | ClientFQDNFlagN, "host", ErrV6Encode},
+		{"MBZ bit", ClientFQDNFlagS | 0x08, "host", ErrV6Encode},
+		{"64-octet label", ClientFQDNFlagS, strings.Repeat("a", 64) + ".example", ErrV6Name},
+		{"256-octet partial name", ClientFQDNFlagS, over, ErrV6Name},
+		{"256-octet full name", ClientFQDNFlagS, fits + ".", ErrV6Name},
+		{"empty label", ClientFQDNFlagS, "host..example", ErrV6Name},
+		{"root alone", ClientFQDNFlagS, ".", ErrV6Name},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := EncodeClientFQDN(tc.flags, tc.in); !errors.Is(err, tc.want) {
+				t.Fatalf("EncodeClientFQDN = %x, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	if _, err := EncodeClientFQDN(ClientFQDNFlagS, label63+".x"); err != nil {
+		t.Fatalf("a 63-octet label was refused: %v", err)
+	}
+	if got, err := EncodeClientFQDN(ClientFQDNFlagS, fits); err != nil || len(got) != 1+255 {
+		t.Fatalf("a 255-octet partial name: %d octets, %v; want 256 and no error", len(got), err)
+	}
+}
+
+// TestDecodeClientFQDNRefusesMalformedOptions: each truncation or bad form is
+// an error, never a panic. The loop also feeds every prefix of a valid option.
+func TestDecodeClientFQDNRefusesMalformedOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		says string
+	}{
+		{"empty", "", "empty"},
+		{"label runs past the end", "0105686f7374", "runs past"},
+		{"octets after the root label", "0104686f73740000", "after its root label"},
+		{"compression pointer", "01c00c", "compression pointer"},
+		{"reserved label form", "0140", "reserved form"},
+		{"label holding a dot", "0105303030302e", "holds a dot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := DecodeClientFQDN(mustHex(tc.data))
+			if err == nil {
+				t.Fatalf("decoded %+v from %s, want an error", f, tc.data)
+			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Fatalf("the error %q does not name the defect %q", err, tc.says)
+			}
+		})
+	}
+	valid := mustHex("0104686f7374076578616d706c6500")
+	for i := range valid {
+		f, err := DecodeClientFQDN(valid[:i])
+		// A prefix that ends at a label boundary is a valid partial name.
+		if err == nil && (i != 1 && i != 6 && i != 14) {
+			t.Fatalf("prefix of %d octets decoded to %+v, want an error", i, f)
+		}
+	}
+}
+
 // ------------------------------------------------------- names and ports --
 
 // TestV6NamesAndPorts keeps the constants honest. The ports are §7.2's, and
@@ -923,7 +1055,7 @@ func TestV6NamesAndPorts(t *testing.T) {
 	}
 	for _, c := range []OptionCodeV6{OptV6ClientID, OptV6ServerID, OptV6IANA, OptV6IAAddr, OptV6ORO,
 		OptV6ElapsedTime, OptV6StatusCode, OptV6DNSServers, OptV6DomainList, OptV6InfoRefresh,
-		OptV6SolMaxRTCode, OptV6InfMaxRTCode} {
+		OptV6SolMaxRTCode, OptV6InfMaxRTCode, OptV6ClientFQDN} {
 		if s := c.String(); s == "" || !strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") {
 			t.Errorf("option code %d has no name: %q", uint16(c), s)
 		}
@@ -956,6 +1088,8 @@ func FuzzDecodeV6Message(f *testing.F) {
 	f.Add(mustHex("011a2b3c0001ffff"))
 	f.Add(mustHex("011a2b3c00010000"))
 	f.Add(mustHex("0c1a2b3c"))
+	f.Add(mustHex("011a2b3c0027000701" + "04686f737400"))
+	f.Add(mustHex("011a2b3c00270007" + "0105303030302e"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		m, err := DecodeV6(b)
 		if err != nil {
@@ -976,6 +1110,13 @@ func FuzzDecodeV6Message(f *testing.F) {
 		_, _, _ = m.Options.ElapsedTime()
 		_, _ = m.Options.DNSServers()
 		_, _ = m.Options.DomainSearch()
+		// A decoded option 39 a client could send re-encodes to its octets.
+		if f, ok, err := m.Options.ClientFQDN(); ok && err == nil {
+			raw, _ := m.Options.First(OptV6ClientFQDN)
+			if enc, err := EncodeClientFQDN(f.Flags, f.Name); err == nil && !bytes.Equal(enc, raw) {
+				t.Fatalf("option 39 %x decoded to %+v and re-encoded as %x", raw, f, enc)
+			}
+		}
 		if ias, err := m.Options.IANAs(); err == nil {
 			for _, ia := range ias {
 				_, _ = ia.Options.Addrs()

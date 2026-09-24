@@ -223,6 +223,9 @@ func (p Params6) validate() error {
 	if len(p.DUID) == 0 {
 		return ErrNoDUID
 	}
+	if err := ValidateHostname6(p.Hostname); err != nil {
+		return err
+	}
 	if p.Hint.IsValid() && (!p.Hint.Is6() || p.Hint.Is4In6()) {
 		return fmt.Errorf("%w: %s", ErrBadHint, p.Hint)
 	}
@@ -386,4 +389,24 @@ func (p Params6) hintAddr() netip.Addr {
 		return p.Hint
 	}
 	return netip.Addr{}
+}
+
+// ErrBadHostname6 is returned for a name option 39 cannot carry.
+var ErrBadHostname6 = errors.New("proto: hostname cannot be sent in option 39")
+
+// ValidateHostname6 is the rule for Params6.Hostname and for a name set on a
+// running v6 client: ValidateHostname's printable-ASCII octets, then what
+// wire.EncodeClientFQDN accepts (63-octet labels, 255-octet name). Empty is
+// valid and means no option 39.
+func ValidateHostname6(name string) error {
+	if name == "" {
+		return nil
+	}
+	if err := ValidateHostname(name); err != nil {
+		return fmt.Errorf("%w: %w", ErrBadHostname6, err)
+	}
+	if _, err := wire.EncodeClientFQDN(wire.ClientFQDNFlagS, name); err != nil {
+		return fmt.Errorf("%w: %w", ErrBadHostname6, err)
+	}
+	return nil
 }

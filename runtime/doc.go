@@ -16,7 +16,8 @@
 // why this ring is tested against a real dnsmasq on a real veth pair.
 //
 // WHAT A CALLER CAN CHANGE WHILE A CLIENT RUNS: the name in option 12, through
-// Client.SetHostname. It is the one piece of configuration that arrives after
+// Client.SetHostname, and in option 39, through Client6.SetHostname (RFC 4704,
+// since 2026-09-24). It is the one piece of configuration that arrives after
 // the interface already needs a lease — a container's name, read from an API
 // once the link exists — and the client sends it to the server at once rather
 // than holding it until T1. Everything else is set in ClientConfig and stays

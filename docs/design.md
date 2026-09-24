@@ -117,6 +117,19 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
+- **A DHCPv6 name given to a client that is already running, in the server's
+  own table.** The client holds a lease with no name and dnsmasq's lease file
+  shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
+  bit set in a Renew at once, and the lease file then carries the name against
+  its address. The server's own Client FQDN option is reported on the lease,
+  and three further calls with the same name produce no Renew
+  (`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). The Renew before
+  T1 is this library's choice: RFC 4704 §5.4 lets a client send new name data
+  "when it communicates with the server again" and RFC 9915 names no early
+  Renew for it (`TestAV6NameSetWhileBoundIsSentInAnEarlyRenew`). The option
+  rides only Solicit, Request, Renew and Rebind (RFC 4704 §5)
+  (`TestAV6NameAtStartRidesSolicitRequestRenewAndRebind`,
+  `TestOption39StaysOutOfEveryOtherV6Message`).
 - **A lease given back with no client and no interface left.**
   `lease.BuildRelease` renders the datagram out of a `Record` alone and
   `runtime.SendRelease` writes it, on both families, from a source address the
