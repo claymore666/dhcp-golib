@@ -32,6 +32,16 @@ import (
 type Machine6 struct {
 	params Params6
 
+	// hostname is the name option 39 carries now; a separate field from
+	// params.Hostname for Machine.hostname's reason (params is the replay
+	// seed). exchangeName is the name fixed at the exchange's first message,
+	// so retransmissions stay the same message (RFC 9915 section 16.1).
+	// nameOnWire is the name the last Solicit, Request, Renew or Rebind
+	// carried. See machine6_hostname.go.
+	hostname     string
+	exchangeName string
+	nameOnWire   string
+
 	state State6
 
 	// nextAction is the ActionID counter, machine state for the reason
@@ -292,7 +302,7 @@ func New6(p Params6) (*Machine6, error) {
 	// restart is seeded from is the one it ended with. Round 1 of this
 	// milestone made Params() answer out of the second, and a run's own
 	// journal then stopped replaying against a snapshot of its own parameters.
-	m := &Machine6{params: p, state: State6Stopped, resume: p.Resume}
+	m := &Machine6{params: p, state: State6Stopped, resume: p.Resume, hostname: p.Hostname}
 	m.rememberDeclined(p.Declined)
 	return m, nil
 }
@@ -488,6 +498,9 @@ func (m *Machine6) Step(now Instant, rnd uint64, ev Event) (State6, []Action) {
 		// "ignored". The caller kept an expired IPv6 address installed with no
 		// event, forever.
 		m.expireLease(now, rnd, &out)
+		return m.state, out.list
+	case ev.Kind == EvSetHostname:
+		m.takeHostname6(now, rnd, ev, &out)
 		return m.state, out.list
 	case ev.Kind == EvActionFailed:
 		// R2, in one arm rather than ten: an action that did not happen means
@@ -796,6 +809,9 @@ func (m *Machine6) stepInfoRequesting6(now Instant, rnd uint64, ev Event, out *a
 			return
 		}
 		m.takeConfig(now, msg, out)
+		// A name set during a Reconfigure's Information-request is sent now
+		// the machine is back in BOUND6 (RFC 4704 section 5.4).
+		m.announceHostname6(now, rnd, out)
 	case EvTimerFired:
 		switch ev.Timer {
 		case Timer6Retransmit:
@@ -1130,6 +1146,7 @@ func (m *Machine6) startExchange(now Instant, rnd uint64, t wire.MessageTypeV6, 
 func (m *Machine6) startExchangeAnswering(now Instant, rnd uint64, t wire.MessageTypeV6, sid []byte, out *actions) {
 	m.reconfServerID = append([]byte(nil), sid...)
 	m.msgType = t
+	m.exchangeName = m.hostname
 	m.xid = uint32(rnd) & (wire.MaxXID6 - 1)
 	m.exchangeStart = now
 	m.transmits = 0
@@ -1532,6 +1549,9 @@ func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, o
 	a := advert6{server: sid, pref: pref, addrs: res.addrs, t1: res.t1, t2: res.t2, seq: len(m.adverts)}
 	m.adverts = append(m.adverts, a)
 	out.journal(m, fmt.Sprintf("Advertise collected: preference %d, %d address(es)", pref, len(res.addrs)))
+	if _, _, note := serverFQDN(msg.Options); note != "" {
+		out.journal(m, note)
+	}
 
 	switch {
 	case pref == 255:
@@ -1899,6 +1919,7 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 		m.pendingType = wire.MsgInformationRequest
 		out.set(m, Timer6Delay, dd)
 	}
+	m.announceHostname6(now, rnd, out)
 }
 
 // armDeadline arms t for ts, or cancels it when there is none.
@@ -2503,7 +2524,22 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 		msg.Options = append(msg.Options, ia)
 	}
 
-	if codes := m.params.oro(t); len(codes) > 0 {
+	fqdn, err := m.fqdnOption(t)
+	if err != nil {
+		return nil, err
+	}
+	codes := m.params.oro(t)
+	if fqdn != nil {
+		msg.Options = append(msg.Options, wire.OptionV6{Code: wire.OptV6ClientFQDN, Data: fqdn})
+		// RFC 4704 section 5: "A client that sends the Client FQDN option
+		// MUST also include the option in the Option Request option if it
+		// expects the server to include the Client FQDN option in any
+		// responses."
+		if !containsCode(codes, wire.OptV6ClientFQDN) {
+			codes = append(codes, wire.OptV6ClientFQDN)
+		}
+	}
+	if len(codes) > 0 {
 		v := make([]byte, 0, 2*len(codes))
 		for _, c := range codes {
 			v = append(v, byte(uint16(c)>>8), byte(uint16(c)))

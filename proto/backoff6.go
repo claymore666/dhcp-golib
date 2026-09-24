@@ -153,6 +153,11 @@ type Params6 struct {
 	// so a caller that leaves this nil still sends a conformant ORO.
 	ORO []wire.OptionCodeV6
 
+	// Hostname is the name option 39 carries (RFC 4704), empty for none. A
+	// trailing dot sends a full name, none a partial one (section 4.2).
+	// ValidateHostname6 is the rule, here and in the running client's setter.
+	Hostname string
+
 	// Resume is the binding remembered from a previous run, or nil.
 	//
 	// It maps to Confirm the way Params.Resume maps to INIT-REBOOT in v4

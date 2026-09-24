@@ -135,6 +135,13 @@ type Lease struct {
 	// so Renew and Rebind are zero on such a lease and their absence is not a
 	// server that forgot to send T1 and T2.
 	SLAAC bool
+
+	// FQDN is the server's DHCPv6 Client FQDN option (RFC 4704 section 6) from
+	// the Reply, and HasFQDN whether it sent one: its flags byte as received,
+	// O and any reserved bits included, and the name. v6 only; a report,
+	// nothing acts on it.
+	FQDN    wire.ClientFQDN
+	HasFQDN bool
 }
 
 // Addr6 is one address of a v6 lease with its own two RFC 9915 §7.1
@@ -485,6 +492,7 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		out.Addr = pfx
 	}
 	out.SLAAC = l.SLAAC
+	out.FQDN, out.HasFQDN = l.FQDN, l.HasFQDN
 	for _, a := range l.Addrs {
 		bits := a.PrefixLen
 		if bits <= 0 {
