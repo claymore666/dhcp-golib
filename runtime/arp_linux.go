@@ -80,12 +80,14 @@ type ARPSocket struct {
 
 	inbound chan lease.ARPInbound
 
-	reads   atomic.Uint64
-	sends   atomic.Uint64
-	dropped atomic.Uint64
+	reads      atomic.Uint64
+	sends      atomic.Uint64
+	dropped    atomic.Uint64
+	readErrors atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	done      chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -110,6 +112,8 @@ type ARPStats struct {
 	// channel. Above zero it means a conflict COULD have been missed, which
 	// is why it is a counter and not a debug line.
 	Dropped uint64
+	// ReadErrors is TransportStats.ReadErrors.
+	ReadErrors uint64
 }
 
 // NewARPSocket opens an ETH_P_ARP socket bound to ifName.
@@ -154,6 +158,7 @@ func NewARPSocket(ifName string) (*ARPSocket, error) {
 		ifIndex: iface.Index,
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
 		inbound: make(chan lease.ARPInbound, arpInboundBuffer),
+		done:    make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go s.read()
@@ -206,6 +211,7 @@ func (s *ARPSocket) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
+		close(s.done)
 		err = closeSocket(s.f, s.ifName)
 		s.wg.Wait()
 		close(s.inbound)
@@ -216,10 +222,11 @@ func (s *ARPSocket) Close() error {
 // Stats reports what the socket has seen.
 func (s *ARPSocket) Stats() ARPStats {
 	return ARPStats{
-		Present: true,
-		Reads:   s.reads.Load(),
-		Sends:   s.sends.Load(),
-		Dropped: s.dropped.Load(),
+		Present:    true,
+		Reads:      s.reads.Load(),
+		Sends:      s.sends.Load(),
+		Dropped:    s.dropped.Load(),
+		ReadErrors: s.readErrors.Load(),
 	}
 }
 
@@ -233,52 +240,34 @@ func (s *ARPSocket) Stats() ARPStats {
 // warning that the two can disagree.
 func (s *ARPSocket) read() {
 	defer s.wg.Done()
-	buf := make([]byte, maxFrame)
-	rc, err := s.f.SyscallConn()
-	if err != nil {
-		s.fail(fmt.Errorf("runtime: syscallconn: %w", err))
-		return
-	}
-	for {
-		var (
-			n    int
-			rerr error
-		)
-		cerr := rc.Read(func(fd uintptr) bool {
-			n, _, rerr = syscall.Recvfrom(int(fd), buf, 0)
-			return rerr != syscall.EAGAIN
-		})
-		if err := firstErr(cerr, rerr); err != nil {
-			if s.closed.Load() {
-				return
-			}
-			s.fail(fmt.Errorf("runtime: arp read: %w", err))
-			return
-		}
-		// The frame aliases buf, which the next read overwrites.
-		f := make([]byte, n)
-		copy(f, buf[:n])
-		s.reads.Add(1)
-		select {
-		case s.inbound <- lease.ARPInbound{Frame: f}:
-		default:
-			// Counted, never blocked on: stalling this reader loses frames in
-			// the kernel instead, where nothing can count them. Above zero
-			// this number means a conflict may have gone unseen.
-			s.dropped.Add(1)
-		}
+	readLoop{
+		f: s.f, ifIndex: s.ifIndex, closed: &s.closed, done: s.done, errs: &s.readErrors, what: "arp read",
+		report:  s.fail,
+		deliver: func(frame []byte, _ syscall.Sockaddr) { s.deliver(frame) },
+	}.run()
+}
+
+// deliver queues one frame for the manager.
+func (s *ARPSocket) deliver(frame []byte) {
+	// The frame aliases buf, which the next read overwrites.
+	f := make([]byte, len(frame))
+	copy(f, frame)
+	s.reads.Add(1)
+	select {
+	case s.inbound <- lease.ARPInbound{Frame: f}:
+	default:
+		// Counted, never blocked on: stalling this reader loses frames in
+		// the kernel instead, where nothing can count them. Above zero
+		// this number means a conflict may have gone unseen.
+		s.dropped.Add(1)
 	}
 }
 
-// fail reports a read error, best-effort.
-//
-// Best-effort because the alternative is blocking a goroutine that is on its
-// way out on a consumer that may already have stopped. The manager treats a
-// closed ARP stream as the end of section 2.4's detection and says so in the
-// journal, so the error being dropped costs a reason, not the fact.
+// fail reports a read error on the port and waits until it is taken or the
+// socket closes, so a reader that stops is never silent (#23).
 func (s *ARPSocket) fail(err error) {
 	select {
 	case s.inbound <- lease.ARPInbound{Err: err}:
-	default:
+	case <-s.done:
 	}
 }
