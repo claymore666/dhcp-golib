@@ -27,6 +27,7 @@ type TransportStatsV6 struct {
 	BadChecksum  uint64
 	Foreign      uint64
 	Dropped      uint64
+	ReadErrors   uint64
 }
 
 // PacketTransportV6 is not available on this platform. Every method below

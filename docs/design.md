@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.0.0
+## Coverage by claim, through v1.1.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -154,6 +154,16 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   and the client leases from a server that exists only in there. The goroutine
   running it cannot even see the interface. That is what lets one process lease
   on many containers' links at once.
+- **A link that is down for a while, and one that goes away.** Each of the
+  four raw sockets (the IPv4 and DHCPv6 transports, ARP and Neighbor
+  Discovery) is opened on a veth whose end is down, reports the one "network
+  is down" Linux gives it, and reads the peer's frames on the same socket once
+  the link comes up. The same sockets on a link that is deleted, while up,
+  after coming up, after frames queued before a down and while still down,
+  report an error wrapping `ErrLinkGone` and stop, and `ReadErrors` counts
+  exactly the errors the consumer received ([#23](https://github.com/claymore666/dhcp-golib/issues/23),
+  `TestTheV4TransportReadsOnAfterTheLinkComesUp`,
+  `TestALinkThatGoesAwayStillReachesEachSocketAsAnError`).
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
@@ -327,9 +337,9 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   the client records, so a key in the Reply to the Renew at T1 ends it there.
   A Reply the client does not act on does not, and §18.2.10's UnspecFail and
   NotOnLink arms, an IA_NA that says NoBinding, a malformed Status Code option
-  and a Reply with no usable address are among them. The rule is the call site,
-  `takeReply` recording the key where the Reply is acted on, and not this
-  list.
+  and a Reply with no usable address are among them. The rule is the two call
+  sites, `takeReply` and `takeConfig` (the Reply to an Information-request),
+  each recording the key where the Reply is acted on, and not this list.
   `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
   Renew's Reply that ends it, and the exchanges §20.4.2 does name;
   `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the

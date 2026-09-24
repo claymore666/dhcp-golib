@@ -121,9 +121,11 @@ type PacketTransport struct {
 	uncompleted atomic.Uint64
 	absent      atomic.Uint64
 	dropped     atomic.Uint64
+	readErrors  atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	done      chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -147,6 +149,9 @@ type TransportStats struct {
 	// because the consumer had not drained the inbound channel. Not Skipped:
 	// see the drop site.
 	Dropped uint64
+	// ReadErrors counts every error the reader reported, the ones it read
+	// past and the last one it stopped on (#23).
+	ReadErrors uint64
 }
 
 // The names the four AF_PACKET sockets in this package wear on their os.File.
@@ -228,6 +233,7 @@ func NewPacketTransport(ifName string) (*PacketTransport, error) {
 		src:     netip.AddrFrom4([4]byte{0, 0, 0, 0}),
 		inbound: make(chan lease.Inbound, inboundBuffer),
 		peers:   make(map[netip.Addr]net.HardwareAddr),
+		done:    make(chan struct{}),
 	}
 	t.wg.Add(1)
 	go t.read()
@@ -348,6 +354,7 @@ func (t *PacketTransport) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.closed.Store(true)
+		close(t.done)
 		err = closeSocket(t.f, t.ifName)
 		t.wg.Wait()
 		close(t.inbound)
@@ -364,6 +371,7 @@ func (t *PacketTransport) Stats() TransportStats {
 		Uncompleted: t.uncompleted.Load(),
 		Absent:      t.absent.Load(),
 		Dropped:     t.dropped.Load(),
+		ReadErrors:  t.readErrors.Load(),
 	}
 }
 
@@ -383,39 +391,18 @@ func (t *PacketTransport) Stats() TransportStats {
 // when the socket is readable.
 func (t *PacketTransport) read() {
 	defer t.wg.Done()
-	buf := make([]byte, maxFrame)
-	rc, err := t.f.SyscallConn()
-	if err != nil {
-		select {
-		case t.inbound <- lease.Inbound{Err: fmt.Errorf("runtime: syscallconn: %w", err)}:
-		default:
-		}
-		return
-	}
-	for {
-		var (
-			n    int
-			from syscall.Sockaddr
-			rerr error
-		)
-		cerr := rc.Read(func(fd uintptr) bool {
-			n, from, rerr = syscall.Recvfrom(int(fd), buf, 0)
-			return rerr != syscall.EAGAIN
-		})
-		if err := firstErr(cerr, rerr); err != nil {
-			if t.closed.Load() {
-				return
-			}
-			// A read error on a live socket is reported, not swallowed: an
-			// interface going away is exactly this, and it must reach the
-			// machine as an event rather than as a silence.
-			select {
-			case t.inbound <- lease.Inbound{Err: fmt.Errorf("runtime: read: %w", err)}:
-			default:
-			}
-			return
-		}
-		t.deliver(buf[:n], senderHardwareAddr(from))
+	readLoop{
+		f: t.f, ifIndex: t.ifIndex, closed: &t.closed, done: t.done, errs: &t.readErrors, what: "read",
+		report:  t.fail,
+		deliver: func(frame []byte, from syscall.Sockaddr) { t.deliver(frame, senderHardwareAddr(from)) },
+	}.run()
+}
+
+// fail reports a read error on the port as ARPSocket.fail does.
+func (t *PacketTransport) fail(err error) {
+	select {
+	case t.inbound <- lease.Inbound{Err: err}:
+	case <-t.done:
 	}
 }
 

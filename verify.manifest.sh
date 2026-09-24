@@ -881,7 +881,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and head. wire/dhcpv6_test.go 4, proto/machine6_hostname_test.go 12,
 # lease/hostname_test.go 1, runtime/hostname6_dnsmasq_linux_test.go 1. The
 # runtime one is a netns test: testroster -netns reads 42 on the base, 43 here.
-MIN_DECLARED_TESTS=915
+#
+# RAW SOCKETS READ ON AFTER A LINK COMES UP, #23: eleven added, none removed,
+# MEASURED 2026-09-24 as testroster runs, 915 on the base and 926 here.
+# runtime/readloop_linux_test.go 4, runtime/readloop_gone_linux_test.go 7.
+# Seven are netns tests: testroster -netns reads 43 on the base, 50 here.
+MIN_DECLARED_TESTS=926
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

@@ -27,6 +27,7 @@ type NDStats struct {
 	BadHopLimit uint64
 	BadSource   uint64
 	Dropped     uint64
+	ReadErrors  uint64
 }
 
 // NDFrame is one validated Neighbor Discovery message. See the Linux

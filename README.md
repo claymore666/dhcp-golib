@@ -57,10 +57,14 @@ and none of it is applied. There is no prefix delegation. A
 server that holds the reconfigure key it gave the client can make it renew,
 rebind or ask for configuration again, and a Reconfigure that is not signed
 with that key is discarded. A DHCPv6 client sends its name in RFC 4704's
-Client FQDN option, and a name set on a running client goes out in a Renew
-straight away and lands in the server's lease file
-(`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). Nothing on DHCPv4
-is planned for a later release.
+Client FQDN option. A name set on a client that holds a lease goes out
+straight away in a Renew, or in a Rebind when the lease names no server or the
+client is already rebinding, and lands in the server's lease file
+(`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). A client bound to
+a SLAAC address or holding no lease sends nothing, a client not yet bound
+sends the name in its next Solicit or Request, or as above once it is bound,
+and an empty name is never sent. Nothing on DHCPv4 is planned for a later
+release.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -73,7 +77,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v100).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v110).
 
 ## Usage
 

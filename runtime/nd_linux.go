@@ -100,6 +100,8 @@ type NDStats struct {
 	// channel. Above zero it means a duplicate address COULD have gone
 	// unseen.
 	Dropped uint64
+	// ReadErrors is TransportStats.ReadErrors.
+	ReadErrors uint64
 }
 
 // NDSocket is RFC 4861's link access: an AF_PACKET socket on ETH_P_IPV6,
@@ -171,9 +173,11 @@ type NDSocket struct {
 	badHopLimit atomic.Uint64
 	badSource   atomic.Uint64
 	dropped     atomic.Uint64
+	readErrors  atomic.Uint64
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	done      chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -215,6 +219,7 @@ func NewNDSocket(ifName string) (*NDSocket, error) {
 		hw:      append(net.HardwareAddr(nil), iface.HardwareAddr...),
 		inbound: make(chan lease.NDInbound, ndInboundBuffer),
 		frames:  make(chan NDFrame, ndInboundBuffer),
+		done:    make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go s.read()
@@ -299,6 +304,7 @@ func (s *NDSocket) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
+		close(s.done)
 		err = closeSocket(s.f, s.ifName)
 		s.wg.Wait()
 		close(s.inbound)
@@ -319,6 +325,7 @@ func (s *NDSocket) Stats() NDStats {
 		BadHopLimit: s.badHopLimit.Load(),
 		BadSource:   s.badSource.Load(),
 		Dropped:     s.dropped.Load(),
+		ReadErrors:  s.readErrors.Load(),
 	}
 }
 
@@ -358,31 +365,11 @@ func (s *NDSocket) isOwn(hw net.HardwareAddr) bool {
 // that tells this host's own duplicate-address probe from a real duplicate.
 func (s *NDSocket) read() {
 	defer s.wg.Done()
-	buf := make([]byte, maxFrame)
-	rc, err := s.f.SyscallConn()
-	if err != nil {
-		s.fail(fmt.Errorf("runtime: syscallconn: %w", err))
-		return
-	}
-	for {
-		var (
-			n    int
-			from syscall.Sockaddr
-			rerr error
-		)
-		cerr := rc.Read(func(fd uintptr) bool {
-			n, from, rerr = syscall.Recvfrom(int(fd), buf, 0)
-			return rerr != syscall.EAGAIN
-		})
-		if err := firstErr(cerr, rerr); err != nil {
-			if s.closed.Load() {
-				return
-			}
-			s.fail(fmt.Errorf("runtime: nd read: %w", err))
-			return
-		}
-		s.deliver(buf[:n], senderHardwareAddr(from))
-	}
+	readLoop{
+		f: s.f, ifIndex: s.ifIndex, closed: &s.closed, done: s.done, errs: &s.readErrors, what: "nd read",
+		report:  s.fail,
+		deliver: func(frame []byte, from syscall.Sockaddr) { s.deliver(frame, senderHardwareAddr(from)) },
+	}.run()
 }
 
 // deliver validates one frame and hands it to the consumers that want it.
@@ -458,11 +445,10 @@ func (s *NDSocket) classify(frame []byte, hw net.HardwareAddr) (NDFrame, bool) {
 	}, true
 }
 
-// fail reports a read error on the port, best-effort, for ARPSocket.fail's
-// reason.
+// fail reports a read error on the port as ARPSocket.fail does.
 func (s *NDSocket) fail(err error) {
 	select {
 	case s.inbound <- lease.NDInbound{Err: err}:
-	default:
+	case <-s.done:
 	}
 }
