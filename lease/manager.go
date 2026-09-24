@@ -1039,7 +1039,7 @@ func (mg *Manager) Hostname() string {
 //
 // Deprecated: SetHostname sends option 39 on v6 and never returns this; kept
 // so callers that name it still build (claymore666/docker-net-dhcp#1029).
-var ErrHostnameV6 = errors.New("lease: this manager runs DHCPv6, which this library sends no name option for")
+var ErrHostnameV6 = errors.New("lease: ErrHostnameV6 is deprecated and never returned; SetHostname sends a name on DHCPv6")
 
 // ErrHostnameFQDN is returned by SetHostname on a client configured with
 // option 81.

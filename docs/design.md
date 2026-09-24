@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.0.0
+## Coverage by claim, through v1.1.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -337,9 +337,9 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   the client records, so a key in the Reply to the Renew at T1 ends it there.
   A Reply the client does not act on does not, and §18.2.10's UnspecFail and
   NotOnLink arms, an IA_NA that says NoBinding, a malformed Status Code option
-  and a Reply with no usable address are among them. The rule is the call site,
-  `takeReply` recording the key where the Reply is acted on, and not this
-  list.
+  and a Reply with no usable address are among them. The rule is the two call
+  sites, `takeReply` and `takeConfig` (the Reply to an Information-request),
+  each recording the key where the Reply is acted on, and not this list.
   `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
   Renew's Reply that ends it, and the exchanges §20.4.2 does name;
   `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
