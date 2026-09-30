@@ -150,15 +150,39 @@ func TestUserClassIsOnTheDiscoverAndOnEveryRequestByteForByte(t *testing.T) {
 	}
 }
 
+// userClassBound reaches BOUND with p from fakes_test.go fixtures only, so this
+// file builds when its neighbours are switched off
+// (claymore666/docker-net-dhcp#1120).
+func userClassBound(t *testing.T, p Params) *Machine {
+	t.Helper()
+	m := newMachine(t, p)
+	_, acts := m.Step(0, 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+	req := mustSend(t, acts, wire.MsgRequest)
+	m.Step(at(2), 3, received(t, ackFor(req, "192.168.99.50", "192.168.99.1", 3600)))
+	if m.State() != StateBound {
+		t.Fatalf("fixture reached %s, want BOUND", m.State())
+	}
+	return m
+}
+
 // TestADeclineAndAReleaseCarryNoUserClass: RFC 2131 Table 5 does not list
 // option 77 for either. The machine has no DHCPINFORM builder, so that message
 // is absent by construction (claymore666/docker-net-dhcp#1120).
 func TestADeclineAndAReleaseCarryNoUserClass(t *testing.T) {
-	p := terminalParams()
-	p.UserClass = [][]byte{[]byte("vip-tier")}
+	// Every option base() adds is on, so a DECLINE without option 77 is not
+	// clean for want of a host name. The fixtures live in fakes_test.go, which a
+	// disabled test file does not take along (claymore666/docker-net-dhcp#1120).
+	p := userClassParams([]byte("vip-tier"))
+	p.Hostname = "container-a"
+	p.VendorClass = "docker-net-dhcp"
+	p.ClientID = []byte{0xFF, 0x01, 0x02, 0x03}
+	p.RequestedLease = 3600 * Second
+	p.Broadcast = true
 
 	t.Run("decline", func(t *testing.T) {
-		m := boundWith(t, p)
+		m := userClassBound(t, p)
 		_, acts := m.Step(at(10), 0xFEED, Simple(EvConflictDetected))
 		msg := encoded(t, mustSend(t, acts, wire.MsgDecline))
 		if _, ok := msg.Options[wire.OptUserClass]; ok {
@@ -166,7 +190,7 @@ func TestADeclineAndAReleaseCarryNoUserClass(t *testing.T) {
 		}
 	})
 	t.Run("release", func(t *testing.T) {
-		m := boundWith(t, p)
+		m := userClassBound(t, p)
 		_, acts := m.Step(at(10), 0xFEED, Simple(EvRelease))
 		msg := encoded(t, mustSend(t, acts, wire.MsgRelease))
 		if _, ok := msg.Options[wire.OptUserClass]; ok {
