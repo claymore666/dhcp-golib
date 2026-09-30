@@ -206,6 +206,14 @@ func TestANilAndAnEmptyUserClassSendNothing(t *testing.T) {
 	}
 }
 
+// TestNoUserClassStaysNilThroughParams: nil in, nil out, so New(m.Params())
+// builds the same machine (claymore666/docker-net-dhcp#1120).
+func TestNoUserClassStaysNilThroughParams(t *testing.T) {
+	if got := newMachine(t, userClassParams()).Params().UserClass; got != nil {
+		t.Fatalf("Params().UserClass = %#v for a client built with none, want nil", got)
+	}
+}
+
 // userClassFirstTwo is the DISCOVER and SELECTING REQUEST of any Params (claymore666/docker-net-dhcp#1120).
 func userClassFirstTwo(t *testing.T, p Params) map[string]*wire.Message {
 	t.Helper()
