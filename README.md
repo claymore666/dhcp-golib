@@ -34,7 +34,7 @@ and it needs no root.
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1031) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
-| Tell the server what kind of client this is (User Class, RFC 3004) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1120) | n/a |
+| Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
 | Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1027) | n/a |
 | Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1028) |
 | Act as a relay agent | unsupported | unsupported |
@@ -66,9 +66,10 @@ client is already rebinding, and lands in the server's lease file
 (`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). A client bound to
 a SLAAC address or holding no lease sends nothing, a client not yet bound
 sends the name in its next Solicit or Request, or as above once it is bound,
-and an empty name is never sent. On DHCPv4 the wire for five more options
-and for DHCPFORCERENEW is in the tree, and the client behaviour for each is
-planned in the rows above: Rapid Commit, User Class, IPv6-Only Preferred, and
+and an empty name is never sent. On DHCPv4 a client with user classes sends
+them in RFC 3004's option in its Discover and every Request. The wire for the
+other options and for DHCPFORCERENEW is in the tree, and the client behaviour
+for each is planned in the rows above: Rapid Commit, IPv6-Only Preferred, and
 a reconfiguration the server starts, signed with the Forcerenew Nonce of
 RFC 6704.
 

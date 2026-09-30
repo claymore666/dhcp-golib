@@ -893,7 +893,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # none removed, MEASURED as testroster runs, 926 on the base and 966 here.
 # wire/option_v4_test.go 16 (one a fuzz function), wire/option_auth_test.go 24
 # (one a fuzz function). No netns test among them.
-MIN_DECLARED_TESTS=966
+#
+# USER CLASS PARAMETER, claymore666/docker-net-dhcp#1120: seven added, none
+# removed, testroster runs 966 on the base and 973 here. proto/userclass_test.go
+# 6, runtime/userclass_dnsmasq_linux_test.go 1, a netns test: testroster -netns
+# reads 50 on the base, 51 here.
+MIN_DECLARED_TESTS=973
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

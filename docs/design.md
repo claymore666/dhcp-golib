@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.1.0
+## Coverage by claim, through v1.2.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -117,6 +117,21 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
+- **A user class that a server's class rule acts on.** The client sends RFC
+  3004's option 77 in its Discover and every Request, one length-prefixed
+  instance per class, and dnsmasq with `--dhcp-userclass` rules hands option
+  224 in the ACK only to the client whose instance matches: not to one sending
+  another class or none, and a rule that spans two instances does not fire
+  where one that names either does. The class dnsmasq logs and the tags it sets
+  are asserted beside the lease the client reports
+  (`TestUserClassReachesTheServersClassRule`). The parameter's limits are
+  RFC 3004's one-octet length, an instance of 1 to 254 octets and the list at
+  most 255 with its length octets; a zero octet inside an instance reaches the
+  bytes, which dnsmasq cannot be given a rule for, so that one is asserted on
+  the encoded message
+  (`TestNewValidatesTheUserClassAgainstRFC3004Section4`,
+  `TestUserClassIsOnTheDiscoverAndOnEveryRequestByteForByte`). A Decline and a
+  Release carry none (`TestADeclineAndAReleaseCarryNoUserClass`).
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
