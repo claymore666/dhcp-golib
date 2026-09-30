@@ -31,9 +31,12 @@ and it needs no root.
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
 | Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
-| Get an address in two messages (Rapid Commit) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
+| Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1031) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
-| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | unsupported | yes |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
+| Tell the server what kind of client this is (User Class, RFC 3004) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1120) | n/a |
+| Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1027) | n/a |
+| Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1028) |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
 
@@ -63,8 +66,11 @@ client is already rebinding, and lands in the server's lease file
 (`TestAV6HostnameSetAfterStartReachesTheServersLeaseFile`). A client bound to
 a SLAAC address or holding no lease sends nothing, a client not yet bound
 sends the name in its next Solicit or Request, or as above once it is bound,
-and an empty name is never sent. Nothing on DHCPv4 is planned for a later
-release.
+and an empty name is never sent. On DHCPv4 the wire for five more options
+and for DHCPFORCERENEW is in the tree, and the client behaviour for each is
+planned in the rows above: Rapid Commit, User Class, IPv6-Only Preferred, and
+a reconfiguration the server starts, signed with the Forcerenew Nonce of
+RFC 6704.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -237,10 +243,10 @@ The bounds below are written down so that nobody has to infer them.
 - No relay agent. A DHCPv6 Relay-forward or a Relay-reply is refused by the
   decoder by name, before its options are parsed. Nothing here forwards
   another host's messages.
-- No server-initiated reconfiguration on IPv4. A message that arrives at a
+- No server-initiated reconfiguration on IPv4 yet. A message that arrives at a
   bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included. DHCPv6's Reconfigure is served, which is a `yes`
-  row above.
+  DHCPFORCERENEW included, until the [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) row lands.
+  DHCPv6's Reconfigure is served, which is a `yes` row above.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.

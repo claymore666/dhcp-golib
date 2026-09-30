@@ -588,7 +588,8 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
 #     HMACMD5AgreesWithTheStandardLibrary,
 #     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
-#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#     EqualConstantTimeHasNoEarlyExit,
+#     MD5IsReachedOnlyFromTheTwoAcceptedVerifiers
 #   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
 #     AReconfigureNamingRebindStartsARebind,
 #     AReconfigureNamingInformationRequestKeepsTheLease,
@@ -887,12 +888,18 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # runtime/readloop_linux_test.go 4, runtime/readloop_gone_linux_test.go 7.
 # Seven are netns tests: testroster -netns reads 43 on the base, 50 here.
 #
+# DHCPv4 WIRE FOR OPTIONS 77, 80, 108, 145 AND 90 AND MESSAGE TYPE 9,
+# claymore666/docker-net-dhcp#1120, #1031, #1027, #1119: forty added,
+# none removed, MEASURED as testroster runs, 926 on the base and 966 here.
+# wire/option_v4_test.go 16 (one a fuzz function), wire/option_auth_test.go 24
+# (one a fuzz function). No netns test among them.
+#
 # WIRE, DHCPv6 RAPID COMMIT, IA_TA AND THE ND NAT64 PREFIX OPTION,
 # claymore666/docker-net-dhcp#926, #927 and #1028: twenty-one added, none
-# removed, MEASURED as testroster runs, 926 on the base and 947 here.
-# wire/rapid_commit_v6_test.go 6, wire/pref64_test.go 9, wire/ia_ta_test.go 6.
-# None is a netns test.
-MIN_DECLARED_TESTS=947
+# removed, MEASURED as testroster runs, 966 on the base (dev after the DHCPv4
+# wire above) and 987 here. wire/rapid_commit_v6_test.go 6,
+# wire/pref64_test.go 9, wire/ia_ta_test.go 6. None is a netns test.
+MIN_DECLARED_TESTS=987
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

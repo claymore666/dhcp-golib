@@ -3,6 +3,7 @@
 package wire
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -38,11 +39,16 @@ const (
 	OptClientID           OptionCode = 61
 	OptTFTPServer         OptionCode = 66  // RFC 2132 section 9.4
 	OptBootfileName       OptionCode = 67  // RFC 2132 section 9.5
+	OptUserClass          OptionCode = 77  // RFC 3004, claymore666/docker-net-dhcp#1120
+	OptRapidCommit        OptionCode = 80  // RFC 4039, claymore666/docker-net-dhcp#1031
 	OptFQDN               OptionCode = 81  // RFC 4702
+	OptAuthentication     OptionCode = 90  // RFC 3118, claymore666/docker-net-dhcp#1119
 	OptPosixTimezone      OptionCode = 100 // RFC 4833, PCode
 	OptTZDatabase         OptionCode = 101 // RFC 4833, TCode
+	OptIPv6OnlyPreferred  OptionCode = 108 // RFC 8925, claymore666/docker-net-dhcp#1027
 	OptDomainSearch       OptionCode = 119 // RFC 3397
 	OptClasslessStaticRte OptionCode = 121 // RFC 3442
+	OptForcerenewNonce    OptionCode = 145 // RFC 6704 FORCERENEW_NONCE_CAPABLE, claymore666/docker-net-dhcp#1119
 	// OptWPAD is the de-facto Web Proxy Auto-Discovery option. It sits in
 	// RFC 2132's site-specific range and NO standards document defines it;
 	// the name is what deployments call it, not what an RFC calls it. It is
@@ -85,11 +91,16 @@ var optionNames = map[OptionCode]string{
 	OptClientID:           "client-id",
 	OptTFTPServer:         "tftp-server",
 	OptBootfileName:       "bootfile-name",
+	OptUserClass:          "user-class",
+	OptRapidCommit:        "rapid-commit",
 	OptFQDN:               "fqdn",
+	OptAuthentication:     "authentication",
 	OptPosixTimezone:      "posix-timezone",
 	OptTZDatabase:         "tz-database",
+	OptIPv6OnlyPreferred:  "ipv6-only-preferred",
 	OptDomainSearch:       "domain-search",
 	OptClasslessStaticRte: "classless-static-route",
+	OptForcerenewNonce:    "forcerenew-nonce-capable",
 	OptWPAD:               "wpad",
 	OptEnd:                "end",
 }
@@ -127,4 +138,146 @@ func (o Options) Codes() []OptionCode {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// ErrBadOptionValue is a DHCPv4 option whose value is not the shape its RFC
+// defines. Each accessor below returns it beside present=true, so a caller can
+// tell "the server sent nothing" from "the server sent something unusable"
+// (claymore666/docker-net-dhcp#1120, #1027, #1031, #1119).
+var ErrBadOptionValue = errors.New("wire: DHCPv4 option value is not the shape its RFC defines")
+
+// maxUserClassInstance is the largest instance RFC 3004 section 4 can carry:
+// the option length is one octet and holds "UC_Len_1 + ... + UC_Len_m + m", so
+// one instance is at most 255 - 1 (claymore666/docker-net-dhcp#1120).
+const maxUserClassInstance = 254
+
+// EncodeUserClass renders option 77's value: each class behind its length
+// octet, RFC 3004 section 4 (claymore666/docker-net-dhcp#1120).
+//
+// A class is opaque data of 1 to 254 octets and the whole value at most 255,
+// because the option's own length octet cannot count more. Refused, never
+// truncated or wrapped: a wrapped length is a valid option that names other
+// classes.
+func EncodeUserClass(classes ...[]byte) ([]byte, error) {
+	if len(classes) == 0 {
+		return nil, fmt.Errorf("%w: no user class, RFC 3004 section 4 gives a minimum Len of two", ErrBadOptionValue)
+	}
+	total := 0
+	for i, c := range classes {
+		if len(c) == 0 || len(c) > maxUserClassInstance {
+			return nil, fmt.Errorf("%w: user class %d is %d octet(s), RFC 3004 section 4 allows 1 to %d",
+				ErrBadOptionValue, i, len(c), maxUserClassInstance)
+		}
+		total += 1 + len(c)
+	}
+	if total > 255 {
+		return nil, fmt.Errorf("%w: user classes need a %d-octet option, one octet of length carries 255",
+			ErrBadOptionValue, total)
+	}
+	out := make([]byte, 0, total)
+	for _, c := range classes {
+		out = append(out, byte(len(c)))
+		out = append(out, c...)
+	}
+	return out, nil
+}
+
+// UserClass returns the classes of option 77, RFC 3004 section 4
+// (claymore666/docker-net-dhcp#1120). The second return is whether the option
+// was there; a present option that is not a whole list of non-empty instances
+// returns ErrBadOptionValue, never the instances that fit.
+func (o Options) UserClass() ([][]byte, bool, error) {
+	v, ok := o[OptUserClass]
+	if !ok {
+		return nil, false, nil
+	}
+	if len(v) == 0 {
+		return nil, true, fmt.Errorf("%w: empty user class option, RFC 3004 section 4 gives a minimum Len of two", ErrBadOptionValue)
+	}
+	var out [][]byte
+	for i := 0; i < len(v); {
+		n := int(v[i])
+		i++
+		if n == 0 {
+			return nil, true, fmt.Errorf("%w: zero-length user class at offset %d, RFC 3004 section 4 says UC_Len MUST be non-zero",
+				ErrBadOptionValue, i-1)
+		}
+		if n > len(v)-i {
+			return nil, true, fmt.Errorf("%w: user class at offset %d claims %d octet(s), %d remain",
+				ErrBadOptionValue, i-1, n, len(v)-i)
+		}
+		out = append(out, append([]byte(nil), v[i:i+n]...))
+		i += n
+	}
+	return out, true, nil
+}
+
+// EncodeRapidCommit renders option 80's value, which is empty: RFC 4039
+// section 4, "Code 80, Len 0" (claymore666/docker-net-dhcp#1031).
+func EncodeRapidCommit() []byte { return []byte{} }
+
+// RapidCommit reports whether option 80 is present. A value of any length
+// but zero returns ErrBadOptionValue with present false: RFC 4039 section 4
+// fixes Len at 0, so the octets are not that option
+// (claymore666/docker-net-dhcp#1031).
+func (o Options) RapidCommit() (bool, error) {
+	v, ok := o[OptRapidCommit]
+	if !ok {
+		return false, nil
+	}
+	if len(v) != 0 {
+		return false, fmt.Errorf("%w: rapid commit is %d octet(s), RFC 4039 section 4 says 0", ErrBadOptionValue, len(v))
+	}
+	return true, nil
+}
+
+// EncodeIPv6OnlyPreferred renders option 108's value, the V6ONLY_WAIT seconds
+// as a 32-bit unsigned integer, RFC 8925 section 3.1
+// (claymore666/docker-net-dhcp#1027).
+func EncodeIPv6OnlyPreferred(seconds uint32) []byte {
+	out := make([]byte, 4)
+	be32(out, seconds)
+	return out
+}
+
+// IPv6OnlyPreferred returns option 108's seconds. A length other than four
+// returns ErrBadOptionValue beside present=true: RFC 8925 section 3.1 says the
+// client "MUST ignore the IPv6-Only Preferred option if the length field value
+// is not 4", and the generic Uint32 reader answers that case exactly as it
+// answers an absent option (claymore666/docker-net-dhcp#1027).
+func (o Options) IPv6OnlyPreferred() (uint32, bool, error) {
+	v, ok := o[OptIPv6OnlyPreferred]
+	if !ok {
+		return 0, false, nil
+	}
+	if len(v) != 4 {
+		return 0, true, fmt.Errorf("%w: IPv6-Only Preferred is %d octet(s), RFC 8925 section 3.1 says 4", ErrBadOptionValue, len(v))
+	}
+	return ube32(v), true, nil
+}
+
+// ForcerenewAlgorithmHMACMD5 is the one algorithm RFC 6704 section 3.1.1
+// defines for FORCERENEW_NONCE_CAPABLE: "algorithm equal to 1"
+// (claymore666/docker-net-dhcp#1119).
+const ForcerenewAlgorithmHMACMD5 uint8 = 1
+
+// EncodeForcerenewNonceCapable renders option 145 as a client sends it: the
+// one algorithm this library implements (claymore666/docker-net-dhcp#1119).
+func EncodeForcerenewNonceCapable() []byte { return []byte{ForcerenewAlgorithmHMACMD5} }
+
+// ForcerenewNonceAlgorithms returns the algorithms option 145 lists.
+//
+// RFC 6704 section 3.1.1 Figure 1 makes the value "a sequence of algorithms",
+// so a server that lists two is read as listing two and never by its first
+// octet; an empty list is ErrBadOptionValue, since it names nothing
+// (claymore666/docker-net-dhcp#1119).
+func (o Options) ForcerenewNonceAlgorithms() ([]uint8, bool, error) {
+	v, ok := o[OptForcerenewNonce]
+	if !ok {
+		return nil, false, nil
+	}
+	if len(v) == 0 {
+		return nil, true, fmt.Errorf("%w: forcerenew nonce capable lists no algorithm, RFC 6704 section 3.1.1", ErrBadOptionValue)
+	}
+	return append([]uint8(nil), v...), true, nil
 }
