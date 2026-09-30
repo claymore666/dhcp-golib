@@ -588,7 +588,8 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
 #     HMACMD5AgreesWithTheStandardLibrary,
 #     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
-#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#     EqualConstantTimeHasNoEarlyExit,
+#     MD5IsReachedOnlyFromTheTwoAcceptedVerifiers
 #   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
 #     AReconfigureNamingRebindStartsARebind,
 #     AReconfigureNamingInformationRequestKeepsTheLease,
