@@ -900,11 +900,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # wire above) and 987 here. wire/rapid_commit_v6_test.go 6,
 # wire/pref64_test.go 9, wire/ia_ta_test.go 6. None is a netns test.
 #
-# USER CLASS PARAMETER, claymore666/docker-net-dhcp#1120: eight added, none
+# USER CLASS PARAMETER, claymore666/docker-net-dhcp#1120: ten added, none
 # removed, testroster runs 987 on the base (dev after the DHCPv6 wire above)
-# and 995 here. proto/userclass_test.go 7, runtime/userclass_dnsmasq_linux_test.go
+# and 997 here. proto/userclass_test.go 9, runtime/userclass_dnsmasq_linux_test.go
 # 1, a netns test: testroster -netns reads 50 on the base, 51 here.
-MIN_DECLARED_TESTS=995
+MIN_DECLARED_TESTS=997
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

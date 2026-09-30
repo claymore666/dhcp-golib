@@ -302,3 +302,52 @@ func TestUserClassDoesNotChangeTheParameterRequestList(t *testing.T) {
 		t.Fatal("the parameter request list asks for option 77")
 	}
 }
+
+// TestAParamsCopyFollowsTheListTheCallerSetsNotTheMachineItCameFrom: the copy
+// Params() returns is the natural input of the next New. Clearing or replacing
+// the list on it must change what that machine sends (claymore666/docker-net-dhcp#1120).
+func TestAParamsCopyFollowsTheListTheCallerSetsNotTheMachineItCameFrom(t *testing.T) {
+	first := newMachine(t, userClassParams([]byte("vip-tier")))
+	for name, tc := range map[string]struct {
+		set  [][]byte
+		want []byte
+	}{
+		"cleared to nil":       {nil, nil},
+		"cleared to empty":     {[][]byte{}, nil},
+		"replaced by one":      {[][]byte{[]byte("gold")}, []byte{4, 'g', 'o', 'l', 'd'}},
+		"replaced by the same": {[][]byte{[]byte("vip-tier")}, []byte{8, 'v', 'i', 'p', '-', 't', 'i', 'e', 'r'}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := first.Params()
+			p.UserClass = tc.set
+			for which, msg := range userClassFirstTwo(t, p) {
+				got, ok := msg.Options[wire.OptUserClass]
+				if tc.want == nil && ok {
+					t.Errorf("%s carries option 77 %x after the caller cleared the list", which, got)
+				}
+				if tc.want != nil && !bytes.Equal(got, tc.want) {
+					t.Errorf("%s option 77 = %x, want %x", which, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestAParamsCopyFollowsTheFQDNTheCallerSets is the same shape for option 81,
+// which the User Class fix exposed on the same line of New
+// (claymore666/docker-net-dhcp#1120).
+func TestAParamsCopyFollowsTheFQDNTheCallerSets(t *testing.T) {
+	p := testParams()
+	p.FQDN = FQDN{Name: "a.example."}
+	first := newMachine(t, p)
+	if _, ok := userClassFirstTwo(t, first.Params())["discover"].Options[wire.OptFQDN]; !ok {
+		t.Fatal("the fixture's DISCOVER carries no option 81, so the check below proves nothing")
+	}
+	q := first.Params()
+	q.FQDN = FQDN{}
+	for which, msg := range userClassFirstTwo(t, q) {
+		if v, ok := msg.Options[wire.OptFQDN]; ok {
+			t.Errorf("%s carries option 81 %x after the caller cleared FQDN", which, v)
+		}
+	}
+}

@@ -146,6 +146,10 @@ func New(p Params) (*Machine, error) {
 	p.CHAddr = append([]byte(nil), p.CHAddr...)
 	p.ClientID = append([]byte(nil), p.ClientID...)
 	p.ParameterList = append([]wire.OptionCode(nil), p.parameterList()...)
+	// A Params taken from Params() carries the encoded values of the machine
+	// it came from; they follow the exported fields the caller may have
+	// changed since, never the other way round (claymore666/docker-net-dhcp#1120).
+	p.userClass, p.fqdn = nil, nil
 	if len(p.UserClass) > 0 {
 		// validate() has run the same encoder, so the error is unreachable;
 		// the value is kept encoded and the caller's list is copied, so
