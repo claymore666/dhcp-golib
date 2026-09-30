@@ -42,6 +42,9 @@ const (
 	MsgNak      MessageType = 6
 	MsgRelease  MessageType = 7
 	MsgInform   MessageType = 8
+	// MsgForceRenew is DHCPFORCERENEW, RFC 3203 section 4
+	// (claymore666/docker-net-dhcp#1119).
+	MsgForceRenew MessageType = 9
 )
 
 func (m MessageType) String() string {
@@ -62,6 +65,8 @@ func (m MessageType) String() string {
 		return "DHCPRELEASE"
 	case MsgInform:
 		return "DHCPINFORM"
+	case MsgForceRenew:
+		return "DHCPFORCERENEW"
 	default:
 		return fmt.Sprintf("msgtype(%d)", uint8(m))
 	}

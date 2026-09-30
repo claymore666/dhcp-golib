@@ -181,3 +181,14 @@ func equalConstantTime(a, b []byte) bool {
 	}
 	return diff == 0
 }
+
+// zeroedHMACMatches reports whether raw[start:end] is the HMAC-MD5 of raw under
+// key with those octets zeroed, compared in constant time. DHCPv4's Forcerenew
+// Nonce option uses RKAP's algorithm 1, so RFC 6704 section 3.1.4 is the same
+// computation as the DHCPv6 one (claymore666/docker-net-dhcp#1119).
+func zeroedHMACMatches(key, raw []byte, start, end int) bool {
+	sent := append([]byte(nil), raw[start:end]...)
+	buf := append([]byte(nil), raw...)
+	clear(buf[start:end])
+	return equalConstantTime(sent, hmacMD5(key, buf))
+}
