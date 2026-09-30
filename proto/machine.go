@@ -63,6 +63,10 @@ type Machine struct {
 	// the whole retransmission interval.
 	requestSentAt Instant
 
+	// rapidCounts is what this machine did with ACKs carrying option 80. See
+	// RapidCommitCounters.
+	rapidCounts RapidCommitCounters
+
 	// lease is the lease held in BOUND.
 	lease   Lease
 	haveLse bool
@@ -325,6 +329,16 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 		m.noteActionFailed(now, rnd, ev, out)
 	case EvSetHostname:
 		m.takeHostname(now, rnd, ev, out)
+	case EvReceived:
+		// No DISCOVER is outstanding in INIT, so an ACK with option 80 answers
+		// nothing this client sent (claymore666/docker-net-dhcp#1031).
+		if hasRapidOption(ev.Msg) {
+			if t, _ := ev.Msg.Type(); t == wire.MsgAck {
+				m.refuseRapid(out, StateInit, "no DHCPDISCOVER is outstanding")
+				return
+			}
+		}
+		out.journal(m, fmt.Sprintf("%s ignored in INIT", ev.Kind))
 	default:
 		out.journal(m, fmt.Sprintf("%s ignored in INIT", ev.Kind))
 	}
@@ -358,6 +372,12 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 			m.retransmits = 0
 			m.sendRequest(now, rnd, out)
 		case wire.MsgAck, wire.MsgNak:
+			if t == wire.MsgAck && hasRapidOption(msg) {
+				// RFC 4039 section 3.1 step 3 is the one ACK SELECTING takes
+				// (claymore666/docker-net-dhcp#1031).
+				m.takeRapidAck(now, rnd, msg, out)
+				return
+			}
 			// RFC 2131 section 4.4.1: "Any arriving DHCPACK messages must be
 			// silently discarded." Silent to the wire, not to the operator.
 			out.journal(m, fmt.Sprintf("%s in SELECTING: discarded", t))
@@ -406,6 +426,9 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 		t, _ := msg.Type()
 		switch t {
 		case wire.MsgAck:
+			if m.refusesRapidInRequesting(msg, out) {
+				return
+			}
 			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
 			if !ok {
 				// An ACK with no yiaddr or no lease time cannot be applied.
@@ -1382,6 +1405,13 @@ func (m *Machine) sendDiscover(now Instant, rnd uint64, out *actions) {
 	if m.params.RequestedIP.Is4() && !m.params.RequestedIP.IsUnspecified() {
 		v := m.params.RequestedIP.As4()
 		msg.Options[wire.OptRequestedIP] = v[:]
+	}
+	if m.params.RapidCommit {
+		// DISCOVER only (RFC 4039 section 3): base() is shared with REQUEST,
+		// and requestSentAt is where a rapid lease's clock starts
+		// (claymore666/docker-net-dhcp#1031).
+		msg.Options[wire.OptRapidCommit] = wire.EncodeRapidCommit()
+		m.requestSentAt = now
 	}
 	m.state = StateSelecting
 	out.cancel(m, TimerDesync)

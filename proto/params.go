@@ -76,6 +76,12 @@ type Params struct {
 	// (claymore666/docker-net-dhcp#1120).
 	UserClass [][]byte
 
+	// RapidCommit puts option 80 in the DHCPDISCOVER, asking a server that
+	// allows it for a two-message lease (RFC 4039 section 3); false sends
+	// nothing. Option 80 is never on another message
+	// (claymore666/docker-net-dhcp#1031).
+	RapidCommit bool
+
 	// ParameterList is option 55. Empty means DefaultParameterList is sent.
 	//
 	// RFC 2131 section 4.4.1: "If the client included a list of requested
@@ -445,6 +451,11 @@ var ErrBadFQDN = errors.New("proto: Params.FQDN cannot be encoded")
 // (RFC 3004 section 4, claymore666/docker-net-dhcp#1120).
 var ErrBadUserClass = errors.New("proto: Params.UserClass cannot be encoded")
 
+// ErrBadRapidCommit is returned by New for a ParameterList naming option 80 on
+// a client that sends Rapid Commit: RFC 4039 section 3 says the option "MUST
+// NOT appear in a Parameter Request List" (claymore666/docker-net-dhcp#1031).
+var ErrBadRapidCommit = errors.New("proto: Params.ParameterList names option 80")
+
 // ErrBadResume is returned by New for a Resume that names no usable IPv4
 // address. See Params.validate.
 var ErrBadResume = errors.New("proto: Params.Resume names no usable IPv4 address")
@@ -499,6 +510,13 @@ func (p Params) validate() error {
 	if len(p.UserClass) > 0 {
 		if _, err := wire.EncodeUserClass(p.UserClass...); err != nil {
 			return fmt.Errorf("%w: %w", ErrBadUserClass, err)
+		}
+	}
+	if p.RapidCommit {
+		for _, c := range p.ParameterList {
+			if c == wire.OptRapidCommit {
+				return ErrBadRapidCommit
+			}
 		}
 	}
 	if err := ValidateHostname(p.Hostname); err != nil {
