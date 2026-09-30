@@ -728,6 +728,16 @@ func TestTheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement(t *testing.T) 
 // Information option, built from RFC 8106 §5.1's and RFC 4191 §2.3's field
 // diagrams so a journal test drives real bytes rather than a struct literal
 // the decoder never saw.
+// pref64Bytes is RFC 8781 §4's Figure 1 octet by octet: Type 38, Length 2, the
+// field "Scaled Lifetime (13) | PLC (3)", then the first twelve octets of the
+// prefix's address (claymore666/docker-net-dhcp#1028).
+func pref64Bytes(scaled uint16, plc uint8, prefix netip.Prefix) []byte {
+	field := scaled<<3 | uint16(plc)
+	o := []byte{38, 2, byte(field >> 8), byte(field)}
+	a := prefix.Addr().As16()
+	return append(o, a[:12]...)
+}
+
 func raWithOptions(resolver string, prefix netip.Prefix) []byte {
 	out := append([]byte(nil), raManaged...)
 	rdnss := make([]byte, 24)
@@ -759,6 +769,10 @@ func TestAReplayedAdvertisementKeepsTheRouterItCameFrom(t *testing.T) {
 			fmt.Sprintf("fd00::5%d", i+3),
 			netip.MustParsePrefix(fmt.Sprintf("2001:db8:%d::/48", i+1)),
 		)
+		// one PREF64 per router, of different lengths, so the replayed list
+		// has to hold both and in an order the arrival does not decide
+		// (claymore666/docker-net-dhcp#1028)
+		raw = append(raw, pref64Bytes(uint16(75*(i+1)), uint8(i), netip.MustParsePrefix("64:ff9b:1::/96"))...)
 		ra := mustRA(t, raw)
 		ra.Router = netip.MustParseAddr(from)
 		r.step(at(int64(i+1)), 0, RouterAdvertRaw(ra, raw))
@@ -793,6 +807,15 @@ func TestAReplayedAdvertisementKeepsTheRouterItCameFrom(t *testing.T) {
 	}
 	if !equalStrings(routesOf(replayed.Routes), []string{"2001:db8:1::/48 via fe80::1", "2001:db8:2::/48 via fe80::2"}) {
 		t.Errorf("the replayed routes are %v", routesOf(replayed.Routes))
+	}
+	// the String() comparison above names the prefixes; this one compares the
+	// slices themselves (claymore666/docker-net-dhcp#1028)
+	wantNAT64 := []string{"64:ff9b:1::/64", "64:ff9b:1::/96"}
+	if !equalStrings(prefixTexts(live.PREF64), wantNAT64) {
+		t.Errorf("the recorded PREF64 list is %v, want %v", prefixTexts(live.PREF64), wantNAT64)
+	}
+	if !equalStrings(prefixTexts(replayed.PREF64), prefixTexts(live.PREF64)) {
+		t.Errorf("the replayed PREF64 list is %v and the recorded one is %v", prefixTexts(replayed.PREF64), prefixTexts(live.PREF64))
 	}
 }
 
