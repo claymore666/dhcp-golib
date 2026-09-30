@@ -27,11 +27,12 @@ import (
 // has THIS header (§8) and is decoded here; whether one is obeyed is §16.11's
 // and §18.2.11's question, which proto.Machine6 answers.
 //
-// D25 keeps IA_PD, IA_TA and Rapid Commit out of the 2.0 line. They are not
-// implemented and not special-cased: an option this codec does not name
-// survives decoding as bytes under its numeric code, which is what §16
-// requires of everyone ("Clients, relay agents, and servers MUST NOT discard
-// messages that contain unknown options").
+// D25 keeps IA_PD and IA_TA out of the 2.0 line. They are not implemented and
+// not special-cased: an option this codec does not name survives decoding as
+// bytes under its numeric code, which is what §16 requires of everyone
+// ("Clients, relay agents, and servers MUST NOT discard messages that contain
+// unknown options"). Rapid Commit (§21.14) is named since v1.2.0,
+// claymore666/docker-net-dhcp#926.
 //
 // The Server Unicast option (§21.12) and the UseMulticast status code (§21.13)
 // are OBSOLETE, §16: "The Server Unicast option (see Section 21.12) and
@@ -122,6 +123,7 @@ const (
 	OptV6Preference   OptionCodeV6 = 7  // §21.8
 	OptV6ElapsedTime  OptionCodeV6 = 8  // §21.9
 	OptV6StatusCode   OptionCodeV6 = 13 // §21.13
+	OptV6RapidCommit  OptionCodeV6 = 14 // §21.14
 	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
 	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
 	OptV6InfoRefresh  OptionCodeV6 = 32 // §21.23
@@ -139,6 +141,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6Preference:   "preference",
 	OptV6ElapsedTime:  "elapsed-time",
 	OptV6StatusCode:   "status-code",
+	OptV6RapidCommit:  "rapid-commit",
 	OptV6Auth:         "auth",
 	OptV6ReconfMsg:    "reconf-msg",
 	OptV6ReconfAccept: "reconf-accept",
@@ -416,6 +419,29 @@ func (o OptionsV6) IANAs() ([]*IANA, error) {
 	}
 	return out, nil
 }
+
+// ------------------------------------------------------------ Rapid Commit --
+
+// RapidCommit reports whether the area carries a Rapid Commit option.
+//
+// §21.14 gives "option-len: 0", so an instance with a payload is not the
+// option and is refused, false beside ErrV6BadOption: true is the answer that
+// lets a Reply be taken as a commit, and an error path must not return it
+// (claymore666/docker-net-dhcp#926).
+func (o OptionsV6) RapidCommit() (bool, error) {
+	present := false
+	for _, v := range o.All(OptV6RapidCommit) {
+		if len(v) != 0 {
+			return false, fmt.Errorf("%w: Rapid Commit is %d octet(s), §21.14 says 0",
+				ErrV6BadOption, len(v))
+		}
+		present = true
+	}
+	return present, nil
+}
+
+// RapidCommitOption is the option a client puts in a Solicit, §21.14.
+func RapidCommitOption() OptionV6 { return OptionV6{Code: OptV6RapidCommit} }
 
 // ------------------------------------------------------------- IA Address --
 
