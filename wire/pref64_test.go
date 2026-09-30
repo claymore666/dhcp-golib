@@ -13,7 +13,7 @@ import (
 // then the twelve octets of the prefix. It is built from the diagram and not
 // from the decoder (claymore666/docker-net-dhcp#1028).
 func pref64Option(hi, lo byte, prefix12 string) []byte {
-	o := []byte{NDOptPREF64, 2, hi, lo}
+	o := []byte{38, 2, hi, lo}
 	return append(o, mustHex(prefix12)...)
 }
 
@@ -153,7 +153,7 @@ func TestPREF64ZeroLifetimeIsAWithdrawalTheCallerSees(t *testing.T) {
 // (8 octets) and 3 (24 octets) are each well-formed for the walk, which moves
 // on by the declared length, so the option after them decodes.
 func TestPREF64OfTheWrongLengthIsIgnoredAndItsSiblingsAreNot(t *testing.T) {
-	short := []byte{NDOptPREF64, 1, 0x00, 0x08, 0, 0, 0, 0}
+	short := []byte{38, 1, 0x00, 0x08, 0, 0, 0, 0}
 	long := append(pref64Option(0x00, 0x08, pref64Prefix), 0, 0, 0, 0, 0, 0, 0, 0)
 	long[1] = 3
 	for name, bad := range map[string][]byte{"length 1": short, "length 3": long} {
@@ -246,8 +246,8 @@ func FuzzDecodeRouterAdvertPREF64(f *testing.F) {
 	f.Add(pref64Option(0x00, 0x0E, pref64Prefix))
 	f.Add(pref64Option(0x00, 0x0F, pref64Prefix))
 	f.Add(pref64Option(0x00, 0x08, pref64Prefix)[:15])
-	f.Add([]byte{NDOptPREF64, 1, 0, 0, 0, 0, 0, 0})
-	f.Add([]byte{NDOptPREF64})
+	f.Add([]byte{38, 1, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{38})
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, opts []byte) {
 		ra, err := DecodeRouterAdvert(raWith(opts))
@@ -257,7 +257,7 @@ func FuzzDecodeRouterAdvertPREF64(f *testing.F) {
 		var want []PREF64
 		for i := 0; i < len(opts); i += int(opts[i+1]) * 8 {
 			n := int(opts[i+1]) * 8
-			if opts[i] != NDOptPREF64 || n != 16 || opts[i+3]&7 > 5 {
+			if opts[i] != 38 || n != 16 || opts[i+3]&7 > 5 {
 				continue
 			}
 			field := uint16(opts[i+2])<<8 | uint16(opts[i+3])
