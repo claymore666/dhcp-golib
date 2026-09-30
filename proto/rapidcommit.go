@@ -21,7 +21,8 @@ type RapidCommitCounters struct {
 func (m *Machine) RapidCommitCounters() RapidCommitCounters { return m.rapidCounts }
 
 // hasRapidOption reports whether the message carries option 80 in any form,
-// malformed included: an ACK with the option is never treated as a plain one.
+// malformed included: an ACK with the option is never treated as a plain one
+// (claymore666/docker-net-dhcp#1031).
 func hasRapidOption(msg *wire.Message) bool {
 	if msg == nil {
 		return false

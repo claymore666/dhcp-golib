@@ -49,9 +49,10 @@ type rapidRun struct {
 }
 
 // startRapid builds the link, a dnsmasq with extra flags, and a client with
-// Params.RapidCommit set as given, and returns once the client holds a lease.
-// Permanent neighbour entries cover the pool, for renewalAgainstDnsmasq's
-// reason: the renewal ACK is unicast to an address nothing here owns.
+// Params.RapidCommit set as given, and returns once the client holds a lease
+// (claymore666/docker-net-dhcp#1031). Permanent neighbour entries cover the
+// pool, for renewalAgainstDnsmasq's reason: the renewal ACK is unicast to an
+// address nothing here owns.
 func startRapid(t *testing.T, serverRapid, clientRapid bool) *rapidRun {
 	t.Helper()
 	mustRun(t, "ip", "link", "add", testClientIf, "type", "veth", "peer", "name", testServerIf)
