@@ -343,3 +343,52 @@ func TestTheObservationNamesItsNAT64Prefixes(t *testing.T) {
 		t.Errorf("the observation's text %q does not name %s", s, nat64A)
 	}
 }
+
+func TestAWithdrawnPREF64FreesItsSlotInTheSameAdvertisement(t *testing.T) {
+	var tab routerTable
+	full := advert("fe80::1", 1800)
+	for i := range maxRouterPref64 {
+		full.PREF64 = append(full.PREF64, nat64(fmt.Sprintf("2001:db8:%x::/96", i+1), 600))
+	}
+	tab.observe(at(0), full)
+	if got := observation(t, &tab, at(1)).PREF64; len(got) != maxRouterPref64 {
+		t.Fatalf("%d prefix(es) before the withdrawal, want the cap %d", len(got), maxRouterPref64)
+	}
+	evicted := tab.evicted
+
+	// The withdrawal comes first, the order RFC 8781 §4.1's options are walked
+	// in; a withdrawn entry that kept its slot would be evicted to make room
+	// and counted as an eviction that never happened
+	// (claymore666/docker-net-dhcp#1028).
+	tab.observe(at(2), withPREF64("fe80::1", 1800,
+		nat64("2001:db8:1::/96", 0), nat64(nat64C, 600)))
+
+	got := prefixTexts(observation(t, &tab, at(3)).PREF64)
+	want := []string{nat64C, "2001:db8:2::/96", "2001:db8:3::/96", "2001:db8:4::/96"}
+	if !equalStrings(got, want) {
+		t.Errorf("the list after a swap is %v, want %v", got, want)
+	}
+	if tab.evicted != evicted {
+		t.Errorf("a withdrawal followed by an addition counted %d eviction(s)", tab.evicted-evicted)
+	}
+}
+
+func TestOneRoutersWithdrawalOfAPREF64TakesItForTheLinkUntilAnotherAdvertisesIt(t *testing.T) {
+	var tab routerTable
+	tab.observe(at(0), withPREF64("fe80::1", 1800, nat64(nat64A, 600)))
+	tab.observe(at(1), withPREF64("fe80::2", 1800, nat64(nat64A, 600)))
+
+	// The list belongs to the link and not to a router (RFC 8781 §5.1), and the
+	// most recent information is authoritative (RFC 4861 §6.3.4): the first
+	// router's withdrawal removes the prefix although the second still
+	// advertises it (claymore666/docker-net-dhcp#1028).
+	tab.observe(at(2), withPREF64("fe80::1", 1800, nat64(nat64A, 0)))
+	if got := observation(t, &tab, at(3)).PREF64; len(got) != 0 {
+		t.Errorf("after one router withdrew it the list is still %v", prefixTexts(got))
+	}
+
+	tab.observe(at(4), withPREF64("fe80::2", 1800, nat64(nat64A, 600)))
+	if got := prefixTexts(observation(t, &tab, at(5)).PREF64); !equalStrings(got, []string{nat64A}) {
+		t.Errorf("the next advertisement from the other router left the list %v", got)
+	}
+}

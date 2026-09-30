@@ -724,10 +724,6 @@ func TestTheObservationIsAgedByAnyStepAndNotOnlyByAnAdvertisement(t *testing.T) 
 	}
 }
 
-// raWithOptions is raManaged followed by one RDNSS option and one Route
-// Information option, built from RFC 8106 §5.1's and RFC 4191 §2.3's field
-// diagrams so a journal test drives real bytes rather than a struct literal
-// the decoder never saw.
 // pref64Bytes is RFC 8781 §4's Figure 1 octet by octet: Type 38, Length 2, the
 // field "Scaled Lifetime (13) | PLC (3)", then the first twelve octets of the
 // prefix's address (claymore666/docker-net-dhcp#1028).
@@ -738,6 +734,10 @@ func pref64Bytes(scaled uint16, plc uint8, prefix netip.Prefix) []byte {
 	return append(o, a[:12]...)
 }
 
+// raWithOptions is raManaged followed by one RDNSS option and one Route
+// Information option, built from RFC 8106 §5.1's and RFC 4191 §2.3's field
+// diagrams so a journal test drives real bytes rather than a struct literal
+// the decoder never saw.
 func raWithOptions(resolver string, prefix netip.Prefix) []byte {
 	out := append([]byte(nil), raManaged...)
 	rdnss := make([]byte, 24)

@@ -378,10 +378,11 @@ func (m *Machine6) Router() RouterObservation { return m.router }
 
 // RouterTableDrops is how many arrivals a full list in the router table would
 // not take, and RouterTableEvictions how many entries a full list threw out to
-// take one: the Default Router List and the route table refuse, the resolver
-// and search lists evict (RFC 8106 §6.2 (d)). Neither is part of the
-// observation: the observation is what the routers said, and these are what
-// this client could not hold, each with its cause.
+// take one: the Default Router List and the route table refuse, the resolver,
+// search and NAT64 prefix lists evict (RFC 8106 §6.2 (d), RFC 8781 §5,
+// claymore666/docker-net-dhcp#1028). Neither is part of the observation: the
+// observation is what the routers said, and these are what this client could
+// not hold, each with its cause.
 func (m *Machine6) RouterTableDrops() uint64 { return m.routers.refused }
 
 // RouterTableEvictions is the eviction half of RouterTableDrops's pair.

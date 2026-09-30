@@ -906,11 +906,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # 1, a netns test: testroster -netns reads 50 on the base, 51 here.
 #
 # PREF64 IN THE ROUTER TABLE AND THE ROUTER VIEW,
-# claymore666/docker-net-dhcp#1028: nineteen added, none removed, MEASURED as
-# testroster runs, 997 on the base and 1016 here. proto/router6_pref64_test.go
-# 17, lease/router6_pref64_test.go 2. The extended journal round-trip test adds
+# claymore666/docker-net-dhcp#1028: twenty-one added, none removed, MEASURED as
+# testroster runs, 997 on the base and 1018 here. proto/router6_pref64_test.go
+# 19, lease/router6_pref64_test.go 2. The extended journal round-trip test adds
 # no function. None is a netns test.
-MIN_DECLARED_TESTS=1016
+MIN_DECLARED_TESTS=1018
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
