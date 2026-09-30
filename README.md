@@ -67,7 +67,7 @@ client is already rebinding, and lands in the server's lease file
 a SLAAC address or holding no lease sends nothing, a client not yet bound
 sends the name in its next Solicit or Request, or as above once it is bound,
 and an empty name is never sent. On DHCPv4 a client with user classes sends
-them in RFC 3004's option in its Discover and every Request. The wire for the
+them in the User Class option in its Discover and every Request. The wire for the
 other options and for DHCPFORCERENEW is in the tree, and the client behaviour
 for each is planned in the rows above: Rapid Commit, IPv6-Only Preferred, and
 a reconfiguration the server starts, signed with the Forcerenew Nonce of

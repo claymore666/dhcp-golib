@@ -117,18 +117,18 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
-- **A user class that a server's class rule acts on.** The client sends RFC
-  3004's option 77 in its Discover and every Request, one length-prefixed
-  instance per class, and dnsmasq with `--dhcp-userclass` rules hands option
-  224 in the ACK only to the client whose instance matches: not to one sending
-  another class or none, and a rule that spans two instances does not fire
-  where one that names either does. The class dnsmasq logs and the tags it sets
-  are asserted beside the lease the client reports
-  (`TestUserClassReachesTheServersClassRule`). The parameter's limits are
-  RFC 3004's one-octet length, an instance of 1 to 254 octets and the list at
-  most 255 with its length octets; a zero octet inside an instance reaches the
-  bytes, which dnsmasq cannot be given a rule for, so that one is asserted on
-  the encoded message
+- **A user class that a server's class rule acts on.** The client sends the
+  User Class option in its Discover and every Request, one length-prefixed
+  instance per class, and dnsmasq with `--dhcp-userclass` rules hands a
+  private option in the ACK only to the client whose instance matches: not to
+  one sending another class or none, and a rule that spans two instances does
+  not fire where one that names either does. The class dnsmasq logs and the
+  tags it sets are asserted beside the lease the client reports
+  (`TestUserClassReachesTheServersClassRule`). The parameter's limits are the
+  RFC's one-octet length: an instance of at least one octet and at most one
+  less than the octet's range, the list within it with its length octets; a
+  zero octet inside an instance reaches the bytes, which dnsmasq cannot be
+  given a rule for, so that one is asserted on the encoded message
   (`TestNewValidatesTheUserClassAgainstRFC3004Section4`,
   `TestUserClassIsOnTheDiscoverAndOnEveryRequestByteForByte`). A Decline and a
   Release carry none (`TestADeclineAndAReleaseCarryNoUserClass`).

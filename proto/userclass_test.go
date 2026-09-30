@@ -256,7 +256,7 @@ func TestACallerCannotEditTheUserClassAfterNew(t *testing.T) {
 	}
 
 	// The same for the message the machine handed out: a receiver that edits
-	// its option 77 must not change the next one.
+	// its option 77 must not change the next one (claymore666/docker-net-dhcp#1120).
 	first.Options[wire.OptUserClass][1] = 'Z'
 	_, acts = m.Step(at(1), 2, received(t, offerFor(first, testLeaseAddr, testServerID)))
 	next := encoded(t, mustSend(t, acts, wire.MsgRequest))
