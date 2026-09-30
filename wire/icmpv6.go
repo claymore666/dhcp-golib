@@ -421,9 +421,9 @@ type PREF64 struct {
 	// Prefix is the 96 advertised bits cut to the length the PLC names, host
 	// bits zero. §4 is silent on what the bits past the length hold.
 	Prefix netip.Prefix
-	// Lifetime is the Scaled Lifetime times 8, in seconds, §4.1. It is a
-	// uint32 because 8191 x 8 = 65528 leaves a 16-bit product no room. Zero
-	// is a withdrawal, see Withdrawn.
+	// Lifetime is the Scaled Lifetime times 8, in seconds, §4.1, at most
+	// 65528, and a uint32 like every other lifetime in this file. Zero is a
+	// withdrawal, see Withdrawn.
 	Lifetime uint32
 }
 

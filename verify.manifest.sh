@@ -886,7 +886,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # MEASURED 2026-09-24 as testroster runs, 915 on the base and 926 here.
 # runtime/readloop_linux_test.go 4, runtime/readloop_gone_linux_test.go 7.
 # Seven are netns tests: testroster -netns reads 43 on the base, 50 here.
-MIN_DECLARED_TESTS=926
+#
+# WIRE, DHCPv6 RAPID COMMIT AND THE ND NAT64 PREFIX OPTION,
+# claymore666/docker-net-dhcp#926 and #1028: fifteen added, none removed,
+# MEASURED as testroster runs, 926 on the base and 941 here.
+# wire/rapid_commit_v6_test.go 6, wire/pref64_test.go 9. None is a netns test.
+MIN_DECLARED_TESTS=941
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
