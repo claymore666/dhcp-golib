@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// iaTAAddrOption is RFC 8415 §21.6's IA Address option written octet by octet
+// iaTAAddrOption is RFC 9915 §21.6's IA Address option written octet by octet
 // (code 5, length 24): 2001:db8::1, preferred 60 s, valid 120 s.
 const iaTAAddrOption = "0005" + "0018" +
 	"20010db8000000000000000000000001" + "0000003c" + "00000078"
