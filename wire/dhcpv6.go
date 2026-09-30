@@ -11,7 +11,8 @@ import (
 
 // The DHCPv6 client codec, RFC 9915 (STD 102).
 //
-// RFC 8415 is OBSOLETE and is cited nowhere in this package. Every section
+// RFC 8415 is OBSOLETE and is cited nowhere in this package except for the
+// IA_TA layout (§21.5, claymore666/docker-net-dhcp#927). Every other section
 // number below is RFC 9915's; where the two documents differ the difference is
 // named at the line it reaches, because a reader who knows 8415 will otherwise
 // read the omission as an oversight.
@@ -27,12 +28,12 @@ import (
 // has THIS header (§8) and is decoded here; whether one is obeyed is §16.11's
 // and §18.2.11's question, which proto.Machine6 answers.
 //
-// D25 keeps IA_PD and IA_TA out of the 2.0 line. They are not implemented and
-// not special-cased: an option this codec does not name survives decoding as
-// bytes under its numeric code, which is what §16 requires of everyone
-// ("Clients, relay agents, and servers MUST NOT discard messages that contain
-// unknown options"). Rapid Commit (§21.14) is named since v1.2.0,
-// claymore666/docker-net-dhcp#926.
+// D25 keeps IA_PD out of the 2.0 line. It is not implemented and not
+// special-cased: an option this codec does not name survives decoding as bytes
+// under its numeric code, which is what §16 requires of everyone ("Clients,
+// relay agents, and servers MUST NOT discard messages that contain unknown
+// options"). Rapid Commit (§21.14) and IA_TA (§21.5) are named since v1.2.0,
+// claymore666/docker-net-dhcp#926 and #927.
 //
 // The Server Unicast option (§21.12) and the UseMulticast status code (§21.13)
 // are OBSOLETE, §16: "The Server Unicast option (see Section 21.12) and
@@ -118,6 +119,7 @@ const (
 	OptV6ClientID     OptionCodeV6 = 1  // §21.2
 	OptV6ServerID     OptionCodeV6 = 2  // §21.3
 	OptV6IANA         OptionCodeV6 = 3  // §21.4
+	OptV6IATA         OptionCodeV6 = 4  // RFC 8415 §21.5, obsoleted by RFC 9915 §21.5
 	OptV6IAAddr       OptionCodeV6 = 5  // §21.6
 	OptV6ORO          OptionCodeV6 = 6  // §21.7
 	OptV6Preference   OptionCodeV6 = 7  // §21.8
@@ -136,6 +138,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6ClientID:     "client-id",
 	OptV6ServerID:     "server-id",
 	OptV6IANA:         "ia-na",
+	OptV6IATA:         "ia-ta",
 	OptV6IAAddr:       "ia-addr",
 	OptV6ORO:          "oro",
 	OptV6Preference:   "preference",
@@ -412,6 +415,62 @@ func (o OptionsV6) IANAs() ([]*IANA, error) {
 	var out []*IANA
 	for _, v := range o.All(OptV6IANA) {
 		ia, err := DecodeIANA(v)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ia)
+	}
+	return out, nil
+}
+
+// ------------------------------------------------------------------ IA_TA --
+
+// IATA is a decoded Identity Association for Temporary Addresses, laid out as
+// RFC 8415 §21.5 has it: an IAID and options, and no T1 or T2. RFC 9915 §21.5
+// obsoletes the option and drops the layout; the library carries it on purpose
+// (claymore666/docker-net-dhcp#927).
+type IATA struct {
+	IAID uint32
+	// Options holds the IA Address options and the Status Code scoped to this
+	// IA_TA alone.
+	Options OptionsV6
+}
+
+// IATAFixedLen is RFC 8415 §21.5's "4 + length of IA_TA-options field".
+const IATAFixedLen = 4
+
+// DecodeIATA parses one IA_TA option value.
+func DecodeIATA(v []byte) (*IATA, error) {
+	if len(v) < IATAFixedLen {
+		return nil, fmt.Errorf("%w: IA_TA is %d octet(s), want at least %d",
+			ErrV6BadOption, len(v), IATAFixedLen)
+	}
+	opts, err := ParseOptionsV6(v[IATAFixedLen:])
+	if err != nil {
+		return nil, err
+	}
+	return &IATA{IAID: ube32(v[0:4]), Options: opts}, nil
+}
+
+// EncodeIATA renders one IA_TA option value.
+func EncodeIATA(ia *IATA) ([]byte, error) {
+	if ia == nil {
+		return nil, fmt.Errorf("%w: nil IA_TA", ErrV6Encode)
+	}
+	body, err := EncodeOptionsV6(ia.Options)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, IATAFixedLen, IATAFixedLen+len(body))
+	be32(out[0:4], ia.IAID)
+	return append(out, body...), nil
+}
+
+// IATAs returns every IA_TA in the options area, decoded, beside IANAs.
+func (o OptionsV6) IATAs() ([]*IATA, error) {
+	var out []*IATA
+	for _, v := range o.All(OptV6IATA) {
+		ia, err := DecodeIATA(v)
 		if err != nil {
 			return nil, err
 		}
@@ -1110,6 +1169,15 @@ func summariseAddrs(o OptionV6) string {
 		// TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode
 		// pins, and that case dies if Addrs ever starts returning the
 		// addresses it did decode alongside the error.
+		as, _ := ia.Options.Addrs()
+		for _, a := range as {
+			addrs = append(addrs, a.Addr)
+		}
+	case OptV6IATA:
+		ia, err := DecodeIATA(o.Data)
+		if err != nil {
+			return ""
+		}
 		as, _ := ia.Options.Addrs()
 		for _, a := range as {
 			addrs = append(addrs, a.Addr)
