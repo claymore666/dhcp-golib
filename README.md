@@ -31,7 +31,7 @@ and it needs no root.
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
 | Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
-| Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1031) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
+| Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | [planned](https://github.com/claymore666/docker-net-dhcp/issues/926) |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
 | Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
@@ -67,9 +67,12 @@ client is already rebinding, and lands in the server's lease file
 a SLAAC address or holding no lease sends nothing, a client not yet bound
 sends the name in its next Solicit or Request, or as above once it is bound,
 and an empty name is never sent. On DHCPv4 a client with user classes sends
-them in the User Class option in its Discover and every Request. The wire for the
+them in the User Class option in its Discover and every Request. A DHCPv4
+client with `RapidCommit` set asks for a two-message lease in its Discover and
+takes an Ack that carries the option as the lease, and a server that answers
+with an Offer gets the ordinary Request. The wire for the
 other options and for DHCPFORCERENEW is in the tree, and the client behaviour
-for each is planned in the rows above: Rapid Commit, IPv6-Only Preferred, and
+for each is planned in the rows above: DHCPv6 Rapid Commit, IPv6-Only Preferred, and
 a reconfiguration the server starts, signed with the Forcerenew Nonce of
 RFC 6704.
 
