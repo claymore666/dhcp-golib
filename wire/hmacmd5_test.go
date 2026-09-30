@@ -8,6 +8,8 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -137,25 +139,45 @@ func TestEqualConstantTimeAnswersTheSameQuestionBytesEqualDoes(t *testing.T) {
 	}
 }
 
-// TestRKAPVerifyIsTheOnlyMD5InThisPackage pins the reason this code exists to
-// one caller. MD5 is not a hash this library offers; it is RKAP's algorithm 1
-// and nothing else, and a second caller appearing would be a decision somebody
-// should have to make on purpose.
-func TestRKAPVerifyIsTheOnlyMD5InThisPackage(t *testing.T) {
+// TestMD5IsReachedOnlyFromTheTwoAcceptedVerifiers pins MD5 to RKAP's algorithm
+// 1: the DHCPv6 Reconfigure Key and the DHCPv4 Forcerenew nonce, nothing else,
+// so a third caller is a decision (claymore666/docker-net-dhcp#1119). Two
+// views, because a helper in the exempt file hid a caller from the first: files
+// outside hmacmd5.go are searched for the three spellings that reach MD5, and
+// the functions inside hmacmd5.go that call MD5 are listed.
+func TestMD5IsReachedOnlyFromTheTwoAcceptedVerifiers(t *testing.T) {
 	src := readPackageSources(t)
 	var callers []string
 	for file, text := range src {
 		if file == "hmacmd5.go" {
 			continue
 		}
-		for _, name := range []string{"md5Sum(", "hmacMD5("} {
+		for _, name := range []string{"md5Sum(", "hmacMD5(", "zeroedHMACMatches("} {
 			if strings.Contains(text, name) {
-				callers = append(callers, file+" names "+name)
+				callers = append(callers, file)
+				break
 			}
 		}
 	}
-	if len(callers) != 1 || !strings.HasPrefix(callers[0], "dhcpv6_reconfigure.go") {
-		t.Errorf("MD5 is reached from %v, want exactly dhcpv6_reconfigure.go", callers)
+	sort.Strings(callers)
+	want := []string{"dhcpv6_reconfigure.go", "option_auth.go"}
+	if !slices.Equal(callers, want) {
+		t.Errorf("MD5 is reached from %v, want exactly %v", callers, want)
+	}
+
+	var inside []string
+	for _, fn := range strings.Split(src["hmacmd5.go"], "\nfunc ")[1:] {
+		name, rest, _ := strings.Cut(fn, "(")
+		for _, call := range []string{"md5Sum(", "hmacMD5("} {
+			if strings.Contains(rest, call) {
+				inside = append(inside, name)
+				break
+			}
+		}
+	}
+	sort.Strings(inside)
+	if want := []string{"hmacMD5", "zeroedHMACMatches"}; !slices.Equal(inside, want) {
+		t.Errorf("hmacmd5.go reaches MD5 from %v, want exactly %v", inside, want)
 	}
 }
 
