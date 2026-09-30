@@ -86,7 +86,7 @@ func TestIATAWithATruncatedOptionIsRefusedWholesale(t *testing.T) {
 	}
 }
 
-// TestIATABesideAnIANACarriesItsOwnStatusPerIA: one Solicit with an IA_NA
+// TestIATABesideAnIANACarriesItsOwnStatusPerIA: one Reply with an IA_NA
 // whose Status Code is NoAddrsAvail (2) and an IA_TA whose Status Code is
 // Success (0), and then the two swapped. §21.5 and §21.4 scope a Status Code
 // to the IA it sits in, so neither may lend its status to the other, and the
@@ -106,7 +106,7 @@ func TestIATABesideAnIANACarriesItsOwnStatusPerIA(t *testing.T) {
 		{"IA_NA succeeds, IA_TA fails", ok, no, StatusSuccess, StatusNoAddrsAvail, "ok", "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := mustHex("01010203" +
+			raw := mustHex("07010203" +
 				"0003" + "0014" + "aaaaaaaa" + "0000012c" + "0000021c" + tc.na +
 				"0004" + "000c" + "bbbbbbbb" + tc.ta)
 			m, err := DecodeV6(raw)
