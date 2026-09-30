@@ -146,6 +146,22 @@ func New(p Params) (*Machine, error) {
 	p.CHAddr = append([]byte(nil), p.CHAddr...)
 	p.ClientID = append([]byte(nil), p.ClientID...)
 	p.ParameterList = append([]wire.OptionCode(nil), p.parameterList()...)
+	// A Params taken from Params() carries the encoded values of the machine
+	// it came from; they follow the exported fields the caller may have
+	// changed since, never the other way round (claymore666/docker-net-dhcp#1120).
+	p.userClass, p.fqdn = nil, nil
+	if len(p.UserClass) > 0 {
+		// validate() has run the same encoder, so the error is unreachable;
+		// the value is kept encoded and the caller's list is copied, so
+		// neither an edit of the slice nor of an instance reaches the wire
+		// (claymore666/docker-net-dhcp#1120).
+		v, err := wire.EncodeUserClass(p.UserClass...)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrBadUserClass, err)
+		}
+		p.userClass = v
+	}
+	p.UserClass = cloneUserClass(p.UserClass)
 	if p.FQDN.Name != "" {
 		// validate() has already run this and refused a name or flag
 		// combination that cannot be encoded, so the error here is
@@ -184,7 +200,20 @@ func (m *Machine) Lease() (Lease, bool) { return m.lease, m.haveLse }
 func (m *Machine) Params() Params {
 	p := m.params
 	p.Resume = p.Resume.Clone()
+	p.UserClass = cloneUserClass(p.UserClass)
 	return p
+}
+
+// cloneUserClass copies the list and every instance, nil for nil (claymore666/docker-net-dhcp#1120).
+func cloneUserClass(in [][]byte) [][]byte {
+	if in == nil {
+		return nil
+	}
+	out := make([][]byte, len(in))
+	for i, c := range in {
+		out[i] = append([]byte(nil), c...)
+	}
+	return out
 }
 
 // Hostname is the name this machine is putting in option 12 now.
@@ -1520,6 +1549,12 @@ func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
 	m.nameOnWire = string(msg.Options[wire.OptHostName])
 	if m.params.VendorClass != "" {
 		msg.Options[wire.OptVendorClassID] = []byte(m.params.VendorClass)
+	}
+	if len(m.params.userClass) > 0 {
+		// Only the builders that reach base(): DHCPDISCOVER and DHCPREQUEST.
+		// terminalBase does not, so a DECLINE or RELEASE cannot carry it
+		// (claymore666/docker-net-dhcp#1120).
+		msg.Options[wire.OptUserClass] = append([]byte(nil), m.params.userClass...)
 	}
 	if pl := m.params.parameterList(); len(pl) > 0 {
 		b := make([]byte, 0, len(pl))

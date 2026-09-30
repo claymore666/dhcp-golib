@@ -71,6 +71,11 @@ type Params struct {
 	// VendorClass is option 60. Empty means the option is not sent.
 	VendorClass string
 
+	// UserClass is option 77, one entry per class instance of 1 to 254 octets
+	// (RFC 3004 section 4); nil or empty means it is not sent
+	// (claymore666/docker-net-dhcp#1120).
+	UserClass [][]byte
+
 	// ParameterList is option 55. Empty means DefaultParameterList is sent.
 	//
 	// RFC 2131 section 4.4.1: "If the client included a list of requested
@@ -193,6 +198,11 @@ type Params struct {
 	// caller that could set it could put bytes on the wire that
 	// wire.EncodeFQDN refuses, which is the check New exists to run.
 	fqdn []byte
+
+	// userClass is UserClass encoded once at New, for fqdn's reason: base()
+	// has no error path, and a caller's later edit of the list cannot reach it
+	// (claymore666/docker-net-dhcp#1120).
+	userClass []byte
 }
 
 // Resume is an address this client held before it was restarted, and the
@@ -430,6 +440,11 @@ var ErrBadRestartDelay = errors.New("proto: Params.RestartDelay is negative")
 // has already been deployed.
 var ErrBadFQDN = errors.New("proto: Params.FQDN cannot be encoded")
 
+// ErrBadUserClass is returned by New for a UserClass option 77 cannot carry:
+// an empty instance, one over 254 octets, or a list that needs more than 255
+// (RFC 3004 section 4, claymore666/docker-net-dhcp#1120).
+var ErrBadUserClass = errors.New("proto: Params.UserClass cannot be encoded")
+
 // ErrBadResume is returned by New for a Resume that names no usable IPv4
 // address. See Params.validate.
 var ErrBadResume = errors.New("proto: Params.Resume names no usable IPv4 address")
@@ -479,6 +494,11 @@ func (p Params) validate() error {
 	if p.FQDN.Name != "" {
 		if _, err := wire.EncodeFQDN(p.FQDN.flags(), p.FQDN.Name); err != nil {
 			return fmt.Errorf("%w: %w", ErrBadFQDN, err)
+		}
+	}
+	if len(p.UserClass) > 0 {
+		if _, err := wire.EncodeUserClass(p.UserClass...); err != nil {
+			return fmt.Errorf("%w: %w", ErrBadUserClass, err)
 		}
 	}
 	if err := ValidateHostname(p.Hostname); err != nil {
