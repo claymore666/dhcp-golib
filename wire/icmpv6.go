@@ -115,6 +115,8 @@ const (
 	NDOptRDNSS uint8 = 25
 	// NDOptDNSSL is RFC 8106 §5.2's DNS Search List option.
 	NDOptDNSSL uint8 = 31
+	// NDOptPREF64 is RFC 8781 §4's NAT64 Prefix option.
+	NDOptPREF64 uint8 = 38
 )
 
 // The fixed lengths of the four messages, in octets, measured from the type
@@ -136,6 +138,10 @@ const (
 	rioMaxUnits   = 3
 	rdnssMinUnits = 3
 	dnsslMinUnits = 2
+	// pref64Len is RFC 8781 §4's Length 2, "The sender MUST set the length to
+	// 2. The receiver MUST ignore the PREF64 option if the Length field value
+	// is not 2."
+	pref64Len = 16
 )
 
 // The refusals.
@@ -409,6 +415,26 @@ func (d DNSSL) String() string {
 	return fmt.Sprintf("dnssl %v lifetime=%ds", d.Names, d.Lifetime)
 }
 
+// PREF64 is a decoded NAT64 Prefix option, RFC 8781 §4
+// (claymore666/docker-net-dhcp#1028).
+type PREF64 struct {
+	// Prefix is the 96 advertised bits cut to the length the PLC names, host
+	// bits zero. §4 is silent on what the bits past the length hold.
+	Prefix netip.Prefix
+	// Lifetime is the Scaled Lifetime times 8, in seconds, §4.1, at most
+	// 65528, and a uint32 like every other lifetime in this file. Zero is a
+	// withdrawal, see Withdrawn.
+	Lifetime uint32
+}
+
+// Withdrawn reports §4.1's "A lifetime of 0 indicates that the prefix SHOULD
+// NOT be used anymore."
+func (p PREF64) Withdrawn() bool { return p.Lifetime == 0 }
+
+func (p PREF64) String() string {
+	return fmt.Sprintf("pref64 %s lifetime=%ds", p.Prefix, p.Lifetime)
+}
+
 // RouterAdvert is a decoded Router Advertisement, RFC 4861 §4.2 — only the
 // fields a DHCPv6 client reads.
 type RouterAdvert struct {
@@ -493,6 +519,10 @@ type RouterAdvert struct {
 	RDNSS []RDNSS
 	DNSSL []DNSSL
 
+	// PREF64 lists RFC 8781 §4's options in wire order, withdrawals included;
+	// §4 allows the option "more than once in an RA".
+	PREF64 []PREF64
+
 	// IgnoredOptions counts the RECOGNISED options this decoder refused by
 	// their own standard's rule and walked past. It does not count options of
 	// a type this decoder does not read: §4.6 tells a receiver to ignore those
@@ -533,6 +563,9 @@ func (r *RouterAdvert) String() string {
 	}
 	for _, d := range r.DNSSL {
 		s += " " + d.String()
+	}
+	for _, p := range r.PREF64 {
+		s += " " + p.String()
 	}
 	if r.IgnoredOptions != 0 {
 		s += fmt.Sprintf(" ignored=%d", r.IgnoredOptions)
@@ -619,6 +652,13 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 				return nil
 			}
 			ra.DNSSL = append(ra.DNSSL, d)
+		case NDOptPREF64:
+			p, ok := decodePREF64(opt)
+			if !ok {
+				ra.IgnoredOptions++
+				return nil
+			}
+			ra.PREF64 = append(ra.PREF64, p)
 		}
 		return nil
 	})
@@ -626,6 +666,31 @@ func DecodeRouterAdvert(b []byte) (*RouterAdvert, error) {
 		return nil, err
 	}
 	return ra, nil
+}
+
+// pref64Lengths maps RFC 8781 §4's PLC to a prefix length: "The PLC field
+// values 0, 1, 2, 3, 4, and 5 indicate the NAT64 prefix length of 96, 64, 56,
+// 48, 40, and 32 bits". 6 and 7 are absent on purpose.
+var pref64Lengths = [...]int{96, 64, 56, 48, 40, 32}
+
+// decodePREF64 reads one NAT64 Prefix option, RFC 8781 §4, and reports whether
+// §4 lets a receiver use it: Length 2 and a PLC in 0..5.
+//
+// The 16 bits after Length are "|Scaled Lifetime (13)|PLC (3)|", the lifetime
+// first, so the PLC is the LOW three bits.
+func decodePREF64(opt []byte) (PREF64, bool) {
+	if len(opt) != pref64Len {
+		return PREF64{}, false
+	}
+	field := ube16(opt[2:4])
+	plc := int(field & 0x7)
+	if plc >= len(pref64Lengths) {
+		return PREF64{}, false
+	}
+	var a [16]byte
+	copy(a[:12], opt[4:16])
+	pfx := netip.PrefixFrom(netip.AddrFrom16(a), pref64Lengths[plc])
+	return PREF64{Prefix: pfx.Masked(), Lifetime: uint32(field>>3) * 8}, true
 }
 
 // decodeRouteInfo reads one Route Information option, RFC 4191 §2.3, and

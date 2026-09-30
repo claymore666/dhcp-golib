@@ -894,11 +894,17 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # wire/option_v4_test.go 16 (one a fuzz function), wire/option_auth_test.go 24
 # (one a fuzz function). No netns test among them.
 #
+# WIRE, DHCPv6 RAPID COMMIT, IA_TA AND THE ND NAT64 PREFIX OPTION,
+# claymore666/docker-net-dhcp#926, #927 and #1028: twenty-one added, none
+# removed, MEASURED as testroster runs, 966 on the base (dev after the DHCPv4
+# wire above) and 987 here. wire/rapid_commit_v6_test.go 6,
+# wire/pref64_test.go 9, wire/ia_ta_test.go 6. None is a netns test.
+#
 # USER CLASS PARAMETER, claymore666/docker-net-dhcp#1120: eight added, none
-# removed, testroster runs 966 on the base and 974 here. proto/userclass_test.go
-# 7, runtime/userclass_dnsmasq_linux_test.go 1, a netns test: testroster -netns
-# reads 50 on the base, 51 here.
-MIN_DECLARED_TESTS=974
+# removed, testroster runs 987 on the base (dev after the DHCPv6 wire above)
+# and 995 here. proto/userclass_test.go 7, runtime/userclass_dnsmasq_linux_test.go
+# 1, a netns test: testroster -netns reads 50 on the base, 51 here.
+MIN_DECLARED_TESTS=995
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
