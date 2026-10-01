@@ -216,7 +216,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   one that fails takes the same Reply's temporary addresses with it; both are
   driven in [`proto`](../proto), where each address can be failed on its own.
   A lease resumed from a remembered binding has no temporary address, because
-  a Confirm is not followed by a Request.
+  a Confirm is not followed by a Request
+  (`TestTemporaryIsNotAskedForOnAResumedLease`).
 - **A delegated prefix from a real server, reported and never installed.** A client
   with `PrefixHint` set sends an IA_PD with the IA_NA's IAID and one hint IA
   Prefix of that length in its Solicit and Request, and again in every Renew,
