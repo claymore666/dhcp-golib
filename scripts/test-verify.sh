@@ -2107,8 +2107,8 @@ sc_ceiling_band() {
 	# 84.
 	[ "$v" -ge 13 ] && [ "$v" -le 102 ] ||
 		note "SUITE_CEILING_SECONDS=$v is outside 13..102; a ceiling under the healthy row's own figure reddens every run, and one above twice the slowest figure any lane machine has drawn is not a drift detector"
-	# The netns band's edges are NOT the suite's, and neither is guessed. 284 is
-	# the last value below NETNS_TIMEOUT_SECONDS=289: a netns ceiling at or
+	# The netns band's edges are NOT the suite's, and neither is guessed. 303 is
+	# the last value below NETNS_TIMEOUT_SECONDS=308: a netns ceiling at or
 	# above the hang timeout can never fire, because the parent kills the run
 	# before the ceiling can diagnose it. verify.sh's bounds row refuses that
 	# relation too, from the constants themselves; the two gates are meant to
@@ -2116,8 +2116,8 @@ sc_ceiling_band() {
 	# is under a third of the 94s the row measures unloaded, so a ceiling cut to
 	# a figure the HEALTHY row cannot meet — which reddens every green run and
 	# gets the row discharged — is refused at the same place.
-	[ "$nv" -ge 30 ] && [ "$nv" -le 284 ] ||
-		note "NETNS_CEILING_SECONDS=$nv is outside 30..284; a netns ceiling at or above the 289s hang timeout never fires, and one below the healthy row's own figure reddens every run"
+	[ "$nv" -ge 30 ] && [ "$nv" -le 303 ] ||
+		note "NETNS_CEILING_SECONDS=$nv is outside 30..303; a netns ceiling at or above the 308s hang timeout never fires, and one below the healthy row's own figure reddens every run"
 	# The values READ, not the fact of having looked. This contract used to
 	# demand nothing at all — an emptied body and a working one were the same
 	# line of output. The manifest names both numbers, so raising either ceiling
