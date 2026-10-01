@@ -36,7 +36,7 @@ and it needs no root.
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
 | Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
 | Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1027) | n/a |
-| Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1028) |
+| Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | yes |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
 

@@ -905,12 +905,18 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and 997 here. proto/userclass_test.go 9, runtime/userclass_dnsmasq_linux_test.go
 # 1, a netns test: testroster -netns reads 50 on the base, 51 here.
 #
+# PREF64 IN THE ROUTER TABLE AND THE ROUTER VIEW,
+# claymore666/docker-net-dhcp#1028: twenty-one added, none removed, MEASURED as
+# testroster runs, 997 on the base and 1018 here. proto/router6_pref64_test.go
+# 19, lease/router6_pref64_test.go 2. The extended journal round-trip test adds
+# no function. None is a netns test.
+#
 # DHCPV4 RAPID COMMIT, claymore666/docker-net-dhcp#1031: twenty-two added, none
-# removed, testroster runs 997 on the base (dev after the user class above)
-# and 1019 here. proto/rapidcommit_test.go 18,
+# removed, testroster runs 1018 on the base (dev after the PREF64 block above)
+# and 1040 here. proto/rapidcommit_test.go 18,
 # runtime/rapidcommit_dnsmasq_linux_test.go 4, all four netns tests: testroster
 # -netns reads 51 on the base, 55 here.
-MIN_DECLARED_TESTS=1019
+MIN_DECLARED_TESTS=1040
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

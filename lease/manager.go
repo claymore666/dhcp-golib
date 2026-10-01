@@ -418,10 +418,11 @@ type Stats struct {
 	// arrival a full list in the router table would not take.
 	// RouterTableEntriesEvicted is its pair, an entry a full list threw out to
 	// take an arrival, which is what RFC 8106 §6.2 (d) asks of the resolver
-	// and search lists. They are two counters because they ask for different
-	// next steps, and either above zero means the table's caps are in force,
-	// which on a quiet link means something is advertising more than a link
-	// has.
+	// and search lists and what the NAT64 prefix list does
+	// (claymore666/docker-net-dhcp#1028). They are two counters because they
+	// ask for different next steps, and either above zero means the table's
+	// caps are in force, which on a quiet link means something is advertising
+	// more than a link has.
 	RouterSolicitsSent         uint64
 	RouterAdvertsSeen          uint64
 	RouterAdvertsRefused       uint64

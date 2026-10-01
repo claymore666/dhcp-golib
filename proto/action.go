@@ -746,6 +746,12 @@ type RouterObservation struct {
 	Search []string
 	Routes []wire.Route
 
+	// PREF64 is RFC 8781 §4's NAT64 prefixes, unioned across routers and held
+	// until each one's own lifetime (Scaled Lifetime times 8, §4.1) runs out,
+	// so an entry outlives the router that sent it. Sorted by address and then
+	// length, not by arrival (claymore666/docker-net-dhcp#1028).
+	PREF64 []netip.Prefix
+
 	// IT IS A SNAPSHOT TAKEN AT THE LAST Step AND NOT A LIVE VIEW. This client
 	// arms no timer for an entry's expiry: the table is pruned from the now
 	// every Step is handed, so a machine that has taken no Step since an entry
@@ -774,6 +780,9 @@ func (r RouterObservation) String() string {
 	}
 	if len(r.Routes) > 0 {
 		s += fmt.Sprintf(", %d route(s)", len(r.Routes))
+	}
+	if len(r.PREF64) > 0 {
+		s += fmt.Sprintf(", nat64 %v", r.PREF64)
 	}
 	return s
 }
