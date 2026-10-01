@@ -33,6 +33,19 @@ sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 	dnsmasq-base kea-dhcp6-server iproute2 shellcheck >/dev/null
 
+# /var/lib/kea is the unit's StateDirectory=, created at the service's first
+# start; the package leaves it to systemd, so a fresh runner has none and a Kea
+# test fails in 0.04 s on its os.Stat (claymore666/docker-net-dhcp#214). Create
+# it the way the unit would, and print what was found so the log is the proof.
+if [ ! -d /var/lib/kea ]; then
+	sudo install -d -m 0750 -o _kea -g _kea /var/lib/kea
+	echo "kea state directory: created"
+else
+	echo "kea state directory: present"
+fi
+ls -ld /var/lib/kea
+echo "kea-dhcp6-server.service: $(systemctl is-active kea-dhcp6-server || true)"
+
 if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
 	sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
 	echo "apparmor userns restriction: cleared"
