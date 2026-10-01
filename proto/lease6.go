@@ -145,6 +145,16 @@ type Lease6 struct {
 	// and Equal compares it so a resumed record cannot change family in
 	// silence.
 	SLAAC bool
+
+	// ReconfigureKey is the RKAP key this lease's server sent (RFC 9915
+	// §20.4.3), ReconfigureReplay the last replay detection value accepted
+	// from that server and ReconfigureReplaySeen whether any was (§20.3: the
+	// first value is recorded without a check, so "none yet" and "zero" differ).
+	// Equal ignores all three, as Lease ignores its nonce
+	// (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte
+	ReconfigureReplay     uint64
+	ReconfigureReplaySeen bool
 }
 
 // Addr is the first address of the IA, which is the one a single-address

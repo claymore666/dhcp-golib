@@ -158,6 +158,15 @@ type Resume6 struct {
 	// A record with prefixes and no address stays unusable: live() needs an
 	// address.
 	Prefixes []Prefix6
+
+	// ReconfigureKey, ReconfigureReplay and ReconfigureReplaySeen are the
+	// RKAP state the lease's server had given before the restart: the
+	// machine seeds its entry for ServerDUID from them, so a Reconfigure is
+	// authenticated and its replay value checked as it was before. An empty
+	// key restores nothing (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte
+	ReconfigureReplay     uint64
+	ReconfigureReplaySeen bool
 }
 
 // Clone deep-copies a Resume6, for the reason Resume.Clone exists: it is the
@@ -174,6 +183,7 @@ func (r *Resume6) Clone() *Resume6 {
 	out.DNS = append([]netip.Addr(nil), r.DNS...)
 	out.Search = append([]string(nil), r.Search...)
 	out.Prefixes = append([]Prefix6(nil), r.Prefixes...)
+	out.ReconfigureKey = append([]byte(nil), r.ReconfigureKey...)
 	return &out
 }
 

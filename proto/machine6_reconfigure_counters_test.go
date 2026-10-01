@@ -448,8 +448,8 @@ func TestAcceptedAndRefusedPartitionEveryReconfigure(t *testing.T) {
 // the span is the whole life of the resumed lease only on a link whose server
 // sends a key nowhere but the three exchanges §20.4.2 names.
 func TestAResumedClientIsKeylessUntilAReplyCarriesAKey(t *testing.T) {
-	// A machine rebuilt from the record a caller persisted after a run that
-	// held this lease. The key is not in that record, by design.
+	// A machine rebuilt from a record that holds this lease and no key: a
+	// record from before the key was persisted (claymore666/dhcp-golib#28).
 	m, acts := confirming6(t, testParams6())
 	sent := mustSendV6(t, acts, wire.MsgConfirm)
 	if ok, err := sent.Options.ReconfigureAccept(); ok || err != nil {

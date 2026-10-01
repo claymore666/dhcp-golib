@@ -136,7 +136,9 @@ type Config struct {
 	// works in, once, at construction, through the same clock bridge
 	// Config.Resume crosses. A deadline already past contributes zero, which
 	// makes the resumed lease one the machine will renew immediately rather
-	// than one it thinks is live.
+	// than one it thinks is live. ReconfigureKey, ReconfigureReplay and
+	// ReconfigureReplaySeen are read too, and restore the RKAP entry of that
+	// server alone (claymore666/dhcp-golib#28).
 	//
 	// UNLIKE Config.Resume, THE SERVER IDENTIFIER IS KEPT. RFC 2131 section
 	// 4.3.2 makes a remembered server identifier in a v4 DHCPREQUEST a hang;
@@ -705,6 +707,10 @@ func newManager6(cfg Config) (*Manager, error) {
 			// caller's remembered lease or from nowhere.
 			DNS:    append([]netip.Addr(nil), cfg.Resume6.DNS...),
 			Search: append([]string(nil), cfg.Resume6.DomainSearch...),
+
+			ReconfigureKey:        append([]byte(nil), cfg.Resume6.ReconfigureKey...),
+			ReconfigureReplay:     cfg.Resume6.ReconfigureReplay,
+			ReconfigureReplaySeen: cfg.Resume6.ReconfigureReplaySeen,
 		}
 	}
 	m, err := proto.New6(params)

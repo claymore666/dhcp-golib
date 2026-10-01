@@ -114,6 +114,16 @@ type Lease struct {
 	ForcerenewNonce  []byte `json:"forcerenew_nonce,omitempty"`
 	ForcerenewReplay uint64 `json:"forcerenew_replay,omitempty"`
 
+	// ReconfigureKey, ReconfigureReplay and ReconfigureReplaySeen are the RKAP
+	// key of a DHCPv6 lease's server and the replay floor last accepted from
+	// it; Seen says a floor exists, so a recorded zero is not "none yet"
+	// (RFC 9915 §20.3, §20.4.3). The record carries them as reconfigure_key,
+	// reconfigure_replay and reconfigure_replay_seen, and a reader that does
+	// not know them ignores all three (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte `json:"reconfigure_key,omitempty"`
+	ReconfigureReplay     uint64 `json:"reconfigure_replay,omitempty"`
+	ReconfigureReplaySeen bool   `json:"reconfigure_replay_seen,omitempty"`
+
 	// Addrs is EVERY address this v6 lease holds, in the order the protocol
 	// produced them, and Addr is the first of them. It is empty for v4 and
 	// for a v6 lease with no address.
@@ -514,6 +524,10 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		ServerDUID:   append([]byte(nil), l.ServerDUID...),
 		IAID:         l.IAID,
 		Acquired:     b.at(l.Start),
+
+		ReconfigureKey:        append([]byte(nil), l.ReconfigureKey...),
+		ReconfigureReplay:     l.ReconfigureReplay,
+		ReconfigureReplaySeen: l.ReconfigureReplaySeen,
 	}
 	if pfx, ok := l.Prefix(); ok {
 		out.Addr = pfx

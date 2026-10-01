@@ -191,39 +191,11 @@ type Machine6 struct {
 	refresh Duration
 
 	// reconf is the RKAP state of every server that has sent this client a
-	// reconfigure key, keyed by that server's DUID. See reconfServer for why
-	// it is per server and what bounds it.
-	//
-	// IT DOES NOT SURVIVE A RESTART, and that is a bound rather than an
-	// oversight. Params6.Resume carries a lease across a process; nothing
-	// carries a reconfigure key, so a machine rebuilt from a Resume6 accepts
-	// no Reconfigure until its next Solicit/Reply, Request/Reply or
-	// Information-request/Reply hands it a new one (§20.4.2). The key is a
-	// shared secret, and the record a caller would have to write it into is
-	// the one this library asks callers to persist and hands to Journal6: a
-	// field that put it there would put the key in every operator's copy of
-	// that record. What the journal already keeps whole is the Reply the key
-	// arrived in, JournalEntry6.Raw, and that is the boundary a caller handing
-	// a journal out has to know.
-	//
-	// THE COST IS NOT ONE REFUSED RECONFIGURE, and the sentence here used to
-	// say it was. A machine rebuilt from a Resume6 sends §18.2.3's Confirm,
-	// and Appendix B Table 5 does not allow OPTION_RECONF_ACCEPT in a Confirm;
-	// §20.4.2 names no key-bearing exchange on that path: "The server selects
-	// a reconfigure key for a client during the Request/Reply, Solicit/Reply,
-	// or Information-request/Reply message exchange." So a resumed client
-	// refuses its server's Reconfigures one after another, each counted as
-	// ReconfigureRefusalNoKey, and not one and then no more.
-	//
-	// WHAT ENDS IT IS A REPLY CARRYING A KEY, WHICHEVER EXCHANGE IT ANSWERS.
-	// §20.4.2 binds when a SERVER selects a key and says nothing about what a
-	// client records, and takeReply records the key on any accepted Reply — so
-	// a server that puts one in the Reply to the Renew at T1 ends the span
-	// there, and the next signed Reconfigure is accepted. On a link whose
-	// server sends a key only where §20.4.2 says it does, the span runs to a
-	// fresh acquisition from INIT6 or to the Information-request §21.23's
-	// refresh time asks a bound client for.
-	// TestAResumedClientIsKeylessUntilAReplyCarriesAKey drives both.
+	// reconfigure key, keyed by that server's DUID; see reconfServer.
+	// Params6.Resume restores the lease's own server's entry, and every other
+	// entry is lost at a restart. A resume with no key leaves the store empty:
+	// each Reconfigure is refused ReconfigureRefusalNoKey until a Reply
+	// carries a key (RFC 9915 §20.4.2; claymore666/dhcp-golib#28).
 	reconf map[string]*reconfServer
 
 	// reconfCounts is what this machine did with the Reconfigure messages it
@@ -332,6 +304,7 @@ func New6(p Params6) (*Machine6, error) {
 	// journal then stopped replaying against a snapshot of its own parameters.
 	m := &Machine6{params: p, state: State6Stopped, resume: p.Resume, hostname: p.Hostname}
 	m.rememberDeclined(p.Declined)
+	m.seedReconfigure(p.Resume)
 	return m, nil
 }
 
@@ -2077,6 +2050,7 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 	m.sendFailures = 0
 
 	had, prev := m.haveLse, m.lease
+	l = m.withReconfigure(l)
 	m.lease, m.haveLse = l, true
 	m.state = State6Bound
 	m.resume = nil
