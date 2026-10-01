@@ -151,6 +151,19 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestARapidAckIsRefusedWhereItAnswersNothingTheClientSent`,
   `TestARapidAckFromADeniedOrUnlistedServerIsRefused`,
   `TestARapidAckInRequestingIsTakenOnlyFromTheServerAndAddressAsked`).
+- **A client that waits when the server says IPv6 only, and one that does not
+  ask.** dnsmasq with `--dhcp-option=108,300` sends option 108 only to a client
+  whose request list names it. A client with `IPv6OnlyPreferred` gets an Offer
+  whose logged options include 108 and sends no Request, Decline or Release:
+  dnsmasq's log holds DHCPDISCOVER and DHCPOFFER and no DHCPREQUEST, the client
+  reports no lease, and its journal shows a restart timer of at least 300
+  seconds (`TestDnsmasqSendsOption108AndAnIPv6OnlyClientWaitsInsteadOfRequesting`).
+  The absence is read after a second client's Discover has been logged, so that
+  no sleep stands in for "nothing came". The same server and a client without
+  the flag exchange four messages and the Offer carries no 108
+  (`TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsmasq`).
+  The wait's end and a link coming up are driven on the machine's own clock in
+  `proto` (`TestTheWaitEndsInAFreshDiscover`, `TestALinkUpEndsTheWaitEarly`).
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S

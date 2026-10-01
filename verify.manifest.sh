@@ -916,7 +916,13 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and 1040 here. proto/rapidcommit_test.go 18,
 # runtime/rapidcommit_dnsmasq_linux_test.go 4, all four netns tests: testroster
 # -netns reads 51 on the base, 55 here.
-MIN_DECLARED_TESTS=1040
+#
+# DHCPV4 IPV6-ONLY PREFERRED, claymore666/docker-net-dhcp#1027: twenty-three
+# added, none removed, MEASURED as testroster runs, 1040 on the base (dev after
+# the Rapid Commit block above) and 1063 here. proto/ipv6only_test.go 21,
+# runtime/ipv6onlypreferred_dnsmasq_linux_test.go 2, the two netns tests:
+# testroster -netns reads 55 on the base, 57 here.
+MIN_DECLARED_TESTS=1063
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

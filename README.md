@@ -35,7 +35,7 @@ and it needs no root.
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
 | Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
-| Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1027) | n/a |
+| Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | yes | n/a |
 | Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | yes |
 | Act as a relay agent | unsupported | unsupported |
 | Apply anything to the link: an address, a route, a resolver | unsupported | unsupported |
@@ -70,9 +70,15 @@ and an empty name is never sent. On DHCPv4 a client with user classes sends
 them in the User Class option in its Discover and every Request. A DHCPv4
 client with `RapidCommit` set asks for a two-message lease in its Discover and
 takes an Ack that carries the option as the lease, and a server that answers
-with an Offer gets the ordinary Request. The wire for the
+with an Offer gets the ordinary Request. A DHCPv4 client with `IPv6OnlyPreferred`
+set lists option 108 in its Discover and every Request. An Offer that carries
+it gets no Request, Decline or Release: the client waits for the server's
+value, never less than 300 seconds, or until the link comes up again, and then
+starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
+and in any other state the lease stands. A client without the flag ignores the
+option. The wire for the
 other options and for DHCPFORCERENEW is in the tree, and the client behaviour
-for each is planned in the rows above: DHCPv6 Rapid Commit, IPv6-Only Preferred, and
+for each is planned in the rows above: DHCPv6 Rapid Commit and
 a reconfiguration the server starts, signed with the Forcerenew Nonce of
 RFC 6704.
 
