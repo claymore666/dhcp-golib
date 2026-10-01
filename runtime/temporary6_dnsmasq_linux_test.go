@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE (claymore666/docker-net-dhcp#927).
 
 //go:build linux
 
@@ -112,7 +112,7 @@ func TestAV6ClientThatAsksForTemporaryAddressesGetsOneFromRealDnsmasq(t *testing
 		}
 
 		// dnsmasq's own words: it granted an IA_TA, with the temporary address
-		// in it, in the Advertise and in the Reply.
+		// in it, in the Advertise and in the Reply (claymore666/docker-net-dhcp#927).
 		r.srv.waitFor(t, "iaaddr  "+temp.String())
 		r.srv.waitFor(t, "DHCPREPLY("+test6ServerIf+") "+temp.String())
 		if n := r.ta6Sent(); n < 2 {
@@ -120,7 +120,7 @@ func TestAV6ClientThatAsksForTemporaryAddressesGetsOneFromRealDnsmasq(t *testing
 		}
 
 		// The client's own messages: the Solicit asks, and the Request repeats
-		// what the Advertise offered.
+		// what the Advertise offered (claymore666/docker-net-dhcp#927).
 		solicit := r.packets(lease.DirOut, wire.MsgSolicit)
 		if len(solicit) == 0 || solicit[0].Options.Count(wire.OptV6IATA) != 1 {
 			t.Fatalf("the Solicit does not carry one IA_TA: %v", solicit)
@@ -180,7 +180,7 @@ func TestARenewalLeavesTheTemporaryAddressAlone(t *testing.T) {
 			t.Fatalf("the grant logged %d ia-ta option(s) sent, want at least 2", before)
 		}
 
-		// A new hostname makes a bound client Renew now (RFC 4704).
+		// A new hostname makes a bound client Renew now (RFC 4704) (claymore666/docker-net-dhcp#927).
 		if err := r.client.SetHostname(ta6Rename); err != nil {
 			t.Fatalf("SetHostname: %v", err)
 		}
@@ -213,14 +213,14 @@ func TestARenewalLeavesTheTemporaryAddressAlone(t *testing.T) {
 			t.Errorf("the decoded Reply to the Renew carries %d IA_NA, want 1", n)
 		}
 
-		// The renewal left the temporary address in place and unrenewed.
+		// The renewal left the temporary address in place and unrenewed (claymore666/docker-net-dhcp#927).
 		l, ok := r.client.Lease()
 		if !ok || l.Addr.Addr() != stable || len(l.TempAddrs) != 1 || l.TempAddrs[0].Addr.Addr() != temp {
 			t.Errorf("after the renewal the client reports %+v (held %v), want %s and %s", l, ok, stable, temp)
 		}
 		// Each event converts through its own pair of clock readings, so the
 		// two wall times may differ by the microseconds between the pair; a
-		// renewal that moved the expiry moves it by the lease time.
+		// renewal that moved the expiry moves it by the lease time (claymore666/docker-net-dhcp#927).
 		if d := renewed.Lease.TempAddrs[0].Valid.Sub(r.ev.Lease.TempAddrs[0].Valid); d > time.Millisecond || d < -time.Millisecond {
 			t.Errorf("the renewal moved the temporary address's expiry from %v to %v",
 				r.ev.Lease.TempAddrs[0].Valid, renewed.Lease.TempAddrs[0].Valid)

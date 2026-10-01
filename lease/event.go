@@ -531,7 +531,7 @@ func outwardAddrs(in []proto.Addr6, start proto.Instant, b clockBridge) []Addr6 
 		bits := a.PrefixLen
 		if bits <= 0 {
 			// A granted address has no prefix length of its own, so it is a
-			// host address. Only RFC 4862 §5.5.3's option carries one.
+			// host address. Only RFC 4862 §5.5.3's option carries one (claymore666/docker-net-dhcp#927).
 			bits = a.Addr.BitLen()
 		}
 		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}

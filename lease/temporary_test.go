@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE (claymore666/docker-net-dhcp#927).
 
 package lease
 
@@ -42,7 +42,7 @@ type lease110 struct {
 }
 
 // record110 is the part of a journal line a v1.1.0 reader keeps of a RecordEvent
-// that carries a lease.
+// that carries a lease (claymore666/docker-net-dhcp#927).
 type record110 struct {
 	ID    string    `json:"id"`
 	Seq   uint64    `json:"seq"`
@@ -98,7 +98,7 @@ func TestTempAddrsRollBack(t *testing.T) {
 		t.Errorf("the v1.1.0 reader got the lease %+v", old.Lease)
 	}
 
-	// The new reader reads its own line back whole.
+	// The new reader reads its own line back whole (claymore666/docker-net-dhcp#927).
 	var back RecordEvent
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
@@ -109,7 +109,7 @@ func TestTempAddrsRollBack(t *testing.T) {
 	}
 
 	// And a line written by v1.1.0 carries no temp_addrs, which this reader
-	// takes as no temporary addresses.
+	// takes as no temporary addresses (claymore666/docker-net-dhcp#927).
 	oldRaw, err := json.Marshal(record110{ID: "ctr", Lease: &lease110{Addr: l.Addr, Addrs: l.Addrs}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -180,7 +180,7 @@ func TestToLease6SeparatesTheTwoSlices(t *testing.T) {
 	if !out.TempAddrs[1].Valid.IsZero() || !out.TempAddrs[1].Preferred.IsZero() {
 		t.Errorf("an infinite temporary address has deadlines %v", out.TempAddrs[1])
 	}
-	// The lease's own expiry is the stable one's: no temporary lifetime moves it.
+	// The lease's own expiry is the stable one's: no temporary lifetime moves it (claymore666/docker-net-dhcp#927).
 	if want := wall.Add(310 * time.Second); !out.Expire.Equal(want) {
 		t.Errorf("Expire %v, want %v", out.Expire, want)
 	}

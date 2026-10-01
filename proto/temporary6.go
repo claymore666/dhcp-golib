@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE (claymore666/docker-net-dhcp#927).
 
 package proto
 
@@ -28,7 +28,7 @@ type Temporary6Counters struct {
 // (claymore666/docker-net-dhcp#927).
 func (m *Machine6) TemporaryCounters() Temporary6Counters { return m.tempCounts }
 
-// taResult is what the IA_TA of one message with our IAID produced.
+// taResult is what the IA_TA of one message with our IAID produced (claymore666/docker-net-dhcp#927).
 type taResult struct {
 	found  bool
 	status wire.StatusCode
@@ -76,7 +76,7 @@ func readIATA(o wire.OptionsV6, iaid uint32) (taResult, []string) {
 	if out.status != wire.StatusSuccess && len(out.addrs) > 0 {
 		// RFC 8415 section 18.2.10.1: the client uses the addresses "from any
 		// IAs that do not contain a Status Code option with the NoAddrsAvail
-		// or NoPrefixAvail status code"; any other failure is no grant either.
+		// or NoPrefixAvail status code"; any other failure is no grant either (claymore666/docker-net-dhcp#927).
 		notes = append(notes, fmt.Sprintf("the IA_TA says %s and carries %d address(es): they are not ours to use (§18.2.10.1)", out.status, len(out.addrs)))
 		out.addrs = nil
 	}
@@ -143,7 +143,7 @@ func (m *Machine6) ignoreTemporary(o wire.OptionsV6, out *actions) {
 }
 
 // expiry is the instant an address's valid lifetime ends, counted from the
-// lease's Start, and false for an infinite lifetime.
+// lease's Start, and false for an infinite lifetime (claymore666/docker-net-dhcp#927).
 func expiry(start Instant, d Duration) (Instant, bool) {
 	if d.IsInfinite() {
 		return 0, false
@@ -226,7 +226,7 @@ func sameEnd(s1 Instant, d1 Duration, s2 Instant, d2 Duration) bool {
 	return f1 == f2 && e1 == e2
 }
 
-// withoutTemp is l with the temporary addresses in drop taken out.
+// withoutTemp is l with the temporary addresses in drop taken out (claymore666/docker-net-dhcp#927).
 func withoutTemp(l Lease6, drop []netip.Addr) Lease6 {
 	var keep []Addr6
 	for _, a := range l.TempAddrs {
@@ -258,7 +258,7 @@ func (m *Machine6) freshTemp(l Lease6) []netip.Addr {
 	return fresh
 }
 
-// isTemp reports whether a is one of l's temporary addresses.
+// isTemp reports whether a is one of l's temporary addresses (claymore666/docker-net-dhcp#927).
 func isTemp(l Lease6, a netip.Addr) bool {
 	for _, t := range l.TempAddrs {
 		if t.Addr == a {

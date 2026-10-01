@@ -545,7 +545,7 @@ func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []string) {
 		// preferred lifetime is greater than the valid lifetime."
 		// wire.IAAddr.Valid is the predicate; the discard is here,
 		// because ring 0 holds no policy and an address dropped by the
-		// decoder could not be counted or journalled.
+		// decoder could not be counted or journalled (claymore666/docker-net-dhcp#927).
 		if !a.Valid() {
 			notes = append(notes, fmt.Sprintf("IA Address %s has preferred %d greater than valid %d: discarded (§21.6)",
 				a.Addr, a.PreferredLifetime, a.ValidLifetime))

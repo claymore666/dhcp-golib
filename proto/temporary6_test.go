@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE (claymore666/docker-net-dhcp#927).
 
 package proto
 
@@ -49,7 +49,7 @@ func optIATA(t *testing.T, iaid uint32, addrs []iaAddrSpec, extra ...wire.Option
 }
 
 // ta6Base is the options every server message here carries: the identifiers
-// and an IA_NA with the stable address, T1 150 and T2 240.
+// and an IA_NA with the stable address, T1 150 and T2 240 (claymore666/docker-net-dhcp#927).
 func ta6Base(t *testing.T, extra ...wire.OptionV6) []wire.OptionV6 {
 	t.Helper()
 	return append([]wire.OptionV6{
@@ -68,7 +68,7 @@ func ta6Reply(t *testing.T, xid uint32, extra ...wire.OptionV6) Event {
 	return receivedV6(t, wire.MsgReply, xid, ta6Base(t, extra...)...)
 }
 
-// ta6Temps is one IA_TA with our IAID and the given addresses, 200 and 1000.
+// ta6Temps is one IA_TA with our IAID and the given addresses, 200 and 1000 (claymore666/docker-net-dhcp#927).
 func ta6Temps(t *testing.T, addrs ...string) wire.OptionV6 {
 	t.Helper()
 	var specs []iaAddrSpec
@@ -78,7 +78,7 @@ func ta6Temps(t *testing.T, addrs ...string) wire.OptionV6 {
 	return optIATA(t, capIAID, specs)
 }
 
-// ta6OnTheWire is the message as a server would read it: encoded, decoded.
+// ta6OnTheWire is the message as a server would read it: encoded, decoded (claymore666/docker-net-dhcp#927).
 func ta6OnTheWire(t *testing.T, msg *wire.MessageV6) *wire.MessageV6 {
 	t.Helper()
 	raw, err := wire.EncodeV6(msg)
@@ -92,7 +92,7 @@ func ta6OnTheWire(t *testing.T, msg *wire.MessageV6) *wire.MessageV6 {
 	return back
 }
 
-// ta6IAs is the IA_NAs and IA_TAs of a message as they went on the wire.
+// ta6IAs is the IA_NAs and IA_TAs of a message as they went on the wire (claymore666/docker-net-dhcp#927).
 func ta6IAs(t *testing.T, msg *wire.MessageV6) ([]*wire.IANA, []*wire.IATA) {
 	t.Helper()
 	back := ta6OnTheWire(t, msg)
@@ -128,7 +128,7 @@ func ta6Journal(acts []Action) string {
 
 func ta6Says(acts []Action, sub string) bool { return strings.Contains(ta6Journal(acts), sub) }
 
-// ta6Targets is the addresses ring 3 was asked to check.
+// ta6Targets is the addresses ring 3 was asked to check (claymore666/docker-net-dhcp#927).
 func ta6Targets(acts []Action) []netip.Addr {
 	var out []netip.Addr
 	for _, a := range acts {
@@ -167,7 +167,7 @@ func ta6Armed(acts []Action, id TimerID) bool {
 // ta6ToDAD takes a fresh machine through the Solicit, the Advertise (with an
 // IA_TA when advTemp) and the Request to the Reply, which it answers with the
 // IA_NA and the extra options. It returns the machine in DAD with the Request
-// and the actions of the Reply.
+// and the actions of the Reply (claymore666/docker-net-dhcp#927).
 func ta6ToDAD(t *testing.T, p Params6, advTemp bool, replyExtra ...wire.OptionV6) (*Machine6, *wire.MessageV6, []Action) {
 	t.Helper()
 	m, sol := solicit6(t, p)
@@ -183,7 +183,7 @@ func ta6ToDAD(t *testing.T, p Params6, advTemp bool, replyExtra ...wire.OptionV6
 
 // ta6Bound is ta6ToDAD with the temporary address granted and every address
 // checked clean; temp is the temporary address's lifetimes, preferred and
-// valid, in seconds.
+// valid, in seconds (claymore666/docker-net-dhcp#927).
 func ta6Bound(t *testing.T, temp [2]uint32) *Machine6 {
 	t.Helper()
 	m, sol := solicit6(t, ta6Params(true))
@@ -200,7 +200,7 @@ func ta6Bound(t *testing.T, temp [2]uint32) *Machine6 {
 }
 
 // ta6Renew sends the Renew at renewAt and answers it at replyAt with the plain
-// stable Reply, and returns the actions of the answer.
+// stable Reply, and returns the actions of the answer (claymore666/docker-net-dhcp#927).
 func ta6Renew(t *testing.T, m *Machine6, renewAt, replyAt int64, extra ...wire.OptionV6) []Action {
 	t.Helper()
 	_, acts := m.Step(at(renewAt), 7, TimerFired(Timer6Renew))
@@ -261,7 +261,7 @@ func TestTemporaryBytesOfEveryMessage(t *testing.T) {
 	}
 
 	// The Advertise offered an address: the Request repeats it with its
-	// lifetimes, because an empty IA makes dnsmasq draw another one.
+	// lifetimes, because an empty IA makes dnsmasq draw another one (claymore666/docker-net-dhcp#927).
 	_, acts := m.Step(at(2), capXIDRequest, ta6Advert(t, sol.XID, ta6Temps(t, ta6Temp)))
 	req := mustSendV6(t, acts, wire.MsgRequest6)
 	_, tas = ta6IAs(t, req)
@@ -273,7 +273,7 @@ func TestTemporaryBytesOfEveryMessage(t *testing.T) {
 		t.Errorf("the Request's IA_TA = %+v, want %s with 200 and 1000", got, ta6Temp)
 	}
 
-	// No IA_TA in the Advertise: the Request still asks, with an empty one.
+	// No IA_TA in the Advertise: the Request still asks, with an empty one (claymore666/docker-net-dhcp#927).
 	m2, sol2 := solicit6(t, p)
 	_, acts = m2.Step(at(2), capXIDRequest, ta6Advert(t, sol2.XID))
 	req2 := mustSendV6(t, acts, wire.MsgRequest6)
@@ -313,7 +313,7 @@ func TestTemporaryBytesOfEveryMessage(t *testing.T) {
 		t.Errorf("the Information-request carries %d IA_NA and %d IA_TA", len(nas), len(tas))
 	}
 
-	// A Decline of a stable address with no temporary one granted: no IA_TA.
+	// A Decline of a stable address with no temporary one granted: no IA_TA (claymore666/docker-net-dhcp#927).
 	m3, _, acts := ta6ToDAD(t, p, false)
 	_, acts = m3.Step(at(4), 0, DADResult(addr6(ta6Stable), true))
 	dec := mustSendV6(t, acts, wire.MsgDecline6)
@@ -463,7 +463,7 @@ func TestTemporaryDoesNotMakeALeaseOfAnIATAAlone(t *testing.T) {
 // expiry it was granted, which is a renewal and not a change
 // (RFC 8415 section 13.2; claymore666/docker-net-dhcp#927).
 func TestTemporaryRenewalKeepsTheAddressAndItsExpiry(t *testing.T) {
-	// Granted at start t+2 s for 1000 s: it ends at t+1002 s.
+	// Granted at start t+2 s for 1000 s: it ends at t+1002 s (claymore666/docker-net-dhcp#927).
 	end := at(1002)
 	m := ta6Bound(t, [2]uint32{200, 1000})
 	for i, hop := range []struct{ renewAt, replyAt int64 }{{152, 153}, {303, 304}} {
@@ -475,7 +475,7 @@ func TestTemporaryRenewalKeepsTheAddressAndItsExpiry(t *testing.T) {
 		if got := l.Start.Add(l.TempAddrs[0].Valid); got != end {
 			t.Errorf("renewal %d moved the temporary expiry to %v, want %v", i, got, end)
 		}
-		// Preferred ends at t+202 s; once that has passed it is clamped to the Start.
+		// Preferred ends at t+202 s; once that has passed it is clamped to the Start (claymore666/docker-net-dhcp#927).
 		wantPref := at(202)
 		if l.Start.After(wantPref) {
 			wantPref = l.Start
@@ -488,7 +488,7 @@ func TestTemporaryRenewalKeepsTheAddressAndItsExpiry(t *testing.T) {
 		}
 	}
 
-	// A rebind Reply reads the same way.
+	// A rebind Reply reads the same way (claymore666/docker-net-dhcp#927).
 	_, acts := m.Step(at(500), 7, TimerFired(Timer6Renew))
 	mustSendV6(t, acts, wire.MsgRenew)
 	_, acts = m.Step(at(600), 8, TimerFired(Timer6Rebind))
@@ -519,7 +519,7 @@ func TestTemporaryRenewalIgnoresAnIATAInTheReply(t *testing.T) {
 // the next Reply builds, and the lease event is Changed because the set
 // differs. At the instant itself it has passed (claymore666/docker-net-dhcp#927).
 func TestTemporaryAddressLeavesWhenItsValidLifetimePasses(t *testing.T) {
-	// The temporary address ends at t+402 s.
+	// The temporary address ends at t+402 s (claymore666/docker-net-dhcp#927).
 	for _, c := range []struct {
 		replyAt int64
 		kept    bool
