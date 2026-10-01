@@ -230,6 +230,23 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   is correct as of the last `Step` and not as of the read. That bound is
   driven and not only written down
   (`TestTheRouterViewOnTheLeaseIsAsOfTheLastStep`).
+- **The NAT64 prefix an advertisement carries, held per entry and reported
+  with the router view.** The PREF64 option of RFC 8781 is decoded in the
+  codec and kept in the state machine beside the resolver list: one entry per
+  prefix, each with its own lifetime, which is the Scaled Lifetime times eight, §4.1. A lifetime
+  of zero withdraws the prefix at once, an entry outlives a router whose
+  lifetime went to zero and dies at its own expiry with no further
+  advertisement, and a refresh that shortens a lifetime is taken as sent
+  (`TestAPREF64PrefixLivesForItsScaledLifetimeTimesEight`,
+  `TestAPREF64PrefixOutlivesARouterWhoseLifetimeWentToZero`,
+  `TestARefreshThatShortensTheLifetimeIsHonoured`). The list is read from
+  `Router()` on the manager, sorted by address and then length, and a journaled
+  advertisement replays into the same list
+  (`TestTheManagersRouterViewCarriesThePREF64AndItsLifetimeEndsOnTheManagersClock`,
+  `TestAReplayedAdvertisementKeepsTheRouterItCameFrom`). The frame is synthetic:
+  dnsmasq sends no such option, so no real server sits behind this entry and
+  the observers are the state machine and manager tests over bytes built from
+  the RFC's diagram.
 - **An address formed from an advertised prefix.** RFC 4862 §5.5.3 d forms it
   by "combining the advertised prefix with an interface identifier of the
   link", and RFC 4291 Appendix A's modified EUI-64 is the identifier. The
