@@ -124,6 +124,13 @@ type Lease struct {
 	// aggregate, for a caller with no per-address handling.
 	Addrs []Addr6
 
+	// TempAddrs is the temporary addresses of the IA_TA beside Addrs, never
+	// inside it, with their own deadlines (claymore666/docker-net-dhcp#927).
+	// It is empty unless Params6.Temporary was set and the server granted one.
+	// The tag is the one a record writes, so a reader built before the field
+	// existed skips it.
+	TempAddrs []Addr6 `json:"temp_addrs,omitempty"`
+
 	// SLAAC says the addresses were FORMED from a Router Advertisement (RFC
 	// 4862 §5.5.3) rather than granted by a server.
 	//
@@ -493,22 +500,8 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	}
 	out.SLAAC = l.SLAAC
 	out.FQDN, out.HasFQDN = l.FQDN, l.HasFQDN
-	for _, a := range l.Addrs {
-		bits := a.PrefixLen
-		if bits <= 0 {
-			// A granted address has no prefix length of its own, so it is a
-			// host address. Only RFC 4862 §5.5.3's option carries one.
-			bits = a.Addr.BitLen()
-		}
-		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
-		if !a.Preferred.IsInfinite() {
-			e.Preferred = b.at(l.Start.Add(a.Preferred))
-		}
-		if !a.Valid.IsInfinite() {
-			e.Valid = b.at(l.Start.Add(a.Valid))
-		}
-		out.Addrs = append(out.Addrs, e)
-	}
+	out.Addrs = outwardAddrs(l.Addrs, l.Start, b)
+	out.TempAddrs = outwardAddrs(l.TempAddrs, l.Start, b)
 	// Domain is option 15's single name and has no DHCPv6 counterpart: RFC
 	// 3646 defines a search LIST (option 24) and no single-name option, so
 	// filling Domain from Search[0] would invent a fact the server did not
@@ -526,6 +519,29 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	}
 	if t, ok := l.PreferredUntil(); ok {
 		out.Preferred = b.at(t)
+	}
+	return out
+}
+
+// outwardAddrs converts one slice of ring 1's addresses, counted from start,
+// into the outward ones (claymore666/docker-net-dhcp#927).
+func outwardAddrs(in []proto.Addr6, start proto.Instant, b clockBridge) []Addr6 {
+	var out []Addr6
+	for _, a := range in {
+		bits := a.PrefixLen
+		if bits <= 0 {
+			// A granted address has no prefix length of its own, so it is a
+			// host address. Only RFC 4862 §5.5.3's option carries one.
+			bits = a.Addr.BitLen()
+		}
+		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
+		if !a.Preferred.IsInfinite() {
+			e.Preferred = b.at(start.Add(a.Preferred))
+		}
+		if !a.Valid.IsInfinite() {
+			e.Valid = b.at(start.Add(a.Valid))
+		}
+		out = append(out, e)
 	}
 	return out
 }
