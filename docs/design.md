@@ -494,6 +494,65 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   A Reconfigure discarded before the state
   machine — a datagram that would not decode, or one the transport dropped as
   addressed to another node — is in neither counter.
+- **The counters of the v1.2.0 features.** Each feature kept its counters in
+  its own `proto` file, and each reaches `lease.Stats`, the record's wire half
+  and a `Manager` accessor the way the Reconfigure counters do: read once after
+  the Step, under the manager's lock, from the machine of the manager's own
+  family, with the other family's accessor returning the zero value
+  (`TestAV4ManagerReportsNoV6Counters`, `TestAV6ManagerReportsNoV4Counters`).
+  All of them are WIRED and none is folded: no event in a record's own stream
+  produces one (`TestEveryNewCounterIsWiredAndNoneIsFolded`), and a record
+  that outlives a manager adds each manager's counts
+  (`TestEveryNewCounterAccumulatesAcrossManagerInstances`). A record written
+  before them decodes with all of them zero
+  (`TestARecordWrittenByV110ReadsBackWithTheNewCountersZero`).
+  - **IPv6-only preferred** (RFC 8925, `IPv6OnlyWaited`, `IPv6OnlyIgnored`,
+    `IPv6OnlyMalformed`, `Manager.IPv6OnlyCounters`): an OFFER with the
+    IPv6-only-preferred option pauses DHCPv4 and an ACK with it keeps the lease
+    (`TestAnOfferWithOption108ReachesStatsAsAWait`,
+    `TestAnAckWithOption108ReachesStatsAsIgnored`,
+    `TestAMalformedOption108ReachesStatsAndTheLeaseStillForms`).
+  - **Rapid commit** (RFC 4039 and RFC 9915's Solicit rules,
+    `RapidCommitsAccepted`, `RapidCommitsRefused`,
+    `Manager.RapidCommitCounters`, `Manager.RapidCommit6Counters`): one pair
+    in `Stats` serves both families, because a manager runs one, and the two
+    accessors stay apart
+    (`TestARapidCommitAckReachesStatsAsAccepted`,
+    `TestARefusedRapidCommitAckReachesStatsAndStartsNoLease`,
+    `TestADhcpv6RapidCommitReplyReachesStatsAsAccepted`,
+    `TestAMalformedDhcpv6RapidCommitReplyReachesStatsAsRefused`; the v6 count
+    is also read at the Step that raised it, before any later Step can hide a
+    mirror taken one Step late,
+    `TestADhcpv6RapidCommitCountIsCurrentAtTheStepThatRaisedIt`,
+    `TestARefusedDhcpv6RapidCommitCountIsCurrentAtTheStepThatRaisedIt`).
+  - **FORCERENEW** (RFC 3203 and RFC 6704, `ForcerenewsRenewed`,
+    `ForcerenewsAlreadyRenewing`, `ForcerenewsAckRefused`,
+    `ForcerenewsRefused`, `Manager.ForcerenewCounters`): `Stats` carries the
+    total of the refusals and the accessor the rule that refused each, and the
+    returned array is the caller's copy
+    (`TestAForcerenewReachesStatsAsRenewedThenAsAlreadyRenewing`,
+    `TestARefusedForcerenewReachesStatsWithTheRuleThatRefusedIt`,
+    `TestAForcerenewAccessorHandsOutACopy`,
+    `TestAnAckThatLacksTheNonceReachesStatsAsAckRefused`).
+  - **Temporary addresses** (RFC 9915's rules for a Reply,
+    `TemporaryAddressesGranted`, `TemporaryAddressesRefused`,
+    `TemporaryAddressesAbsent`, `TemporaryAddressesConflicted`,
+    `Manager.TemporaryCounters`): an Advertise and a Reply each count Absent
+    or Refused, so one exchange can count either twice
+    (`TestAReplyWithNoIATAReachesStatsAsAbsent`,
+    `TestAnIATAWithNoAddressReachesStatsAsRefused`,
+    `TestAnIATAWithAnAddressReachesStatsAsGranted`,
+    `TestADuplicateTemporaryAddressReachesStatsAsConflicted`; the count is also
+    read at the Step that raised it,
+    `TestATemporaryAddressCountIsCurrentAtTheStepThatRaisedIt`).
+  - **Delegated prefixes** (RFC 9915's rules for a Reply, `PrefixesGranted`,
+    `PrefixesRefused`, `PrefixesAbsent`, `PrefixesChanged`,
+    `Manager.PrefixCounters`): only a Reply grants, a Renew's or Rebind's
+    Reply that names other prefixes counts Changed
+    (`TestADelegatedPrefixReachesStatsAsGranted`,
+    `TestAnAnswerWithNoIAPDReachesStatsAsAbsent`,
+    `TestAnIAPDWithNoPrefixReachesStatsAsRefused`,
+    `TestARenewalThatChangesThePrefixReachesStatsAsChanged`).
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

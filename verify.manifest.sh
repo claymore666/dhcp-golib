@@ -962,7 +962,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster runs, 1195 on the base and 1220 here. proto/
 # machine6_reconfigure_persist_test.go 16 and lease/reconfigure_record_test.go
 # 9; no netns test among them.
-MIN_DECLARED_TESTS=1220
+#
+# EVERY CYCLE COUNTER REACHES STATS AND THE RECORD, claymore666/docker-net-dhcp#1027:
+# twenty-nine added, none removed, MEASURED as testroster runs, 1220 before and
+# 1249 here. lease/counters_fold4_test.go 10, lease/counters_fold6_test.go 14
+# and lease/counters_record_test.go 5; no netns test among them.
+MIN_DECLARED_TESTS=1249
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
