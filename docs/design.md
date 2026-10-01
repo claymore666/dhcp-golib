@@ -172,7 +172,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   the lease: dnsmasq's log holds a second DHCPREQUEST and DHCPACK with the
   DHCPDISCOVER count unmoved.
   The frame is synthetic, since dnsmasq sends none. A frame addressed to
-  the broadcast address, one with a flipped digest and one that repeats a spent
+  the broadcast address, one for another host's address that reached the link as
+  a broadcast, one with a flipped digest and one that repeats a spent
   replay value each start nothing, read as an absence window on a second
   socket and as a refusal in the journal, and the same bytes sent again after
   they were obeyed are refused too

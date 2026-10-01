@@ -85,8 +85,9 @@ rows above. A DHCPv4 client lists the Forcerenew Nonce option (RFC 6704) in its
 Discover and every Request and keeps the nonce its Ack gives. A DHCPFORCERENEW
 is acted on only when it was sent to the leased address, names this client, and
 carries an HMAC-MD5 over its own octets under that nonce with a replay value
-above the last one used; it then renews like T1, and anything else is discarded
-and counted by reason. An Ack that follows an Offer which listed the option and
+above the last one used; a client that holds a lease then renews like T1 (one
+already renewing or rebinding only raises the replay floor), and anything else is
+discarded and counted by reason. An Ack that follows an Offer which listed the option and
 carries no valid nonce is discarded, and the client starts over. A client
 restarted from its record holds no nonce and refuses every DHCPFORCERENEW until
 its next Ack gives one.
