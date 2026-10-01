@@ -132,6 +132,25 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestNewValidatesTheUserClassAgainstRFC3004Section4`,
   `TestUserClassIsOnTheDiscoverAndOnEveryRequestByteForByte`). A Decline and a
   Release carry none (`TestADeclineAndAReleaseCarryNoUserClass`).
+- **A two-message lease from a real server, and the four-message one when the
+  server does not allow it.** A client with `RapidCommit` sends the Rapid Commit option in its
+  Discover and in no other message. dnsmasq with `--dhcp-rapid-commit` answers
+  with an Ack, and its log holds DHCPDISCOVER and DHCPACK with no DHCPOFFER and
+  no DHCPREQUEST, beside the lease the client reports
+  (`TestRapidCommitTakesTheTwoMessageLeaseFromDnsmasq`). Without the flag the same
+  client gets Discover, Offer, Request, Ack
+  (`TestADnsmasqWithoutRapidCommitAnswersAClientThatAsksInFourMessages`), a client
+  that does not ask gets four messages from the flagged server
+  (`TestAClientThatDoesNotAskGetsTheFourMessageExchangeFromARapidCommitServer`), and
+  the renewal after the rapid lease is a Request and an Ack with the
+  DHCPDISCOVER count unmoved and no Rapid Commit option on any Request the client sent
+  (`TestARenewalAfterARapidLeaseCarriesNoOption80`). An Ack with the option is
+  refused in INIT, from a server the client's policy excludes, with no server
+  identifier, with a lease time of zero, and from a server other than the one
+  an Offer is being requested from
+  (`TestARapidAckIsRefusedWhereItAnswersNothingTheClientSent`,
+  `TestARapidAckFromADeniedOrUnlistedServerIsRefused`,
+  `TestARapidAckInRequestingIsTakenOnlyFromTheServerAndAddressAsked`).
 - **A two-message DHCPv6 lease from a real server, and the four-message one
   from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
   Solicit and in no other message. dnsmasq answers a Solicit that carries it with
