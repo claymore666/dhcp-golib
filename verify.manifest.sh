@@ -910,7 +910,13 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster runs, 997 on the base and 1018 here. proto/router6_pref64_test.go
 # 19, lease/router6_pref64_test.go 2. The extended journal round-trip test adds
 # no function. None is a netns test.
-MIN_DECLARED_TESTS=1018
+#
+# DHCPv6 RAPID COMMIT IN THE CLIENT, claymore666/docker-net-dhcp#926: seventeen
+# added, none removed, MEASURED as testroster runs, 1018 on the base and 1035
+# here. proto/rapidcommit6_test.go 14, runtime/rapidcommit6_dnsmasq_linux_test.go
+# 3. The three runtime ones are netns tests: testroster -netns reads 51 on the
+# base, 54 here.
+MIN_DECLARED_TESTS=1035
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
