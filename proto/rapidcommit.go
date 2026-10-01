@@ -62,7 +62,7 @@ func (m *Machine) takeRapidAck(now Instant, rnd uint64, msg *wire.Message, out *
 		m.refuseRapid(out, StateSelecting, "no usable yiaddr and lease time")
 		return
 	}
-	if lse.LeaseTime <= 0 {
+	if lse.LeaseTime <= 0 && !lse.LeaseTime.IsInfinite() {
 		m.refuseRapid(out, StateSelecting, "lease time is 0")
 		return
 	}

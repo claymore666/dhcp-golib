@@ -275,6 +275,31 @@ func TestARapidAckTakesTheSamePathAnOrdinaryAckTakes(t *testing.T) {
 	}
 }
 
+// TestARapidAckWithAnInfiniteLeaseTimeIsTheLeaseAnOrdinaryAckGives: the
+// infinite value (RFC 2132 section 9.2) is not a lease of zero, so the rapid
+// ACK reaches the state and holds the lease the OFFER, REQUEST, ACK path does
+// (claymore666/docker-net-dhcp#1031).
+func TestARapidAckWithAnInfiniteLeaseTimeIsTheLeaseAnOrdinaryAckGives(t *testing.T) {
+	om, disc := rcSelecting(t, testParams())
+	_, acts := om.Step(at(11), 2, received(t, offerFor(disc, rcAddr, rcServer)))
+	req := mustSend(t, acts, wire.MsgRequest)
+	om.Step(at(12), 3, received(t, ackFor(req, rcAddr, rcServer, 0xFFFFFFFF)))
+
+	rm, rdisc := rcSelecting(t, rcParams())
+	rm.Step(at(12), 3, received(t, rcAck(rdisc, rcAddr, rcServer, 0xFFFFFFFF)))
+	if rm.State() != om.State() || om.State() != StateBound {
+		t.Fatalf("a rapid ACK reached %s, an ordinary one %s, want both BOUND", rm.State(), om.State())
+	}
+	rl, rheld := rm.Lease()
+	ol, oheld := om.Lease()
+	if !rheld || !oheld || !rl.LeaseTime.IsInfinite() || !ol.LeaseTime.IsInfinite() {
+		t.Errorf("held %v/%v, lease times %v/%v, want both held and infinite", rheld, oheld, rl.LeaseTime, ol.LeaseTime)
+	}
+	if c := rm.RapidCommitCounters(); c.Accepted != 1 || c.Refused != 0 {
+		t.Errorf("counters %+v, want Accepted 1 Refused 0", c)
+	}
+}
+
 // TestARapidAckIsRefusedWhereItAnswersNothingTheClientSent: no lease, no
 // message, the DISCOVER's retransmission untouched, and the refusal counted
 // and journalled. A valid rapid ACK then takes the lease, so the refusal left
