@@ -936,7 +936,16 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and 1108 here. proto/temporary6_test.go 19, lease/temporary_test.go 4,
 # runtime/temporary6_dnsmasq_linux_test.go 3. The three runtime ones are netns
 # tests: testroster -netns reads 60 on the base, 63 here.
-MIN_DECLARED_TESTS=1108
+#
+# DHCPFORCERENEW WITH NONCE AUTHENTICATION, claymore666/docker-net-dhcp#1119:
+# thirty-two added, none removed, MEASURED as testroster runs, 1108 on the base
+# (dev after the IPv6 temporary addresses block above) and 1140 here.
+# proto/forcerenew_test.go 23, lease/forcerenew_record_test.go 5,
+# lease/forcerenew_dispatch_test.go 1, runtime/forcerenew_dnsmasq_linux_test.go
+# 1, runtime/forcerenew_dst_test.go 1, runtime/forcerenew_dst_linux_test.go 1.
+# The two linux runtime ones are netns tests: testroster -netns reads 63 on the
+# base, 65 here.
+MIN_DECLARED_TESTS=1140
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

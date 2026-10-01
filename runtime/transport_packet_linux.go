@@ -466,7 +466,7 @@ func (t *PacketTransport) deliver(frame []byte, hw net.HardwareAddr) {
 	copy(p, dg.Payload)
 
 	select {
-	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src}:
+	case t.inbound <- lease.Inbound{Payload: p, From: dg.Src, To: dg.Dst}:
 	default:
 		// The consumer is behind. Blocking here would stall the reader and
 		// lose packets in the kernel instead, where nothing can count them.

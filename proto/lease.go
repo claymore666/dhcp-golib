@@ -68,6 +68,15 @@ type Lease struct {
 	// an option this library forgot to model is then recoverable by the
 	// caller rather than gone.
 	Options wire.Options
+
+	// ForcerenewNonce is the 128-bit key an ACK's option 90 gave for
+	// authenticating a DHCPFORCERENEW, and ForcerenewReplay is that option's
+	// replay value, the floor a FORCERENEW must exceed (RFC 6704 section 3.1.3,
+	// RFC 3118 section 2; claymore666/docker-net-dhcp#1119). Nil and zero when
+	// no ACK of this lease carried one. It is also in Options, because Options
+	// keeps the whole ACK; these are what the machine and the record read.
+	ForcerenewNonce  []byte
+	ForcerenewReplay uint64
 }
 
 // Expire is the Instant the lease runs out, and whether it has one at all.
@@ -320,6 +329,10 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 	}
 	if t2, ok := m.Uint32(wire.OptRebindingTime); ok {
 		l.T2 = SecondsToDuration(t2)
+	}
+	if a, ok := validForcerenewNonce(m); ok {
+		l.ForcerenewNonce = append([]byte(nil), a.Value[:]...)
+		l.ForcerenewReplay = a.Replay
 	}
 	note = joinNotes(note, l.takeRoutes(m.Options))
 	note = joinNotes(note, l.takeDomainSearch(m.Options))
