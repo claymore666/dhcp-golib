@@ -71,6 +71,10 @@ func (m *Machine) takeRapidAck(now Instant, rnd uint64, msg *wire.Message, out *
 	if note != "" {
 		out.journal(m, note)
 	}
+	// A Rapid Commit ACK has committed the binding, and RFC 8925 section 3.2
+	// has a client in any state but an OFFER's or INIT-REBOOT's keep its
+	// address (claymore666/docker-net-dhcp#1027).
+	m.noteV6OnlyKept(msg, StateSelecting, out)
 	m.afterAck(now, rnd, lse, out)
 }
 

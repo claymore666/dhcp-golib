@@ -67,6 +67,10 @@ type Machine struct {
 	// RapidCommitCounters.
 	rapidCounts RapidCommitCounters
 
+	// v6OnlyCounts is what this machine did with option 108. See
+	// IPv6OnlyCounters (claymore666/docker-net-dhcp#1027).
+	v6OnlyCounts IPv6OnlyCounters
+
 	// lease is the lease held in BOUND.
 	lease   Lease
 	haveLse bool
@@ -358,6 +362,13 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 		t, _ := msg.Type()
 		switch t {
 		case wire.MsgOffer:
+			// Before the yiaddr check on purpose: RFC 8925 section 3.3 has an
+			// IPv6-only server send 0.0.0.0 as the offered address
+			// (claymore666/docker-net-dhcp#1027).
+			if secs, ok := m.v6OnlyValue(msg, out); ok {
+				m.waitForIPv6(now, out, StateSelecting, secs)
+				return
+			}
 			sid, hasSID := msg.Addr4(wire.OptServerID)
 			if !msg.YIAddr.Is4() || msg.YIAddr.IsUnspecified() || !hasSID || sid.IsUnspecified() {
 				// RFC 2131 section 4.4.1 has the client extract the server
@@ -429,6 +440,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 			if m.refusesRapidInRequesting(msg, out) {
 				return
 			}
+			m.noteV6OnlyKept(msg, StateRequesting, out)
 			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
 			if !ok {
 				// An ACK with no yiaddr or no lease time cannot be applied.
@@ -507,6 +519,12 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 		t, _ := msg.Type()
 		switch t {
 		case wire.MsgAck:
+			// RFC 8925 section 3.2 for INIT-REBOOT: the same wait, whatever
+			// address the ACK carries (claymore666/docker-net-dhcp#1027).
+			if secs, ok := m.v6OnlyValue(msg, out); ok {
+				m.waitForIPv6(now, out, StateRebooting, secs)
+				return
+			}
 			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
 			if !ok {
 				// The retransmission timer is still armed, so the machine
@@ -646,6 +664,7 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 		// T1, in RENEWING. Anything arriving here is unsolicited — including
 		// a DHCPACK for the transaction that produced this lease, which the
 		// server may retransmit and which must not restart the timers.
+		m.noteV6OnlyKept(ev.Msg, StateBound, out)
 		out.journal(m, "message in BOUND with no transaction open: discarded")
 	case EvActionFailed:
 		m.noteActionFailed(now, rnd, ev, out)
@@ -688,6 +707,7 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 		t, _ := msg.Type()
 		switch t {
 		case wire.MsgAck:
+			m.noteV6OnlyKept(msg, m.state, out)
 			lse, note, ok := leaseFromAck(msg, m.requestSentAt)
 			if !ok {
 				// The retransmission timer is still armed and so are T2 and
@@ -1587,9 +1607,14 @@ func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
 		msg.Options[wire.OptUserClass] = append([]byte(nil), m.params.userClass...)
 	}
 	if pl := m.params.parameterList(); len(pl) > 0 {
-		b := make([]byte, 0, len(pl))
+		b := make([]byte, 0, len(pl)+1)
 		for _, c := range pl {
 			b = append(b, byte(c))
+		}
+		if m.params.IPv6OnlyPreferred && !listsCode(b, wire.OptIPv6OnlyPreferred) {
+			// RFC 8925 section 3.2: only a client that can run IPv6-only
+			// lists 108 (claymore666/docker-net-dhcp#1027).
+			b = append(b, byte(wire.OptIPv6OnlyPreferred))
 		}
 		msg.Options[wire.OptParameterList] = b
 	}
