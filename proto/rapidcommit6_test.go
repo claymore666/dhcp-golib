@@ -555,8 +555,48 @@ func TestARapid6NotOnLinkIsNotAnsweredWithTheSameHint(t *testing.T) {
 	}
 	rc6Counters(t, m, 0, 1)
 	_, acts = m.Step(at(3), capXIDRequest, TimerFired(Timer6Delay))
-	if hinted(mustSendV6(t, acts, wire.MsgSolicit)) {
+	second := mustSendV6(t, acts, wire.MsgSolicit)
+	if hinted(second) {
 		t.Error("the restarted Solicit hints the address the server just said is not on this link")
+	}
+	// A second NotOnLink, to the Solicit that carried no hint, does not make
+	// the machine forget the first: the third Solicit still carries none.
+	m.Step(at(4), 0, receivedV6(t, wire.MsgReply, second.XID,
+		optClientID(capDUID), optServerID(testServerDUID), wire.RapidCommitOption(), optStatus(wire.StatusNotOnLink)))
+	_, acts = m.Step(at(5), capXIDSolicit, TimerFired(Timer6Delay))
+	if hinted(mustSendV6(t, acts, wire.MsgSolicit)) {
+		t.Error("a second NotOnLink made the machine hint the refused address again")
+	}
+}
+
+// TestRapid6CountersCountOnlyReplies: the counter is about Replies carrying
+// option 14. An Advertise with the option, discarded or late, adds nothing, and
+// a Reply with the option twice is still a Reply with option 14
+// (claymore666/docker-net-dhcp#926).
+func TestRapid6CountersCountOnlyReplies(t *testing.T) {
+	good := []wire.OptionV6{
+		optClientID(capDUID), optServerID(testServerDUID),
+		optIANA(t, capIAID, 150, 240, []iaAddrSpec{{rc6Addr, 300, 300}}),
+		optPreference(255), wire.RapidCommitOption(),
+	}
+	m, sol := solicit6(t, rc6Params(true))
+	m.Step(at(2), 0, receivedV6(t, wire.MsgAdvertise, sol.XID+1, good...))
+	rc6Counters(t, m, 0, 0)
+	twice := append(append([]wire.OptionV6{}, good...), wire.RapidCommitOption())
+	m.Step(at(3), 0, receivedV6(t, wire.MsgReply, sol.XID+1, twice...))
+	rc6Counters(t, m, 0, 1)
+
+	m, sol = solicit6(t, rc6Params(true))
+	m.Step(at(2), 0, rc6Reply14(t, sol.XID))
+	for _, state := range []State6{State6DAD, State6Bound} {
+		if m.State() != state {
+			t.Fatalf("state %s, want %s", m.State(), state)
+		}
+		m.Step(at(3), 0, receivedV6(t, wire.MsgAdvertise, sol.XID, good...))
+		rc6Counters(t, m, 1, 0)
+		if state == State6DAD {
+			m.Step(at(4), 0, DADResult(addr6(rc6Addr), false))
+		}
 	}
 }
 
