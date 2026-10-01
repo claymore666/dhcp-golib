@@ -112,6 +112,14 @@ const (
 	minSearchFloor  = 3
 )
 
+// maxRouterPref64 is the PREF64 list's cap (claymore666/docker-net-dhcp#1028).
+// RFC 8781 states no floor; §5 says the option "may appear more than once in an
+// RA (e.g., when gracefully renumbering the network from one NAT64 prefix to
+// another)", so two is the least that can hold a renumbering and four leaves
+// two spare. A full list evicts with evictShortest like the resolver list, the
+// other link-level list, and counts it in routerTable.evicted.
+const maxRouterPref64 = 4
+
 // minLinkMTU is RFC 8200 §5's minimum IPv6 link MTU, which is the bound RFC
 // 4861 §6.3.4 names when it says what a host may copy out of an MTU option:
 // "If the MTU option is present, hosts SHOULD copy the option's value into
@@ -263,6 +271,16 @@ type searchEntry struct {
 	seq  int
 }
 
+// pref64Entry is one NAT64 prefix with its own lifetime. It is keyed on the
+// masked prefix alone, length included: RFC 8781 §5.1 speaks of "multiple RAs
+// with different PREF64 prefixes on a given interface", so the list belongs to
+// the link and no router is recorded (claymore666/docker-net-dhcp#1028).
+type pref64Entry struct {
+	prefix netip.Prefix
+	life   timedEntry
+	seq    int
+}
+
 type routeEntry struct {
 	prefix netip.Prefix
 	via    netip.Addr
@@ -277,6 +295,7 @@ type routerTable struct {
 	dns     []dnsEntry
 	search  []searchEntry
 	routes  []routeEntry
+	pref64  []pref64Entry
 
 	// mtu is single-valued, so §6.3.4's "the most recently received
 	// information is considered authoritative" decides it and there is no
@@ -347,6 +366,9 @@ func (t *routerTable) observe(now Instant, ra *wire.RouterAdvert) bool {
 	}
 	for _, rt := range ra.Routes {
 		t.observeRoute(now, ra.Router, rt)
+	}
+	for _, p := range ra.PREF64 {
+		t.observePREF64(now, p)
 	}
 	t.prune(now)
 	return true
@@ -518,6 +540,43 @@ func (t *routerTable) observeRoute(now Instant, via netip.Addr, ri wire.RouteInf
 	})
 }
 
+// observePREF64 applies one PREF64 option, RFC 8781 §4.1: lifetime 0 withdraws
+// the prefix and any other lifetime replaces the entry's own deadline
+// (claymore666/docker-net-dhcp#1028).
+func (t *routerTable) observePREF64(now Instant, p wire.PREF64) {
+	// masked here as well as in the decoder: the table is also handed structs
+	// it did not build, and two spellings of one prefix would be two entries
+	// that a withdrawal of one cannot find (claymore666/docker-net-dhcp#1028).
+	if !p.Prefix.IsValid() {
+		t.optIgnored++
+		return
+	}
+	pfx := p.Prefix.Masked()
+	idx := -1
+	for i := range t.pref64 {
+		if t.pref64[i].prefix == pfx {
+			idx = i
+			break
+		}
+	}
+	if p.Lifetime == 0 {
+		if idx >= 0 {
+			t.pref64 = append(t.pref64[:idx], t.pref64[idx+1:]...)
+		}
+		return
+	}
+	if idx >= 0 {
+		t.pref64[idx].life = entryUntil(now, p.Lifetime)
+		return
+	}
+	if len(t.pref64) >= maxRouterPref64 {
+		t.pref64 = evictShortest(t.pref64, func(e pref64Entry) (timedEntry, int) { return e.life, e.seq })
+		t.evicted++
+	}
+	t.seq++
+	t.pref64 = append(t.pref64, pref64Entry{prefix: pfx, life: entryUntil(now, p.Lifetime), seq: t.seq})
+}
+
 // prune drops what has expired as of now.
 //
 // A ROUTER ENTRY OUTLIVES ITS DEFAULT-ROUTER STATUS and is removed only when it
@@ -552,6 +611,13 @@ func (t *routerTable) prune(now Instant) {
 		}
 	}
 	t.routes = routes
+	pref64 := t.pref64[:0]
+	for _, e := range t.pref64 {
+		if e.life.live(now) {
+			pref64 = append(pref64, e)
+		}
+	}
+	t.pref64 = pref64
 	routers := t.routers[:0]
 	for _, e := range t.routers {
 		if e.isDeflt || t.holdsSomethingOf(e.addr) {
@@ -636,4 +702,20 @@ func (t *routerTable) fill(now Instant, out *RouterObservation) {
 	for _, e := range live {
 		out.Routes = append(out.Routes, wire.Route{Dest: e.prefix, Router: e.via})
 	}
+	// sorted by address, then length, and not by arrival: RFC 8781 §5.1 gives
+	// the list no order (it defers to RFC 7050 §3, which takes the set), so the
+	// order is this library's, and one an arrival sequence cannot change is the
+	// one a replayed journal shares with the live run
+	// (claymore666/docker-net-dhcp#1028). The slice is built fresh so a caller
+	// that edits it edits nothing the table holds.
+	out.PREF64 = nil
+	for _, e := range t.pref64 {
+		out.PREF64 = append(out.PREF64, e.prefix)
+	}
+	sort.Slice(out.PREF64, func(i, j int) bool {
+		if c := out.PREF64[i].Addr().Compare(out.PREF64[j].Addr()); c != 0 {
+			return c < 0
+		}
+		return out.PREF64[i].Bits() < out.PREF64[j].Bits()
+	})
 }

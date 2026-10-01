@@ -27,10 +27,11 @@ import (
 // Params6 is RFC 9915 §7.6's Table 1, "Transmission and Retransmission
 // Parameters", as a value.
 //
-// Two of the twenty-five are absent. REC_TIMEOUT and REC_MAX_RC belong to
-// Reconfigure, which is v2.2's (D25) and which this client refuses at the codec
-// (wire.ErrV6NotForClient); HOP_COUNT_LIMIT belongs to a relay agent. Naming
-// them here would be an enumeration of parameters nothing reads.
+// Two of the twenty-five are absent. REC_TIMEOUT and REC_MAX_RC pace the
+// server's retransmission of a Reconfigure, which this client receives and
+// obeys under §16.11 and has served since v1.0.0 (README.md, Reconfigure row);
+// HOP_COUNT_LIMIT belongs to a relay agent. Naming them here would be an
+// enumeration of parameters nothing reads.
 type Params6 struct {
 	// Solicit, §18.2.1.
 	SolMaxDelay Duration
@@ -206,6 +207,28 @@ type Params6 struct {
 	// goes unanswered ends at T2 and then at the valid lifetime — and a caller
 	// that must have the MUST watches its own address and stops the client.
 	AcceptReconfigure bool
+
+	// RapidCommit puts option 14 in the Solicit, asking a server that allows
+	// it for a two-message lease (RFC 8415 sections 18.2.1 and 21.14); false
+	// sends nothing. Option 14 is never on another message
+	// (claymore666/docker-net-dhcp#926).
+	RapidCommit bool
+
+	// Temporary asks for temporary addresses beside the stable one: an IA_TA
+	// with the same IAID, in the Solicit and the Request and in no other
+	// message (RFC 8415 sections 13.2, 18.2.2 and 21.5). false sends nothing.
+	// The addresses come back in Lease6.TempAddrs and are never renewed
+	// (claymore666/docker-net-dhcp#927).
+	Temporary bool
+
+	// PrefixHint asks for a delegated prefix: 0 sends no IA_PD and changes
+	// nothing, 1 to 128 puts an IA_PD in the Solicit and the Request carrying
+	// one IA Prefix of that length with zero lifetimes (RFC 8415 sections
+	// 18.2.1 and 21.22). The IA_PD takes the IA_NA's IAID. The server's answer
+	// comes back in Lease6.Prefixes with the length the server chose; the
+	// library reports it and installs nothing (RFC 3633 section 12.1;
+	// claymore666/docker-net-dhcp#214).
+	PrefixHint int
 
 	// MaxSendFailures is how many consecutive ActSendV6 failures end the
 	// acquisition with ReasonTransport. It is Params.MaxSendFailures's

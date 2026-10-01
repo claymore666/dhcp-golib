@@ -59,6 +59,23 @@ type Lease6 struct {
 	// Address or IA Prefix option."
 	Addrs []Addr6
 
+	// TempAddrs is the addresses of the IA_TA, in the order they appeared,
+	// beside Addrs and never inside it: Addr, Prefix, the deadlines, the
+	// Renew, the Release and the Decline all read Addrs alone. The same
+	// lifetime rules apply, and they are never renewed (RFC 8415 section 13.2:
+	// "it is NOT RECOMMENDED for a client to renew temporary addresses"), so a
+	// renewed lease carries them forward with their original expiry and drops
+	// the ones that ran out (claymore666/docker-net-dhcp#927).
+	TempAddrs []Addr6
+
+	// Prefixes is the delegated prefixes of the IA_PD, in the order they
+	// appeared, beside Addrs and TempAddrs and never inside either: a prefix is
+	// not an address, so Addr, Prefix, the duplicate address detection, the
+	// outward address list and the longest valid lifetime all read Addrs alone.
+	// The library reports the prefix and installs nothing (RFC 3633 section
+	// 12.1; claymore666/docker-net-dhcp#214).
+	Prefixes []Prefix6
+
 	// ServerDUID is the Server Identifier option's contents, as sent. It is
 	// the v6 counterpart of Lease.ServerID and the reason lease.Lease carries
 	// both: a v6 server is named by opaque bytes, not by an address.
@@ -128,6 +145,16 @@ type Lease6 struct {
 	// and Equal compares it so a resumed record cannot change family in
 	// silence.
 	SLAAC bool
+
+	// ReconfigureKey is the RKAP key this lease's server sent (RFC 9915
+	// §20.4.3), ReconfigureReplay the last replay detection value accepted
+	// from that server and ReconfigureReplaySeen whether any was (§20.3: the
+	// first value is recorded without a check, so "none yet" and "zero" differ).
+	// Equal ignores all three, as Lease ignores its nonce
+	// (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte
+	ReconfigureReplay     uint64
+	ReconfigureReplaySeen bool
 }
 
 // Addr is the first address of the IA, which is the one a single-address
@@ -346,6 +373,24 @@ func (l Lease6) Equal(o Lease6) bool {
 			return false
 		}
 	}
+	// The temporary addresses compare as the stable ones do, lifetimes
+	// included, but counted from the clock and not from Start: a renewal
+	// carries them forward with the expiry they were granted, which is no
+	// change (claymore666/docker-net-dhcp#927).
+	if !tempEqual(l, o) {
+		return false
+	}
+	// A delegated prefix compares like an address, lifetimes included, so a
+	// Renew that moves, shortens or drops it is ActLeaseChanged
+	// (claymore666/docker-net-dhcp#214).
+	if len(l.Prefixes) != len(o.Prefixes) {
+		return false
+	}
+	for i := range l.Prefixes {
+		if l.Prefixes[i] != o.Prefixes[i] {
+			return false
+		}
+	}
 	if !sameDUID(l.ServerDUID, o.ServerDUID) {
 		return false
 	}
@@ -367,6 +412,14 @@ func (l Lease6) String() string {
 	for _, a := range l.Addrs {
 		b.WriteString(" ")
 		b.WriteString(a.String())
+	}
+	for _, a := range l.TempAddrs {
+		b.WriteString(" temp ")
+		b.WriteString(a.String())
+	}
+	for _, p := range l.Prefixes {
+		b.WriteString(" pd ")
+		b.WriteString(p.String())
 	}
 	b.WriteString(fmt.Sprintf(" t1=%s t2=%s", l.T1, l.T2))
 	if len(l.DNS) > 0 {
@@ -500,39 +553,50 @@ func readIA(o wire.OptionsV6, iaid uint32) (iaResult, []string) {
 		default:
 			out.status = wire.StatusSuccess
 		}
-		addrs, err := ia.Options.Addrs()
-		if err != nil {
-			notes = append(notes, "IA Address option: "+err.Error())
-			continue
-		}
-		for _, a := range addrs {
-			// §21.6: "The client MUST discard any addresses for which the
-			// preferred lifetime is greater than the valid lifetime."
-			// wire.IAAddr.Valid is the predicate; the discard is here,
-			// because ring 0 holds no policy and an address dropped by the
-			// decoder could not be counted or journalled.
-			if !a.Valid() {
-				notes = append(notes, fmt.Sprintf("IA Address %s has preferred %d greater than valid %d: discarded (§21.6)",
-					a.Addr, a.PreferredLifetime, a.ValidLifetime))
-				continue
-			}
-			if a.ValidLifetime == 0 {
-				notes = append(notes, fmt.Sprintf("IA Address %s has a valid lifetime of 0: discarded (§18.2.10.1)", a.Addr))
-				continue
-			}
-			if !a.Addr.Is6() || a.Addr.Is4In6() || a.Addr.IsUnspecified() {
-				notes = append(notes, fmt.Sprintf("IA Address %s is not a usable IPv6 address: discarded", a.Addr))
-				continue
-			}
-			out.addrs = append(out.addrs, Addr6{
-				Addr:      a.Addr,
-				Preferred: SecondsToDuration(a.PreferredLifetime),
-				Valid:     SecondsToDuration(a.ValidLifetime),
-			})
-		}
+		addrs, ans := iaAddrs(ia.Options, "IA Address option")
+		notes = append(notes, ans...)
+		out.addrs = append(out.addrs, addrs...)
 	}
 	if !out.found && len(ias) > 0 {
 		notes = append(notes, fmt.Sprintf("no IA_NA with our IAID %d in the message", iaid))
+	}
+	return out, notes
+}
+
+// iaAddrs reads the IA Address options of one IA and applies the discard rules
+// both IA types share. what names the option in the notes
+// (claymore666/docker-net-dhcp#927).
+func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []string) {
+	var notes []string
+	var out []Addr6
+	addrs, err := o.Addrs()
+	if err != nil {
+		return nil, append(notes, what+": "+err.Error())
+	}
+	for _, a := range addrs {
+		// §21.6: "The client MUST discard any addresses for which the
+		// preferred lifetime is greater than the valid lifetime."
+		// wire.IAAddr.Valid is the predicate; the discard is here,
+		// because ring 0 holds no policy and an address dropped by the
+		// decoder could not be counted or journalled (claymore666/docker-net-dhcp#927).
+		if !a.Valid() {
+			notes = append(notes, fmt.Sprintf("IA Address %s has preferred %d greater than valid %d: discarded (§21.6)",
+				a.Addr, a.PreferredLifetime, a.ValidLifetime))
+			continue
+		}
+		if a.ValidLifetime == 0 {
+			notes = append(notes, fmt.Sprintf("IA Address %s has a valid lifetime of 0: discarded (§18.2.10.1)", a.Addr))
+			continue
+		}
+		if !a.Addr.Is6() || a.Addr.Is4In6() || a.Addr.IsUnspecified() {
+			notes = append(notes, fmt.Sprintf("IA Address %s is not a usable IPv6 address: discarded", a.Addr))
+			continue
+		}
+		out = append(out, Addr6{
+			Addr:      a.Addr,
+			Preferred: SecondsToDuration(a.PreferredLifetime),
+			Valid:     SecondsToDuration(a.ValidLifetime),
+		})
 	}
 	return out, notes
 }

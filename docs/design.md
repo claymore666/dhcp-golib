@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.1.0
+## Coverage by claim, through v1.2.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -117,6 +117,129 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   message is RFC 2131 §4.4.5's early renewal, and two further calls with the
   same name produce no further exchange
   (`TestAHostnameSetAfterStartReachesTheServersLeaseFile`).
+- **A user class that a server's class rule acts on.** The client sends the
+  User Class option in its Discover and every Request, one length-prefixed
+  instance per class, and dnsmasq with `--dhcp-userclass` rules hands a
+  private option in the ACK only to the client whose instance matches: not to
+  one sending another class or none, and a rule that spans two instances does
+  not fire where one that names either does. The class dnsmasq logs and the
+  tags it sets are asserted beside the lease the client reports
+  (`TestUserClassReachesTheServersClassRule`). The parameter's limits are the
+  RFC's one-octet length: an instance of at least one octet and at most one
+  less than the octet's range, the list within it with its length octets; a
+  zero octet inside an instance reaches the bytes, which dnsmasq cannot be
+  given a rule for, so that one is asserted on the encoded message
+  (`TestNewValidatesTheUserClassAgainstRFC3004Section4`,
+  `TestUserClassIsOnTheDiscoverAndOnEveryRequestByteForByte`). A Decline and a
+  Release carry none (`TestADeclineAndAReleaseCarryNoUserClass`).
+- **A two-message lease from a real server, and the four-message one when the
+  server does not allow it.** A client with `RapidCommit` sends the Rapid Commit option in its
+  Discover and in no other message. dnsmasq with `--dhcp-rapid-commit` answers
+  with an Ack, and its log holds DHCPDISCOVER and DHCPACK with no DHCPOFFER and
+  no DHCPREQUEST, beside the lease the client reports
+  (`TestRapidCommitTakesTheTwoMessageLeaseFromDnsmasq`). Without the flag the same
+  client gets Discover, Offer, Request, Ack
+  (`TestADnsmasqWithoutRapidCommitAnswersAClientThatAsksInFourMessages`), a client
+  that does not ask gets four messages from the flagged server
+  (`TestAClientThatDoesNotAskGetsTheFourMessageExchangeFromARapidCommitServer`), and
+  the renewal after the rapid lease is a Request and an Ack with the
+  DHCPDISCOVER count unmoved and no Rapid Commit option on any Request the client sent
+  (`TestARenewalAfterARapidLeaseCarriesNoOption80`). An Ack with the option is
+  refused in INIT, from a server the client's policy excludes, with no server
+  identifier, with a lease time of zero, and from a server other than the one
+  an Offer is being requested from
+  (`TestARapidAckIsRefusedWhereItAnswersNothingTheClientSent`,
+  `TestARapidAckFromADeniedOrUnlistedServerIsRefused`,
+  `TestARapidAckInRequestingIsTakenOnlyFromTheServerAndAddressAsked`).
+- **A client that waits when the server says IPv6 only, and one that does not
+  ask.** dnsmasq set to send the IPv6-Only Preferred option (RFC 8925) with a
+  value of five minutes sends it only to a client whose request list names it.
+  A client with `IPv6OnlyPreferred` gets an Offer whose logged options include
+  it and sends no Request, Decline or Release: dnsmasq's log holds DHCPDISCOVER
+  and DHCPOFFER and no DHCPREQUEST, the client reports no lease, and its journal
+  shows a restart timer of at least five minutes
+  (`TestDnsmasqSendsOption108AndAnIPv6OnlyClientWaitsInsteadOfRequesting`).
+  The absence is read after a second client's Discover has been logged, so that
+  no sleep stands in for "nothing came". The same server and a client without
+  the flag exchange four messages and the Offer does not carry it
+  (`TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsmasq`).
+  The wait's end and a link coming up are driven on the machine's own clock in
+  `proto` (`TestTheWaitEndsInAFreshDiscover`, `TestALinkUpEndsTheWaitEarly`).
+- **A DHCPFORCERENEW the client obeys only when it is genuine and unicast.**
+  dnsmasq is given the server's Forcerenew Nonce Capable and Authentication
+  options as fixed bytes, so the client's Discover and Request carry the first,
+  the Ack's nonce becomes the lease's key, and a frame signed with it renews
+  the lease: dnsmasq's log holds a second DHCPREQUEST and DHCPACK with the
+  DHCPDISCOVER count unmoved.
+  The frame is synthetic, since dnsmasq sends none. A frame addressed to
+  the broadcast address, one for another host's address that reached the link as
+  a broadcast, one with a flipped digest and one that repeats a spent
+  replay value each start nothing, read as an absence window on a second
+  socket and as a refusal in the journal, and the same bytes sent again after
+  they were obeyed are refused too
+  (`TestAForcerenewIsObeyedOnlyWhenItIsAuthenticAndUnicast`). The same server
+  proves only that the client sends the Forcerenew Nonce option and keeps the nonce; it is not a
+  conformant FORCERENEW server. The refusals and the replay floor are driven
+  on the machine's own clock in `proto`
+  (`TestEveryRefusalLeavesTheMachineAsItWas`, `TestTheReplayFloorIsStrict`).
+- **A two-message DHCPv6 lease from a real server, and the four-message one
+  from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
+  Solicit and in no other message. dnsmasq answers a Solicit that carries it with
+  a Reply, whatever its `--dhcp-rapid-commit` flag, which is the DHCPv4 switch, so the
+  client's setting is the only one that decides. The server's log holds
+  DHCPSOLICIT and DHCPREPLY with no DHCPADVERTISE and no DHCPREQUEST, beside the
+  lease the client reports
+  (`TestAV6ClientThatAsksForRapidCommitGetsTheTwoMessageLease`). The same server
+  and a client that does not ask gives Solicit, Advertise, Request, Reply
+  (`TestAV6ClientThatDoesNotAskGetsTheFourMessageExchangeFromTheSameDnsmasq`), and
+  the renewal after the rapid lease is a Renew and a Reply with the DHCPSOLICIT
+  count unmoved and no Rapid Commit option in any Renew the client sent
+  (`TestARenewAfterARapidV6LeaseCarriesNoOption14`). dnsmasq cannot be made to
+  answer such a Solicit with a plain Advertise, so that fallback is driven in
+  [`proto`](../proto) alone, with the refusals of a Reply that carries the option
+  (`TestARapid6ReplyIsDiscardedWhereItAnswersNothingTheClientSent`,
+  `TestAPlainAdvertise6ToARapidSolicitLeadsToRequestAndReply`).
+- **A temporary address from a real server, beside the stable one.** A client
+  with `Temporary` sends an IA_TA with the IA_NA's IAID in its Solicit, repeats
+  the address the Advertise offered in its Request, and holds the Reply's
+  address in `TempAddrs`, a second slice that nothing reading the stable lease
+  looks at. The test runs dnsmasq with a range of billions of addresses, because it
+  draws both addresses from one range at random starts, and asserts a stable
+  and a distinct temporary address on the lease, the IA_TA and the same address
+  in dnsmasq's log, and no IA_TA at all for a client that does not ask
+  (`TestAV6ClientThatAsksForTemporaryAddressesGetsOneFromRealDnsmasq`,
+  `TestAV6ClientThatDoesNotAskGetsNoTemporaryAddress`). A renewal asks for no
+  temporary address, as RFC 8415 advises: the count of `ia-ta` options
+  dnsmasq logged as sent does not move and the decoded Reply has none
+  (`TestARenewalLeavesTheTemporaryAddressAlone`). A temporary address that
+  fails duplicate address detection is declined alone in an IA_TA, and a stable
+  one that fails takes the same Reply's temporary addresses with it; both are
+  driven in [`proto`](../proto), where each address can be failed on its own.
+  A lease resumed from a remembered binding has no temporary address, because
+  a Confirm is not followed by a Request
+  (`TestTemporaryIsNotAskedForOnAResumedLease`).
+- **A delegated prefix from a real server, reported and never installed.** A client
+  with `PrefixHint` set sends an IA_PD with the IA_NA's IAID and one hint IA
+  Prefix of that length in its Solicit and Request, and again in every Renew,
+  Rebind and Release; a zero hint puts nothing on the wire. The Reply's
+  prefixes are held in `Prefixes`, a third slice that the address list, duplicate
+  address detection and every reader of the stable lease never see, because
+  RFC 3633 §12.1 never assigns a delegated prefix to the link it arrived on.
+  The library installs nothing. dnsmasq delegates no prefix, so the tests run Kea:
+  with a `pd-pools` entry its lease file carries a PD row for the client's DUID,
+  a Renew appends the renewed row and a Release a row that has expired
+  (`TestKeaDelegatesAPrefixAndKeepsItsRow`, `TestKeaRenewsThePrefixRow`,
+  `TestKeaTakesAReleasedPrefixBack`). Kea without a pool answers NoPrefixAvail
+  and still gives the address, and dnsmasq answers with no IA_PD at all; both
+  leave the address bound and `Prefixes` empty
+  (`TestKeaWithoutAPrefixPoolStillGivesTheAddress`,
+  `TestADnsmasqThatCannotDelegateLeavesTheAddressAlone`). A lease resumed with a
+  prefix sends a Rebind and no Confirm, as RFC 8415 §18.2.12 has it, and Kea's
+  row is renewed (`TestKeaSeesAResumedPrefixRebind`). The refusals, the
+  earliest T1 and T2 across the IAs, a prefix changed or dropped by a renewal and
+  the resumed Rebind's three outcomes are driven in [`proto`](../proto), where
+  the Reply can be chosen. The Kea tests run in a mount namespace so its lease
+  database sits under the one directory it accepts.
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
@@ -215,6 +338,23 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   is correct as of the last `Step` and not as of the read. That bound is
   driven and not only written down
   (`TestTheRouterViewOnTheLeaseIsAsOfTheLastStep`).
+- **The NAT64 prefix an advertisement carries, held per entry and reported
+  with the router view.** The PREF64 option of RFC 8781 is decoded in the
+  codec and kept in the state machine beside the resolver list: one entry per
+  prefix, each with its own lifetime, which is the Scaled Lifetime times eight, §4.1. A lifetime
+  of zero withdraws the prefix at once, an entry outlives a router whose
+  lifetime went to zero and dies at its own expiry with no further
+  advertisement, and a refresh that shortens a lifetime is taken as sent
+  (`TestAPREF64PrefixLivesForItsScaledLifetimeTimesEight`,
+  `TestAPREF64PrefixOutlivesARouterWhoseLifetimeWentToZero`,
+  `TestARefreshThatShortensTheLifetimeIsHonoured`). The list is read from
+  `Router()` on the manager, sorted by address and then length, and a journaled
+  advertisement replays into the same list
+  (`TestTheManagersRouterViewCarriesThePREF64AndItsLifetimeEndsOnTheManagersClock`,
+  `TestAReplayedAdvertisementKeepsTheRouterItCameFrom`). The frame is synthetic:
+  dnsmasq sends no such option, so no real server sits behind this entry and
+  the observers are the state machine and manager tests over bytes built from
+  the RFC's diagram.
 - **An address formed from an advertised prefix.** RFC 4862 §5.5.3 d forms it
   by "combining the advertised prefix with an interface identifier of the
   link", and RFC 4291 Appendix A's modified EUI-64 is the identifier. The
@@ -327,8 +467,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestEveryReconfigureRefusalIsDeclaredCountedAndNamed`,
   `TestAnAcceptedReconfigureReachesStatsAndTheCounters`,
   `TestARefusedReconfigureReachesStatsWithTheRuleThatRefusedIt`). A refusal is
-  not a fault: a client that RESUMED a lease holds no reconfigure key and
-  refuses its server's Reconfigures one after another, because RFC 9915
+  not a fault: a client that RESUMED a lease from a record with no key holds
+  none and refuses its server's Reconfigures one after another, because RFC 9915
   Appendix B Table 5 gives the Reconfigure Accept option no mark for Confirm
   and §20.4.2 says "The server selects a reconfigure key for a client during
   the Request/Reply, Solicit/Reply, or Information-request/Reply message
@@ -343,9 +483,82 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
   Renew's Reply that ends it, and the exchanges §20.4.2 does name;
   `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
-  boundary. A Reconfigure discarded before the state
+  boundary.
+  The key, the replay floor and whether a floor exists are in the lease record
+  (`reconfigure_key`, `reconfigure_replay`, `reconfigure_replay_seen`) and
+  restore the resumed lease's own server's entry, so a record that has them
+  starts no keyless span (`TestAResumedLeaseAuthenticatesAReconfigureSignedWithItsRestoredKey`).
+  A Reconfigure accepted since the last Reply that carries a lease reaches the
+  record at that Reply, so a restart before it accepts those Reconfigures
+  again; an Information-request Reconfigure emits no lease, so several can wait
+  there. A Reconfigure key carried by an Information-request Reply reaches the
+  record at the next lease Reply too, the same window as the floor; a restart
+  inside it restores the earlier key, so the server's valid Reconfigures are
+  refused until a Reply brings a key again
+  (`TestAKeyChangedInAnInformationRequestReplyReachesTheRecordAtTheNextLeaseReply`).
+  Other servers' entries are lost at a restart.
+  A Reconfigure discarded before the state
   machine — a datagram that would not decode, or one the transport dropped as
   addressed to another node — is in neither counter.
+- **The counters of the v1.2.0 features.** Each feature kept its counters in
+  its own `proto` file, and each reaches `lease.Stats`, the record's wire half
+  and a `Manager` accessor the way the Reconfigure counters do: read once after
+  the Step, under the manager's lock, from the machine of the manager's own
+  family, with the other family's accessor returning the zero value
+  (`TestAV4ManagerReportsNoV6Counters`, `TestAV6ManagerReportsNoV4Counters`).
+  All of them are WIRED and none is folded: no event in a record's own stream
+  produces one (`TestEveryNewCounterIsWiredAndNoneIsFolded`), and a record
+  that outlives a manager adds each manager's counts
+  (`TestEveryNewCounterAccumulatesAcrossManagerInstances`). A record written
+  before them decodes with all of them zero
+  (`TestARecordWrittenByV110ReadsBackWithTheNewCountersZero`).
+  - **IPv6-only preferred** (RFC 8925, `IPv6OnlyWaited`, `IPv6OnlyIgnored`,
+    `IPv6OnlyMalformed`, `Manager.IPv6OnlyCounters`): an OFFER with the
+    IPv6-only-preferred option pauses DHCPv4 and an ACK with it keeps the lease
+    (`TestAnOfferWithOption108ReachesStatsAsAWait`,
+    `TestAnAckWithOption108ReachesStatsAsIgnored`,
+    `TestAMalformedOption108ReachesStatsAndTheLeaseStillForms`).
+  - **Rapid commit** (RFC 4039 and RFC 9915's Solicit rules,
+    `RapidCommitsAccepted`, `RapidCommitsRefused`,
+    `Manager.RapidCommitCounters`, `Manager.RapidCommit6Counters`): one pair
+    in `Stats` serves both families, because a manager runs one, and the two
+    accessors stay apart
+    (`TestARapidCommitAckReachesStatsAsAccepted`,
+    `TestARefusedRapidCommitAckReachesStatsAndStartsNoLease`,
+    `TestADhcpv6RapidCommitReplyReachesStatsAsAccepted`,
+    `TestAMalformedDhcpv6RapidCommitReplyReachesStatsAsRefused`; the v6 count
+    is also read at the Step that raised it, before any later Step can hide a
+    mirror taken one Step late,
+    `TestADhcpv6RapidCommitCountIsCurrentAtTheStepThatRaisedIt`,
+    `TestARefusedDhcpv6RapidCommitCountIsCurrentAtTheStepThatRaisedIt`).
+  - **FORCERENEW** (RFC 3203 and RFC 6704, `ForcerenewsRenewed`,
+    `ForcerenewsAlreadyRenewing`, `ForcerenewsAckRefused`,
+    `ForcerenewsRefused`, `Manager.ForcerenewCounters`): `Stats` carries the
+    total of the refusals and the accessor the rule that refused each, and the
+    returned array is the caller's copy
+    (`TestAForcerenewReachesStatsAsRenewedThenAsAlreadyRenewing`,
+    `TestARefusedForcerenewReachesStatsWithTheRuleThatRefusedIt`,
+    `TestAForcerenewAccessorHandsOutACopy`,
+    `TestAnAckThatLacksTheNonceReachesStatsAsAckRefused`).
+  - **Temporary addresses** (RFC 9915's rules for a Reply,
+    `TemporaryAddressesGranted`, `TemporaryAddressesRefused`,
+    `TemporaryAddressesAbsent`, `TemporaryAddressesConflicted`,
+    `Manager.TemporaryCounters`): an Advertise and a Reply each count Absent
+    or Refused, so one exchange can count either twice
+    (`TestAReplyWithNoIATAReachesStatsAsAbsent`,
+    `TestAnIATAWithNoAddressReachesStatsAsRefused`,
+    `TestAnIATAWithAnAddressReachesStatsAsGranted`,
+    `TestADuplicateTemporaryAddressReachesStatsAsConflicted`; the count is also
+    read at the Step that raised it,
+    `TestATemporaryAddressCountIsCurrentAtTheStepThatRaisedIt`).
+  - **Delegated prefixes** (RFC 9915's rules for a Reply, `PrefixesGranted`,
+    `PrefixesRefused`, `PrefixesAbsent`, `PrefixesChanged`,
+    `Manager.PrefixCounters`): only a Reply grants, a Renew's or Rebind's
+    Reply that names other prefixes counts Changed
+    (`TestADelegatedPrefixReachesStatsAsGranted`,
+    `TestAnAnswerWithNoIAPDReachesStatsAsAbsent`,
+    `TestAnIAPDWithNoPrefixReachesStatsAsRefused`,
+    `TestARenewalThatChangesThePrefixReachesStatsAsChanged`).
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

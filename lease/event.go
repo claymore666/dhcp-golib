@@ -106,6 +106,24 @@ type Lease struct {
 	// Options is every option from the ACK, unparsed.
 	Options wire.Options
 
+	// ForcerenewNonce and ForcerenewReplay are the key and the replay floor of
+	// a DHCPv4 lease's FORCERENEW authentication, nil and zero when its ACKs
+	// gave none (RFC 6704 section 3.1.3; claymore666/docker-net-dhcp#1119).
+	// The record carries them as forcerenew_nonce and forcerenew_replay, and
+	// a reader that does not know them ignores both.
+	ForcerenewNonce  []byte `json:"forcerenew_nonce,omitempty"`
+	ForcerenewReplay uint64 `json:"forcerenew_replay,omitempty"`
+
+	// ReconfigureKey, ReconfigureReplay and ReconfigureReplaySeen are the RKAP
+	// key of a DHCPv6 lease's server and the replay floor last accepted from
+	// it; Seen says a floor exists, so a recorded zero is not "none yet"
+	// (RFC 9915 §20.3, §20.4.3). The record carries them as reconfigure_key,
+	// reconfigure_replay and reconfigure_replay_seen, and a reader that does
+	// not know them ignores all three (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte `json:"reconfigure_key,omitempty"`
+	ReconfigureReplay     uint64 `json:"reconfigure_replay,omitempty"`
+	ReconfigureReplaySeen bool   `json:"reconfigure_replay_seen,omitempty"`
+
 	// Addrs is EVERY address this v6 lease holds, in the order the protocol
 	// produced them, and Addr is the first of them. It is empty for v4 and
 	// for a v6 lease with no address.
@@ -123,6 +141,22 @@ type Lease struct {
 	// only be an aggregate. Lease.Preferred and Lease.Valid remain that
 	// aggregate, for a caller with no per-address handling.
 	Addrs []Addr6
+
+	// TempAddrs is the temporary addresses of the IA_TA beside Addrs, never
+	// inside it, with their own deadlines (claymore666/docker-net-dhcp#927).
+	// It is empty unless Params6.Temporary was set and the server granted one.
+	// The tag is the one a record writes, so a reader built before the field
+	// existed skips it.
+	TempAddrs []Addr6 `json:"temp_addrs,omitempty"`
+
+	// Prefixes is the delegated prefixes of the IA_PD beside Addrs, never
+	// inside it, each with its own deadlines: Addr is the prefix the server
+	// delegated, with the length the server chose (claymore666/docker-net-dhcp#214).
+	// It is empty unless Params6.PrefixHint was set or the resumed record held
+	// a prefix, and the server granted one. The library reports the prefix and
+	// installs nothing (RFC 3633 section 12.1). The tag is the one a record
+	// writes, so a reader built before the field existed skips it.
+	Prefixes []Addr6 `json:"prefixes,omitempty"`
 
 	// SLAAC says the addresses were FORMED from a Router Advertisement (RFC
 	// 4862 §5.5.3) rather than granted by a server.
@@ -452,6 +486,9 @@ func toLease(l proto.Lease, b clockBridge) Lease {
 		DomainSearch: append([]string(nil), l.DomainSearch...),
 		Acquired:     b.at(l.Start),
 		Options:      l.Options.Clone(),
+
+		ForcerenewNonce:  append([]byte(nil), l.ForcerenewNonce...),
+		ForcerenewReplay: l.ForcerenewReplay,
 	}
 	// proto.Lease.Gateway, not Router[0]: after RFC 3442 the default route can
 	// come from option 121, and a server sending 121 is required to have its
@@ -487,28 +524,19 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		ServerDUID:   append([]byte(nil), l.ServerDUID...),
 		IAID:         l.IAID,
 		Acquired:     b.at(l.Start),
+
+		ReconfigureKey:        append([]byte(nil), l.ReconfigureKey...),
+		ReconfigureReplay:     l.ReconfigureReplay,
+		ReconfigureReplaySeen: l.ReconfigureReplaySeen,
 	}
 	if pfx, ok := l.Prefix(); ok {
 		out.Addr = pfx
 	}
 	out.SLAAC = l.SLAAC
 	out.FQDN, out.HasFQDN = l.FQDN, l.HasFQDN
-	for _, a := range l.Addrs {
-		bits := a.PrefixLen
-		if bits <= 0 {
-			// A granted address has no prefix length of its own, so it is a
-			// host address. Only RFC 4862 §5.5.3's option carries one.
-			bits = a.Addr.BitLen()
-		}
-		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
-		if !a.Preferred.IsInfinite() {
-			e.Preferred = b.at(l.Start.Add(a.Preferred))
-		}
-		if !a.Valid.IsInfinite() {
-			e.Valid = b.at(l.Start.Add(a.Valid))
-		}
-		out.Addrs = append(out.Addrs, e)
-	}
+	out.Addrs = outwardAddrs(l.Addrs, l.Start, b)
+	out.TempAddrs = outwardAddrs(l.TempAddrs, l.Start, b)
+	out.Prefixes = outwardPrefixes(l.Prefixes, l.Start, b)
 	// Domain is option 15's single name and has no DHCPv6 counterpart: RFC
 	// 3646 defines a search LIST (option 24) and no single-name option, so
 	// filling Domain from Search[0] would invent a fact the server did not
@@ -526,6 +554,46 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	}
 	if t, ok := l.PreferredUntil(); ok {
 		out.Preferred = b.at(t)
+	}
+	return out
+}
+
+// outwardAddrs converts one slice of ring 1's addresses, counted from start,
+// into the outward ones (claymore666/docker-net-dhcp#927).
+func outwardAddrs(in []proto.Addr6, start proto.Instant, b clockBridge) []Addr6 {
+	var out []Addr6
+	for _, a := range in {
+		bits := a.PrefixLen
+		if bits <= 0 {
+			// A granted address has no prefix length of its own, so it is a
+			// host address. Only RFC 4862 §5.5.3's option carries one (claymore666/docker-net-dhcp#927).
+			bits = a.Addr.BitLen()
+		}
+		e := Addr6{Addr: netip.PrefixFrom(a.Addr, bits)}
+		if !a.Preferred.IsInfinite() {
+			e.Preferred = b.at(start.Add(a.Preferred))
+		}
+		if !a.Valid.IsInfinite() {
+			e.Valid = b.at(start.Add(a.Valid))
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// outwardPrefixes is outwardAddrs for the delegated prefixes: the prefix keeps
+// the length the server gave it (claymore666/docker-net-dhcp#214).
+func outwardPrefixes(in []proto.Prefix6, start proto.Instant, b clockBridge) []Addr6 {
+	var out []Addr6
+	for _, p := range in {
+		e := Addr6{Addr: p.Prefix}
+		if !p.Preferred.IsInfinite() {
+			e.Preferred = b.at(start.Add(p.Preferred))
+		}
+		if !p.Valid.IsInfinite() {
+			e.Valid = b.at(start.Add(p.Valid))
+		}
+		out = append(out, e)
 	}
 	return out
 }

@@ -150,6 +150,23 @@ type Resume6 struct {
 	// is no later message that supplies them.
 	DNS    []netip.Addr
 	Search []string
+
+	// Prefixes is the delegated prefixes last held. A non-empty set makes the
+	// machine send a Rebind instead of a Confirm: RFC 8415 section 18.2.12 has
+	// a client with a delegated prefix rebind, and the Rebind carries the
+	// addresses in its IA_NA and these in its IA_PD (claymore666/docker-net-dhcp#214).
+	// A record with prefixes and no address stays unusable: live() needs an
+	// address.
+	Prefixes []Prefix6
+
+	// ReconfigureKey, ReconfigureReplay and ReconfigureReplaySeen are the
+	// RKAP state the lease's server had given before the restart: the
+	// machine seeds its entry for ServerDUID from them, so a Reconfigure is
+	// authenticated and its replay value checked as it was before. An empty
+	// key restores nothing (claymore666/dhcp-golib#28).
+	ReconfigureKey        []byte
+	ReconfigureReplay     uint64
+	ReconfigureReplaySeen bool
 }
 
 // Clone deep-copies a Resume6, for the reason Resume.Clone exists: it is the
@@ -165,6 +182,8 @@ func (r *Resume6) Clone() *Resume6 {
 	out.ServerDUID = append([]byte(nil), r.ServerDUID...)
 	out.DNS = append([]netip.Addr(nil), r.DNS...)
 	out.Search = append([]string(nil), r.Search...)
+	out.Prefixes = append([]Prefix6(nil), r.Prefixes...)
+	out.ReconfigureKey = append([]byte(nil), r.ReconfigureKey...)
 	return &out
 }
 
@@ -193,6 +212,8 @@ var (
 	ErrBadResume6 = errors.New("proto: Params6.Resume names no usable IPv6 address")
 	// ErrBadDADTimeout is a negative Params6.DADTimeout.
 	ErrBadDADTimeout = errors.New("proto: Params6.DADTimeout is negative")
+	// ErrBadPrefixHint is a Params6.PrefixHint outside 0..128.
+	ErrBadPrefixHint = errors.New("proto: Params6.PrefixHint is outside 0..128")
 	// ErrBadRetransmit6 is a §7.6 parameter that cannot produce a schedule.
 	ErrBadRetransmit6 = errors.New("proto: Params6 carries a non-positive retransmission parameter")
 )
@@ -231,6 +252,9 @@ func (p Params6) validate() error {
 	}
 	if p.Resume != nil && !p.Resume.live() {
 		return ErrBadResume6
+	}
+	if p.PrefixHint < 0 || p.PrefixHint > 128 {
+		return fmt.Errorf("%w: %d", ErrBadPrefixHint, p.PrefixHint)
 	}
 	if p.DADTimeout < 0 {
 		return fmt.Errorf("%w: %s", ErrBadDADTimeout, p.DADTimeout)

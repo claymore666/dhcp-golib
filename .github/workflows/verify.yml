@@ -279,6 +279,7 @@ jobs:
             echo "memory (kB):    $(sed -n 's/^MemTotal: *//p' /proc/meminfo)"
             echo "load before:    $(cut -d' ' -f1-3 /proc/loadavg)"
             echo "dnsmasq:        $( (command -v dnsmasq >/dev/null && dnsmasq --version || /usr/sbin/dnsmasq --version || true) | head -n 1)"
+            echo "kea-dhcp6:      $( (command -v kea-dhcp6 >/dev/null && kea-dhcp6 -V || /usr/sbin/kea-dhcp6 -V || true) | head -n 1)"
             echo "go:             $(go version)"
             echo "userns maxuser: $(cat /proc/sys/user/max_user_namespaces 2>&1 || true)"
             echo "shellcheck:     $( (shellcheck --version || true) | sed -n 's/^version: //p')"

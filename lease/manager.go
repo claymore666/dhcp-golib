@@ -136,7 +136,9 @@ type Config struct {
 	// works in, once, at construction, through the same clock bridge
 	// Config.Resume crosses. A deadline already past contributes zero, which
 	// makes the resumed lease one the machine will renew immediately rather
-	// than one it thinks is live.
+	// than one it thinks is live. ReconfigureKey, ReconfigureReplay and
+	// ReconfigureReplaySeen are read too, and restore the RKAP entry of that
+	// server alone (claymore666/dhcp-golib#28).
 	//
 	// UNLIKE Config.Resume, THE SERVER IDENTIFIER IS KEPT. RFC 2131 section
 	// 4.3.2 makes a remembered server identifier in a v4 DHCPREQUEST a hang;
@@ -161,6 +163,15 @@ type Manager struct {
 	// reconfCounts mirrors the v6 machine's Reconfigure counters for
 	// ReconfigureCounters, taken where the router observation is taken.
 	reconfCounts proto.ReconfigureCounters
+
+	// The mirrors of the other per-rule counters, one per accessor, taken at
+	// the same place (claymore666/docker-net-dhcp#1027).
+	v6OnlyCounts proto.IPv6OnlyCounters
+	rapidCounts  proto.RapidCommitCounters
+	rapid6Counts proto.RapidCommit6Counters
+	frCounts     proto.ForcerenewCounters
+	tempCounts   proto.Temporary6Counters
+	pdCounts     proto.Prefix6Counters
 
 	// params6 mirrors the v6 machine's configuration for Params6, and
 	// declined6 the set it has declined for Declined6. Both are read under mu
@@ -418,10 +429,11 @@ type Stats struct {
 	// arrival a full list in the router table would not take.
 	// RouterTableEntriesEvicted is its pair, an entry a full list threw out to
 	// take an arrival, which is what RFC 8106 §6.2 (d) asks of the resolver
-	// and search lists. They are two counters because they ask for different
-	// next steps, and either above zero means the table's caps are in force,
-	// which on a quiet link means something is advertising more than a link
-	// has.
+	// and search lists and what the NAT64 prefix list does
+	// (claymore666/docker-net-dhcp#1028). They are two counters because they
+	// ask for different next steps, and either above zero means the table's
+	// caps are in force, which on a quiet link means something is advertising
+	// more than a link has.
 	RouterSolicitsSent         uint64
 	RouterAdvertsSeen          uint64
 	RouterAdvertsRefused       uint64
@@ -495,6 +507,51 @@ type Stats struct {
 	// folded into NDIgnored.
 	ReconfiguresAccepted uint64
 	ReconfiguresRefused  uint64
+
+	// The counters the feature lanes of v1.2.0 kept in their own ring-1 types.
+	// They are ring 1's and are mirrored here at each Step, like the
+	// Reconfigure counters above (claymore666/docker-net-dhcp#1027).
+	//
+	// IPv6OnlyWaited counts DHCPv4 pauses started by option 108 (RFC 8925
+	// section 3.2), IPv6OnlyIgnored the DHCPACKs carrying it that kept their
+	// address, IPv6OnlyMalformed the 108 options whose length is not 4. DHCPv4
+	// only.
+	IPv6OnlyWaited    uint64
+	IPv6OnlyIgnored   uint64
+	IPv6OnlyMalformed uint64
+
+	// RapidCommitsAccepted and RapidCommitsRefused count option 80 (RFC 4039,
+	// DHCPv4) or option 14 (RFC 9915 section 18.2.1, DHCPv6). One pair serves
+	// both families because a manager runs one: the record says which
+	// (claymore666/docker-net-dhcp#1031). Refused holds every rule together;
+	// which one refused is in the journal line beside it.
+	RapidCommitsAccepted uint64
+	RapidCommitsRefused  uint64
+
+	// The FORCERENEW counters, RFC 3203 and RFC 6704 section 3.1.4, DHCPv4
+	// only. ForcerenewsRefused is the total over every refusal rule and
+	// Manager.ForcerenewCounters has the split. ForcerenewsAckRefused is an
+	// ACK discarded for lacking the option 90 an OFFER promised and is not in
+	// ForcerenewsRefused (claymore666/docker-net-dhcp#1119).
+	ForcerenewsRenewed         uint64
+	ForcerenewsAlreadyRenewing uint64
+	ForcerenewsAckRefused      uint64
+	ForcerenewsRefused         uint64
+
+	// The temporary-address counters, DHCPv6 only. TemporaryAddressesAbsent
+	// counts messages, so one exchange can raise it twice (claymore666/docker-net-dhcp#927).
+	TemporaryAddressesGranted    uint64
+	TemporaryAddressesRefused    uint64
+	TemporaryAddressesAbsent     uint64
+	TemporaryAddressesConflicted uint64
+
+	// The prefix-delegation counters, DHCPv6 only. PrefixesRefused and
+	// PrefixesAbsent count messages, so one exchange can raise either twice
+	// (claymore666/docker-net-dhcp#214).
+	PrefixesGranted uint64
+	PrefixesRefused uint64
+	PrefixesAbsent  uint64
+	PrefixesChanged uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -693,6 +750,7 @@ func newManager6(cfg Config) (*Manager, error) {
 			}
 		}
 		params.Resume = &proto.Resume6{
+			Prefixes:   resumedPrefixes(b, cfg.Resume6),
 			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
@@ -703,6 +761,10 @@ func newManager6(cfg Config) (*Manager, error) {
 			// caller's remembered lease or from nowhere.
 			DNS:    append([]netip.Addr(nil), cfg.Resume6.DNS...),
 			Search: append([]string(nil), cfg.Resume6.DomainSearch...),
+
+			ReconfigureKey:        append([]byte(nil), cfg.Resume6.ReconfigureKey...),
+			ReconfigureReplay:     cfg.Resume6.ReconfigureReplay,
+			ReconfigureReplaySeen: cfg.Resume6.ReconfigureReplaySeen,
 		}
 	}
 	m, err := proto.New6(params)
@@ -746,6 +808,22 @@ func newManager6(cfg Config) (*Manager, error) {
 		mg.journalNote("RFC 9915 §14.1's rate limit is disabled by Config.RateLimit.Messages < 0: this client will not bound the messages it sends")
 	}
 	return mg, nil
+}
+
+// resumedPrefixes is the delegated prefixes a record held, as the machine takes
+// them: they ride with the addresses so the machine rebinds rather than
+// confirms. A prefix with no valid lifetime of its own ends with the record, as
+// an address does (claymore666/docker-net-dhcp#214).
+func resumedPrefixes(b clockBridge, rec *Lease) []proto.Prefix6 {
+	var held []proto.Prefix6
+	for _, p := range rec.Prefixes {
+		held = append(held, proto.Prefix6{
+			Prefix:    p.Addr,
+			Preferred: remaining(b, p.Preferred),
+			Valid:     remaining(b, p.Valid, rec.Expire),
+		})
+	}
+	return held
 }
 
 // remaining is a wall-clock deadline expressed as the duration still to run,
@@ -1162,7 +1240,10 @@ func (mg *Manager) onInbound(ctx context.Context, in Inbound) {
 		mg.bump(func(s *Stats) { s.DecodeFailures++ })
 		return
 	}
-	mg.dispatch(ctx, proto.Received(msg, append([]byte(nil), in.Payload...)))
+	// The destination travels with the octets for the v6 path's reason: a
+	// FORCERENEW is decided on the address it was sent to, which is not in
+	// the payload (claymore666/docker-net-dhcp#1119).
+	mg.dispatch(ctx, proto.ReceivedTo(msg, append([]byte(nil), in.Payload...), in.To))
 }
 
 // dispatch feeds one event and everything that event produces.
@@ -1229,6 +1310,23 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.reconfCounts = rc
 			mg.stats.ReconfiguresAccepted = rc.Accepted
 			mg.stats.ReconfiguresRefused = rc.RefusedTotal()
+			// ONE DERIVATION again, for the three types the feature lanes
+			// kept in ring 1: a refused Reply+14, an IA_TA with no address
+			// and an IA_PD with no prefix each produce no action
+			// (claymore666/docker-net-dhcp#926, #927, #214).
+			mg.rapid6Counts = mg.machine6.RapidCommitCounters()
+			mg.stats.RapidCommitsAccepted = mg.rapid6Counts.Accepted
+			mg.stats.RapidCommitsRefused = mg.rapid6Counts.Refused
+			mg.tempCounts = mg.machine6.TemporaryCounters()
+			mg.stats.TemporaryAddressesGranted = mg.tempCounts.Granted
+			mg.stats.TemporaryAddressesRefused = mg.tempCounts.Refused
+			mg.stats.TemporaryAddressesAbsent = mg.tempCounts.Absent
+			mg.stats.TemporaryAddressesConflicted = mg.tempCounts.Conflicted
+			mg.pdCounts = mg.machine6.PrefixCounters()
+			mg.stats.PrefixesGranted = mg.pdCounts.Granted
+			mg.stats.PrefixesRefused = mg.pdCounts.Refused
+			mg.stats.PrefixesAbsent = mg.pdCounts.Absent
+			mg.stats.PrefixesChanged = mg.pdCounts.Changed
 			mg.params6.SolMaxRT, mg.params6.InfMaxRT = mg.machine6.MaxRT()
 			mg.hostname = mg.machine6.Hostname()
 			if d := mg.machine6.Declined(); len(d) != len(mg.declined6) {
@@ -1247,6 +1345,21 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 			mg.seq++
 			mg.stats.Steps++
 			mg.acd = mg.machine.ACDPhase()
+			// ONE DERIVATION, as in the v6 arm: an option 108 treated as
+			// absent, a refused ACK+80 and a refused FORCERENEW produce no
+			// action (claymore666/docker-net-dhcp#1027, #1031, #1119).
+			mg.v6OnlyCounts = mg.machine.IPv6OnlyCounters()
+			mg.stats.IPv6OnlyWaited = mg.v6OnlyCounts.Waited
+			mg.stats.IPv6OnlyIgnored = mg.v6OnlyCounts.Ignored
+			mg.stats.IPv6OnlyMalformed = mg.v6OnlyCounts.Malformed
+			mg.rapidCounts = mg.machine.RapidCommitCounters()
+			mg.stats.RapidCommitsAccepted = mg.rapidCounts.Accepted
+			mg.stats.RapidCommitsRefused = mg.rapidCounts.Refused
+			mg.frCounts = mg.machine.ForcerenewCounters()
+			mg.stats.ForcerenewsRenewed = mg.frCounts.Renewed
+			mg.stats.ForcerenewsAlreadyRenewing = mg.frCounts.AlreadyRenewing
+			mg.stats.ForcerenewsAckRefused = mg.frCounts.AckRefused
+			mg.stats.ForcerenewsRefused = mg.frCounts.RefusedTotal()
 			mg.hostname = mg.machine.Hostname()
 			mg.mu.Unlock()
 
@@ -1571,6 +1684,59 @@ func (mg *Manager) ReconfigureCounters() proto.ReconfigureCounters {
 	mg.mu.Lock()
 	defer mg.mu.Unlock()
 	return mg.reconfCounts
+}
+
+// IPv6OnlyCounters is what the v4 machine did with option 108. The zero value
+// is what a v6 manager reports (claymore666/docker-net-dhcp#1027).
+func (mg *Manager) IPv6OnlyCounters() proto.IPv6OnlyCounters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.v6OnlyCounts
+}
+
+// RapidCommitCounters is what the v4 machine did with DHCPACKs carrying option
+// 80, behind Stats.RapidCommitsAccepted and RapidCommitsRefused. The zero value
+// is what a v6 manager reports (claymore666/docker-net-dhcp#1031).
+func (mg *Manager) RapidCommitCounters() proto.RapidCommitCounters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.rapidCounts
+}
+
+// RapidCommit6Counters is what the v6 machine did with Replies carrying option
+// 14, behind the same two Stats fields. The zero value is what a v4 manager
+// reports (claymore666/docker-net-dhcp#926).
+func (mg *Manager) RapidCommit6Counters() proto.RapidCommit6Counters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.rapid6Counts
+}
+
+// ForcerenewCounters is what the v4 machine did with FORCERENEW messages, rule
+// by rule: Stats.ForcerenewsRefused is the total of its Refused array. The zero
+// value is what a v6 manager reports (claymore666/docker-net-dhcp#1119).
+func (mg *Manager) ForcerenewCounters() proto.ForcerenewCounters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.frCounts
+}
+
+// TemporaryCounters is what the v6 machine did with the IA_TA of the messages
+// that answered a temporary-address request. The zero value is what a v4
+// manager reports (claymore666/docker-net-dhcp#927).
+func (mg *Manager) TemporaryCounters() proto.Temporary6Counters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.tempCounts
+}
+
+// PrefixCounters is what the v6 machine did with the IA_PD of the messages that
+// answered a prefix request. The zero value is what a v4 manager reports
+// (claymore666/docker-net-dhcp#214).
+func (mg *Manager) PrefixCounters() proto.Prefix6Counters {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.pdCounts
 }
 
 // Params6 is the configuration the v6 machine RAN WITH, and the second value

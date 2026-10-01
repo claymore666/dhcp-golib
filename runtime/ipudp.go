@@ -137,6 +137,10 @@ type Datagram struct {
 	Payload []byte
 	// Src is the IPv4 source address of the frame.
 	Src netip.Addr
+	// Dst is the IPv4 destination address of the frame, which is what a
+	// DHCPFORCERENEW is accepted or refused on (RFC 3203 section 2.2;
+	// claymore666/docker-net-dhcp#1119).
+	Dst netip.Addr
 	// Checksum says whether the payload was verified, and if not, why not.
 	Checksum ChecksumState
 }
@@ -202,6 +206,7 @@ func ParseIPv4UDP(frame []byte) (Datagram, error) {
 	return Datagram{
 		Payload:  u[udpHeaderLen:],
 		Src:      netip.AddrFrom4(s4),
+		Dst:      netip.AddrFrom4(d4),
 		Checksum: state,
 	}, nil
 }

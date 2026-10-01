@@ -177,9 +177,10 @@ type Event struct {
 	// would let two messages that re-encode alike share one signature.
 	Raw []byte
 
-	// Dst is the IP destination the datagram carrying MsgV6 was addressed to,
-	// as the transport read it off the frame. The zero Addr means the
-	// transport did not report one.
+	// Dst is the IP destination the datagram carrying Msg or MsgV6 was
+	// addressed to, as the transport read it off the frame. The zero Addr
+	// means the transport did not report one. For DHCPv4 only a FORCERENEW
+	// reads it (RFC 3203 section 2.2; claymore666/docker-net-dhcp#1119).
 	//
 	// IT EXISTS FOR ONE RULE. §16.11's first bullet makes a client discard a
 	// Reconfigure that "was not unicast to the client", and that is a fact
@@ -246,9 +247,20 @@ type Event struct {
 	Reason string
 }
 
-// Received builds an EvReceived event.
+// Received builds an EvReceived event carrying a DHCPv4 message, with no
+// destination reported.
+//
+// A FORCERENEW BUILT THIS WAY IS DROPPED, the safe direction and the v6
+// Reconfigure's: RFC 3203 section 2.2's "unicast only" cannot be checked for a
+// datagram whose destination nobody recorded (claymore666/docker-net-dhcp#1119).
+// Transports that read the destination use ReceivedTo.
 func Received(m *wire.Message, raw []byte) Event {
 	return Event{Kind: EvReceived, Msg: m, Raw: raw}
+}
+
+// ReceivedTo is Received with the datagram's IP destination.
+func ReceivedTo(m *wire.Message, raw []byte, dst netip.Addr) Event {
+	return Event{Kind: EvReceived, Msg: m, Raw: raw, Dst: dst}
 }
 
 // ReceivedV6 builds an EvReceived event carrying a DHCPv6 message, with no
