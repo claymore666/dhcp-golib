@@ -217,6 +217,28 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   driven in [`proto`](../proto), where each address can be failed on its own.
   A lease resumed from a remembered binding has no temporary address, because
   a Confirm is not followed by a Request.
+- **A delegated prefix from a real server, reported and never installed.** A client
+  with `PrefixHint` set sends an IA_PD with the IA_NA's IAID and one hint IA
+  Prefix of that length in its Solicit and Request, and again in every Renew,
+  Rebind and Release; a zero hint puts nothing on the wire. The Reply's
+  prefixes are held in `Prefixes`, a third slice that the address list, duplicate
+  address detection and every reader of the stable lease never see, because
+  RFC 3633 §12.1 never assigns a delegated prefix to the link it arrived on.
+  The library installs nothing. dnsmasq delegates no prefix, so the tests run Kea:
+  with a `pd-pools` entry its lease file carries a PD row for the client's DUID,
+  a Renew appends the renewed row and a Release a row that has expired
+  (`TestKeaDelegatesAPrefixAndKeepsItsRow`, `TestKeaRenewsThePrefixRow`,
+  `TestKeaTakesAReleasedPrefixBack`). Kea without a pool answers NoPrefixAvail
+  and still gives the address, and dnsmasq answers with no IA_PD at all; both
+  leave the address bound and `Prefixes` empty
+  (`TestKeaWithoutAPrefixPoolStillGivesTheAddress`,
+  `TestADnsmasqThatCannotDelegateLeavesTheAddressAlone`). A lease resumed with a
+  prefix sends a Rebind and no Confirm, as RFC 8415 §18.2.12 has it, and Kea's
+  row is renewed (`TestKeaSeesAResumedPrefixRebind`). The refusals, the
+  earliest T1 and T2 across the IAs, a prefix changed or dropped by a renewal and
+  the resumed Rebind's three outcomes are driven in [`proto`](../proto), where
+  the Reply can be chosen. The Kea tests run in a mount namespace so its lease
+  database sits under the one directory it accepts.
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S

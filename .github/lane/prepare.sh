@@ -15,10 +15,11 @@
 #
 # Each thing here was measured on the image rather than assumed:
 #
-#   - dnsmasq, iproute2 and shellcheck. The arbiter shells out to all three
-#     (netns-suite, the namespaced tests, the shellcheck row) and the image
-#     carries none of them. Without this step those rows report an absent tool,
-#     which is a FAIL and not a skip.
+#   - dnsmasq, kea-dhcp6-server, iproute2 and shellcheck. The arbiter shells
+#     out to all of them (netns-suite, the namespaced tests, the shellcheck row)
+#     and the image carries none of them. Without this step those rows report
+#     an absent tool, which is a FAIL and not a skip. Kea serves the
+#     prefix-delegation tests (claymore666/docker-net-dhcp#214).
 #   - kernel.apparmor_restrict_unprivileged_userns. The image's AppArmor lets an
 #     unprivileged user namespace be CREATED and then refuses every netlink call
 #     inside it, so `ip link add` answers "Operation not permitted" and the
@@ -30,7 +31,7 @@ set -euo pipefail
 
 sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-	dnsmasq-base iproute2 shellcheck >/dev/null
+	dnsmasq-base kea-dhcp6-server iproute2 shellcheck >/dev/null
 
 if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
 	sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0

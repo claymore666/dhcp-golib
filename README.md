@@ -30,7 +30,7 @@ and it needs no root.
 | Tell a server that refused apart from one that never answered, and say which code it sent | yes | yes |
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
-| Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
+| Ask for a delegated prefix and report it (IA_PD, RFC 8415; the library installs nothing) | n/a | yes |
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | yes |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | yes, not on a resumed lease |
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | yes | yes |
@@ -56,9 +56,11 @@ IPv6 is not finished. DHCPv6 takes a lease and keeps it. The matrix says where
 it stops. The Router Advertisement is read for its flags and for its
 prefixes, its routes, its link MTU, its resolvers and its search list, an
 address is formed from an advertised prefix, and every one of those is reported
-and none of it is applied. There is no prefix delegation. A
-server that holds the reconfigure key it gave the client can make it renew,
-rebind or ask for configuration again, and a Reconfigure that is not signed
+and none of it is applied. A client with `PrefixHint` set asks for a delegated
+prefix in an IA_PD and reports what the server grants; it installs no address
+and no route, as RFC 3633 §12.1 says a delegated prefix is never assigned to
+the link it arrived on. A server that holds the reconfigure key it gave the
+client can make it renew, rebind or ask for configuration again, and a Reconfigure that is not signed
 with that key is discarded. A DHCPv6 client sends its name in RFC 4704's
 Client FQDN option. A name set on a client that holds a lease goes out
 straight away in a Renew, or in a Rebind when the lease names no server or the
@@ -245,7 +247,9 @@ The work it saves you:
   else's network.
 - The tests run against a real DHCP server. It is dnsmasq on a veth pair in an
   unprivileged namespace, asserted against the server's own log and lease
-  file. No root, no password.
+  file. No root, no password. The prefix delegation tests run Kea instead,
+  because dnsmasq delegates nothing; they need `kea-dhcp6` on `PATH` and fail
+  when it is absent.
 
 It is written for and consumed by the
 [docker-net-dhcp](https://github.com/claymore666/docker-net-dhcp) network
