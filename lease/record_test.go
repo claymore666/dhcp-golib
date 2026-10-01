@@ -744,6 +744,12 @@ func snakeCase(name string) string {
 		if upper && i > 0 {
 			prevLower := r[i-1] >= 'a' && r[i-1] <= 'z'
 			nextLower := i+1 < len(r) && r[i+1] >= 'a' && r[i+1] <= 'z'
+			// A version token such as the Pv6 of IPv6Only stays whole, so the
+			// key reads ipv6_only and not i_pv6_only
+			// (claymore666/docker-net-dhcp#1027).
+			if i+2 < len(r) && r[i+1] == 'v' && r[i+2] >= '0' && r[i+2] <= '9' {
+				nextLower = false
+			}
 			if prevLower || nextLower {
 				out = append(out, '_')
 			}
