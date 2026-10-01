@@ -81,11 +81,11 @@ it gets no Request, Decline or Release: the client waits for the server's
 value, never less than five minutes, or until the link comes up again, and then
 starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
 and in any other state, a two-message Ack included, the lease stands. A client
-without the flag ignores the option. The wire for the
-other options is in the tree, and the client behaviour for each is planned in the
-rows above. A DHCPv4 client lists the Forcerenew Nonce option (RFC 6704) in its
-Discover and every Request and keeps the nonce its Ack gives. A DHCPFORCERENEW
-is acted on only when it was sent to the leased address, names this client, and
+without the flag ignores the option. The wire and the client behaviour for every
+option in the rows above ship in this release. A DHCPv4 client lists the
+Forcerenew Nonce option (RFC 6704) in its Discover and every Request and keeps
+the nonce its Ack gives. A DHCPFORCERENEW is acted on only when it was sent to
+the leased address, names this client, and
 carries an HMAC-MD5 over its own octets under that nonce with a replay value
 above the last one used; a client that holds a lease then renews like T1 (one
 already renewing or rebinding only raises the replay floor), and anything else is
@@ -105,7 +105,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v110).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v120).
 
 ## Usage
 

@@ -28,10 +28,9 @@ import (
 // has THIS header (§8) and is decoded here; whether one is obeyed is §16.11's
 // and §18.2.11's question, which proto.Machine6 answers.
 //
-// D25 keeps IA_PD out of the 2.0 line. It is not implemented and not
-// special-cased: an option this codec does not name survives decoding as bytes
-// under its numeric code, which is what §16 requires of everyone ("Clients,
-// relay agents, and servers MUST NOT discard messages that contain unknown
+// An option this codec does not name survives decoding as bytes under its
+// numeric code, which is what §16 requires of everyone ("Clients, relay
+// agents, and servers MUST NOT discard messages that contain unknown
 // options"). Rapid Commit (§21.14) and IA_TA (§21.5) are named since v1.2.0,
 // claymore666/docker-net-dhcp#926 and #927.
 //

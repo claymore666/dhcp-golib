@@ -5,16 +5,23 @@
 One command, one verdict. Exit 0 is PASS and is the normal state; exit 1 is
 FAIL. A step that cannot be measured records FAIL. It may not record SKIPPED.
 
-It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
-gate roster cross-check, the T1 and T2 gates, the race-enabled pure unit suite
-under a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a
-test that never returns; it is computed after `go test` comes back), the
-namespaced dnsmasq and Kea tests under a ceiling and a timeout of their own, a check
-that the flags each of those runs with carry a hang timeout that exceeds its
-ceiling and that each invocation expands its own flag array, a check that every
-test function DECLARED in a `_test.go` file actually ran, a citation check, a
-byte-for-byte comparison of every fenced block in the README's Usage section
-against the Example function it names, and its own oracle.
+It runs, in the order of `MANIFEST_ROWS` in
+[`verify.manifest.sh`](../verify.manifest.sh), these rows: `self-check`, which
+feeds the verdict writer verdicts it must refuse; `citations`, the check that
+every test name a document cites is declared; `bounds`, the check that the flags
+each test run carries a hang timeout that exceeds its ceiling and that each
+invocation expands its own flag array; `build`; `vet`; `gofmt`; `shellcheck`
+over the shell scripts; `doc-numbers`, the sweep that refuses a number in prose
+which an instrument already owns; `readme-usage`, the byte-for-byte comparison
+of every fenced block in the README's Usage section against the Example function
+it names; `gate-roster`, the gate roster cross-check; `t1` and `t2`, the two
+gates; the `unit-suite`, the race-enabled pure unit suite under a wall-clock
+ceiling AND a `go test -timeout` (the ceiling cannot bound a test that never
+returns; it is computed after `go test` comes back) with a check that every test
+function DECLARED in a `_test.go` file actually ran; the `netns-suite`, the
+namespaced dnsmasq and Kea tests under a ceiling and a timeout of their own;
+`self-drive`, which plants defects in a copy and requires the row that owns each
+one to go red; and `verify-oracle`, its own oracle.
 
 No row can report PASS on an exit status alone. A row records PASS only by also
 stating how many things it examined, and a count that is absent or zero is
@@ -363,9 +370,11 @@ this page does not assume it:
 So the rule is met with about forty seconds to spare, and the spare is where a
 reader should look first when it stops being met: roughly half of each job is
 [`verify.sh`](../verify.sh) and the other half is the checkout, the toolchain and the
-packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of ten
-shards whose longest ran 11m34s (run 34204814646). That is why it is not in this
-table.
+packages `prepare.sh` installs. The oracle is a matrix cut from
+`MANIFEST_SCENARIOS` at the shard size
+[`verify.yml`](../.github/workflows/verify.yml) sets (eleven shards at v1.2.0);
+for the tree of this table it was ten shards whose longest ran 11m34s (run
+34204814646). That is why it is not in this table.
 
 **Which pushes wait for it, since the required check is downstream of it.**
 `the arbiter` is the job `dev` is protected on, and it carries

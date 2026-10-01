@@ -191,10 +191,10 @@ func TestCapturedRouterAdvertDecodes(t *testing.T) {
 //
 // RFC 4861 §4.2 draws the octet "|M|O|  Reserved |" most significant bit first,
 // so M is 0x80 and O is 0x40. §4.6.2 draws "|L|A| Reserved1 |", so L is 0x80
-// and A is 0x40. RFC 9762 puts R at 0x20 and P at 0x10 in the RA octet, and
-// §7.1 says: "Clients that do not support DHCPv6 prefix delegation MUST ignore
-// the P flag." Prefix delegation is v2.2 (D25), so this decoder reads M and O
-// and nothing else in that octet changes its answer.
+// and A is 0x40. RFC 9762 puts R at 0x20 and P at 0x10 in the RA octet. A
+// delegated prefix is asked for by Params6.PrefixHint and not by a router's
+// flag (claymore666/docker-net-dhcp#214), so this decoder reads M and O and
+// nothing else in that octet changes its answer.
 func TestRouterAdvertFlagsAreReadFromTheirOwnBits(t *testing.T) {
 	ra := func(flags uint8) []byte {
 		b := make([]byte, raFixedLen)

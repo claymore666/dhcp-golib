@@ -216,7 +216,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   one that fails takes the same Reply's temporary addresses with it; both are
   driven in [`proto`](../proto), where each address can be failed on its own.
   A lease resumed from a remembered binding has no temporary address, because
-  a Confirm is not followed by a Request.
+  a Confirm is not followed by a Request
+  (`TestTemporaryIsNotAskedForOnAResumedLease`).
 - **A delegated prefix from a real server, reported and never installed.** A client
   with `PrefixHint` set sends an IA_PD with the IA_NA's IAID and one hint IA
   Prefix of that length in its Solicit and Request, and again in every Renew,
@@ -490,7 +491,12 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   A Reconfigure accepted since the last Reply that carries a lease reaches the
   record at that Reply, so a restart before it accepts those Reconfigures
   again; an Information-request Reconfigure emits no lease, so several can wait
-  there. Other servers' entries are lost at a restart.
+  there. A Reconfigure key carried by an Information-request Reply reaches the
+  record at the next lease Reply too, the same window as the floor; a restart
+  inside it restores the earlier key, so the server's valid Reconfigures are
+  refused until a Reply brings a key again
+  (`TestAKeyChangedInAnInformationRequestReplyReachesTheRecordAtTheNextLeaseReply`).
+  Other servers' entries are lost at a restart.
   A Reconfigure discarded before the state
   machine — a datagram that would not decode, or one the transport dropped as
   addressed to another node — is in neither counter.

@@ -80,13 +80,13 @@ import (
 // here and by lease.TestOneMalformedPrefixDoesNotHideTheRouterThatSentIt one
 // ring up.
 //
-// PREFIX DELEGATION IS OUT (D25), SO THE P FLAG IS IGNORED. RFC 9762 adds a P
-// flag to the Prefix Information option after L, A and R, and §9.1 amends RFC
-// 4861 §4.2's note to read "If the M, O, or P (RFC 9762) flags are not set,
-// this indicates that no information is available via DHCPv6." This client does
-// not support prefix delegation, and RFC 9762 §7.1 is explicit about what such
-// a client does: "Clients that do not support DHCPv6 prefix delegation MUST
-// ignore the P flag."
+// THE P FLAG IS NOT READ. RFC 9762 adds a P flag to the Prefix Information
+// option after L, A and R, and §9.1 amends RFC 4861 §4.2's note to read "If the
+// M, O, or P (RFC 9762) flags are not set, this indicates that no information
+// is available via DHCPv6." This decoder reads M and O only: the client asks
+// for a delegated prefix when its caller sets Params6.PrefixHint, never because
+// a router advertised one, so a router that sets only P reads as having no
+// DHCPv6 information (claymore666/docker-net-dhcp#214).
 
 // The ICMPv6 types of RFC 4861 §4.
 const (
@@ -457,9 +457,8 @@ type RouterAdvert struct {
 	// DHCPv6." That sentence is what turns "the DHCPv6 server did not answer"
 	// into "there is no DHCPv6 server here, and the router said so" — a
 	// distinction the 1.9.0 plugin could not make. RFC 9762 §9.1 amends the
-	// note to include its P flag; prefix delegation is out of scope (D25) and
-	// §7.1 tells such a client to ignore P, so this decoder reads M and O and
-	// the two of them decide.
+	// note to include its P flag, which this decoder does not read (the note on
+	// the P flag near the top of this file), so M and O decide.
 	Other bool
 
 	// RouterLifetime is in seconds. "A Lifetime of 0 indicates that the router

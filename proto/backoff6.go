@@ -27,10 +27,11 @@ import (
 // Params6 is RFC 9915 §7.6's Table 1, "Transmission and Retransmission
 // Parameters", as a value.
 //
-// Two of the twenty-five are absent. REC_TIMEOUT and REC_MAX_RC belong to
-// Reconfigure, which is v2.2's (D25) and which this client refuses at the codec
-// (wire.ErrV6NotForClient); HOP_COUNT_LIMIT belongs to a relay agent. Naming
-// them here would be an enumeration of parameters nothing reads.
+// Two of the twenty-five are absent. REC_TIMEOUT and REC_MAX_RC pace the
+// server's retransmission of a Reconfigure, which this client receives and
+// obeys under §16.11 and has served since v1.0.0 (README.md, Reconfigure row);
+// HOP_COUNT_LIMIT belongs to a relay agent. Naming them here would be an
+// enumeration of parameters nothing reads.
 type Params6 struct {
 	// Solicit, §18.2.1.
 	SolMaxDelay Duration
