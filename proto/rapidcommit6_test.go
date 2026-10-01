@@ -663,3 +663,28 @@ func rc6RapidWith(t *testing.T, xid uint32, addrs []iaAddrSpec) Event {
 	return receivedV6(t, wire.MsgReply, xid, optClientID(capDUID), optServerID(testServerDUID),
 		optIANA(t, capIAID, 0xFFFFFFFF, 0xFFFFFFFF, addrs), wire.RapidCommitOption())
 }
+
+// TestANotOnLinkAfterTheRequestKeepsTheConfiguredHint: only a Reply to the
+// Solicit remembers a refused hint. A NotOnLink to a Request is the base's
+// transition and the restarted Solicit still asks, whether or not the client
+// asked for Rapid Commit (claymore666/docker-net-dhcp#926).
+func TestANotOnLinkAfterTheRequestKeepsTheConfiguredHint(t *testing.T) {
+	for _, rapid := range []bool{false, true} {
+		p := rc6Params(rapid)
+		p.Hint = addr6(rc6Addr)
+		m, sol := solicit6(t, p)
+		_, acts := m.Step(at(2), capXIDRequest, advertise(t, sol.XID, 255))
+		req := mustSendV6(t, acts, wire.MsgRequest6)
+		s, _ := m.Step(at(3), 0, receivedV6(t, wire.MsgReply, req.XID,
+			optClientID(capDUID), optServerID(testServerDUID), optStatus(wire.StatusNotOnLink)))
+		if s != State6Init {
+			t.Fatalf("rapid=%t: NotOnLink to the Request left the machine in %s", rapid, s)
+		}
+		_, acts = m.Step(at(4), capXIDSolicit, TimerFired(Timer6Delay))
+		again := mustSendV6(t, acts, wire.MsgSolicit)
+		ia, ok := again.Options.First(wire.OptV6IANA)
+		if !ok || !bytes.Contains(ia, addr6(rc6Addr).AsSlice()) {
+			t.Errorf("rapid=%t: the Solicit after a NotOnLink to the Request lost the configured hint", rapid)
+		}
+	}
+}
