@@ -33,7 +33,7 @@ and it needs no root.
 | Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | yes |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/927) |
-| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
+| Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | yes | yes |
 | Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
 | Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | yes | n/a |
 | Read the NAT64 prefix a Router Advertisement carries (PREF64, RFC 8781) | n/a | yes |
@@ -80,9 +80,16 @@ value, never less than five minutes, or until the link comes up again, and then
 starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
 and in any other state, a two-message Ack included, the lease stands. A client
 without the flag ignores the option. The wire for the
-other options and for DHCPFORCERENEW is in the tree, and the client behaviour
-for each is planned in the rows above: a reconfiguration the server starts,
-signed with the Forcerenew Nonce of RFC 6704.
+other options is in the tree, and the client behaviour for each is planned in the
+rows above. A DHCPv4 client lists the Forcerenew Nonce option (RFC 6704) in its
+Discover and every Request and keeps the nonce its Ack gives. A DHCPFORCERENEW
+is acted on only when it was sent to the leased address, names this client, and
+carries an HMAC-MD5 over its own octets under that nonce with a replay value
+above the last one used; it then renews like T1, and anything else is discarded
+and counted by reason. An Ack that follows an Offer which listed the option and
+carries no valid nonce is discarded, and the client starts over. A client
+restarted from its record holds no nonce and refuses every DHCPFORCERENEW until
+its next Ack gives one.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -255,10 +262,10 @@ The bounds below are written down so that nobody has to infer them.
 - No relay agent. A DHCPv6 Relay-forward or a Relay-reply is refused by the
   decoder by name, before its options are parsed. Nothing here forwards
   another host's messages.
-- No server-initiated reconfiguration on IPv4 yet. A message that arrives at a
-  bound client with no exchange in flight is discarded, RFC 3203's
-  DHCPFORCERENEW included, until the [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) row lands.
-  DHCPv6's Reconfigure is served, which is a `yes` row above.
+- No unauthenticated DHCPFORCERENEW. RFC 3203's message is acted on only with
+  the nonce authentication of RFC 6704 ([#1119](https://github.com/claymore666/docker-net-dhcp/issues/1119)); a server that gave no nonce cannot
+  make an IPv4 client renew, and a frame sent to a broadcast or multicast address
+  is discarded. DHCPv6's Reconfigure is served, which is a `yes` row above.
 - No DHCPINFORM. An IPv4 caller that already has an address and wants only the
   parameters is not served. DHCPv6's Information-request is sent, and it is how
   a stateless link is served.

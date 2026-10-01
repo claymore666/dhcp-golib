@@ -165,6 +165,22 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsmasq`).
   The wait's end and a link coming up are driven on the machine's own clock in
   `proto` (`TestTheWaitEndsInAFreshDiscover`, `TestALinkUpEndsTheWaitEarly`).
+- **A DHCPFORCERENEW the client obeys only when it is genuine and unicast.**
+  dnsmasq is given the server's Forcerenew Nonce Capable and Authentication
+  options as fixed bytes, so the client's Discover and Request carry the first,
+  the Ack's nonce becomes the lease's key, and a frame signed with it renews
+  the lease: dnsmasq's log holds a second DHCPREQUEST and DHCPACK with the
+  DHCPDISCOVER count unmoved.
+  The frame is synthetic, since dnsmasq sends none. A frame addressed to
+  the broadcast address, one with a flipped digest and one that repeats a spent
+  replay value each start nothing, read as an absence window on a second
+  socket and as a refusal in the journal, and the same bytes sent again after
+  they were obeyed are refused too
+  (`TestAForcerenewIsObeyedOnlyWhenItIsAuthenticAndUnicast`). The same server
+  proves only that the client sends the Forcerenew Nonce option and keeps the nonce; it is not a
+  conformant FORCERENEW server. The refusals and the replay floor are driven
+  on the machine's own clock in `proto`
+  (`TestEveryRefusalLeavesTheMachineAsItWas`, `TestTheReplayFloorIsStrict`).
 - **A two-message DHCPv6 lease from a real server, and the four-message one
   from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
   Solicit and in no other message. dnsmasq answers a Solicit that carries it with
