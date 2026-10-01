@@ -224,6 +224,14 @@ type Machine6 struct {
 	// was handed. See ReconfigureCounters.
 	reconfCounts ReconfigureCounters
 
+	// rapidCounts is what this machine did with Replies carrying option 14.
+	// See RapidCommitCounters (claymore666/docker-net-dhcp#926).
+	rapidCounts RapidCommit6Counters
+
+	// hintOffLink is the Hint a Reply+14 answered NotOnLink; solicitHint does
+	// not send it again (claymore666/docker-net-dhcp#926).
+	hintOffLink netip.Addr
+
 	// reconfDetour says the Information-request in flight was asked for by a
 	// Reconfigure while this machine was BOUND6, so its Reply returns to
 	// BOUND6 rather than leaving the lease behind in INFO-REQUESTING6.
@@ -630,11 +638,14 @@ func (m *Machine6) stepSelecting6(now Instant, rnd uint64, ev Event, out *action
 		if !ok {
 			return
 		}
-		if msg.Type != wire.MsgAdvertise {
+		switch msg.Type {
+		case wire.MsgAdvertise:
+			m.takeAdvertise(now, rnd, msg, out)
+		case wire.MsgReply:
+			m.takeRapidReply(now, rnd, msg, out)
+		default:
 			out.journal(m, fmt.Sprintf("a %s arrived while soliciting: ignored", msg.Type))
-			return
 		}
-		m.takeAdvertise(now, rnd, msg, out)
 	case EvTimerFired:
 		switch ev.Timer {
 		case Timer6Retransmit:
@@ -905,6 +916,7 @@ func (m *Machine6) stepDAD6(now Instant, rnd uint64, ev Event, out *actions) {
 		}
 	case EvReceived:
 		if m.msgType != wire.MsgDecline6 {
+			m.countRapidDiscard(ev.MsgV6)
 			out.journal(m, "message received while waiting for duplicate address detection: ignored")
 			return
 		}
@@ -1001,6 +1013,7 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 	case EvLinkDown:
 		m.halt(out, ReasonLinkDown)
 	case EvReceived:
+		m.countRapidDiscard(ev.MsgV6)
 		out.journal(m, "message received while bound with no exchange in flight: ignored")
 	case EvStart:
 		out.journal(m, "already bound")
@@ -1361,6 +1374,14 @@ func (m *Machine6) noteActionFailed(now Instant, rnd uint64, ev Event, out *acti
 // reason and a machine that dropped it for the right one look identical from
 // outside, and the journal line is the only thing that separates them.
 func (m *Machine6) admit(ev Event, out *actions) (*wire.MessageV6, bool) {
+	msg, ok := m.admitMsg(ev, out)
+	if !ok {
+		m.countRapidDiscard(ev.MsgV6)
+	}
+	return msg, ok
+}
+
+func (m *Machine6) admitMsg(ev Event, out *actions) (*wire.MessageV6, bool) {
 	msg := ev.MsgV6
 	if msg == nil {
 		out.journal(m, "nil v6 message: discarded")
@@ -1667,6 +1688,11 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 			out.journal(m, "Reply says NotOnLink while a lease is held: the address is not on this link, ending the lease (stated bound; §18.2.10.1 and §18.2.10.3 both address a client that holds none)")
 			m.loseLease(out, ReasonNak)
 		}
+		if m.state == State6Selecting {
+			// A Reply+14 to a hinted Solicit: restarting with the same hint
+			// would draw the same NotOnLink at once (claymore666/docker-net-dhcp#926).
+			m.rejectRapidHint()
+		}
 		out.journal(m, "Reply says NotOnLink: restarting discovery (§18.2.10.1)")
 		// After the loss and before the restart, which is v4's order for a
 		// DHCPNAK (D30): a caller tears the interface down when it sees the
@@ -1707,6 +1733,13 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// IAs, the client may either try another server (perhaps restarting the
 		// DHCP server discovery process) or use the Information-request message
 		// to obtain other configuration information only."
+		if m.state == State6Selecting {
+			// A Reply+14 with no address answers the Solicit, not a Request:
+			// m.server is nobody's and the Solicit schedule is still running
+			// (claymore666/docker-net-dhcp#926).
+			out.journal(m, "no usable address in the Reply to the Solicit: soliciting on (§18.2.1)")
+			return
+		}
 		if !renewal {
 			m.tried = append(m.tried, m.server)
 			if m.selectAndRequest(now, rnd, out) {
@@ -2137,7 +2170,7 @@ func (m *Machine6) rememberDeclined(addrs []netip.Addr) {
 // decides which messages carry it.
 func (m *Machine6) solicitHint() netip.Addr {
 	h := m.params.hintAddr()
-	if h.IsValid() && containsAddr(m.declined, h) {
+	if h.IsValid() && (containsAddr(m.declined, h) || h == m.hintOffLink) {
 		return netip.Addr{}
 	}
 	return h
@@ -2518,6 +2551,13 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 			// §21.20: "option-len: 0". The option IS the announcement.
 			msg.Options = append(msg.Options, wire.OptionV6{Code: wire.OptV6ReconfAccept})
 		}
+	}
+
+	// §18.2.1 and §21.14: option 14 rides the Solicit and no other message; a
+	// retransmitted Solicit is built here again and carries it again
+	// (claymore666/docker-net-dhcp#926).
+	if m.params.RapidCommit && t == wire.MsgSolicit {
+		msg.Options = append(msg.Options, wire.RapidCommitOption())
 	}
 
 	if ia, ok, err := m.buildIA(t); err != nil {
