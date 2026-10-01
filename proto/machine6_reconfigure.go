@@ -322,6 +322,38 @@ func (m *Machine6) noteReconfigureKey(msg *wire.MessageV6, out *actions) {
 	out.journal(m, fmt.Sprintf("the %s carries a %d-octet reconfigure key: recorded for this server (§20.4.3)", msg.Type, len(val)))
 }
 
+// seedReconfigure restores the RKAP entry of the server a resumed lease came
+// from. Only that entry is restored: the others are lost at a restart, as
+// every entry was before. A floor given without the seen flag is read as seen,
+// so a caller that fills only the value is not handed an unchecked first
+// Reconfigure (RFC 9915 §20.3; claymore666/dhcp-golib#28).
+func (m *Machine6) seedReconfigure(r *Resume6) {
+	if r == nil || len(r.ReconfigureKey) == 0 {
+		return
+	}
+	m.reconf = map[string]*reconfServer{string(r.ServerDUID): {
+		key:    append([]byte(nil), r.ReconfigureKey...),
+		replay: r.ReconfigureReplay,
+		seen:   r.ReconfigureReplaySeen || r.ReconfigureReplay != 0,
+	}}
+}
+
+// withReconfigure is l carrying the entry its server holds now: the key the
+// Reply brought or the one already held, and the floor as it stands. A
+// Reconfigure accepted since the last lease-bearing Reply reaches the record
+// at the next one, so a restart before it accepts those Reconfigures again.
+// An Information-request one emits no lease, and ActLeaseRenewed would claim
+// an extension nothing made, so several can wait (claymore666/dhcp-golib#28).
+func (m *Machine6) withReconfigure(l Lease6) Lease6 {
+	s := m.reconf[string(l.ServerDUID)]
+	if s == nil {
+		return l
+	}
+	l.ReconfigureKey = append([]byte(nil), s.key...)
+	l.ReconfigureReplay, l.ReconfigureReplaySeen = s.replay, s.seen
+	return l
+}
+
 // refuseReconfigure is the ONE way a Reconfigure is turned down. The reason
 // and the journal line leave together, so an arm cannot record the sentence
 // without the number or the number without the sentence, and an arm added

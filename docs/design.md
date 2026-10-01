@@ -466,8 +466,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestEveryReconfigureRefusalIsDeclaredCountedAndNamed`,
   `TestAnAcceptedReconfigureReachesStatsAndTheCounters`,
   `TestARefusedReconfigureReachesStatsWithTheRuleThatRefusedIt`). A refusal is
-  not a fault: a client that RESUMED a lease holds no reconfigure key and
-  refuses its server's Reconfigures one after another, because RFC 9915
+  not a fault: a client that RESUMED a lease from a record with no key holds
+  none and refuses its server's Reconfigures one after another, because RFC 9915
   Appendix B Table 5 gives the Reconfigure Accept option no mark for Confirm
   and §20.4.2 says "The server selects a reconfigure key for a client during
   the Request/Reply, Solicit/Reply, or Information-request/Reply message
@@ -482,7 +482,16 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestAResumedClientIsKeylessUntilAReplyCarriesAKey` drives the span, the
   Renew's Reply that ends it, and the exchanges §20.4.2 does name;
   `TestAKeyInAReplyThisClientRefusesDoesNotEndTheKeylessSpan` drives the
-  boundary. A Reconfigure discarded before the state
+  boundary.
+  The key, the replay floor and whether a floor exists are in the lease record
+  (`reconfigure_key`, `reconfigure_replay`, `reconfigure_replay_seen`) and
+  restore the resumed lease's own server's entry, so a record that has them
+  starts no keyless span (`TestAResumedLeaseAuthenticatesAReconfigureSignedWithItsRestoredKey`).
+  A Reconfigure accepted since the last Reply that carries a lease reaches the
+  record at that Reply, so a restart before it accepts those Reconfigures
+  again; an Information-request Reconfigure emits no lease, so several can wait
+  there. Other servers' entries are lost at a restart.
+  A Reconfigure discarded before the state
   machine — a datagram that would not decode, or one the transport dropped as
   addressed to another node — is in neither counter.
 - **The namespace and the thread.** The v6 client's three sockets and its

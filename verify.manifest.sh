@@ -956,7 +956,13 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster -netns reads 65 on the base, 71 here. NETNS_CEILING_SECONDS moves
 # with them, 170 -> 298, pinned below in the ceiling-band row; the derivation
 # is in verify.sh above the constant.
-MIN_DECLARED_TESTS=1195
+#
+# THE DHCPv6 RECONFIGURE KEY AND REPLAY FLOOR ACROSS A RESTART,
+# claymore666/dhcp-golib#28: twenty-five added, none removed, MEASURED as
+# testroster runs, 1195 on the base and 1220 here. proto/
+# machine6_reconfigure_persist_test.go 16 and lease/reconfigure_record_test.go
+# 9; no netns test among them.
+MIN_DECLARED_TESTS=1220
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

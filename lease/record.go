@@ -1280,6 +1280,7 @@ func CloneLease(l Lease) Lease {
 	l.DomainSearch = append([]string(nil), l.DomainSearch...)
 	l.Options = l.Options.Clone()
 	l.ForcerenewNonce = append([]byte(nil), l.ForcerenewNonce...)
+	l.ReconfigureKey = append([]byte(nil), l.ReconfigureKey...)
 	return l
 }
 

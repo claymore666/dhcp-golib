@@ -21,18 +21,24 @@
 // discard rule is applied, and a message that fails RKAP authentication or
 // repeats a §20.3 replay detection value is dropped with a journal line.
 //
-// Four things this does NOT do, stated here because a default that is on
-// makes all of them reachable:
+// What this does NOT do, stated here because a default that is on makes all
+// of it reachable:
 //
-// No reconfigure key survives a restart. A key is held in the Machine6 alone:
-// not in Resume6, and not in the lease record a caller persists, because it is
-// a shared secret and that record is the one callers log and hand to Journal6.
-// A machine rebuilt after a restart therefore discards every
-// Reconfigure from its server until the next Solicit/Reply, Request/Reply or
-// Information-request/Reply hands it a new key (§20.4.2).
+// A reconfigure key survives a restart only through Resume6. The key, the
+// replay floor and whether a floor exists ride Lease6, the record and Resume6
+// (claymore666/dhcp-golib#28), and the machine restores the entry of the
+// lease's own server from them. Two bounds stay: every other server's entry
+// is lost at a restart, and a Reconfigure accepted since the last Reply that
+// carries a lease moves the floor in the machine only: the record gets it at
+// that Reply, so a restart before it accepts those Reconfigures again. An
+// Information-request Reconfigure emits no lease, so any number of them can
+// wait there. A machine rebuilt from a
+// Resume6 with no key discards every Reconfigure from its server until the
+// next Solicit/Reply, Request/Reply or Information-request/Reply hands it a
+// new key (§20.4.2).
 //
-// That span is not one message, and it is not bounded by the resume. A
-// resumed client's first message is §18.2.3's Confirm, which Appendix B Table
+// The keyless span of a resume with no key is not one message, and it is not
+// bounded by the resume. A resumed client's first message is §18.2.3's Confirm, which Appendix B Table
 // 5 does not allow the Reconfigure Accept option in, so the resume itself
 // reaches no exchange §20.4.2 hands a key to, and each Reconfigure that
 // arrives meanwhile is reported as ReconfigureRefusalNoKey. What ends the span
@@ -46,11 +52,12 @@
 // exchanges §20.4.2 names, the span is the whole
 // life of the resumed lease.
 //
-// The recorded datagram is the exception to that, and a caller handing out a
-// journal needs it: the Reply that delivered the key keeps it verbatim in
-// JournalEntry6.Raw and in the packet capture, because a replay needs the
-// octets. The sentence above is about what a rebuilt machine holds, and not
-// about what a saved journal contains.
+// The key is in three places a caller can hand to somebody else. The lease
+// record carries it as reconfigure_key, where a DHCPv4 lease's nonce already
+// sits, and so does the Params6 snapshot of a run that started from a resume.
+// The Reply that delivered it keeps it verbatim in JournalEntry6.Raw and in the
+// packet capture, because a replay needs the octets. No note, action or error
+// string carries it.
 //
 // Half of §16.11's first bullet is somebody else's. "the message was not
 // unicast to the client" is a fact about the datagram, and this package
