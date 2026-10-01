@@ -275,17 +275,15 @@ func isTemp(l Lease6, a netip.Addr) bool {
 // another one); a Decline carries the temporary addresses it declines, with
 // lifetimes zero. A Renew, a Rebind, a Release and a Confirm carry none
 // (claymore666/docker-net-dhcp#927).
-func (m *Machine6) buildTA(addrs []Addr6, zeroLifetimes bool) (wire.OptionV6, error) {
+func (m *Machine6) buildTA(addrs []Addr6) (wire.OptionV6, error) {
 	ia := &wire.IATA{IAID: m.params.IAID}
 	for _, a := range addrs {
 		if !a.Addr.Is6() || a.Addr.Is4In6() || a.Addr.IsUnspecified() {
 			continue
 		}
 		e := &wire.IAAddr{Addr: a.Addr}
-		if !zeroLifetimes {
-			e.PreferredLifetime = durationToSeconds(a.Preferred)
-			e.ValidLifetime = durationToSeconds(a.Valid)
-		}
+		e.PreferredLifetime = durationToSeconds(a.Preferred)
+		e.ValidLifetime = durationToSeconds(a.Valid)
 		v, err := wire.EncodeIAAddr(e)
 		if err != nil {
 			return wire.OptionV6{}, err

@@ -2697,21 +2697,18 @@ func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
 		out = append(out, na)
 	}
 	var ta []Addr6
-	zero := false
 	switch {
 	case t == wire.MsgSolicit && m.params.Temporary:
-		zero = true
 	case t == wire.MsgRequest6 && m.params.Temporary:
 		ta = m.pending.TempAddrs
 	case t == wire.MsgDecline6 && len(m.decliningTA) > 0:
 		for _, a := range m.decliningTA {
 			ta = append(ta, Addr6{Addr: a})
 		}
-		zero = true
 	default:
 		return out, nil
 	}
-	v, err := m.buildTA(ta, zero)
+	v, err := m.buildTA(ta)
 	if err != nil {
 		return nil, err
 	}
