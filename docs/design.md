@@ -164,6 +164,23 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsmasq`).
   The wait's end and a link coming up are driven on the machine's own clock in
   `proto` (`TestTheWaitEndsInAFreshDiscover`, `TestALinkUpEndsTheWaitEarly`).
+- **A two-message DHCPv6 lease from a real server, and the four-message one
+  from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
+  Solicit and in no other message. dnsmasq answers a Solicit that carries it with
+  a Reply, whatever its `--dhcp-rapid-commit` flag, which is the DHCPv4 switch, so the
+  client's setting is the only one that decides. The server's log holds
+  DHCPSOLICIT and DHCPREPLY with no DHCPADVERTISE and no DHCPREQUEST, beside the
+  lease the client reports
+  (`TestAV6ClientThatAsksForRapidCommitGetsTheTwoMessageLease`). The same server
+  and a client that does not ask gives Solicit, Advertise, Request, Reply
+  (`TestAV6ClientThatDoesNotAskGetsTheFourMessageExchangeFromTheSameDnsmasq`), and
+  the renewal after the rapid lease is a Renew and a Reply with the DHCPSOLICIT
+  count unmoved and no Rapid Commit option in any Renew the client sent
+  (`TestARenewAfterARapidV6LeaseCarriesNoOption14`). dnsmasq cannot be made to
+  answer such a Solicit with a plain Advertise, so that fallback is driven in
+  [`proto`](../proto) alone, with the refusals of a Reply that carries the option
+  (`TestARapid6ReplyIsDiscardedWhereItAnswersNothingTheClientSent`,
+  `TestAPlainAdvertise6ToARapidSolicitLeadsToRequestAndReply`).
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
