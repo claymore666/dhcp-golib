@@ -348,6 +348,24 @@ str_has() { local text="$1"; shift; grep -q "$@" <<<"$text"; }
 FAILS=()
 note() { FAILS+=("$*"); }
 
+# diag — stdin becomes DIAGNOSTIC lines of the account, the evidence a red
+# scenario's note cannot carry (claymore666/docker-net-dhcp#214). The prefix is
+# not RESULT, SHARD or ORACLE, so no reader of the account counts or parses
+# them. Under the driver they go to a file it prints after the sorted results,
+# because parallel children writing many lines into one file would splice them;
+# a lone --scenario run prints them itself, ahead of its RESULT line.
+diag() {
+	local line n=0
+	while IFS= read -r line; do
+		n=$((n + 1))
+		if [ -n "${ORACLE_DIAG_FILE:-}" ]; then
+			printf 'DIAGNOSTIC %s %03d | %.200s\n' "$SC_NAME" "$n" "$line" >>"$ORACLE_DIAG_FILE"
+		else
+			printf 'DIAGNOSTIC %s %03d | %.200s\n' "$SC_NAME" "$n" "$line"
+		fi
+	done
+}
+
 # ---------------------------------------------------------------- scenarios --
 #
 # Each scenario prints exactly one line: RESULT <name> <PASS|FAIL> <detail>.
@@ -1887,7 +1905,15 @@ sc_netns_row_control() {
 	fabricating_stub "$d/scripts/test-verify.sh" "$((ORACLE_MIN_SECONDS + 1))" "netns-row-control"
 	run_verify_outer "$d"
 	[ "$RC" -eq 0 ] || note "an untouched tree did not pass with the netns row in it"
-	[ "$(row netns-suite)" = PASS ] || note "the netns row did not pass on an untouched tree: $(row netns-suite) — $(why netns-suite)"
+	if [ "$(row netns-suite)" != PASS ]; then
+		note "the netns row did not pass on an untouched tree: $(row netns-suite) — $(why netns-suite)"
+		# The row's own output, which verify.sh keeps under this marker; the
+		# window is the first failure and the lines around it (claymore666/docker-net-dhcp#214).
+		sed -n '/^--- netns-suite FAILED ---$/,/^step  *result/p' <<<"$OUT" | awk '
+			{ l[NR] = $0 } /^--- FAIL/ && !f { f = NR }
+			END { a = f ? f - 40 : 1; b = f ? f + 15 : 80
+			      for (i = (a < 1 ? 1 : a); i <= b && i <= NR; i++) print l[i] }' | diag
+	fi
 	[ "$(row unit-suite)" = PASS ] || note "the pure suite did not pass beside it: $(row unit-suite) — $(why unit-suite)"
 }
 
@@ -2107,8 +2133,8 @@ sc_ceiling_band() {
 	# 84.
 	[ "$v" -ge 13 ] && [ "$v" -le 102 ] ||
 		note "SUITE_CEILING_SECONDS=$v is outside 13..102; a ceiling under the healthy row's own figure reddens every run, and one above twice the slowest figure any lane machine has drawn is not a drift detector"
-	# The netns band's edges are NOT the suite's, and neither is guessed. 175 is
-	# the last value below NETNS_TIMEOUT_SECONDS=180: a netns ceiling at or
+	# The netns band's edges are NOT the suite's, and neither is guessed. 303 is
+	# the last value below NETNS_TIMEOUT_SECONDS=308: a netns ceiling at or
 	# above the hang timeout can never fire, because the parent kills the run
 	# before the ceiling can diagnose it. verify.sh's bounds row refuses that
 	# relation too, from the constants themselves; the two gates are meant to
@@ -2116,8 +2142,8 @@ sc_ceiling_band() {
 	# is under a third of the 94s the row measures unloaded, so a ceiling cut to
 	# a figure the HEALTHY row cannot meet — which reddens every green run and
 	# gets the row discharged — is refused at the same place.
-	[ "$nv" -ge 30 ] && [ "$nv" -le 175 ] ||
-		note "NETNS_CEILING_SECONDS=$nv is outside 30..175; a netns ceiling at or above the 180s hang timeout never fires, and one below the healthy row's own figure reddens every run"
+	[ "$nv" -ge 30 ] && [ "$nv" -le 303 ] ||
+		note "NETNS_CEILING_SECONDS=$nv is outside 30..303; a netns ceiling at or above the 308s hang timeout never fires, and one below the healthy row's own figure reddens every run"
 	# The values READ, not the fact of having looked. This contract used to
 	# demand nothing at all — an emptied body and a working one were the same
 	# line of output. The manifest names both numbers, so raising either ceiling
@@ -2771,7 +2797,9 @@ else
 fi
 
 results="$(mktemp)"
-trap 'rm -f "$results"' EXIT
+ORACLE_DIAG_FILE="$(mktemp)"
+export ORACLE_DIAG_FILE
+trap 'rm -f "$results" "$ORACLE_DIAG_FILE"' EXIT
 
 printf '%s\n' "${RUN_SET[@]}" | xargs -P "$JOBS" -I{} "$ROOT/scripts/test-verify.sh" --scenario {} >"$results" 2>&1 || true
 
@@ -2793,6 +2821,7 @@ fi
 # is the account it reads — a stub that prints only a summary line no longer
 # satisfies it.
 sort -k2,2 "$results" | sed 's/^/  /'
+[ ! -s "$ORACLE_DIAG_FILE" ] || sed 's/^/  /' "$ORACLE_DIAG_FILE"
 
 bad="$(grep -c '^RESULT [^ ]* FAIL' "$results" || true)"
 echo "---"

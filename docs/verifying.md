@@ -9,7 +9,7 @@ It runs `go build`, `go vet`, `gofmt`, `shellcheck` over the shell scripts, the
 gate roster cross-check, the T1 and T2 gates, the race-enabled pure unit suite
 under a wall-clock ceiling AND a `go test -timeout` (the ceiling cannot bound a
 test that never returns; it is computed after `go test` comes back), the
-namespaced dnsmasq tests under a ceiling and a timeout of their own, a check
+namespaced dnsmasq and Kea tests under a ceiling and a timeout of their own, a check
 that the flags each of those runs with carry a hang timeout that exceeds its
 ceiling and that each invocation expands its own flag array, a check that every
 test function DECLARED in a `_test.go` file actually ran, a citation check, a
@@ -362,7 +362,7 @@ this page does not assume it:
 
 So the rule is met with about forty seconds to spare, and the spare is where a
 reader should look first when it stops being met: roughly half of each job is
-[`verify.sh`](../verify.sh) and the other half is the checkout, the toolchain and the three
+[`verify.sh`](../verify.sh) and the other half is the checkout, the toolchain and the
 packages `prepare.sh` installs. The oracle, for the same tree, is a matrix of ten
 shards whose longest ran 11m34s (run 34204814646). That is why it is not in this
 table.
@@ -933,7 +933,7 @@ show it. The list is kept because every one of these is a hosted image again:
 developer's box and a hosted image are different hardware, and a ceiling that one
 meets and the other does not is a thing somebody has to look at. The first two
 causes above are handled by the lane and not by luck. [`.github/lane/prepare.sh`](../.github/lane/prepare.sh)
-clears the namespace restriction where the knob exists and installs the three
+clears the namespace restriction where the knob exists and installs the
 tools the arbiter shells out to, and the shards run one copy of the suite at a
 time. The last two were real defects in the library that only a machine with
 contention could show. A green run and a green local arbiter are two measurements

@@ -106,7 +106,11 @@ func reexecInNamespaces(t *testing.T) {
 	if _, err := os.Stat("/proc/self/ns/user"); err != nil {
 		t.Fatalf("this kernel has no user namespaces (%v); done-condition (a) cannot be measured here", err)
 	}
-	if _, err := findDnsmasq(); err != nil {
+	if isKeaTest(name) {
+		if _, err := findKea(); err != nil {
+			t.Fatalf("%v — install kea-dhcp6-server; the Kea tests fail closed without it (claymore666/docker-net-dhcp#214)", err)
+		}
+	} else if _, err := findDnsmasq(); err != nil {
 		t.Fatalf("%v — install dnsmasq; this test is the only one that talks to a real server", err)
 	}
 	if _, err := exec.LookPath("ip"); err != nil {
@@ -122,7 +126,7 @@ func reexecInNamespaces(t *testing.T) {
 	// `ip link add` then fails with EPERM, because CAP_NET_ADMIN was dropped
 	// by the exec rather than never granted.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | keaCloneFlags(name),
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
 		},
@@ -698,6 +702,10 @@ type dnsmasqServer struct {
 	// topology can read its own log lines back.
 	iface string
 
+	// tag is what each streamed log line is prefixed with; empty is dnsmasq.
+	// The Kea fixture reuses this type and sets it (claymore666/docker-net-dhcp#214).
+	tag string
+
 	mu  sync.Mutex
 	buf []string
 
@@ -841,7 +849,11 @@ func (s *dnsmasqServer) read(r io.Reader) {
 		// Streamed, not only buffered. The buffer is dumped in a Cleanup,
 		// and a Cleanup does not run when the child is killed on its own
 		// deadline — which is the one occasion the log is worth having.
-		fmt.Fprintf(os.Stderr, "dnsmasq| %s\n", line)
+		tag := s.tag
+		if tag == "" {
+			tag = "dnsmasq"
+		}
+		fmt.Fprintf(os.Stderr, "%s| %s\n", tag, line)
 		s.mu.Lock()
 		s.buf = append(s.buf, line)
 		s.mu.Unlock()

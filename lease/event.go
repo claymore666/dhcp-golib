@@ -139,6 +139,15 @@ type Lease struct {
 	// existed skips it.
 	TempAddrs []Addr6 `json:"temp_addrs,omitempty"`
 
+	// Prefixes is the delegated prefixes of the IA_PD beside Addrs, never
+	// inside it, each with its own deadlines: Addr is the prefix the server
+	// delegated, with the length the server chose (claymore666/docker-net-dhcp#214).
+	// It is empty unless Params6.PrefixHint was set or the resumed record held
+	// a prefix, and the server granted one. The library reports the prefix and
+	// installs nothing (RFC 3633 section 12.1). The tag is the one a record
+	// writes, so a reader built before the field existed skips it.
+	Prefixes []Addr6 `json:"prefixes,omitempty"`
+
 	// SLAAC says the addresses were FORMED from a Router Advertisement (RFC
 	// 4862 §5.5.3) rather than granted by a server.
 	//
@@ -513,6 +522,7 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	out.FQDN, out.HasFQDN = l.FQDN, l.HasFQDN
 	out.Addrs = outwardAddrs(l.Addrs, l.Start, b)
 	out.TempAddrs = outwardAddrs(l.TempAddrs, l.Start, b)
+	out.Prefixes = outwardPrefixes(l.Prefixes, l.Start, b)
 	// Domain is option 15's single name and has no DHCPv6 counterpart: RFC
 	// 3646 defines a search LIST (option 24) and no single-name option, so
 	// filling Domain from Search[0] would invent a fact the server did not
@@ -551,6 +561,23 @@ func outwardAddrs(in []proto.Addr6, start proto.Instant, b clockBridge) []Addr6 
 		}
 		if !a.Valid.IsInfinite() {
 			e.Valid = b.at(start.Add(a.Valid))
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// outwardPrefixes is outwardAddrs for the delegated prefixes: the prefix keeps
+// the length the server gave it (claymore666/docker-net-dhcp#214).
+func outwardPrefixes(in []proto.Prefix6, start proto.Instant, b clockBridge) []Addr6 {
+	var out []Addr6
+	for _, p := range in {
+		e := Addr6{Addr: p.Prefix}
+		if !p.Preferred.IsInfinite() {
+			e.Preferred = b.at(start.Add(p.Preferred))
+		}
+		if !p.Valid.IsInfinite() {
+			e.Valid = b.at(start.Add(p.Valid))
 		}
 		out = append(out, e)
 	}

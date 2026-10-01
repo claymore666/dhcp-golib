@@ -694,6 +694,7 @@ func newManager6(cfg Config) (*Manager, error) {
 			}
 		}
 		params.Resume = &proto.Resume6{
+			Prefixes:   resumedPrefixes(b, cfg.Resume6),
 			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
@@ -747,6 +748,22 @@ func newManager6(cfg Config) (*Manager, error) {
 		mg.journalNote("RFC 9915 §14.1's rate limit is disabled by Config.RateLimit.Messages < 0: this client will not bound the messages it sends")
 	}
 	return mg, nil
+}
+
+// resumedPrefixes is the delegated prefixes a record held, as the machine takes
+// them: they ride with the addresses so the machine rebinds rather than
+// confirms. A prefix with no valid lifetime of its own ends with the record, as
+// an address does (claymore666/docker-net-dhcp#214).
+func resumedPrefixes(b clockBridge, rec *Lease) []proto.Prefix6 {
+	var held []proto.Prefix6
+	for _, p := range rec.Prefixes {
+		held = append(held, proto.Prefix6{
+			Prefix:    p.Addr,
+			Preferred: remaining(b, p.Preferred),
+			Valid:     remaining(b, p.Valid, rec.Expire),
+		})
+	}
+	return held
 }
 
 // remaining is a wall-clock deadline expressed as the duration still to run,
