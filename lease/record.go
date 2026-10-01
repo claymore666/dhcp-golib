@@ -724,6 +724,35 @@ type WireCounters struct {
 	// client's own T1 produced, and a refused one produces no event at all.
 	ReconfiguresAccepted uint64 `json:"reconfigures_accepted,omitempty"`
 	ReconfiguresRefused  uint64 `json:"reconfigures_refused,omitempty"`
+
+	// The v1.2.0 feature counters, all wired and none folded
+	// (claymore666/docker-net-dhcp#1027). IPv6Only: option 108 adds no lease
+	// event beyond a Failed. RapidCommits: a lease taken with no Request is
+	// the same Acquired as one taken with it. Forcerenews: an obeyed one is a
+	// Renewed the fold cannot tell from T1's, a refused one has no event.
+	// TemporaryAddresses and Prefixes: the outcome rides inside Acquired and
+	// Renewed, and an absent or refused one has none.
+	IPv6OnlyWaited    uint64 `json:"ipv6_only_waited,omitempty"`
+	IPv6OnlyIgnored   uint64 `json:"ipv6_only_ignored,omitempty"`
+	IPv6OnlyMalformed uint64 `json:"ipv6_only_malformed,omitempty"`
+
+	RapidCommitsAccepted uint64 `json:"rapid_commits_accepted,omitempty"`
+	RapidCommitsRefused  uint64 `json:"rapid_commits_refused,omitempty"`
+
+	ForcerenewsRenewed         uint64 `json:"forcerenews_renewed,omitempty"`
+	ForcerenewsAlreadyRenewing uint64 `json:"forcerenews_already_renewing,omitempty"`
+	ForcerenewsAckRefused      uint64 `json:"forcerenews_ack_refused,omitempty"`
+	ForcerenewsRefused         uint64 `json:"forcerenews_refused,omitempty"`
+
+	TemporaryAddressesGranted    uint64 `json:"temporary_addresses_granted,omitempty"`
+	TemporaryAddressesRefused    uint64 `json:"temporary_addresses_refused,omitempty"`
+	TemporaryAddressesAbsent     uint64 `json:"temporary_addresses_absent,omitempty"`
+	TemporaryAddressesConflicted uint64 `json:"temporary_addresses_conflicted,omitempty"`
+
+	PrefixesGranted uint64 `json:"prefixes_granted,omitempty"`
+	PrefixesRefused uint64 `json:"prefixes_refused,omitempty"`
+	PrefixesAbsent  uint64 `json:"prefixes_absent,omitempty"`
+	PrefixesChanged uint64 `json:"prefixes_changed,omitempty"`
 }
 
 // The seven Stats fields WireCounters deliberately does not carry, because the
