@@ -34,10 +34,9 @@ import (
 
 const keaTestPrefix = "TestKea"
 
-// keaLeaseDir is the one path Kea accepts for a memfile lease database. The
-// package does not create it: it is the unit's StateDirectory=, made at the
-// service's first start, and the lane's prepare step creates it when the
-// service never ran (claymore666/docker-net-dhcp#214).
+// keaLeaseDir is the one path Kea accepts for a memfile lease database. Each
+// test checks it exists, then bind-mounts its own directory over it inside the
+// test's mount namespace (claymore666/docker-net-dhcp#214).
 const keaLeaseDir = "/var/lib/kea"
 
 // keaPDPrefix and the lengths below are the pool every Kea test delegates from:
@@ -139,7 +138,7 @@ func keaStart(t *testing.T, cfg keaConfig) *dnsmasqServer {
 		t.Fatalf("%v", err)
 	}
 	if _, err := os.Stat(keaLeaseDir); err != nil {
-		t.Fatalf("%s is missing (%v): it is the kea service's StateDirectory, created at its first start (the lane's prepare step creates it when the service never ran), and Kea accepts no other lease directory", keaLeaseDir, err)
+		t.Fatalf("%s is missing (%v): Kea accepts no other lease directory, so the test mounts its own over this one", keaLeaseDir, err)
 	}
 	dir := t.TempDir()
 	if err := syscall.Mount(dir, keaLeaseDir, "", syscall.MS_BIND, ""); err != nil {
