@@ -13,7 +13,9 @@
 # shard need exactly the same machine, and a lane that wrote these steps out
 # twice is a lane where a fix reaches one of them.
 #
-# Each thing here was measured on the image rather than assumed:
+# Each thing here was measured on the image rather than assumed. The apt calls
+# are bounded by a lock timeout, retries and a wall limit, and name the lock
+# holder on failure, so a stuck runner reads as a failure and not as silence.
 #
 #   - dnsmasq, kea-dhcp6-server, iproute2 and shellcheck. The arbiter shells
 #     out to all of them (netns-suite, the namespaced tests, the shellcheck row)
@@ -29,14 +31,31 @@
 
 set -euo pipefail
 
-sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-	dnsmasq-base kea-dhcp6-server iproute2 shellcheck >/dev/null
+# Both apt calls are bounded and loud. A fresh runner can hold the dpkg lock
+# in a background apt run or stall on a mirror, and an unbounded call then sits
+# silent until the job's own timeout kills it with nothing in the log. The
+# install's stdout is kept, because that is where apt says it is waiting for a
+# lock (claymore666/docker-net-dhcp#214).
+apt_bounded() {
+	local limit=$1 rc=0
+	shift
+	sudo env DEBIAN_FRONTEND=noninteractive timeout -k 10 "$limit" apt-get \
+		-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 \
+		-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+		"$@" || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		echo "apt-get $* failed after at most ${limit}s, exit $rc; lock holders follow" >&2
+		sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >&2 || true
+		ps -eo pid,etimes,cmd | awk '/[a]pt|[d]pkg|[u]nattended/' >&2 || true
+		exit "$rc"
+	fi
+}
+apt_bounded 240 update -qq
+apt_bounded 600 install -y -qq dnsmasq-base kea-dhcp6-server iproute2 shellcheck
 
-# /var/lib/kea is the unit's StateDirectory=, created at the service's first
-# start; the package leaves it to systemd, so a fresh runner has none and a Kea
-# test fails in 0.04 s on its os.Stat (claymore666/docker-net-dhcp#214). Create
-# it the way the unit would, and print what was found so the log is the proof.
+# The Kea tests stat /var/lib/kea and bind-mount a per-test directory over it.
+# Print what the runner has, so the log shows it, and make it only if absent
+# (claymore666/docker-net-dhcp#214).
 if [ ! -d /var/lib/kea ]; then
 	sudo install -d -m 0750 -o _kea -g _kea /var/lib/kea
 	echo "kea state directory: created"
