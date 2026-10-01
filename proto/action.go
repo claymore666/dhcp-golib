@@ -473,6 +473,12 @@ const (
 	// with the Autonomous flag, or only ones RFC 4862 §5.5.3 refuses. The
 	// SLAACIgnore counters say which rule refused them.
 	ReasonNoPrefix
+	// ReasonIPv6OnlyPreferred means a server answered with option 108: this
+	// network wants no IPv4 from a client that asked for IPv6-only service, and
+	// DHCPv4 is paused for V6ONLY_WAIT (RFC 8925 section 3.2). Nothing failed;
+	// the wait ends on its timer or on a link-up
+	// (claymore666/docker-net-dhcp#1027).
+	ReasonIPv6OnlyPreferred
 )
 
 func (r Reason) String() string {
@@ -503,6 +509,8 @@ func (r Reason) String() string {
 		return "no-router"
 	case ReasonNoPrefix:
 		return "no-prefix"
+	case ReasonIPv6OnlyPreferred:
+		return "ipv6-only-preferred"
 	default:
 		return fmt.Sprintf("reason(%d)", uint8(r))
 	}
@@ -746,6 +754,12 @@ type RouterObservation struct {
 	Search []string
 	Routes []wire.Route
 
+	// PREF64 is RFC 8781 §4's NAT64 prefixes, unioned across routers and held
+	// until each one's own lifetime (Scaled Lifetime times 8, §4.1) runs out,
+	// so an entry outlives the router that sent it. Sorted by address and then
+	// length, not by arrival (claymore666/docker-net-dhcp#1028).
+	PREF64 []netip.Prefix
+
 	// IT IS A SNAPSHOT TAKEN AT THE LAST Step AND NOT A LIVE VIEW. This client
 	// arms no timer for an entry's expiry: the table is pruned from the now
 	// every Step is handed, so a machine that has taken no Step since an entry
@@ -774,6 +788,9 @@ func (r RouterObservation) String() string {
 	}
 	if len(r.Routes) > 0 {
 		s += fmt.Sprintf(", %d route(s)", len(r.Routes))
+	}
+	if len(r.PREF64) > 0 {
+		s += fmt.Sprintf(", nat64 %v", r.PREF64)
 	}
 	return s
 }

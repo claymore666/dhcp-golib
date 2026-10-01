@@ -588,7 +588,8 @@ MANIFEST_SHELL_SCRIPTS_N=13
 #     MD5AgreesWithTheStandardLibraryAtEveryBoundary,
 #     HMACMD5AgreesWithTheStandardLibrary,
 #     EqualConstantTimeAnswersTheSameQuestionBytesEqualDoes,
-#     EqualConstantTimeHasNoEarlyExit, RKAPVerifyIsTheOnlyMD5InThisPackage
+#     EqualConstantTimeHasNoEarlyExit,
+#     MD5IsReachedOnlyFromTheTwoAcceptedVerifiers
 #   proto/machine6_reconfigure_test.go  (25) AReconfigureNamingRenewStartsARenew,
 #     AReconfigureNamingRebindStartsARebind,
 #     AReconfigureNamingInformationRequestKeepsTheLease,
@@ -886,7 +887,56 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # MEASURED 2026-09-24 as testroster runs, 915 on the base and 926 here.
 # runtime/readloop_linux_test.go 4, runtime/readloop_gone_linux_test.go 7.
 # Seven are netns tests: testroster -netns reads 43 on the base, 50 here.
-MIN_DECLARED_TESTS=926
+#
+# DHCPv4 WIRE FOR OPTIONS 77, 80, 108, 145 AND 90 AND MESSAGE TYPE 9,
+# claymore666/docker-net-dhcp#1120, #1031, #1027, #1119: forty added,
+# none removed, MEASURED as testroster runs, 926 on the base and 966 here.
+# wire/option_v4_test.go 16 (one a fuzz function), wire/option_auth_test.go 24
+# (one a fuzz function). No netns test among them.
+#
+# WIRE, DHCPv6 RAPID COMMIT, IA_TA AND THE ND NAT64 PREFIX OPTION,
+# claymore666/docker-net-dhcp#926, #927 and #1028: twenty-one added, none
+# removed, MEASURED as testroster runs, 966 on the base (dev after the DHCPv4
+# wire above) and 987 here. wire/rapid_commit_v6_test.go 6,
+# wire/pref64_test.go 9, wire/ia_ta_test.go 6. None is a netns test.
+#
+# USER CLASS PARAMETER, claymore666/docker-net-dhcp#1120: ten added, none
+# removed, testroster runs 987 on the base (dev after the DHCPv6 wire above)
+# and 997 here. proto/userclass_test.go 9, runtime/userclass_dnsmasq_linux_test.go
+# 1, a netns test: testroster -netns reads 50 on the base, 51 here.
+#
+# PREF64 IN THE ROUTER TABLE AND THE ROUTER VIEW,
+# claymore666/docker-net-dhcp#1028: twenty-one added, none removed, MEASURED as
+# testroster runs, 997 on the base and 1018 here. proto/router6_pref64_test.go
+# 19, lease/router6_pref64_test.go 2. The extended journal round-trip test adds
+# no function. None is a netns test.
+#
+# DHCPV4 RAPID COMMIT, claymore666/docker-net-dhcp#1031: twenty-two added, none
+# removed, testroster runs 1018 on the base (dev after the PREF64 block above)
+# and 1040 here. proto/rapidcommit_test.go 18,
+# runtime/rapidcommit_dnsmasq_linux_test.go 4, all four netns tests: testroster
+# -netns reads 51 on the base, 55 here.
+#
+# DHCPv6 RAPID COMMIT IN THE CLIENT, claymore666/docker-net-dhcp#926: nineteen
+# added, none removed, MEASURED as testroster runs, 1040 on the base (dev after
+# the DHCPv4 Rapid Commit block above) and 1059 here.
+# proto/rapidcommit6_test.go 16, runtime/rapidcommit6_dnsmasq_linux_test.go 3.
+# The three runtime ones are netns tests: testroster -netns reads 55 on the
+# base, 58 here.
+#
+# DHCPV4 IPV6-ONLY PREFERRED, claymore666/docker-net-dhcp#1027: twenty-three
+# added, none removed, MEASURED as testroster runs, 1059 on the base (dev after
+# the DHCPv6 Rapid Commit block above) and 1082 here. proto/ipv6only_test.go 21,
+# runtime/ipv6onlypreferred_dnsmasq_linux_test.go 2, the two netns tests:
+# testroster -netns reads 58 on the base, 60 here.
+#
+# DHCPv6 TEMPORARY ADDRESSES (IA_TA) IN THE CLIENT,
+# claymore666/docker-net-dhcp#927: twenty-six added, none removed, MEASURED as
+# testroster runs, 1082 on the base (dev after the IPv6-only preferred block above)
+# and 1108 here. proto/temporary6_test.go 19, lease/temporary_test.go 4,
+# runtime/temporary6_dnsmasq_linux_test.go 3. The three runtime ones are netns
+# tests: testroster -netns reads 60 on the base, 63 here.
+MIN_DECLARED_TESTS=1108
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

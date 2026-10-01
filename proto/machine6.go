@@ -105,8 +105,11 @@ type Machine6 struct {
 
 	// declining is the addresses the Decline exchange in flight names, and
 	// releasing the ones the Release exchange names with their lifetimes.
-	declining []netip.Addr
-	releasing []Addr6
+	// decliningTA is the temporary ones, which the Decline carries in an IA_TA
+	// (claymore666/docker-net-dhcp#927).
+	declining   []netip.Addr
+	decliningTA []netip.Addr
+	releasing   []Addr6
 	// afterDecline says what to do when the Decline exchange ends.
 	afterDecline func(now Instant, rnd uint64, out *actions)
 
@@ -223,6 +226,17 @@ type Machine6 struct {
 	// reconfCounts is what this machine did with the Reconfigure messages it
 	// was handed. See ReconfigureCounters.
 	reconfCounts ReconfigureCounters
+
+	// rapidCounts is what this machine did with Replies carrying option 14.
+	// See RapidCommitCounters (claymore666/docker-net-dhcp#926).
+	rapidCounts RapidCommit6Counters
+	// tempCounts is what this machine did with IA_TA options
+	// (claymore666/docker-net-dhcp#927).
+	tempCounts Temporary6Counters
+
+	// hintOffLink is the Hint a Reply+14 answered NotOnLink; solicitHint does
+	// not send it again (claymore666/docker-net-dhcp#926).
+	hintOffLink netip.Addr
 
 	// reconfDetour says the Information-request in flight was asked for by a
 	// Reconfigure while this machine was BOUND6, so its Reply returns to
@@ -379,9 +393,11 @@ func (m *Machine6) Router() RouterObservation { return m.router }
 // RouterTableDrops is how many arrivals a full list in the router table would
 // not take, and RouterTableEvictions how many entries a full list threw out to
 // take one: the Default Router List and the route table refuse, the resolver
-// and search lists evict (RFC 8106 §6.2 (d)). Neither is part of the
-// observation: the observation is what the routers said, and these are what
-// this client could not hold, each with its cause.
+// and search lists evict (RFC 8106 §6.2 (d)), and so does the NAT64 prefix
+// list, by this library's choice because RFC 8781 states no rule for a full
+// list (claymore666/docker-net-dhcp#1028). Neither is part of the observation:
+// the observation is what the routers said, and these are what this client
+// could not hold, each with its cause.
 func (m *Machine6) RouterTableDrops() uint64 { return m.routers.refused }
 
 // RouterTableEvictions is the eviction half of RouterTableDrops's pair.
@@ -437,6 +453,9 @@ type advert6 struct {
 	server []byte
 	pref   uint8
 	addrs  []Addr6
+	// temp is the IA_TA's addresses, which the Request repeats
+	// (claymore666/docker-net-dhcp#927).
+	temp   []Addr6
 	t1, t2 Duration
 	// seq is the arrival order, which is what §18.2.9's tie is broken on:
 	// the RFC says only that the highest preference SHOULD be preferred, so
@@ -628,11 +647,14 @@ func (m *Machine6) stepSelecting6(now Instant, rnd uint64, ev Event, out *action
 		if !ok {
 			return
 		}
-		if msg.Type != wire.MsgAdvertise {
+		switch msg.Type {
+		case wire.MsgAdvertise:
+			m.takeAdvertise(now, rnd, msg, out)
+		case wire.MsgReply:
+			m.takeRapidReply(now, rnd, msg, out)
+		default:
 			out.journal(m, fmt.Sprintf("a %s arrived while soliciting: ignored", msg.Type))
-			return
 		}
-		m.takeAdvertise(now, rnd, msg, out)
 	case EvTimerFired:
 		switch ev.Timer {
 		case Timer6Retransmit:
@@ -903,6 +925,7 @@ func (m *Machine6) stepDAD6(now Instant, rnd uint64, ev Event, out *actions) {
 		}
 	case EvReceived:
 		if m.msgType != wire.MsgDecline6 {
+			m.countRapidDiscard(ev.MsgV6)
 			out.journal(m, "message received while waiting for duplicate address detection: ignored")
 			return
 		}
@@ -999,6 +1022,7 @@ func (m *Machine6) stepBound6(now Instant, rnd uint64, ev Event, out *actions) {
 	case EvLinkDown:
 		m.halt(out, ReasonLinkDown)
 	case EvReceived:
+		m.countRapidDiscard(ev.MsgV6)
 		out.journal(m, "message received while bound with no exchange in flight: ignored")
 	case EvStart:
 		out.journal(m, "already bound")
@@ -1215,7 +1239,7 @@ func (m *Machine6) retransmit(now Instant, rnd uint64, out *actions, exhausted f
 // endExchange forgets the message in flight and disarms its timer.
 func (m *Machine6) endExchange(out *actions) {
 	m.msgType = 0
-	m.declining = nil
+	m.declining, m.decliningTA = nil, nil
 	m.afterDecline = nil
 	out.cancel(m, Timer6Retransmit)
 }
@@ -1264,7 +1288,7 @@ func (m *Machine6) halt(out *actions, r Reason) {
 	m.wantConfig, m.askedConfig = false, false
 	m.dropPending()
 	m.msgType = 0
-	m.declining = nil
+	m.declining, m.decliningTA = nil, nil
 	m.afterDecline = nil
 	m.state = State6Stopped
 	out.cancelAll(m)
@@ -1359,6 +1383,14 @@ func (m *Machine6) noteActionFailed(now Instant, rnd uint64, ev Event, out *acti
 // reason and a machine that dropped it for the right one look identical from
 // outside, and the journal line is the only thing that separates them.
 func (m *Machine6) admit(ev Event, out *actions) (*wire.MessageV6, bool) {
+	msg, ok := m.admitMsg(ev, out)
+	if !ok {
+		m.countRapidDiscard(ev.MsgV6)
+	}
+	return msg, ok
+}
+
+func (m *Machine6) admitMsg(ev Event, out *actions) (*wire.MessageV6, bool) {
 	msg := ev.MsgV6
 	if msg == nil {
 		out.journal(m, "nil v6 message: discarded")
@@ -1547,6 +1579,12 @@ func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, o
 	}
 
 	a := advert6{server: sid, pref: pref, addrs: res.addrs, t1: res.t1, t2: res.t2, seq: len(m.adverts)}
+	if m.params.Temporary {
+		// An Advertise without an IA_TA is no reason to skip the server: the
+		// Request asks again and the Reply decides (RFC 8415 section 18.2.4;
+		// claymore666/docker-net-dhcp#927).
+		a.temp = m.readTemporary(msg.Options, res.addrs, false, out)
+	}
 	m.adverts = append(m.adverts, a)
 	out.journal(m, fmt.Sprintf("Advertise collected: preference %d, %d address(es)", pref, len(res.addrs)))
 	if _, _, note := serverFQDN(msg.Options); note != "" {
@@ -1600,7 +1638,7 @@ func (m *Machine6) selectAndRequest(now Instant, rnd uint64, out *actions) bool 
 	}
 	a := m.adverts[best]
 	m.server = a.server
-	m.pending = Lease6{IAID: m.params.IAID, Addrs: a.addrs, ServerDUID: a.server, T1: a.t1, T2: a.t2}
+	m.pending = Lease6{IAID: m.params.IAID, Addrs: a.addrs, TempAddrs: a.temp, ServerDUID: a.server, T1: a.t1, T2: a.t2}
 	out.journal(m, fmt.Sprintf("selected the Advertise with preference %d (arrival %d of %d): requesting", a.pref, a.seq+1, len(m.adverts)))
 	m.startExchange(now, rnd, wire.MsgRequest6, out)
 	return true
@@ -1665,6 +1703,11 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 			out.journal(m, "Reply says NotOnLink while a lease is held: the address is not on this link, ending the lease (stated bound; §18.2.10.1 and §18.2.10.3 both address a client that holds none)")
 			m.loseLease(out, ReasonNak)
 		}
+		if m.state == State6Selecting {
+			// A Reply+14 to a hinted Solicit: restarting with the same hint
+			// would draw the same NotOnLink at once (claymore666/docker-net-dhcp#926).
+			m.rejectRapidHint()
+		}
 		out.journal(m, "Reply says NotOnLink: restarting discovery (§18.2.10.1)")
 		// After the loss and before the restart, which is v4's order for a
 		// DHCPNAK (D30): a caller tears the interface down when it sees the
@@ -1705,6 +1748,13 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// IAs, the client may either try another server (perhaps restarting the
 		// DHCP server discovery process) or use the Information-request message
 		// to obtain other configuration information only."
+		if m.state == State6Selecting {
+			// A Reply+14 with no address answers the Solicit, not a Request:
+			// m.server is nobody's and the Solicit schedule is still running
+			// (claymore666/docker-net-dhcp#926).
+			out.journal(m, "no usable address in the Reply to the Solicit: soliciting on (§18.2.1)")
+			return
+		}
 		if !renewal {
 			m.tried = append(m.tried, m.server)
 			if m.selectAndRequest(now, rnd, out) {
@@ -1721,6 +1771,24 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		out.journal(m, "no usable address in the Reply: restarting discovery (§18.2.10.1)")
 		m.restartDiscovery(now, rnd, out)
 		return
+	}
+
+	switch {
+	case renewal:
+		// No IA_TA went out, so none is read; the temporary addresses already
+		// held keep the expiry they were granted
+		// (claymore666/docker-net-dhcp#927).
+		m.ignoreTemporary(msg.Options, out)
+		if m.haveLse {
+			l.TempAddrs = carryTemp(m.lease.TempAddrs, m.lease.Start, l.Start, now)
+			if n := len(m.lease.TempAddrs) - len(l.TempAddrs); n > 0 {
+				out.journal(m, fmt.Sprintf("%d temporary address(es) reached their valid lifetime and left the lease (RFC 8415 section 13.2)", n))
+			}
+		}
+	case m.params.Temporary:
+		l.TempAddrs = m.readTemporary(msg.Options, l.Addrs, true, out)
+	default:
+		m.ignoreTemporary(msg.Options, out)
 	}
 
 	m.server = l.ServerDUID
@@ -1746,7 +1814,7 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 	// that comes back with the address the client already holds and has already
 	// checked runs no DAD, and one that comes back with a new address runs it
 	// on the new address only.
-	fresh := m.unchecked(l)
+	fresh := append(m.unchecked(l), m.freshTemp(l)...)
 	if len(fresh) == 0 {
 		m.enterBound(now, rnd, l, out)
 		return
@@ -1824,6 +1892,25 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 		return
 	}
 
+	// A TEMPORARY ADDRESS THAT FAILS ALONE IS DECLINED ALONE: RFC 8415
+	// section 18.2.10.1 has the client use "the other addresses", and the
+	// stable one is neither in conflict nor the reason the temporary one is
+	// (claymore666/docker-net-dhcp#927).
+	var tempBad []netip.Addr
+	stableBad := false
+	for _, a := range m.dadBad {
+		if isTemp(m.pending, a) {
+			tempBad = append(tempBad, a)
+			m.tempCounts.Conflicted++
+		} else {
+			stableBad = true
+		}
+	}
+	if !stableBad {
+		m.declineTemporary(now, rnd, tempBad, out)
+		return
+	}
+
 	// ANY DUPLICATE FAILS THE WHOLE IA, and that is a BOUND rather than a
 	// reading of §18.2.8. The section says "The client SHOULD NOT send a
 	// Release message for other bindings it may have received just because it
@@ -1836,7 +1923,8 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	// can produce. The SHOULD is declined here, in writing, rather than
 	// implemented untested.
 	bad := m.pending
-	note := fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs))
+	granted := m.freshTemp(bad)
+	note := fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs)+len(bad.TempAddrs))
 	out.journal(m, note)
 
 	// WHAT THE CHASSIS IS TOLD WHEN NOTHING WAS ACQUIRED, and it is
@@ -1872,8 +1960,28 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	if !held {
 		out.failed(m, ReasonConflict, note)
 	}
-	m.declineAll(now, rnd, bad, out, func(n Instant, r uint64, o *actions) {
+	// The temporary addresses this Reply granted go into the same Decline, in
+	// their IA_TA: the whole Reply is being given back
+	// (claymore666/docker-net-dhcp#927).
+	m.declineSet(now, rnd, bad.ServerDUID, addrsOf(bad), granted, out, func(n Instant, r uint64, o *actions) {
 		m.restartDiscovery(n, r, o)
+	})
+}
+
+// declineTemporary is the Decline of temporary addresses that failed duplicate
+// address detection while the stable lease did not. The lease minus those
+// addresses is bound when the exchange ends, whichever way it ends
+// (claymore666/docker-net-dhcp#927).
+func (m *Machine6) declineTemporary(now Instant, rnd uint64, bad []netip.Addr, out *actions) {
+	l := m.pending
+	out.journal(m, fmt.Sprintf("duplicate address detection found %d temporary address(es) in use: declining them alone and keeping the stable lease (§18.2.10.1)", len(bad)))
+	rest := withoutTemp(l, bad)
+	m.pending = rest
+	m.dadWait, m.dadBad = nil, nil
+	m.declineSet(now, rnd, l.ServerDUID, nil, bad, out, func(n Instant, r uint64, o *actions) {
+		kept := m.pending
+		m.dropPending()
+		m.enterBound(n, r, kept, o)
 	})
 }
 
@@ -2018,6 +2126,12 @@ func (m *Machine6) continueFromResume(now Instant, rnd uint64, out *actions, how
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
 	out.journal(m, fmt.Sprintf("continuing with the %s addresses and their last known lifetimes", how))
+	if m.params.Temporary {
+		// Resume6 holds stable addresses only and no Request follows a
+		// Confirm, so a resumed lease has no temporary address until the
+		// stable one is acquired again (claymore666/docker-net-dhcp#927).
+		out.journal(m, "temporary addresses are not asked for on a resumed lease")
+	}
 	addrs := make([]netip.Addr, 0, len(l.Addrs))
 	for _, a := range l.Addrs {
 		addrs = append(addrs, a.Addr)
@@ -2086,8 +2200,15 @@ func (m *Machine6) release(now Instant, rnd uint64, out *actions) {
 // in REBINDING, where the Rebind carries no Server Identifier at all: the
 // exchange has no server, and the LEASE still names the one that allocated it.
 func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, then func(Instant, uint64, *actions)) {
-	addrs := addrsOf(l)
-	if len(addrs) == 0 {
+	m.declineSet(now, rnd, l.ServerDUID, addrsOf(l), nil, out, then)
+}
+
+// declineSet is the Decline of the stable addresses in addrs and the temporary
+// ones in temp, the latter in an IA_TA. The temporary ones are never an
+// argument of declineAll: a bound lease that loses an address is not evidence
+// against the temporary addresses beside it (claymore666/docker-net-dhcp#927).
+func (m *Machine6) declineSet(now Instant, rnd uint64, server []byte, addrs, temp []netip.Addr, out *actions, then func(Instant, uint64, *actions)) {
+	if len(addrs)+len(temp) == 0 {
 		out.journal(m, "nothing to decline: the lease carries no address (§18.2.8)")
 		then(now, rnd, out)
 		return
@@ -2097,7 +2218,7 @@ func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, t
 	// server — is still an address another node answered for, and hinting it
 	// again is the same loop with the Decline missing from the log.
 	m.rememberDeclined(addrs)
-	if len(l.ServerDUID) == 0 {
+	if len(server) == 0 {
 		// §18.2.8's Server Identifier is a MUST and this client cannot invent
 		// one. This is a STATED BOUND rather than a silent refusal: a lease
 		// with no server DUID can only come from a Resume6 the caller built
@@ -2107,8 +2228,9 @@ func (m *Machine6) declineAll(now Instant, rnd uint64, l Lease6, out *actions, t
 		then(now, rnd, out)
 		return
 	}
-	m.server = append([]byte(nil), l.ServerDUID...)
+	m.server = append([]byte(nil), server...)
 	m.declining = append([]netip.Addr(nil), addrs...)
+	m.decliningTA = append([]netip.Addr(nil), temp...)
 	m.afterDecline = then
 	m.state = State6DAD
 	out.cancel(m, Timer6DAD)
@@ -2135,7 +2257,7 @@ func (m *Machine6) rememberDeclined(addrs []netip.Addr) {
 // decides which messages carry it.
 func (m *Machine6) solicitHint() netip.Addr {
 	h := m.params.hintAddr()
-	if h.IsValid() && containsAddr(m.declined, h) {
+	if h.IsValid() && (containsAddr(m.declined, h) || h == m.hintOffLink) {
 		return netip.Addr{}
 	}
 	return h
@@ -2518,11 +2640,18 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 		}
 	}
 
-	if ia, ok, err := m.buildIA(t); err != nil {
-		return nil, err
-	} else if ok {
-		msg.Options = append(msg.Options, ia)
+	// §18.2.1 and §21.14: option 14 rides the Solicit and no other message; a
+	// retransmitted Solicit is built here again and carries it again
+	// (claymore666/docker-net-dhcp#926).
+	if m.params.RapidCommit && t == wire.MsgSolicit {
+		msg.Options = append(msg.Options, wire.RapidCommitOption())
 	}
+
+	ias, err := m.buildIAs(t)
+	if err != nil {
+		return nil, err
+	}
+	msg.Options = append(msg.Options, ias...)
 
 	fqdn, err := m.fqdnOption(t)
 	if err != nil {
@@ -2560,6 +2689,38 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 	return msg, nil
 }
 
+// buildIAs renders the IAs this message carries: the IA_NA, then the IA_TA
+// where there is one. The IA_TA rides the Solicit and the Request of a client
+// with Params6.Temporary and a Decline of temporary addresses, and no other
+// message: RFC 8415 section 13.2 makes renewing temporary addresses NOT
+// RECOMMENDED and the Release stays with the stable binding
+// (claymore666/docker-net-dhcp#927).
+func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
+	var out []wire.OptionV6
+	if na, ok, err := m.buildIA(t); err != nil {
+		return nil, err
+	} else if ok {
+		out = append(out, na)
+	}
+	var ta []Addr6
+	switch {
+	case t == wire.MsgSolicit && m.params.Temporary:
+	case t == wire.MsgRequest6 && m.params.Temporary:
+		ta = m.pending.TempAddrs
+	case t == wire.MsgDecline6 && len(m.decliningTA) > 0:
+		for _, a := range m.decliningTA {
+			ta = append(ta, Addr6{Addr: a})
+		}
+	default:
+		return out, nil
+	}
+	v, err := m.buildTA(ta)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, v), nil
+}
+
 // buildIA renders the IA_NA this message carries, if it carries one.
 func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 	var addrs []Addr6
@@ -2589,6 +2750,11 @@ func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 	case wire.MsgRelease6:
 		addrs = m.releasing
 	case wire.MsgDecline6:
+		if len(m.declining) == 0 {
+			// Temporary addresses alone: no IA_NA with no address in it
+			// (claymore666/docker-net-dhcp#927).
+			return wire.OptionV6{}, false, nil
+		}
 		addrs = make([]Addr6, 0, len(m.declining))
 		for _, a := range m.declining {
 			addrs = append(addrs, Addr6{Addr: a})

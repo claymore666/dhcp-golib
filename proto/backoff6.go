@@ -207,6 +207,19 @@ type Params6 struct {
 	// that must have the MUST watches its own address and stops the client.
 	AcceptReconfigure bool
 
+	// RapidCommit puts option 14 in the Solicit, asking a server that allows
+	// it for a two-message lease (RFC 8415 sections 18.2.1 and 21.14); false
+	// sends nothing. Option 14 is never on another message
+	// (claymore666/docker-net-dhcp#926).
+	RapidCommit bool
+
+	// Temporary asks for temporary addresses beside the stable one: an IA_TA
+	// with the same IAID, in the Solicit and the Request and in no other
+	// message (RFC 8415 sections 13.2, 18.2.2 and 21.5). false sends nothing.
+	// The addresses come back in Lease6.TempAddrs and are never renewed
+	// (claymore666/docker-net-dhcp#927).
+	Temporary bool
+
 	// MaxSendFailures is how many consecutive ActSendV6 failures end the
 	// acquisition with ReasonTransport. It is Params.MaxSendFailures's
 	// counterpart and exists for R2's reason: a machine whose every send
