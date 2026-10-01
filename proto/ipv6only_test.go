@@ -551,35 +551,49 @@ func TestAnAckWith108InRebootingStartsTheWait(t *testing.T) {
 	}
 }
 
-// TestARapidCommitAckWith108InSelectingWaits: with both flags on, an ACK that
-// carries 80 and 108 is the server's "IPv6 only", not a two-message lease; the
-// same ACK without 108 is still taken (claymore666/docker-net-dhcp#1027).
-func TestARapidCommitAckWith108InSelectingWaits(t *testing.T) {
+// TestARapidCommitAckWith108InSelectingIsTakenAsTheLease: with both flags on,
+// an ACK that carries 80 and 108 has committed the binding, so it is the lease,
+// counted as an ACK with 108 that was kept, with no wait armed and no Failed
+// (claymore666/docker-net-dhcp#1027).
+func TestARapidCommitAckWith108InSelectingIsTakenAsTheLease(t *testing.T) {
 	p := v6oParams()
 	p.RapidCommit = true
-	rapid := func(disc *wire.Message, with108 bool) *wire.Message {
-		a := ackFor(disc, v6oAddr, v6oServer, 3600)
-		a.Options[wire.OptRapidCommit] = wire.EncodeRapidCommit()
-		if with108 {
-			a.Options[wire.OptIPv6OnlyPreferred] = wire.EncodeIPv6OnlyPreferred(300)
-		}
-		return a
-	}
 	m, disc := v6oSelecting(t, p)
 	got := v6oWire(t, disc)
 	if _, ok := got.Options[wire.OptRapidCommit]; !ok || v6oCount108(got) != 1 {
 		t.Fatalf("the DISCOVER lacks option 80 or 108: %v", got.Options)
 	}
-	_, acts := m.Step(at(12), 2, received(t, rapid(disc, true)))
-	v6oAssertWait(t, m, acts, 300*Second)
-	if rc := m.RapidCommitCounters(); rc != (RapidCommitCounters{}) {
-		t.Errorf("Rapid Commit counters %+v, want none: the ACK was neither taken nor refused", rc)
+	ack := ackFor(disc, v6oAddr, v6oServer, 3600)
+	ack.Options[wire.OptRapidCommit] = wire.EncodeRapidCommit()
+	ack.Options[wire.OptIPv6OnlyPreferred] = wire.EncodeIPv6OnlyPreferred(300)
+	_, acts := m.Step(at(12), 2, received(t, ack))
+	if m.State() != StateBound || count(acts, ActLeaseAcquired) != 1 {
+		t.Fatalf("state %s, acquired %d: %v", m.State(), count(acts, ActLeaseAcquired), RenderActions(acts))
+	}
+	if _, ok := v6oRestartTimer(acts); ok {
+		t.Error("a restart timer was armed")
+	}
+	if r, failed := v6oFailedReason(acts); failed {
+		t.Errorf("Failed %s", r)
+	}
+	if c := m.IPv6OnlyCounters(); c != (IPv6OnlyCounters{Ignored: 1}) {
+		t.Errorf("counters %+v, want Ignored 1 only", c)
+	}
+	if rc := m.RapidCommitCounters(); rc != (RapidCommitCounters{Accepted: 1}) {
+		t.Errorf("Rapid Commit counters %+v, want Accepted 1 only", rc)
+	}
+	if !strings.Contains(v6oJournal(acts), "lease kept") {
+		t.Errorf("no journal line for the kept lease: %q", v6oJournal(acts))
 	}
 
-	m, disc = v6oSelecting(t, p)
-	m.Step(at(12), 2, received(t, rapid(disc, false)))
-	if m.State() != StateBound || m.RapidCommitCounters().Accepted != 1 {
-		t.Errorf("the control: an ACK with option 80 only gave %s, %+v", m.State(), m.RapidCommitCounters())
+	ctl := p
+	ctl.IPv6OnlyPreferred = false
+	cm, cdisc := v6oSelecting(t, ctl)
+	cack := ackFor(cdisc, v6oAddr, v6oServer, 3600)
+	cack.Options[wire.OptRapidCommit] = wire.EncodeRapidCommit()
+	cm.Step(at(12), 2, received(t, cack))
+	if cm.State() != StateBound || cm.IPv6OnlyCounters() != (IPv6OnlyCounters{}) {
+		t.Errorf("the control without the flag: %s, %+v", cm.State(), cm.IPv6OnlyCounters())
 	}
 }
 

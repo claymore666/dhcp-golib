@@ -53,15 +53,6 @@ func (m *Machine) takeRapidAck(now Instant, rnd uint64, msg *wire.Message, out *
 		m.refuseRapid(out, StateSelecting, "the DHCPDISCOVER did not ask for it")
 		return
 	}
-	// RFC 8925 section 3.2 gives an ACK that carries 108 a wait only in
-	// INIT-REBOOT; here it is the Rapid Commit ACK the client asked for, which
-	// section 3.3 says a server should not send with 108. The check follows
-	// the two refusals above, so an ACK the base discards or refuses is still
-	// discarded or refused (claymore666/docker-net-dhcp#1027).
-	if secs, ok := m.v6OnlyValue(msg, out); ok {
-		m.waitForIPv6(now, out, StateSelecting, secs)
-		return
-	}
 	if sid, ok := msg.Addr4(wire.OptServerID); !ok || sid.IsUnspecified() {
 		m.refuseRapid(out, StateSelecting, "no usable server identifier")
 		return
@@ -80,6 +71,10 @@ func (m *Machine) takeRapidAck(now Instant, rnd uint64, msg *wire.Message, out *
 	if note != "" {
 		out.journal(m, note)
 	}
+	// A Rapid Commit ACK has committed the binding, and RFC 8925 section 3.2
+	// has a client in any state but an OFFER's or INIT-REBOOT's keep its
+	// address (claymore666/docker-net-dhcp#1027).
+	m.noteV6OnlyKept(msg, StateSelecting, out)
 	m.afterAck(now, rnd, lse, out)
 }
 
