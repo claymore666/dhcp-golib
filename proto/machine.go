@@ -383,16 +383,6 @@ func (m *Machine) stepSelecting(now Instant, rnd uint64, ev Event, out *actions)
 			m.retransmits = 0
 			m.sendRequest(now, rnd, out)
 		case wire.MsgAck, wire.MsgNak:
-			if t == wire.MsgAck {
-				// An ACK answering a DISCOVER carrying 108 is the server's
-				// "IPv6 only" as much as an OFFER is, and RFC 8925 section
-				// 3.3 keeps Rapid Commit away from it
-				// (claymore666/docker-net-dhcp#1027).
-				if secs, ok := m.v6OnlyValue(msg, out); ok {
-					m.waitForIPv6(now, out, StateSelecting, secs)
-					return
-				}
-			}
 			if t == wire.MsgAck && hasRapidOption(msg) {
 				// RFC 4039 section 3.1 step 3 is the one ACK SELECTING takes
 				// (claymore666/docker-net-dhcp#1031).

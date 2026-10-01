@@ -583,13 +583,55 @@ func TestARapidCommitAckWith108InSelectingWaits(t *testing.T) {
 	}
 }
 
-// TestAPlainAckInSelectingWith108IsWaitedOnToo: an ACK answering a DISCOVER
-// carries the server's answer whether or not it has option 80
+// TestAnAckInSelectingThatTheBaseDiscardsOrRefusesIsNotAWaitBecauseOf108: RFC
+// 8925 section 3.2 gives an ACK that carries 108 a wait only in INIT-REBOOT. In
+// SELECTING a plain ACK, one with option 80 where the client did not ask for
+// it, and one with a malformed option 80 are discarded, refused and refused as
+// they are without the flag, and the journal says the same words
 // (claymore666/docker-net-dhcp#1027).
-func TestAPlainAckInSelectingWith108IsWaitedOnToo(t *testing.T) {
-	m, disc := v6oSelecting(t, v6oParams())
-	_, acts := m.Step(at(12), 2, received(t, v6oAck(disc, 300)))
-	v6oAssertWait(t, m, acts, 300*Second)
+func TestAnAckInSelectingThatTheBaseDiscardsOrRefusesIsNotAWaitBecauseOf108(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*wire.Message)
+		refused uint64
+	}{
+		{"plain", func(a *wire.Message) {}, 0},
+		{"option 80 not asked for", func(a *wire.Message) { a.Options[wire.OptRapidCommit] = wire.EncodeRapidCommit() }, 1},
+		{"malformed option 80", func(a *wire.Message) { a.Options[wire.OptRapidCommit] = []byte{1} }, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, disc := v6oSelecting(t, v6oParams())
+			ack := v6oAck(disc, 1800)
+			c.mutate(ack)
+			_, acts := m.Step(at(12), 2, received(t, ack))
+			if m.State() != StateSelecting {
+				t.Errorf("state %s, want SELECTING", m.State())
+			}
+			if _, ok := v6oRestartTimer(acts); ok {
+				t.Error("a restart timer was armed")
+			}
+			if r, failed := v6oFailedReason(acts); failed {
+				t.Errorf("Failed %s", r)
+			}
+			if got := m.IPv6OnlyCounters(); got != (IPv6OnlyCounters{}) {
+				t.Errorf("counters %+v, want none", got)
+			}
+			if got := m.RapidCommitCounters(); got.Refused != c.refused || got.Accepted != 0 {
+				t.Errorf("Rapid Commit counters %+v, want Refused %d", got, c.refused)
+			}
+
+			ctl := v6oParams()
+			ctl.IPv6OnlyPreferred = false
+			cm, cdisc := v6oSelecting(t, ctl)
+			cack := v6oAck(cdisc, 1800)
+			c.mutate(cack)
+			_, cacts := cm.Step(at(12), 2, received(t, cack))
+			if v6oJournal(acts) != v6oJournal(cacts) {
+				t.Errorf("journal %q, the control without the flag wrote %q", v6oJournal(acts), v6oJournal(cacts))
+			}
+		})
+	}
 }
 
 // TestTheWaitTimerIsArmedAfterEverythingIsCancelled: toInitIdle cancels every

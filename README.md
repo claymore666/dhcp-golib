@@ -74,8 +74,9 @@ with an Offer gets the ordinary Request. A DHCPv4 client with `IPv6OnlyPreferred
 set lists option 108 in its Discover and every Request. An Offer that carries
 it gets no Request, Decline or Release: the client waits for the server's
 value, never less than 300 seconds, or until the link comes up again, and then
-starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
-and in any other state the lease stands. A client without the flag ignores the
+starts a new Discover. An Ack that carries it in INIT-REBOOT, or the two-message
+Ack of a client that asked for both, is the same wait, and in REQUESTING, BOUND,
+RENEWING and REBINDING the lease stands. A client without the flag ignores the
 option. The wire for the
 other options and for DHCPFORCERENEW is in the tree, and the client behaviour
 for each is planned in the rows above: DHCPv6 Rapid Commit and

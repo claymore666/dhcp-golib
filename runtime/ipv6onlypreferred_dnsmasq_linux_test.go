@@ -39,9 +39,6 @@ const v6oProbeMAC = "02:00:00:00:00:99"
 var (
 	v6oLine  = regexp.MustCompile(`DHCP(DISCOVER|OFFER|REQUEST|ACK|NAK|DECLINE|RELEASE)\(` + testServerIf + `\)(?: [0-9.]+)? ([0-9a-f:]{17})`)
 	v6oTimer = regexp.MustCompile(`^SetTimer restart after (\d+)s$`)
-	// v6oSent108 is dnsmasq's log line for option 108 in a message it sends;
-	// the column is padded, so it reads "option:108" for three digits (claymore666/docker-net-dhcp#1027).
-	v6oSent108 = regexp.MustCompile(`sent size:\s*\d+ option:\s*108 `)
 )
 
 // v6oKinds is the order of the DHCP message kinds dnsmasq logged for one
@@ -56,14 +53,31 @@ func v6oKinds(lines []string, mac string) []string {
 	return kinds
 }
 
-func v6oCountSent108(lines []string) int {
+// v6oCountSent108 counts the lines for option 108 in messages dnsmasq sent for
+// one transaction, each log line being prefixed with the decimal xid. The
+// barrier's probe sends no request list, so dnsmasq answers it with every
+// configured option, and its lines are not this client's
+// (claymore666/docker-net-dhcp#1027).
+func v6oCountSent108(lines []string, xid uint32) int {
+	re := regexp.MustCompile(`\b` + strconv.FormatUint(uint64(xid), 10) + ` sent size:\s*\d+ option:\s*108 `)
 	n := 0
 	for _, l := range lines {
-		if v6oSent108.MatchString(l) {
+		if re.MatchString(l) {
 			n++
 		}
 	}
 	return n
+}
+
+// clientXID is the transaction id of the client's first captured DISCOVER
+// (claymore666/docker-net-dhcp#1027).
+func (r *v6oRun) clientXID(t *testing.T) uint32 {
+	t.Helper()
+	d := r.packets(lease.DirOut, wire.MsgDiscover)
+	if len(d) == 0 {
+		t.Fatal("the client captured no DISCOVER")
+	}
+	return d[0].XID
 }
 
 type v6oRun struct {
@@ -184,6 +198,7 @@ func TestDnsmasqSendsOption108AndAnIPv6OnlyClientWaitsInsteadOfRequesting(t *tes
 		r := startV6Only(t, true)
 		r.srv.waitFor(t, "DHCPOFFER("+testServerIf+")")
 		var failed lease.Event
+		announceWait("a Failed event with reason "+proto.ReasonIPv6OnlyPreferred.String(), nil)
 		for ev := range r.client.Events() {
 			t.Logf("client event: %s", ev)
 			if ev.Kind == lease.Acquired {
@@ -206,8 +221,8 @@ func TestDnsmasqSendsOption108AndAnIPv6OnlyClientWaitsInsteadOfRequesting(t *tes
 		if n := r.srv.count("DHCPREQUEST("); n != 0 {
 			t.Errorf("dnsmasq logged %d DHCPREQUEST line(s) during the wait", n)
 		}
-		if n := v6oCountSent108(r.srv.lines()); n == 0 {
-			t.Fatalf("dnsmasq never logged sending option 108, so this run proves nothing.\nLog:\n%s", log)
+		if n := v6oCountSent108(r.srv.lines(), r.clientXID(t)); n == 0 {
+			t.Fatalf("dnsmasq never logged sending option 108 to the client's transaction, so this run proves nothing.\nLog:\n%s", log)
 		}
 
 		offers := r.packets(lease.DirIn, wire.MsgOffer)
@@ -261,7 +276,7 @@ func TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsm
 		if got := strings.Join(v6oKinds(r.srv.lines(), r.mac), ","); got != "DISCOVER,OFFER,REQUEST,ACK" {
 			t.Fatalf("dnsmasq logged %s, want DISCOVER,OFFER,REQUEST,ACK.\nLog:\n%s", got, strings.Join(r.srv.lines(), "\n"))
 		}
-		if n := v6oCountSent108(r.srv.lines()); n != 0 {
+		if n := v6oCountSent108(r.srv.lines(), r.clientXID(t)); n != 0 {
 			t.Errorf("dnsmasq sent option 108 %d time(s) to a client that never asked", n)
 		}
 		offers := r.packets(lease.DirIn, wire.MsgOffer)
