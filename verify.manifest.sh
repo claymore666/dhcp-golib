@@ -945,7 +945,18 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # 1, runtime/forcerenew_dst_test.go 1, runtime/forcerenew_dst_linux_test.go 1.
 # The two linux runtime ones are netns tests: testroster -netns reads 63 on the
 # base, 65 here.
-MIN_DECLARED_TESTS=1140
+#
+# DHCPv6 PREFIX DELEGATION (IA_PD), claymore666/docker-net-dhcp#214:
+# forty-seven added, none removed, MEASURED as testroster runs, 1140 on the base
+# (dev after the DHCPFORCERENEW block above) and 1187 here. wire/ia_pd_test.go
+# and the fuzz target for the IA_PD, proto/prefix6_test.go,
+# proto/prefix6_resume_test.go, lease/prefix_test.go,
+# runtime/kea6_fixture_test.go 2 and runtime/prefix6_kea_linux_test.go 6. The six
+# in the last file are netns tests (five against Kea, one against dnsmasq):
+# testroster -netns reads 65 on the base, 71 here. NETNS_CEILING_SECONDS moves
+# with them, 170 -> 279, pinned below in the ceiling-band row; the derivation
+# is in verify.sh above the constant.
+MIN_DECLARED_TESTS=1187
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
@@ -1557,7 +1568,7 @@ MANIFEST_SCENARIO_CONTRACTS=(
 	# both numbers with the single token a contract is allowed. Raising
 	# EITHER ceiling in verify.sh without editing this line reddens the
 	# verify-oracle row.
-	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:170|no row"
+	"ceiling-band|static|ceiling-seconds:84,netns-ceiling-seconds:279|no row"
 	"gate-panic|nonzero|t2:FAIL|with no REFUSED line the gate crashed"
 	"gate-refuses|nonzero|t1:FAIL|REFUSED the gate could not measure its domain"
 	"self-drive-blinded|nonzero|self-drive:FAIL|gofmt PASS planted did not redden"

@@ -427,7 +427,7 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # IT IS STILL INSIDE EVERY BOUND THAT READS IT: below NETNS_TIMEOUT_SECONDS at
 # 180, which is what makes an overrun a diagnosis rather than a kill; above the
 # child's 45s budget; and inside the oracle's ceiling-band scenario, which
-# refuses anything outside 30..175.
+# refuses anything outside 30..284.
 #
 # WHAT THIS ENUMERATION STILL DOES NOT HAVE: a gate. Nothing compares the
 # names here against internal/tools/testroster -netns, which is how it came to
@@ -486,7 +486,7 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # It is still below NETNS_TIMEOUT_SECONDS, which is what makes a row that
 # overruns the ceiling a diagnosis rather than a kill, and still above the
 # child's own 45s budget. Two readers outside this file hold the number to
-# that: the oracle's ceiling-band scenario refuses a value outside 30..175,
+# that: the oracle's ceiling-band scenario refuses a value outside 30..284,
 # and verify.manifest.sh pins the value itself — so moving this ceiling is a
 # deliberate edit in two files, the same shape SUITE_CEILING_SECONDS has.
 #
@@ -536,8 +536,22 @@ SUITE_ARGS=(-race -count=1 -v -timeout "${SUITE_TIMEOUT_SECONDS}s")
 # ceiling moved in that round. The box has since carried more than one
 # co-tenant — #816's own table was measured under four — and the answer to it
 # is the number above: against 170 the same 106s leaves 64s.
-NETNS_CEILING_SECONDS=170
-NETNS_TIMEOUT_SECONDS=180
+# L11 (claymore666/docker-net-dhcp#214) ADDED SIX NETNS TESTS, five against Kea
+# and one against dnsmasq, 65 -> 71 by testroster -netns, and the row now
+# crosses 170. MEASURED three times on the session box at this head, exactly as
+# this file runs the row (-race -count=1 -v, -run over the roster): 192s, 188s
+# and 190s, one-minute load 3.6, 2.9 and 0.4; the first of them took 180s to get
+# past 65 of the 71 and would have been killed by the old hang timeout.
+# DERIVATION, the rule of the paragraphs above and not a new one: the headroom
+# keeps the ratio 170 had over its 117s, 53/117, so 192 x 170/117 = 278.97 and
+# the ceiling is 279. The hang timeout stays ten seconds above it, 289, which is
+# the gap it had at 180 over 170, and the child's own budget is still far below.
+# The headroom is 87s against the 32s floor. The oracle's ceiling-band scenario
+# (scripts/test-verify.sh) and the manifest's pin move in the same commit, and
+# the band's upper edge stays the last value below the hang timeout, 284.
+# Nothing was trimmed: the six tests are the L11 netns list.
+NETNS_CEILING_SECONDS=279
+NETNS_TIMEOUT_SECONDS=289
 NETNS_ARGS=(-race -count=1 -v -timeout "${NETNS_TIMEOUT_SECONDS}s")
 
 # The gates that MUST run: enumerated, not discovered — a verifier that finds
