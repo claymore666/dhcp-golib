@@ -1277,6 +1277,7 @@ func CloneLease(l Lease) Lease {
 	l.Routes = append([]wire.Route(nil), l.Routes...)
 	l.DomainSearch = append([]string(nil), l.DomainSearch...)
 	l.Options = l.Options.Clone()
+	l.ForcerenewNonce = append([]byte(nil), l.ForcerenewNonce...)
 	return l
 }
 

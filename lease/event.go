@@ -106,6 +106,14 @@ type Lease struct {
 	// Options is every option from the ACK, unparsed.
 	Options wire.Options
 
+	// ForcerenewNonce and ForcerenewReplay are the key and the replay floor of
+	// a DHCPv4 lease's FORCERENEW authentication, nil and zero when its ACKs
+	// gave none (RFC 6704 section 3.1.3; claymore666/docker-net-dhcp#1119).
+	// The record carries them as forcerenew_nonce and forcerenew_replay, and
+	// a reader that does not know them ignores both.
+	ForcerenewNonce  []byte `json:"forcerenew_nonce,omitempty"`
+	ForcerenewReplay uint64 `json:"forcerenew_replay,omitempty"`
+
 	// Addrs is EVERY address this v6 lease holds, in the order the protocol
 	// produced them, and Addr is the first of them. It is empty for v4 and
 	// for a v6 lease with no address.
@@ -452,6 +460,9 @@ func toLease(l proto.Lease, b clockBridge) Lease {
 		DomainSearch: append([]string(nil), l.DomainSearch...),
 		Acquired:     b.at(l.Start),
 		Options:      l.Options.Clone(),
+
+		ForcerenewNonce:  append([]byte(nil), l.ForcerenewNonce...),
+		ForcerenewReplay: l.ForcerenewReplay,
 	}
 	// proto.Lease.Gateway, not Router[0]: after RFC 3442 the default route can
 	// come from option 121, and a server sending 121 is required to have its

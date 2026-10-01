@@ -71,6 +71,12 @@ type Machine struct {
 	// IPv6OnlyCounters (claymore666/docker-net-dhcp#1027).
 	v6OnlyCounts IPv6OnlyCounters
 
+	// frCounts and fr are what this machine did with option 90 and type 9,
+	// and the key that authenticates a FORCERENEW. See ForcerenewCounters
+	// (claymore666/docker-net-dhcp#1119).
+	frCounts ForcerenewCounters
+	fr       forcerenewKey
+
 	// lease is the lease held in BOUND.
 	lease   Lease
 	haveLse bool
@@ -198,7 +204,17 @@ func New(p Params) (*Machine, error) {
 func (m *Machine) State() State { return m.state }
 
 // Lease returns the held lease, if any.
-func (m *Machine) Lease() (Lease, bool) { return m.lease, m.haveLse }
+//
+// The nonce is a copy and the replay value is the floor as it stands now, which
+// can be above the one the lease was built with (claymore666/docker-net-dhcp#1119).
+func (m *Machine) Lease() (Lease, bool) {
+	l := m.lease
+	if m.haveLse && m.fr.have {
+		l.ForcerenewNonce = append([]byte(nil), m.fr.nonce[:]...)
+		l.ForcerenewReplay = m.fr.floor
+	}
+	return l, m.haveLse
+}
 
 // Params returns the machine's configuration.
 //
@@ -241,6 +257,12 @@ func (m *Machine) Hostname() string { return m.hostname }
 // depend on a persisted seed AND a call count.
 func (m *Machine) Step(now Instant, rnd uint64, ev Event) (State, []Action) {
 	var out actions
+	if ev.Kind == EvReceived && ev.Msg != nil {
+		if t, ok := ev.Msg.Type(); ok && t == wire.MsgForceRenew {
+			m.takeForcerenew(now, rnd, ev, &out)
+			return m.state, out.list
+		}
+	}
 	switch m.state {
 	case StateStopped:
 		m.stepStopped(now, rnd, ev, &out)
@@ -438,6 +460,16 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 		switch t {
 		case wire.MsgAck:
 			if m.refusesRapidInRequesting(msg, out) {
+				return
+			}
+			if m.refusesAckWithoutNonce(msg) {
+				// RFC 6704 section 3.1.4: back to INIT, and the ACK is not a
+				// lease. The desync wait is on, unlike after a NAK: a server
+				// that always omits the option would otherwise be asked again
+				// at wire speed (claymore666/docker-net-dhcp#1119).
+				m.frCounts.AckRefused++
+				out.journal(m, "DHCPACK without a valid option 90 after an OFFER with option 145: discarded, back to INIT (RFC 6704 section 3.1.4)")
+				m.beginAcquisition(now, split(rnd, 1), out, true)
 				return
 			}
 			m.noteV6OnlyKept(msg, StateRequesting, out)
@@ -1061,6 +1093,7 @@ func (m *Machine) releaseBeforeBound(out *actions) {
 func (m *Machine) enterBound(now Instant, rnd uint64, l Lease, out *actions, renewal bool) {
 	prev, hadPrev := m.lease, m.haveLse
 	out.cancel(m, TimerRetransmit)
+	m.settleForcerenew(&l, renewal && hadPrev)
 	m.lease = l
 	m.haveLse = true
 	m.state = StateBound
@@ -1173,6 +1206,7 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 	}
 	m.haveLse = false
 	m.lease = Lease{}
+	m.fr = forcerenewKey{}
 	// All three lease timers, not only the expiry. "Holding a lease" and
 	// "the deadlines of that lease are armed" are meant to be the same state,
 	// and after M3 a lease has three deadlines. Every caller happens to reach
@@ -1618,6 +1652,10 @@ func (m *Machine) base(now Instant, t wire.MessageType) *wire.Message {
 		}
 		msg.Options[wire.OptParameterList] = b
 	}
+	// RFC 6704 section 3.1.1: every DISCOVER and REQUEST says the client can
+	// authenticate a FORCERENEW, and there is no switch for it because the
+	// RFC makes it a MUST (claymore666/docker-net-dhcp#1119).
+	msg.Options[wire.OptForcerenewNonce] = wire.EncodeForcerenewNonceCapable()
 	if m.params.RequestedLease > 0 && !m.params.RequestedLease.IsInfinite() {
 		secs := uint32(m.params.RequestedLease.Seconds())
 		msg.Options[wire.OptLeaseTime] = []byte{

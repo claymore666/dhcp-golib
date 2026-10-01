@@ -1163,7 +1163,10 @@ func (mg *Manager) onInbound(ctx context.Context, in Inbound) {
 		mg.bump(func(s *Stats) { s.DecodeFailures++ })
 		return
 	}
-	mg.dispatch(ctx, proto.Received(msg, append([]byte(nil), in.Payload...)))
+	// The destination travels with the octets for the v6 path's reason: a
+	// FORCERENEW is decided on the address it was sent to, which is not in
+	// the payload (claymore666/docker-net-dhcp#1119).
+	mg.dispatch(ctx, proto.ReceivedTo(msg, append([]byte(nil), in.Payload...), in.To))
 }
 
 // dispatch feeds one event and everything that event produces.

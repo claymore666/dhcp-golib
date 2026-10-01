@@ -28,6 +28,11 @@ type JournalEntry struct {
 
 	// Raw is the wire bytes for EvReceived.
 	Raw []byte
+	// Dst is the IP destination an EvReceived datagram was addressed to. It
+	// is not in Raw's bytes, and a FORCERENEW is accepted or refused on it
+	// (claymore666/docker-net-dhcp#1119). An entry written before the field
+	// existed carries none and replays as a refusal.
+	Dst netip.Addr
 	// RA is the ICMPv6 bytes for EvRouterAdvert, re-decoded on replay for the
 	// reason Raw is: replaying from a decoded struct re-runs ring 1 against a
 	// decode that already happened.
@@ -92,7 +97,7 @@ type JournalEntry struct {
 func NewJournalEntry(seq uint64, now Instant, rnd uint64, ev Event, from, to State, acts []Action) JournalEntry {
 	return JournalEntry{
 		Seq: seq, Now: now, Rnd: rnd, Kind: ev.Kind,
-		Raw: ev.Raw, RA: ev.RARaw, RASrc: raSrcOf(ev), DAD: ev.DAD, Hostname: ev.Hostname,
+		Raw: ev.Raw, Dst: ev.Dst, RA: ev.RARaw, RASrc: raSrcOf(ev), DAD: ev.DAD, Hostname: ev.Hostname,
 		Timer: ev.Timer, Action: ev.Action, Reason: ev.Reason,
 		From: from, To: to, Actions: RenderActions(acts),
 	}
@@ -119,7 +124,7 @@ func (e JournalEntry) Event() (Event, error) {
 	if err != nil {
 		return Event{}, fmt.Errorf("entry %d: %w", e.Seq, err)
 	}
-	return Received(msg, e.Raw), nil
+	return ReceivedTo(msg, e.Raw, e.Dst), nil
 }
 
 // replayEvent reconstructs every event kind whose payload does not depend on
