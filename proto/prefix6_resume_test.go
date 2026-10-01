@@ -365,3 +365,92 @@ func TestResumeRebindDropsAnUnusablePrefix(t *testing.T) {
 		t.Errorf("the Rebind's IA Prefixes = %+v, want the one usable prefix", ps)
 	}
 }
+
+// TestAResumedLeaseThenBoundRebindsWithTheRebindParameters: once a Reply to the
+// resumed Rebind has been accepted the exchange is over, and the Rebind that T2
+// sends later is paced by the Rebind parameters. It is not held to the Confirm's
+// ten seconds and it does not fall back to a Solicit (RFC 8415 section 18.2.5;
+// claymore666/docker-net-dhcp#214).
+func TestAResumedLeaseThenBoundRebindsWithTheRebindParameters(t *testing.T) {
+	m, reb, _ := pr6Rebinding(t, pr6Params())
+	m.Step(at(2), 3, pr6Reply(t, reb.XID, pr6IANA(t), pr6IAPD(t, pr6First, 1000, 2000)))
+	if s, _ := m.Step(at(3), 0, DADResult(netip.MustParseAddr(pr6Addr), false)); s != State6Bound {
+		t.Fatalf("the Reply and a clean DAD left the machine in %s, want %s", s, State6Bound)
+	}
+	if s, _ := m.Step(at(123), 0, TimerFired(Timer6Renew)); s != State6Renewing {
+		t.Fatalf("T1 left the machine in %s, want %s", s, State6Renewing)
+	}
+	s, acts := m.Step(at(205), 0, TimerFired(Timer6Rebind))
+	if s != State6Rebinding || !hasSendV6(acts, wire.MsgRebind) {
+		t.Fatalf("T2 left the machine in %s, want %s with a Rebind sent", s, State6Rebinding)
+	}
+	for _, now := range []int64{225, 285} {
+		s, acts = m.Step(at(now), 5, TimerFired(Timer6Retransmit))
+		if s != State6Rebinding || !hasSendV6(acts, wire.MsgRebind) || hasSendV6(acts, wire.MsgSolicit) {
+			t.Fatalf("at t=%d s the machine is in %s after %v, want %s resending the Rebind", now, s, acts, State6Rebinding)
+		}
+	}
+}
+
+// TestADeclinedResumedLeaseDoesNotOweARebind: a resume whose Rebind went
+// unanswered owes a Rebind once its lease is announced, and a lease that was
+// declined is never announced. The owed Rebind dies with the discovery that
+// followed, so the fresh lease that discovery acquires is bound with no Rebind
+// sent at once (claymore666/docker-net-dhcp#214).
+func TestADeclinedResumedLeaseDoesNotOweARebind(t *testing.T) {
+	m, _, _ := pr6Rebinding(t, pr6Params())
+	now := int64(1)
+	var acts []Action
+	for i := 0; i < 20 && m.State() == State6Rebinding; i++ {
+		now += 2
+		_, acts = m.Step(at(now), uint64(i)+5, TimerFired(Timer6Retransmit))
+	}
+	if m.State() != State6DAD {
+		t.Fatalf("the unanswered Rebind left the machine in %s, want %s", m.State(), State6DAD)
+	}
+	now++
+	s, acts := m.Step(at(now), 9, DADResult(netip.MustParseAddr(pr6Addr), true))
+	if s != State6DAD {
+		t.Fatalf("a duplicate left the machine in %s, want %s (the Decline exchange)", s, State6DAD)
+	}
+	dec := mustSendV6(t, acts, wire.MsgDecline6)
+	now++
+	s, _ = m.Step(at(now), 0, receivedV6(t, wire.MsgReply, dec.XID,
+		optClientID(capDUID), optServerID(testServerDUID), optStatus(wire.StatusSuccess)))
+	if s != State6Init {
+		t.Fatalf("the Reply to the Decline left the machine in %s, want %s", s, State6Init)
+	}
+	now++
+	_, acts = m.Step(at(now), capXIDSolicit, TimerFired(Timer6Delay))
+	if !hasSendV6(acts, wire.MsgSolicit) || hasSendV6(acts, wire.MsgRebind) {
+		t.Fatalf("discovery after a Decline did not begin with a Solicit: %v", acts)
+	}
+	now++
+	if s, _ = m.Step(at(now), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255)); s != State6Requesting {
+		t.Fatalf("an Advertise left the machine in %s, want %s", s, State6Requesting)
+	}
+	now++
+	m.Step(at(now), 0, reply(t, uint32(capXIDRequest), dnsmasqLeasedAddr))
+	now++
+	s, acts = m.Step(at(now), 0, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), false))
+	if s != State6Bound {
+		t.Fatalf("a clean DAD left the machine in %s, want %s", s, State6Bound)
+	}
+	if hasSendV6(acts, wire.MsgRebind) {
+		t.Error("the fresh lease was bound with a Rebind sent at once: the declined resume's owed Rebind survived")
+	}
+}
+
+// TestTheResumedRebindIsDelayedByTheConfirmBound: the first Rebind of a resume
+// waits a random time up to CnfMaxDelay, as the Confirm it replaces did, and
+// not up to SolMaxDelay (RFC 8415 section 18.2.12; claymore666/docker-net-dhcp#214).
+func TestTheResumedRebindIsDelayedByTheConfirmBound(t *testing.T) {
+	p := pr6Params()
+	p.SolMaxDelay, p.CnfMaxDelay = 1*Second, 100*Second
+	m := newMachine6(t, p)
+	_, acts := m.Step(at(0), uint64(51*Second), Simple(EvStart))
+	d, ok := timerSet(acts, Timer6Delay)
+	if !ok || d != 51*Second {
+		t.Errorf("the delay before the resumed Rebind is %v (set %v), want 51 s drawn under CnfMaxDelay", d, ok)
+	}
+}
