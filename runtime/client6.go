@@ -58,6 +58,14 @@ type ClientConfig6 struct {
 	// it makes the first message on the wire RFC 9915 section 18.2.12's
 	// Confirm instead of a Solicit. See lease.Config.Resume6.
 	Resume *lease.Lease
+
+	// PrefixHint asks for a delegated prefix of that length, 1 to 128, and 0
+	// asks for none: it sets Params6.PrefixHint when it is not zero, so a
+	// caller that fills only this field gets an IA_PD in the Solicit and the
+	// Request. The prefix comes back in Lease().Prefixes and in the Acquired and
+	// Changed events with the length the server chose; this library installs
+	// nothing (RFC 3633 section 12.1; claymore666/docker-net-dhcp#214).
+	PrefixHint int
 }
 
 // NewClient6 assembles a Client6 on the named interface.
@@ -162,6 +170,9 @@ func NewClient6(cfg ClientConfig6) (*Client6, error) {
 	}
 
 	params := cfg.Params6
+	if cfg.PrefixHint != 0 {
+		params.PrefixHint = cfg.PrefixHint
+	}
 	mgr, err := lease.NewManager(lease.Config{
 		Params6:     &params,
 		Resume6:     cfg.Resume,

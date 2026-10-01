@@ -68,6 +68,14 @@ type Lease6 struct {
 	// the ones that ran out (claymore666/docker-net-dhcp#927).
 	TempAddrs []Addr6
 
+	// Prefixes is the delegated prefixes of the IA_PD, in the order they
+	// appeared, beside Addrs and TempAddrs and never inside either: a prefix is
+	// not an address, so Addr, Prefix, the duplicate address detection, the
+	// outward address list and the longest valid lifetime all read Addrs alone.
+	// The library reports the prefix and installs nothing (RFC 3633 section
+	// 12.1; claymore666/docker-net-dhcp#214).
+	Prefixes []Prefix6
+
 	// ServerDUID is the Server Identifier option's contents, as sent. It is
 	// the v6 counterpart of Lease.ServerID and the reason lease.Lease carries
 	// both: a v6 server is named by opaque bytes, not by an address.
@@ -362,6 +370,17 @@ func (l Lease6) Equal(o Lease6) bool {
 	if !tempEqual(l, o) {
 		return false
 	}
+	// A delegated prefix compares like an address, lifetimes included, so a
+	// Renew that moves, shortens or drops it is ActLeaseChanged
+	// (claymore666/docker-net-dhcp#214).
+	if len(l.Prefixes) != len(o.Prefixes) {
+		return false
+	}
+	for i := range l.Prefixes {
+		if l.Prefixes[i] != o.Prefixes[i] {
+			return false
+		}
+	}
 	if !sameDUID(l.ServerDUID, o.ServerDUID) {
 		return false
 	}
@@ -387,6 +406,10 @@ func (l Lease6) String() string {
 	for _, a := range l.TempAddrs {
 		b.WriteString(" temp ")
 		b.WriteString(a.String())
+	}
+	for _, p := range l.Prefixes {
+		b.WriteString(" pd ")
+		b.WriteString(p.String())
 	}
 	b.WriteString(fmt.Sprintf(" t1=%s t2=%s", l.T1, l.T2))
 	if len(l.DNS) > 0 {

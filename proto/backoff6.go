@@ -220,6 +220,15 @@ type Params6 struct {
 	// (claymore666/docker-net-dhcp#927).
 	Temporary bool
 
+	// PrefixHint asks for a delegated prefix: 0 sends no IA_PD and changes
+	// nothing, 1 to 128 puts an IA_PD in the Solicit and the Request carrying
+	// one IA Prefix of that length with zero lifetimes (RFC 8415 sections
+	// 18.2.1 and 21.22). The IA_PD takes the IA_NA's IAID. The server's answer
+	// comes back in Lease6.Prefixes with the length the server chose; the
+	// library reports it and installs nothing (RFC 3633 section 12.1;
+	// claymore666/docker-net-dhcp#214).
+	PrefixHint int
+
 	// MaxSendFailures is how many consecutive ActSendV6 failures end the
 	// acquisition with ReasonTransport. It is Params.MaxSendFailures's
 	// counterpart and exists for R2's reason: a machine whose every send

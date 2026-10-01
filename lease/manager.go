@@ -693,7 +693,18 @@ func newManager6(cfg Config) (*Manager, error) {
 				})
 			}
 		}
+		// The delegated prefixes the record held ride with the addresses, so the
+		// machine rebinds rather than confirms (claymore666/docker-net-dhcp#214).
+		var held []proto.Prefix6
+		for _, p := range cfg.Resume6.Prefixes {
+			held = append(held, proto.Prefix6{
+				Prefix:    p.Addr,
+				Preferred: remaining(b, p.Preferred),
+				Valid:     remaining(b, p.Valid, cfg.Resume6.Expire),
+			})
+		}
 		params.Resume = &proto.Resume6{
+			Prefixes:   held,
 			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
