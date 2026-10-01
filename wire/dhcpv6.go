@@ -128,6 +128,8 @@ const (
 	OptV6RapidCommit  OptionCodeV6 = 14 // §21.14
 	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
 	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
+	OptV6IAPD         OptionCodeV6 = 25 // §21.21
+	OptV6IAPrefix     OptionCodeV6 = 26 // §21.22
 	OptV6InfoRefresh  OptionCodeV6 = 32 // §21.23
 	OptV6ClientFQDN   OptionCodeV6 = 39 // RFC 4704 section 4
 	OptV6SolMaxRTCode OptionCodeV6 = 82 // §21.24
@@ -150,6 +152,8 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6ReconfAccept: "reconf-accept",
 	OptV6DNSServers:   "dns-servers",
 	OptV6DomainList:   "domain-list",
+	OptV6IAPD:         "ia-pd",
+	OptV6IAPrefix:     "ia-prefix",
 	OptV6InfoRefresh:  "info-refresh-time",
 	OptV6ClientFQDN:   "client-fqdn",
 	OptV6SolMaxRTCode: "sol-max-rt",
@@ -479,6 +483,155 @@ func (o OptionsV6) IATAs() ([]*IATA, error) {
 	return out, nil
 }
 
+// ------------------------------------------------------------------ IA_PD --
+
+// IAPD is a decoded Identity Association for Prefix Delegation, §21.21, laid
+// out as an IA_NA is (claymore666/docker-net-dhcp#214).
+type IAPD struct {
+	IAID uint32
+	// T1 and T2 are §21.21's two renewal times, in seconds, with the same
+	// meanings of 0 and 0xffffffff as IANA's.
+	T1, T2 uint32
+	// Options is the IA_PD-options field: the IA Prefix options and any Status
+	// Code scoped to this IA_PD.
+	Options OptionsV6
+}
+
+// IAPDFixedLen is §21.21's "12 + length of IA_PD-options field".
+const IAPDFixedLen = 12
+
+// DecodeIAPD parses one IA_PD option value.
+func DecodeIAPD(v []byte) (*IAPD, error) {
+	if len(v) < IAPDFixedLen {
+		return nil, fmt.Errorf("%w: IA_PD is %d octet(s), want at least %d",
+			ErrV6BadOption, len(v), IAPDFixedLen)
+	}
+	opts, err := ParseOptionsV6(v[IAPDFixedLen:])
+	if err != nil {
+		return nil, err
+	}
+	return &IAPD{
+		IAID:    ube32(v[0:4]),
+		T1:      ube32(v[4:8]),
+		T2:      ube32(v[8:12]),
+		Options: opts,
+	}, nil
+}
+
+// EncodeIAPD renders one IA_PD option value.
+func EncodeIAPD(ia *IAPD) ([]byte, error) {
+	if ia == nil {
+		return nil, fmt.Errorf("%w: nil IA_PD", ErrV6Encode)
+	}
+	body, err := EncodeOptionsV6(ia.Options)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, IAPDFixedLen, IAPDFixedLen+len(body))
+	be32(out[0:4], ia.IAID)
+	be32(out[4:8], ia.T1)
+	be32(out[8:12], ia.T2)
+	return append(out, body...), nil
+}
+
+// IAPDs returns every IA_PD in the options area, decoded, beside IANAs.
+func (o OptionsV6) IAPDs() ([]*IAPD, error) {
+	var out []*IAPD
+	for _, v := range o.All(OptV6IAPD) {
+		ia, err := DecodeIAPD(v)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ia)
+	}
+	return out, nil
+}
+
+// --------------------------------------------------------------- IA Prefix --
+
+// IAPrefix is a decoded IA Prefix option, §21.22.
+type IAPrefix struct {
+	// Prefix is the delegated prefix with the length the option carries. The
+	// length is the option's prefix-length octet and nothing else
+	// (claymore666/docker-net-dhcp#214: a client never assumes its hint).
+	Prefix netip.Prefix
+	// PreferredLifetime and ValidLifetime are §21.22's two lifetimes, in
+	// seconds. 0xffffffff is infinity (§7.7).
+	PreferredLifetime uint32
+	ValidLifetime     uint32
+	// Options is the IAprefix-options field: a Status Code scoped to this
+	// prefix.
+	Options OptionsV6
+}
+
+// IAPrefixFixedLen is §21.22's "25 + length of IAprefix-options field"
+// (claymore666/docker-net-dhcp#214).
+const IAPrefixFixedLen = 25
+
+// DecodeIAPrefix parses one IA Prefix option value.
+//
+// A prefix-length above 128 is no prefix and is refused with ErrV6BadOption;
+// preferred above valid is IAPrefix.Valid(), as IAAddr.Valid() is for an
+// address, so a machine can count the discard (claymore666/docker-net-dhcp#214).
+func DecodeIAPrefix(v []byte) (*IAPrefix, error) {
+	if len(v) < IAPrefixFixedLen {
+		return nil, fmt.Errorf("%w: IA Prefix is %d octet(s), want at least %d",
+			ErrV6BadOption, len(v), IAPrefixFixedLen)
+	}
+	if v[8] > 128 {
+		return nil, fmt.Errorf("%w: IA Prefix length %d is above 128", ErrV6BadOption, v[8])
+	}
+	opts, err := ParseOptionsV6(v[IAPrefixFixedLen:])
+	if err != nil {
+		return nil, err
+	}
+	return &IAPrefix{
+		PreferredLifetime: ube32(v[0:4]),
+		ValidLifetime:     ube32(v[4:8]),
+		Prefix:            netip.PrefixFrom(netip.AddrFrom16([16]byte(v[9:25])), int(v[8])),
+		Options:           opts,
+	}, nil
+}
+
+// EncodeIAPrefix renders one IA Prefix option value.
+func EncodeIAPrefix(p *IAPrefix) ([]byte, error) {
+	if p == nil {
+		return nil, fmt.Errorf("%w: nil IA Prefix", ErrV6Encode)
+	}
+	if !p.Prefix.IsValid() || !p.Prefix.Addr().Is6() || p.Prefix.Addr().Is4In6() {
+		return nil, fmt.Errorf("%w: IA Prefix %s is not an IPv6 prefix", ErrV6Encode, p.Prefix)
+	}
+	body, err := EncodeOptionsV6(p.Options)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, IAPrefixFixedLen, IAPrefixFixedLen+len(body))
+	be32(out[0:4], p.PreferredLifetime)
+	be32(out[4:8], p.ValidLifetime)
+	out[8] = byte(p.Prefix.Bits())
+	b16 := p.Prefix.Addr().As16()
+	copy(out[9:25], b16[:])
+	return append(out, body...), nil
+}
+
+// Valid reports §21.22's usability predicate: a prefix whose preferred
+// lifetime exceeds its valid lifetime is one "the client MUST discard".
+func (p *IAPrefix) Valid() bool { return p.PreferredLifetime <= p.ValidLifetime }
+
+// Prefixes returns every IA Prefix in the options area, decoded; its domain is
+// an IA_PD's options field, as Addrs' is an IA_NA's (claymore666/docker-net-dhcp#214).
+func (o OptionsV6) Prefixes() ([]*IAPrefix, error) {
+	var out []*IAPrefix
+	for _, v := range o.All(OptV6IAPrefix) {
+		p, err := DecodeIAPrefix(v)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // ------------------------------------------------------------ Rapid Commit --
 
 // RapidCommit reports whether the area carries a Rapid Commit option.
@@ -606,15 +759,16 @@ type StatusCode uint16
 // §16 obsoletes it, so it arrives here as a code with no name, which is what
 // this codec does with every code IANA adds after today.
 //
-// NoPrefixAvail (6) is absent for the other reason: prefix delegation is
-// v2.2's (D25), so a client that never sends an IA_PD cannot be told there are
-// none.
+// NoPrefixAvail (6) is named since a client can send an IA_PD
+// (claymore666/docker-net-dhcp#214).
 const (
 	StatusSuccess      StatusCode = 0
 	StatusUnspecFail   StatusCode = 1
 	StatusNoAddrsAvail StatusCode = 2
 	StatusNoBinding    StatusCode = 3
 	StatusNotOnLink    StatusCode = 4
+
+	StatusNoPrefixAvail StatusCode = 6
 )
 
 // StatusMalformed is what Status() returns beside ErrV6BadOption, and it is
@@ -647,6 +801,8 @@ func (s StatusCode) String() string {
 		return "NoBinding"
 	case StatusNotOnLink:
 		return "NotOnLink"
+	case StatusNoPrefixAvail:
+		return "NoPrefixAvail"
 	default:
 		return fmt.Sprintf("status(%d)", uint16(s))
 	}
@@ -1152,7 +1308,7 @@ func (m *MessageV6) Summary() string {
 // summariseAddrs is the address list one option contributes to a Summary, in
 // parentheses, or the empty string.
 func summariseAddrs(o OptionV6) string {
-	var addrs []netip.Addr
+	var addrs []fmt.Stringer
 	switch o.Code {
 	case OptV6IANA:
 		ia, err := DecodeIANA(o.Data)
@@ -1188,6 +1344,22 @@ func summariseAddrs(o OptionV6) string {
 			return ""
 		}
 		addrs = append(addrs, a.Addr)
+	case OptV6IAPD:
+		// all-or-nothing like the IA_NA arm (claymore666/docker-net-dhcp#214)
+		ia, err := DecodeIAPD(o.Data)
+		if err != nil {
+			return ""
+		}
+		ps, _ := ia.Options.Prefixes()
+		for _, p := range ps {
+			addrs = append(addrs, p.Prefix)
+		}
+	case OptV6IAPrefix:
+		p, err := DecodeIAPrefix(o.Data)
+		if err != nil {
+			return ""
+		}
+		addrs = append(addrs, p.Prefix)
 	default:
 		return ""
 	}

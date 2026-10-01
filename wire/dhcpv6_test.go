@@ -646,8 +646,8 @@ func TestStatusDistinguishesAbsentFromSuccess(t *testing.T) {
 	if s := StatusCode(5).String(); !strings.Contains(s, "5") || strings.Contains(strings.ToLower(s), "multicast") {
 		t.Errorf("status code 5 renders as %q; §16 obsoleted UseMulticast, so it must read as an unknown code", s)
 	}
-	if s := StatusCode(6).String(); !strings.Contains(s, "6") {
-		t.Errorf("status code 6 renders as %q; prefix delegation is out of scope (D25) and NoPrefixAvail must stay unnamed", s)
+	if s := StatusCode(6).String(); s != "NoPrefixAvail" {
+		t.Errorf("status code 6 renders as %q, want NoPrefixAvail: the IA_PD slice names it (claymore666/docker-net-dhcp#214)", s)
 	}
 }
 
