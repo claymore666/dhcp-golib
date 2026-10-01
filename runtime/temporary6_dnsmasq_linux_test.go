@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE (claymore666/docker-net-dhcp#927).
+// Copyright (c) 2026 Christian Kamien. MIT License, see LICENSE.
 
 //go:build linux
 
