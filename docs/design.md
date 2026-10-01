@@ -151,6 +151,20 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestARapidAckIsRefusedWhereItAnswersNothingTheClientSent`,
   `TestARapidAckFromADeniedOrUnlistedServerIsRefused`,
   `TestARapidAckInRequestingIsTakenOnlyFromTheServerAndAddressAsked`).
+- **A client that waits when the server says IPv6 only, and one that does not
+  ask.** dnsmasq set to send the IPv6-Only Preferred option (RFC 8925) with a
+  value of five minutes sends it only to a client whose request list names it.
+  A client with `IPv6OnlyPreferred` gets an Offer whose logged options include
+  it and sends no Request, Decline or Release: dnsmasq's log holds DHCPDISCOVER
+  and DHCPOFFER and no DHCPREQUEST, the client reports no lease, and its journal
+  shows a restart timer of at least five minutes
+  (`TestDnsmasqSendsOption108AndAnIPv6OnlyClientWaitsInsteadOfRequesting`).
+  The absence is read after a second client's Discover has been logged, so that
+  no sleep stands in for "nothing came". The same server and a client without
+  the flag exchange four messages and the Offer does not carry it
+  (`TestAClientWithoutTheFlagGetsAFourMessageLeaseAndNoOption108FromTheSameDnsmasq`).
+  The wait's end and a link coming up are driven on the machine's own clock in
+  `proto` (`TestTheWaitEndsInAFreshDiscover`, `TestALinkUpEndsTheWaitEarly`).
 - **A two-message DHCPv6 lease from a real server, and the four-message one
   from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
   Solicit and in no other message. dnsmasq answers a Solicit that carries it with

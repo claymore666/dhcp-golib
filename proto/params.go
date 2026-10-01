@@ -82,6 +82,13 @@ type Params struct {
 	// (claymore666/docker-net-dhcp#1031).
 	RapidCommit bool
 
+	// IPv6OnlyPreferred puts option 108 in the parameter request list of every
+	// message that carries one, saying this host needs no IPv4 address when
+	// the network offers IPv6 only (RFC 8925 section 3.2); false sends
+	// nothing, and a 108 in an answer is then ignored
+	// (claymore666/docker-net-dhcp#1027).
+	IPv6OnlyPreferred bool
+
 	// ParameterList is option 55. Empty means DefaultParameterList is sent.
 	//
 	// RFC 2131 section 4.4.1: "If the client included a list of requested
@@ -456,6 +463,12 @@ var ErrBadUserClass = errors.New("proto: Params.UserClass cannot be encoded")
 // NOT appear in a Parameter Request List" (claymore666/docker-net-dhcp#1031).
 var ErrBadRapidCommit = errors.New("proto: Params.ParameterList names option 80")
 
+// ErrBadIPv6OnlyPreferred is returned by New for a ParameterList naming option
+// 108 on a client that does not set IPv6OnlyPreferred: RFC 8925 section 3.2
+// says an IPv4-requiring host "MUST NOT include the IPv6-Only Preferred option
+// code in the Parameter Request List" (claymore666/docker-net-dhcp#1027).
+var ErrBadIPv6OnlyPreferred = errors.New("proto: Params.ParameterList names option 108 without IPv6OnlyPreferred")
+
 // ErrBadResume is returned by New for a Resume that names no usable IPv4
 // address. See Params.validate.
 var ErrBadResume = errors.New("proto: Params.Resume names no usable IPv4 address")
@@ -516,6 +529,13 @@ func (p Params) validate() error {
 		for _, c := range p.ParameterList {
 			if c == wire.OptRapidCommit {
 				return ErrBadRapidCommit
+			}
+		}
+	}
+	if !p.IPv6OnlyPreferred {
+		for _, c := range p.ParameterList {
+			if c == wire.OptIPv6OnlyPreferred {
+				return ErrBadIPv6OnlyPreferred
 			}
 		}
 	}
