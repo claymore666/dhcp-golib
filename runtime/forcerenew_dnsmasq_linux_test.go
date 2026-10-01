@@ -25,34 +25,21 @@ import (
 	"github.com/claymore666/dhcp-golib/wire"
 )
 
-// Runtime half of claymore666/docker-net-dhcp#1119, DHCPFORCERENEW with Forcerenew
-// Nonce Authentication, against dnsmasq 2.91 as the server.
-//
-// WHAT THIS PROVES AND WHAT IT DOES NOT. dnsmasq has no option 145, no option
-// 90 and no DHCPFORCERENEW. It sends the bytes it is given, so the server's
-// options 145 and 90 are fixed bytes and the FORCERENEW frame is synthetic: a
-// frame this file builds and puts on the link. Case (a) proves that the client
-// offered option 145 (dnsmasq's tag fires on it and the forced options come
-// back only then) and that it took the nonce out of the ACK. It does not
-// prove a conformant server. Cases (b) to (e) prove how the client treats a
-// frame, read from dnsmasq's log: a DHCPREQUEST that answers it, under a new
-// xid and with no DHCPDISCOVER, and none from the frames that must change
-// nothing.
-//
-// THE FIXED REPLAY VALUE is frcServerReplay, the replay detection value of the
-// option 90 dnsmasq puts on every ACK, renewals included. The floor starts at
-// it, so every frame sent here must exceed it: 101 and 102 do and 100 does
-// not. The renewal ACK in (b) carries 100 again with the same nonce, and the
-// refused replay in (c) is the proof that the floor was not lowered to it.
-//
-// THE XID of every frame here is a constant that is not the client's. A
-// FORCERENEW is server-initiated and answers no transaction, so the machine
-// does not look at it (RFC 3203 section 2.2).
-//
-// The library's own counters are not what is read. The journal is read once,
-// after the last frame, as the account of why each earlier one did nothing:
-// the final frame is processed after every earlier one, so the journal is
-// complete by then.
+// Runtime half of claymore666/docker-net-dhcp#1119, DHCPFORCERENEW with nonce
+// authentication, against dnsmasq 2.91. dnsmasq has no option 145, 90 or
+// DHCPFORCERENEW: it sends the options it is told to, and the FORCERENEW frame
+// is synthetic. Case (a) proves the client offered option 145 and took the
+// nonce from the ACK, not that a server is conformant. Cases (b) to (e) read
+// dnsmasq's log for the DHCPREQUEST that answers a frame, under a new xid and
+// with no DHCPDISCOVER, and for the silence after frames that must change
+// nothing. The library's counters are not read.
+
+// frcServerReplay is the replay value of the option 90 dnsmasq puts on every
+// ACK, renewals included. The floor starts at it, so each frame sent here must
+// exceed it: 101 and 102 do, 100 does not. The renewal ACK in (b) carries 100
+// again, and the refused replay in (c) shows the floor was not lowered to it.
+// The xid of every frame is a constant that is not the client's: a FORCERENEW
+// answers no transaction, so the machine never looks at it (RFC 3203 2.2).
 
 const (
 	frcServerReplay = 100
