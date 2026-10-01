@@ -182,6 +182,24 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   [`proto`](../proto) alone, with the refusals of a Reply that carries the option
   (`TestARapid6ReplyIsDiscardedWhereItAnswersNothingTheClientSent`,
   `TestAPlainAdvertise6ToARapidSolicitLeadsToRequestAndReply`).
+- **A temporary address from a real server, beside the stable one.** A client
+  with `Temporary` sends an IA_TA with the IA_NA's IAID in its Solicit, repeats
+  the address the Advertise offered in its Request, and holds the Reply's
+  address in `TempAddrs`, a second slice that nothing reading the stable lease
+  looks at. The test runs dnsmasq with a range of billions of addresses, because it
+  draws both addresses from one range at random starts, and asserts a stable
+  and a distinct temporary address on the lease, the IA_TA and the same address
+  in dnsmasq's log, and no IA_TA at all for a client that does not ask
+  (`TestAV6ClientThatAsksForTemporaryAddressesGetsOneFromRealDnsmasq`,
+  `TestAV6ClientThatDoesNotAskGetsNoTemporaryAddress`). A renewal asks for no
+  temporary address, as RFC 8415 advises: the count of `ia-ta` options
+  dnsmasq logged as sent does not move and the decoded Reply has none
+  (`TestARenewalLeavesTheTemporaryAddressAlone`). A temporary address that
+  fails duplicate address detection is declined alone in an IA_TA, and a stable
+  one that fails takes the same Reply's temporary addresses with it; both are
+  driven in [`proto`](../proto), where each address can be failed on its own.
+  A lease resumed from a remembered binding has no temporary address, because
+  a Confirm is not followed by a Request.
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S

@@ -1273,6 +1273,7 @@ func familyOf(ev RecordEvent, rec Record) Family {
 // CloneLease deep-copies a Lease for the same reason SnapshotParams exists.
 func CloneLease(l Lease) Lease {
 	l.Addrs = append([]Addr6(nil), l.Addrs...)
+	l.TempAddrs = append([]Addr6(nil), l.TempAddrs...)
 	l.DNS = append([]netip.Addr(nil), l.DNS...)
 	l.Routes = append([]wire.Route(nil), l.Routes...)
 	l.DomainSearch = append([]string(nil), l.DomainSearch...)
