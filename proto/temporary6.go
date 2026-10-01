@@ -191,11 +191,33 @@ func tempEqual(a Lease6, b Lease6) bool {
 		if x.Addr != y.Addr || x.PrefixLen != y.PrefixLen {
 			return false
 		}
-		if !sameEnd(a.Start, x.Valid, b.Start, y.Valid) || !sameEnd(a.Start, x.Preferred, b.Start, y.Preferred) {
+		if !sameEnd(a.Start, x.Valid, b.Start, y.Valid) || !samePreferred(a.Start, x.Preferred, b.Start, y.Preferred) {
 			return false
 		}
 	}
 	return true
+}
+
+// samePreferred is sameEnd for the preferred lifetime, except that two ends
+// which both lie before the later of the two Starts are equal: carryTemp clamps
+// a passed preferred time to its new Start, so without this every renewal after
+// the address was deprecated would read as a change (claymore666/docker-net-dhcp#927).
+func samePreferred(s1 Instant, d1 Duration, s2 Instant, d2 Duration) bool {
+	e1, f1 := expiry(s1, d1)
+	e2, f2 := expiry(s2, d2)
+	if f1 != f2 {
+		return false
+	}
+	if f1 {
+		later := s1
+		if s2.After(later) {
+			later = s2
+		}
+		if !e1.After(later) && !e2.After(later) {
+			return true
+		}
+	}
+	return e1 == e2
 }
 
 func sameEnd(s1 Instant, d1 Duration, s2 Instant, d2 Duration) bool {

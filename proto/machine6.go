@@ -1901,6 +1901,7 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 	for _, a := range m.dadBad {
 		if isTemp(m.pending, a) {
 			tempBad = append(tempBad, a)
+			m.tempCounts.Conflicted++
 		} else {
 			stableBad = true
 		}
@@ -1974,7 +1975,6 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 func (m *Machine6) declineTemporary(now Instant, rnd uint64, bad []netip.Addr, out *actions) {
 	l := m.pending
 	out.journal(m, fmt.Sprintf("duplicate address detection found %d temporary address(es) in use: declining them alone and keeping the stable lease (§18.2.10.1)", len(bad)))
-	m.tempCounts.Conflicted += uint64(len(bad))
 	rest := withoutTemp(l, bad)
 	m.pending = rest
 	m.dadWait, m.dadBad = nil, nil
