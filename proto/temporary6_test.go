@@ -864,7 +864,12 @@ func TestTemporaryIsNotAskedForOnAResumedLease(t *testing.T) {
 		t.Errorf("binding a resumed lease sent a message")
 	}
 	for i, at0 := range []int64{200, 400, 600} {
-		acts = ta6Renew(t, m, at0, at0+1)
+		_, acts = m.Step(at(at0), 7, TimerFired(Timer6Renew))
+		ren := mustSendV6(t, acts, wire.MsgRenew)
+		if _, tas := ta6IAs(t, ren); len(tas) != 0 {
+			t.Errorf("renewal %d carries %d IA_TA", i, len(tas))
+		}
+		_, acts = m.Step(at(at0+1), 0, ta6Reply(t, ren.XID))
 		for _, a := range acts {
 			if a.Kind == ActLeaseRenewed && len(a.Lease6.TempAddrs) != 0 {
 				t.Errorf("renewal %d gave the lease %d temporary addresses", i, len(a.Lease6.TempAddrs))
