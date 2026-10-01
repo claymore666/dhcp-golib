@@ -64,6 +64,10 @@ else
 fi
 ls -ld /var/lib/kea
 echo "kea-dhcp6-server.service: $(systemctl is-active kea-dhcp6-server || true)"
+# Ubuntu's package ships an AppArmor profile for kea-dhcp6; the Kea tests keep
+# their files inside it, so the log states whether it is loaded and its mode
+# (claymore666/docker-net-dhcp#214).
+sudo aa-status 2>/dev/null | grep -i kea || echo "apparmor: no kea profile"
 
 if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
 	sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0

@@ -34,10 +34,23 @@ import (
 
 const keaTestPrefix = "TestKea"
 
-// keaLeaseDir is the one path Kea accepts for a memfile lease database. Each
-// test checks it exists, then bind-mounts its own directory over it inside the
-// test's mount namespace (claymore666/docker-net-dhcp#214).
-const keaLeaseDir = "/var/lib/kea"
+// The paths below are the ones Ubuntu's AppArmor profile for kea-dhcp6 allows,
+// and Kea accepts no others for the lease database, so each test mounts its own
+// state over them inside the test's mount namespace: the config under
+// /etc/kea, named kea-dhcp6.conf so the PID file is the one the profile
+// allows, the PID file and lock file under a private /run, and the lease
+// database under /var/lib/kea. A stock Debian package has no profile, which is
+// why a test that wrote to /tmp passed there and was denied on the Ubuntu
+// runner (claymore666/docker-net-dhcp#214).
+const (
+	keaLeaseDir  = "/var/lib/kea"
+	keaConfDir   = "/etc/kea"
+	keaRunDir    = "/run"
+	keaPidDir    = "/run/kea"
+	keaLockDir   = "/run/lock/kea"
+	keaLeaseFile = "kea-leases6.csv"
+	keaConfFile  = "kea-dhcp6.conf"
+)
 
 // keaPDPrefix and the lengths below are the pool every Kea test delegates from:
 // /48 split into /64 (claymore666/docker-net-dhcp#214).
@@ -123,13 +136,13 @@ func (k keaConfig) json() string {
     "loggers": [ { "name": "kea-dhcp6", "output_options": [ { "output": "stderr" } ], "severity": "INFO", "debuglevel": 0 } ]
   }
 }
-`, test6ServerIf, filepath.Join(keaLeaseDir, "leases6.csv"),
+`, test6ServerIf, filepath.Join(keaLeaseDir, keaLeaseFile),
 		keaValidSec, keaT1Sec, keaT2Sec, keaPrefSec,
 		test6Prefix, test6PrefixLn, test6ServerIf, test6RangeLo, test6RangeHi, pd)
 }
 
-// keaStart binds a per-test directory over keaLeaseDir, starts kea-dhcp6 on the
-// fixture link and returns once it logs DHCP6_STARTED
+// keaStart mounts the per-test state over the paths above, starts kea-dhcp6 on
+// the fixture link and returns once it logs DHCP6_STARTED
 // (claymore666/docker-net-dhcp#214).
 func keaStart(t *testing.T, cfg keaConfig) *dnsmasqServer {
 	t.Helper()
@@ -137,20 +150,43 @@ func keaStart(t *testing.T, cfg keaConfig) *dnsmasqServer {
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	if _, err := os.Stat(keaLeaseDir); err != nil {
-		t.Fatalf("%s is missing (%v): Kea accepts no other lease directory, so the test mounts its own over this one", keaLeaseDir, err)
-	}
 	dir := t.TempDir()
-	if err := syscall.Mount(dir, keaLeaseDir, "", syscall.MS_BIND, ""); err != nil {
-		t.Fatalf("binding %s over %s: %v. A Kea test runs in a mount namespace of its own, and only a test named %s... is given one", dir, keaLeaseDir, err, keaTestPrefix)
+	leaseDir, confDir := filepath.Join(dir, "lease"), filepath.Join(dir, "conf")
+	for _, d := range []string{leaseDir, confDir} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatalf("creating %s: %v", d, err)
+		}
 	}
-	conf := filepath.Join(dir, "kea.json")
+	for _, d := range []string{keaLeaseDir, keaConfDir} {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("%s is missing (%v): Kea reads its configuration and keeps its leases only there, so the test mounts its own over it; install kea-dhcp6-server", d, err)
+		}
+	}
+	mounts := []struct {
+		src, dst, fstype string
+		flags            uintptr
+	}{
+		{leaseDir, keaLeaseDir, "", syscall.MS_BIND},
+		{confDir, keaConfDir, "", syscall.MS_BIND},
+		{"tmpfs", keaRunDir, "tmpfs", 0},
+	}
+	for _, m := range mounts {
+		if err := syscall.Mount(m.src, m.dst, m.fstype, m.flags, ""); err != nil {
+			t.Fatalf("mounting %s over %s: %v. A Kea test runs in a mount namespace of its own, and only a test named %s... is given one", m.src, m.dst, err, keaTestPrefix)
+		}
+	}
+	for _, d := range []string{keaPidDir, keaLockDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("creating %s under the private %s: %v", d, keaRunDir, err)
+		}
+	}
+	conf := filepath.Join(keaConfDir, keaConfFile)
 	if err := os.WriteFile(conf, []byte(cfg.json()), 0o600); err != nil {
-		t.Fatalf("writing the Kea configuration: %v", err)
+		t.Fatalf("writing the Kea configuration %s: %v", conf, err)
 	}
 
 	cmd := exec.Command(bin, "-c", conf)
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C", "KEA_PIDFILE_DIR="+dir, "KEA_LOCKFILE_DIR="+dir)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C", "KEA_PIDFILE_DIR="+keaPidDir, "KEA_LOCKFILE_DIR="+keaLockDir)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatalf("StderrPipe: %v", err)
@@ -159,7 +195,7 @@ func keaStart(t *testing.T, cfg keaConfig) *dnsmasqServer {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting kea-dhcp6: %v", err)
 	}
-	s := &dnsmasqServer{cmd: cmd, arrived: make(chan string, 1024), leasefile: filepath.Join(dir, "leases6.csv"), iface: test6ServerIf, tag: "kea"}
+	s := &dnsmasqServer{cmd: cmd, arrived: make(chan string, 1024), leasefile: filepath.Join(leaseDir, keaLeaseFile), iface: test6ServerIf, tag: "kea"}
 	go s.read(stderr)
 	t.Cleanup(func() {
 		s.stop()
