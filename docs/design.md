@@ -184,6 +184,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   fails duplicate address detection is declined alone in an IA_TA, and a stable
   one that fails takes the same Reply's temporary addresses with it; both are
   driven in [`proto`](../proto), where each address can be failed on its own.
+  A lease resumed from a remembered binding has no temporary address, because
+  a Confirm is not followed by a Request.
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S

@@ -2126,6 +2126,12 @@ func (m *Machine6) continueFromResume(now Instant, rnd uint64, out *actions, how
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
 	out.journal(m, fmt.Sprintf("continuing with the %s addresses and their last known lifetimes", how))
+	if m.params.Temporary {
+		// Resume6 holds stable addresses only and no Request follows a
+		// Confirm, so a resumed lease has no temporary address until the
+		// stable one is acquired again (claymore666/docker-net-dhcp#927).
+		out.journal(m, "temporary addresses are not asked for on a resumed lease")
+	}
 	addrs := make([]netip.Addr, 0, len(l.Addrs))
 	for _, a := range l.Addrs {
 		addrs = append(addrs, a.Addr)

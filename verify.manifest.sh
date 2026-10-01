@@ -925,12 +925,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # base, 58 here.
 #
 # DHCPv6 TEMPORARY ADDRESSES (IA_TA) IN THE CLIENT,
-# claymore666/docker-net-dhcp#927: twenty-five added, none removed, MEASURED as
+# claymore666/docker-net-dhcp#927: twenty-six added, none removed, MEASURED as
 # testroster runs, 1059 on the base (dev after the Rapid Commit block above)
-# and 1084 here. proto/temporary6_test.go 18, lease/temporary_test.go 4,
+# and 1085 here. proto/temporary6_test.go 19, lease/temporary_test.go 4,
 # runtime/temporary6_dnsmasq_linux_test.go 3. The three runtime ones are netns
 # tests: testroster -netns reads 58 on the base, 61 here.
-MIN_DECLARED_TESTS=1084
+MIN_DECLARED_TESTS=1085
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

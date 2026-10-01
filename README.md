@@ -32,7 +32,7 @@ and it needs no root.
 | Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
 | Prefix delegation (IA_PD) | n/a | [planned](https://github.com/claymore666/docker-net-dhcp/issues/214) |
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | yes |
-| Hold a temporary address beside the non-temporary one (IA_TA) | n/a | yes |
+| Hold a temporary address beside the non-temporary one (IA_TA) | n/a | yes, not on a resumed lease |
 | Take a reconfiguration the server starts (DHCPFORCERENEW / Reconfigure) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1119) | yes |
 | Tell the server what kind of client this is (User Class, RFC 3004) | yes | n/a |
 | Learn that the network runs IPv6 only and how long to wait before asking again (IPv6-Only Preferred, RFC 8925) | [planned](https://github.com/claymore666/docker-net-dhcp/issues/1027) | n/a |

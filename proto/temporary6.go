@@ -270,9 +270,8 @@ func isTemp(l Lease6, a netip.Addr) bool {
 
 // buildTA renders the IA_TA a Solicit, a Request or a Decline carries. A
 // Solicit and a Request carry the client's IAID and, in the Request, the
-// addresses the Advertise offered (RFC 8415 section 18.2.2: an IA with no
-// address makes dnsmasq take the Request for a rapid Solicit and allocate
-// another one); a Decline carries the temporary addresses it declines, with
+// addresses the Advertise offered (dnsmasq takes a Request whose IA has no
+// address for a rapid Solicit and allocates another one); a Decline carries the temporary addresses it declines, with
 // lifetimes zero. A Renew, a Rebind, a Release and a Confirm carry none
 // (claymore666/docker-net-dhcp#927).
 func (m *Machine6) buildTA(addrs []Addr6) (wire.OptionV6, error) {

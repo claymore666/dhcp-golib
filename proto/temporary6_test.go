@@ -837,3 +837,41 @@ func TestTemporaryLeaseReplaysFromTheJournal(t *testing.T) {
 		t.Error("the journal replayed against a client that never asked for temporary addresses")
 	}
 }
+
+// TestTemporaryIsNotAskedForOnAResumedLease: Resume6 holds stable addresses and
+// no Request follows a Confirm, so a resumed client binds with no temporary
+// address, sends no IA_TA on any renewal, and says so in the journal
+// (claymore666/docker-net-dhcp#927).
+func TestTemporaryIsNotAskedForOnAResumedLease(t *testing.T) {
+	m, acts := confirming6(t, ta6Params(true))
+	conf := mustSendV6(t, acts, wire.MsgConfirm)
+	if _, tas := ta6IAs(t, conf); len(tas) != 0 {
+		t.Errorf("the Confirm carries %d IA_TA", len(tas))
+	}
+	s, acts := m.Step(at(2), 3, receivedV6(t, wire.MsgReply, conf.XID,
+		optClientID(capDUID), optServerID(testServerDUID), optStatus(wire.StatusSuccess)))
+	if s != State6DAD {
+		t.Fatalf("a confirming Reply left the machine in %s, want %s", s, State6DAD)
+	}
+	if !ta6Says(acts, "temporary addresses are not asked for on a resumed lease") {
+		t.Errorf("the journal does not say the resumed lease has no temporary address: %s", ta6Journal(acts))
+	}
+	s, acts = m.Step(at(3), 0, DADResult(netip.MustParseAddr(dnsmasqLeasedAddr), false))
+	if s != State6Bound {
+		t.Fatalf("DAD passed and the machine is in %s, want %s", s, State6Bound)
+	}
+	if count(acts, ActSendV6) != 0 {
+		t.Errorf("binding a resumed lease sent a message")
+	}
+	for i, at0 := range []int64{200, 400, 600} {
+		acts = ta6Renew(t, m, at0, at0+1)
+		for _, a := range acts {
+			if a.Kind == ActLeaseRenewed && len(a.Lease6.TempAddrs) != 0 {
+				t.Errorf("renewal %d gave the lease %d temporary addresses", i, len(a.Lease6.TempAddrs))
+			}
+		}
+	}
+	if c := m.TemporaryCounters(); c != (Temporary6Counters{}) {
+		t.Errorf("counters after three renewals of a resumed lease = %+v", c)
+	}
+}
