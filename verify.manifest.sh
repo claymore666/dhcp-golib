@@ -967,7 +967,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # twenty-nine added, none removed, MEASURED as testroster runs, 1220 before and
 # 1249 here. lease/counters_fold4_test.go 10, lease/counters_fold6_test.go 14
 # and lease/counters_record_test.go 5; no netns test among them.
-MIN_DECLARED_TESTS=1249
+#
+# THE RECONFIGURE KEY'S WINDOW ACROSS A RESTART, claymore666/dhcp-golib#28:
+# one added, none removed, MEASURED as testroster runs, 1249 before and 1250
+# here. proto/machine6_reconfigure_persist_test.go 1; no netns test.
+MIN_DECLARED_TESTS=1250
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

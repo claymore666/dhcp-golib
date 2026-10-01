@@ -302,7 +302,8 @@ func TestAKeylessReplyAfterResumeKeepsTheRestoredKeyAndFloor(t *testing.T) {
 
 // TestEveryLeaseFromAReplyCarriesTheStoreEntry is what the record sees: the
 // lease the machine emits holds the key and the floor, and the floor moves at
-// the Reply the Renew brings, not before (the bound the handover states).
+// the Reply the Renew brings, not before, because an Information-request
+// Reconfigure emits no lease (claymore666/dhcp-golib#28).
 func TestEveryLeaseFromAReplyCarriesTheStoreEntry(t *testing.T) {
 	t.Run("a Solicit-path lease carries the key and no floor yet", func(t *testing.T) {
 		m, _ := solicit6(t, testParams6())
@@ -526,18 +527,7 @@ func TestReplay6ReproducesARunThatStartedFromARestoredKey(t *testing.T) {
 // bound machine, through the Reply that ends it, and returns every action.
 func persistInfoDetour(t *testing.T, m *Machine6, now int64, replay uint64) []Action {
 	t.Helper()
-	s, acts := m.Step(at(now), 7, persistSigned(t, testServerDUID, persistKey, replay, wire.MsgInformationRequest))
-	if s != State6InfoRequesting {
-		t.Fatalf("a Reconfigure at %d naming Information-request left the machine in %s, want %s", replay, s, State6InfoRequesting)
-	}
-	sent := mustSendV6(t, acts, wire.MsgInformationRequest)
-	all := append([]Action(nil), acts...)
-	s, acts = m.Step(at(now+1), 0, receivedV6(t, wire.MsgReply, sent.XID,
-		optClientID(capDUID), optServerID(testServerDUID), optU32(wire.OptV6InfoRefresh, 3600)))
-	if s != State6Bound {
-		t.Fatalf("the Reply to the Information-request left the machine in %s, want %s", s, State6Bound)
-	}
-	return append(all, acts...)
+	return persistInfoDetourKeyed(t, m, now, replay, nil)
 }
 
 // TestInformationRequestReconfiguresReachTheRecordAtTheNextLeaseReply states
@@ -577,5 +567,77 @@ func TestInformationRequestReconfiguresReachTheRecordAtTheNextLeaseReply(t *test
 	next, ok := persistLease(acts)
 	if !ok || next.ReconfigureReplay != 61 {
 		t.Errorf("the Renew's lease carries floor %d (found %v), want 61", next.ReconfigureReplay, ok)
+	}
+}
+
+// persistInfoDetourKeyed is persistInfoDetour whose Reply carries key as the
+// reconfigure key of RFC 9915 §20.4.1, or none when key is nil.
+func persistInfoDetourKeyed(t *testing.T, m *Machine6, now int64, replay uint64, key []byte) []Action {
+	t.Helper()
+	s, acts := m.Step(at(now), 7, persistSigned(t, testServerDUID, persistKey, replay, wire.MsgInformationRequest))
+	if s != State6InfoRequesting {
+		t.Fatalf("a Reconfigure at %d naming Information-request left the machine in %s, want %s", replay, s, State6InfoRequesting)
+	}
+	sent := mustSendV6(t, acts, wire.MsgInformationRequest)
+	all := append([]Action(nil), acts...)
+	opts := []wire.OptionV6{optClientID(capDUID), optServerID(testServerDUID), optU32(wire.OptV6InfoRefresh, 3600)}
+	if key != nil {
+		auth, err := wire.EncodeRKAPAuth(wire.RKAPTypeKey, key, 0)
+		if err != nil {
+			t.Fatalf("EncodeRKAPAuth: %v", err)
+		}
+		opts = append(opts, wire.OptionV6{Code: wire.OptV6Auth, Data: auth})
+	}
+	s, acts = m.Step(at(now+1), 0, receivedV6(t, wire.MsgReply, sent.XID, opts...))
+	if s != State6Bound {
+		t.Fatalf("the Reply to the Information-request left the machine in %s, want %s", s, State6Bound)
+	}
+	return append(all, acts...)
+}
+
+// TestAKeyChangedInAnInformationRequestReplyReachesTheRecordAtTheNextLeaseReply
+// is the key's window beside the floor's: a restart before the next lease Reply
+// restores the earlier key and refuses Reconfigures signed with the new one
+// (claymore666/dhcp-golib#28).
+func TestAKeyChangedInAnInformationRequestReplyReachesTheRecordAtTheNextLeaseReply(t *testing.T) {
+	m, acts := persistBound(t, persistResume(persistKey, 40, true))
+	record, ok := persistLease(acts)
+	if !ok || !bytes.Equal(record.ReconfigureKey, persistKey) {
+		t.Fatalf("the record before the detour holds key %x (found %v), want %x", record.ReconfigureKey, ok, persistKey)
+	}
+	detour := persistInfoDetourKeyed(t, m, 10, 50, persistOtherKey)
+	if l, ok := persistLease(detour); ok {
+		t.Fatalf("an Information-request detour emitted a lease (key %x): the new key would already be in the record", l.ReconfigureKey)
+	}
+
+	// The running machine already holds the new key and no longer the old one.
+	if ok, _ := persistAccepts(t, m, 20, testServerDUID, persistKey, 51); ok {
+		t.Fatal("the running machine accepted a Reconfigure signed with the key the Reply replaced")
+	}
+	if got := persistRefused(m, ReconfigureRefusalBadDigest); got != 1 {
+		t.Fatalf("BadDigest refusals in the running machine: %d, want 1", got)
+	}
+
+	// The restart: the record the caller last saved still holds the earlier
+	// key, so the server's valid Reconfigure is refused until a Reply brings a key.
+	r, _ := persistBound(t, persistResume(record.ReconfigureKey, record.ReconfigureReplay, record.ReconfigureReplaySeen))
+	if ok, _ := persistAccepts(t, r, 10, testServerDUID, persistOtherKey, 51); ok {
+		t.Fatal("a restart in the window accepted a Reconfigure signed with the new key, which the record cannot hold yet")
+	}
+	if got := persistRefused(r, ReconfigureRefusalBadDigest); got != 1 {
+		t.Fatalf("BadDigest refusals after the restart: %d, want 1", got)
+	}
+
+	// The next Reply that carries a lease writes the new key.
+	_, acts = m.Step(at(40), 7, persistSigned(t, testServerDUID, persistOtherKey, 52, wire.MsgRenew))
+	renew := mustSendV6(t, acts, wire.MsgRenew)
+	_, acts = m.Step(at(41), 0, persistReply(t, renew.XID, testServerDUID, nil))
+	next, ok := persistLease(acts)
+	if !ok || !bytes.Equal(next.ReconfigureKey, persistOtherKey) {
+		t.Fatalf("the Renew's lease carries key %x (found %v), want %x", next.ReconfigureKey, ok, persistOtherKey)
+	}
+	r2, _ := persistBound(t, persistResume(next.ReconfigureKey, next.ReconfigureReplay, next.ReconfigureReplaySeen))
+	if ok, _ := persistAccepts(t, r2, 10, testServerDUID, persistOtherKey, 53); !ok {
+		t.Error("a restart from the record the lease Reply wrote refused a Reconfigure signed with the new key")
 	}
 }
