@@ -27,7 +27,8 @@ const rc6RenameTo = "renamed-after-rapid"
 
 var rc6Line = regexp.MustCompile(`DHCP(SOLICIT|ADVERTISE|REQUEST|REPLY|RENEW|REBIND|CONFIRM|RELEASE|DECLINE)\(` + test6ServerIf + `\)`)
 
-// rc6Kinds is the order of the DHCPv6 message kinds dnsmasq logged on the link.
+// rc6Kinds is the order of the DHCPv6 message kinds dnsmasq logged on the link
+// (claymore666/docker-net-dhcp#926).
 func rc6Kinds(lines []string) []string {
 	var kinds []string
 	for _, l := range lines {
@@ -61,7 +62,7 @@ func rc6Start(t *testing.T, rapid bool) *rc6Run {
 	return &rc6Run{srv: srv, client: c, stop: stop, addr: addr}
 }
 
-// sent returns the client's captured outbound messages of one type.
+// sent returns the client's captured outbound messages of one type (claymore666/docker-net-dhcp#926).
 func (r *rc6Run) sent(mt wire.MessageTypeV6) []*wire.MessageV6 {
 	var out []*wire.MessageV6
 	for _, p := range r.client.Packets() {
@@ -72,10 +73,44 @@ func (r *rc6Run) sent(mt wire.MessageTypeV6) []*wire.MessageV6 {
 	return out
 }
 
-func (r *rc6Run) wantKinds(t *testing.T, want ...string) {
+// kinds is the order of the message kinds dnsmasq has logged so far
+// (claymore666/docker-net-dhcp#926).
+func (r *rc6Run) kinds() []string { return rc6Kinds(r.srv.lines()) }
+
+// rc6Index is where a kind first appears in the log, or -1 (claymore666/docker-net-dhcp#926).
+func rc6Index(kinds []string, kind string) int {
+	for i, k := range kinds {
+		if k == kind {
+			return i
+		}
+	}
+	return -1
+}
+
+// onlyKinds fails when dnsmasq logged a kind outside the allowed ones. A
+// Solicit the client repeated before its first answer is allowed to repeat; a
+// kind that must be absent stays absent, whatever the repeats
+// (claymore666/docker-net-dhcp#926).
+func (r *rc6Run) onlyKinds(t *testing.T, allowed ...string) {
 	t.Helper()
-	if got := rc6Kinds(r.srv.lines()); strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("dnsmasq logged the exchange %v, want %v.\nLog:\n%s", got, want, strings.Join(r.srv.lines(), "\n"))
+	for _, k := range r.kinds() {
+		if rc6Index(allowed, k) < 0 {
+			t.Fatalf("dnsmasq logged a %s the exchange must not have.\nLog:\n%s", k, strings.Join(r.srv.lines(), "\n"))
+		}
+	}
+}
+
+// inOrder fails unless the kinds appear in the log as a subsequence, each after
+// the first appearance of the one before it (claymore666/docker-net-dhcp#926).
+func (r *rc6Run) inOrder(t *testing.T, want ...string) {
+	t.Helper()
+	got, from := r.kinds(), 0
+	for _, w := range want {
+		i := rc6Index(got[from:], w)
+		if i < 0 {
+			t.Fatalf("dnsmasq's log has no %s after %v in %v, want the order %v.\nLog:\n%s", w, want[:from], got, want, strings.Join(r.srv.lines(), "\n"))
+		}
+		from += i + 1
 	}
 }
 
@@ -87,7 +122,10 @@ func (r *rc6Run) wantKinds(t *testing.T, want ...string) {
 func TestAV6ClientThatAsksForRapidCommitGetsTheTwoMessageLease(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		r := rc6Start(t, true)
-		r.wantKinds(t, "SOLICIT", "REPLY")
+		// At least a Solicit and the Reply that leased; a repeated Solicit is
+		// allowed, an Advertise and a Request are not (claymore666/docker-net-dhcp#926).
+		r.onlyKinds(t, "SOLICIT", "REPLY")
+		r.inOrder(t, "SOLICIT", "REPLY")
 		for _, k := range []string{"DHCPADVERTISE(", "DHCPREQUEST("} {
 			if n := r.srv.count(k); n != 0 {
 				t.Errorf("dnsmasq logged %d %s line(s) for a two-message lease", n, k)
@@ -118,7 +156,11 @@ func TestAV6ClientThatAsksForRapidCommitGetsTheTwoMessageLease(t *testing.T) {
 func TestAV6ClientThatDoesNotAskGetsTheFourMessageExchangeFromTheSameDnsmasq(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		r := rc6Start(t, false)
-		r.wantKinds(t, "SOLICIT", "ADVERTISE", "REQUEST", "REPLY")
+		r.onlyKinds(t, "SOLICIT", "ADVERTISE", "REQUEST", "REPLY")
+		r.inOrder(t, "SOLICIT", "ADVERTISE", "REQUEST", "REPLY")
+		if got := r.kinds(); rc6Index(got, "REPLY") < rc6Index(got, "REQUEST") {
+			t.Errorf("dnsmasq sent a Reply before any Request: %v", got)
+		}
 		for _, m := range r.sent(wire.MsgSolicit) {
 			if n := m.Options.Count(wire.OptV6RapidCommit); n != 0 {
 				t.Errorf("a client with RapidCommit false sent option 14 (%d)", n)
@@ -136,7 +178,8 @@ func TestAV6ClientThatDoesNotAskGetsTheFourMessageExchangeFromTheSameDnsmasq(t *
 func TestARenewAfterARapidV6LeaseCarriesNoOption14(t *testing.T) {
 	if os.Getenv(nsChildEnv) == "1" {
 		r := rc6Start(t, true)
-		r.wantKinds(t, "SOLICIT", "REPLY")
+		r.onlyKinds(t, "SOLICIT", "REPLY")
+		r.inOrder(t, "SOLICIT", "REPLY")
 		solicits := r.srv.count("DHCPSOLICIT(")
 		replies := r.srv.count("DHCPREPLY(")
 
@@ -151,7 +194,15 @@ func TestARenewAfterARapidV6LeaseCarriesNoOption14(t *testing.T) {
 			t.Fatalf("the server logged %d DHCPSOLICIT lines, %d before the renewal: a re-acquisition, not a renewal.\nLog:\n%s",
 				got, solicits, strings.Join(r.srv.lines(), "\n"))
 		}
-		r.wantKinds(t, "SOLICIT", "REPLY", "RENEW", "REPLY")
+		// The renewal is a Renew and a Reply after the lease, with no new
+		// Solicit, Advertise or Request (claymore666/docker-net-dhcp#926).
+		r.onlyKinds(t, "SOLICIT", "REPLY", "RENEW")
+		r.inOrder(t, "SOLICIT", "REPLY", "RENEW", "REPLY")
+		for _, k := range []string{"DHCPADVERTISE(", "DHCPREQUEST("} {
+			if n := r.srv.count(k); n != 0 {
+				t.Errorf("dnsmasq logged %d %s line(s) around a renewal", n, k)
+			}
+		}
 		renews := r.sent(wire.MsgRenew)
 		if len(renews) == 0 {
 			t.Fatal("the client captured no Renew, so there is nothing to read option 14 from")
