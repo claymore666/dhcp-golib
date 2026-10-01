@@ -437,7 +437,7 @@ func TestEveryRefusalLeavesTheMachineAsItWas(t *testing.T) {
 			raw := tc.raw()
 			dec, err := wire.Decode(raw)
 			if err != nil {
-				t.Skipf("the codec refuses this frame before the machine sees it: %v", err)
+				t.Fatalf("the codec refused the frame, so the machine never saw it and this row tests nothing: %v", err)
 			}
 			var d netip.Addr
 			if tc.dst != "" {
