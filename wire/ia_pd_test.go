@@ -87,7 +87,8 @@ func TestIAPrefixValidIsPreferredNotAboveValidAndEncodeRefusesWhatIsNoV6Prefix(t
 }
 
 // TestIAPDShorterThanItsFixedFieldsOrWithATruncatedPrefixIsRefusedWholesale is
-// the truncation row of the defeat list: no panic, no partial answer.
+// the truncation case: no panic, no partial answer
+// (claymore666/docker-net-dhcp#214).
 func TestIAPDShorterThanItsFixedFieldsOrWithATruncatedPrefixIsRefusedWholesale(t *testing.T) {
 	for _, n := range []int{0, 4, 11} {
 		if _, err := DecodeIAPD(make([]byte, n)); !errors.Is(err, ErrV6BadOption) {
