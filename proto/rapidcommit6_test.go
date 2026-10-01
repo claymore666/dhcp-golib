@@ -631,3 +631,35 @@ func TestARapid6LeaseReplaysFromTheJournal(t *testing.T) {
 		t.Error("the journal replayed against a client that never asked for Rapid Commit")
 	}
 }
+
+// TestARapid6ReplyWithInfiniteLifetimesIsTheLeaseAnOrdinaryReplyGives: the
+// all-ones lifetime is infinity (RFC 8415 section 7.7), and a rapid Reply
+// carrying it binds exactly as the ordinary Reply does
+// (claymore666/docker-net-dhcp#926).
+func TestARapid6ReplyWithInfiniteLifetimesIsTheLeaseAnOrdinaryReplyGives(t *testing.T) {
+	forever := []iaAddrSpec{{rc6Addr, 0xFFFFFFFF, 0xFFFFFFFF}}
+	rapid, sol := solicit6(t, rc6Params(true))
+	rapid.Step(at(2), 0, rc6RapidWith(t, sol.XID, forever))
+	rapid.Step(at(3), 0, DADResult(addr6(rc6Addr), false))
+
+	plain, _ := solicit6(t, rc6Params(false))
+	plain.Step(at(2), capXIDRequest, advertise(t, uint32(capXIDSolicit), 255))
+	plain.Step(at(3), 0, receivedV6(t, wire.MsgReply, uint32(capXIDRequest),
+		optClientID(capDUID), optServerID(testServerDUID), optIANA(t, capIAID, 0xFFFFFFFF, 0xFFFFFFFF, forever)))
+	plain.Step(at(4), 0, DADResult(addr6(rc6Addr), false))
+
+	rl, rheld := rapid.Lease()
+	pl, pheld := plain.Lease()
+	if rapid.State() != State6Bound || plain.State() != State6Bound || !rheld || !pheld {
+		t.Fatalf("rapid %s (held %t), ordinary %s (held %t)", rapid.State(), rheld, plain.State(), pheld)
+	}
+	if rl.Addrs[0] != pl.Addrs[0] || rl.Addrs[0].Valid != Infinite || rl.T1 != pl.T1 || rl.T2 != pl.T2 {
+		t.Errorf("rapid lease %+v, ordinary lease %+v", rl, pl)
+	}
+}
+
+func rc6RapidWith(t *testing.T, xid uint32, addrs []iaAddrSpec) Event {
+	t.Helper()
+	return receivedV6(t, wire.MsgReply, xid, optClientID(capDUID), optServerID(testServerDUID),
+		optIANA(t, capIAID, 0xFFFFFFFF, 0xFFFFFFFF, addrs), wire.RapidCommitOption())
+}
