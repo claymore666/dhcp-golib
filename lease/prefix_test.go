@@ -209,7 +209,16 @@ func TestAResumedLeaseWithAPrefixRebindsThroughTheManager(t *testing.T) {
 	}
 	r := newRig6On(t, clk, p, rebinding, withResume6(remembered))
 
-	r.waitSent(t, wire.MsgRebind)
+	// The first message is read, not waited past: a resume that confirms
+	// sends a Confirm first and no Rebind ever follows.
+	select {
+	case first := <-r.server.seen:
+		if first != wire.MsgRebind {
+			t.Fatalf("the first message to leave the host is a %s, want a Rebind", first)
+		}
+	case <-r.server.closed:
+		t.Fatal("the transport closed before a Rebind was sent")
+	}
 	var reb *wire.MessageV6
 	for _, m := range r.server.sentMessages() {
 		if m.Type == wire.MsgConfirm || m.Type == wire.MsgSolicit {
@@ -238,5 +247,35 @@ func TestAResumedLeaseWithAPrefixRebindsThroughTheManager(t *testing.T) {
 	}
 	if len(ev.Lease.Addrs) != 1 {
 		t.Errorf("Addrs %v: the prefix is not an address", ev.Lease.Addrs)
+	}
+}
+
+// TestAResumedPrefixKeepsItsLifetimesAndEndsWithTheRecord: a prefix with a
+// valid lifetime of its own keeps it, one with none ends with the record as an
+// address does, and a preferred lifetime of none stays infinite
+// (claymore666/docker-net-dhcp#214).
+func TestAResumedPrefixKeepsItsLifetimesAndEndsWithTheRecord(t *testing.T) {
+	wall := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	b := clockBridge{mono: 0, wall: wall}
+	rec := &Lease{
+		Expire: wall.Add(240 * time.Second),
+		Prefixes: []Addr6{
+			{Addr: netip.MustParsePrefix(pfxFirst), Preferred: wall.Add(100 * time.Second), Valid: wall.Add(500 * time.Second)},
+			{Addr: netip.MustParsePrefix("2001:db8:2::/56")},
+			{Addr: netip.MustParsePrefix("2001:db8:3::/60"), Preferred: wall.Add(-time.Second), Valid: wall.Add(-time.Second)},
+		},
+	}
+	got := resumedPrefixes(b, rec)
+	if len(got) != 3 {
+		t.Fatalf("%d prefixes, want 3", len(got))
+	}
+	if got[0].Prefix != rec.Prefixes[0].Addr || got[0].Preferred != 100*proto.Second || got[0].Valid != 500*proto.Second {
+		t.Errorf("the dated prefix = %+v, want its own lifetimes and its length", got[0])
+	}
+	if got[1].Prefix != rec.Prefixes[1].Addr || !got[1].Preferred.IsInfinite() || got[1].Valid != 240*proto.Second {
+		t.Errorf("the undated prefix = %+v, want an infinite preferred and the record's expiry", got[1])
+	}
+	if got[2].Preferred != 0 || got[2].Valid != 0 {
+		t.Errorf("the past prefix = %+v, want zero lifetimes", got[2])
 	}
 }

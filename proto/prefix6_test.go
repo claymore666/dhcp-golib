@@ -400,6 +400,10 @@ func TestPrefixStatusIsPerIA(t *testing.T) {
 	good := pd6Spec{pd6First, 300, 600}
 	trunc := wire.OptionV6{Code: wire.OptV6IAPD, Data: []byte{0, 0, 0, 1, 0}}
 	shortPrefix := wire.OptionV6{Code: wire.OptV6IAPrefix, Data: make([]byte, 10)}
+	// The encoder refuses an IPv4-mapped prefix, so the bytes are written by hand:
+	// preferred 300, valid 600, length 96, ::ffff:192.0.2.0 (claymore666/docker-net-dhcp#214).
+	mapped := []byte{0, 0, 1, 44, 0, 0, 2, 88, 96, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 0, 2, 0}
+	rawPD := wire.OptionV6{Code: wire.OptV6IAPrefix, Data: mapped}
 	cases := []struct {
 		name    string
 		extra   []wire.OptionV6
@@ -423,6 +427,12 @@ func TestPrefixStatusIsPerIA(t *testing.T) {
 			Prefix6Counters{Absent: 2}, "is not ours"},
 		{"valid lifetime 0", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, []pd6Spec{{pd6First, 0, 0}})}, nil,
 			Prefix6Counters{Refused: 2}, "valid lifetime of 0"},
+		{"a zero-length prefix", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, []pd6Spec{{"::/0", 300, 600}})}, nil,
+			Prefix6Counters{Refused: 2}, "not a usable IPv6 prefix"},
+		{"a v4-mapped prefix", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, nil, rawPD)}, nil,
+			Prefix6Counters{Refused: 2}, "not a usable IPv6 prefix"},
+		{"host bits set are masked off", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, []pd6Spec{{"2001:db8:1:100::5/64", 300, 600}})}, []string{pd6First},
+			Prefix6Counters{Granted: 1}, "gave 1 delegated"},
 		{"preferred above valid", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, []pd6Spec{{pd6First, 900, 100}})}, nil,
 			Prefix6Counters{Refused: 2}, "greater than valid"},
 		{"T1 above T2", []wire.OptionV6{optIAPD(t, capIAID, 300, 100, []pd6Spec{good})}, nil,
@@ -544,6 +554,21 @@ func TestPrefixTakesTheEarliestRenewalTimes(t *testing.T) {
 				t.Errorf("the Renew timer is armed for %s, want no later than T1 %s", renewAfter, c.wantT1)
 			}
 		})
+	}
+}
+
+// TestPrefixTimesOfAnIAThatGaveNoPrefixAreNotMerged: an IA_PD that refuses
+// carries T1 and T2 of its own, and the IA_NA lease keeps its own
+// (claymore666/docker-net-dhcp#214).
+func TestPrefixTimesOfAnIAThatGaveNoPrefixAreNotMerged(t *testing.T) {
+	refused := optIAPD(t, capIAID, 10, 20, nil, optStatus(wire.StatusNoPrefixAvail))
+	m, _, acts := pd6ToDAD(t, pd6Params(64), []wire.OptionV6{pd6Good(t)}, refused)
+	for _, a := range pd6Targets(acts) {
+		m.Step(at(4), 0, DADResult(a, false))
+	}
+	l, _ := m.Lease()
+	if l.T1 != 150*Second || l.T2 != 240*Second || len(l.Prefixes) != 0 {
+		t.Errorf("T1 %s T2 %s with %d prefixes, want the IA_NA's 150s and 240s and none", l.T1, l.T2, len(l.Prefixes))
 	}
 }
 
@@ -710,4 +735,45 @@ func TestPrefixCountersAreJournalled(t *testing.T) {
 		t.Errorf("a dropped IA_PD left no journal line:%s", pd6Journal(acts))
 	}
 	pd6Counters(t, m, Prefix6Counters{Granted: 1, Absent: 1, Changed: 1})
+}
+
+// TestPrefixEarliestTimeTable: a zero or an infinite time from one IA gives
+// way to the other IA's, and otherwise the earlier one wins (RFC 8415 section
+// 18.2.4; claymore666/docker-net-dhcp#214).
+func TestPrefixEarliestTimeTable(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		a, b, want Duration
+	}{
+		{"the first is zero", 0, 100 * Second, 100 * Second},
+		{"the second is zero", 100 * Second, 0, 100 * Second},
+		{"the first is infinite", Infinite, 100 * Second, 100 * Second},
+		{"the second is infinite", 100 * Second, Infinite, 100 * Second},
+		{"the first is earlier", 100 * Second, 200 * Second, 100 * Second},
+		{"the second is earlier", 200 * Second, 100 * Second, 100 * Second},
+		{"both zero", 0, 0, 0},
+	} {
+		if got := earliestT(c.a, c.b); got != c.want {
+			t.Errorf("%s: earliestT(%s, %s) = %s, want %s", c.name, c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestPrefixBuilderWithoutAHintCarriesNoHint: the IA_PD builder puts a hint
+// prefix in only for a hint above zero, so a caller that reaches it with none
+// sends an IA_PD with no IA Prefix and never a zero-length one
+// (claymore666/docker-net-dhcp#214).
+func TestPrefixBuilderWithoutAHintCarriesNoHint(t *testing.T) {
+	m, _ := solicit6(t, pd6Params(64))
+	opt, err := m.buildPD(nil, 0, false)
+	if err != nil {
+		t.Fatalf("buildPD: %v", err)
+	}
+	ia, err := wire.DecodeIAPD(opt.Data)
+	if err != nil {
+		t.Fatalf("DecodeIAPD: %v", err)
+	}
+	if ps, _ := ia.Options.Prefixes(); len(ps) != 0 {
+		t.Errorf("an IA_PD with no hint and no prefix carries %d IA Prefix option(s), want 0", len(ps))
+	}
 }

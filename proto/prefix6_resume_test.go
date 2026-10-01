@@ -345,3 +345,23 @@ func TestResumeRebindEndsAtTheValidLifetime(t *testing.T) {
 		t.Errorf("the valid lifetime passed with the lease held %t and %d Lost", held, count(acts, ActLeaseLost))
 	}
 }
+
+// TestResumeRebindDropsAnUnusablePrefix: a record that names a prefix no
+// delegating router could have given (zero length, IPv4-mapped) sends the
+// usable prefix alone, not nothing and not the bad one
+// (claymore666/docker-net-dhcp#214).
+func TestResumeRebindDropsAnUnusablePrefix(t *testing.T) {
+	p := pr6Params()
+	p.Resume.Prefixes = append(p.Resume.Prefixes,
+		Prefix6{Prefix: netip.MustParsePrefix("::/0"), Preferred: 300 * Second, Valid: 600 * Second},
+		Prefix6{Prefix: netip.MustParsePrefix("::ffff:192.0.2.0/96"), Preferred: 300 * Second, Valid: 600 * Second})
+	_, reb, _ := pr6Rebinding(t, p)
+	pds, _ := pr6Wire(t, reb).Options.IAPDs()
+	if len(pds) != 1 {
+		t.Fatalf("the Rebind carries %d IA_PD, want 1", len(pds))
+	}
+	ps, _ := pds[0].Options.Prefixes()
+	if len(ps) != 1 || ps[0].Prefix != netip.MustParsePrefix(pr6First) {
+		t.Errorf("the Rebind's IA Prefixes = %+v, want the one usable prefix", ps)
+	}
+}
