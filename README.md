@@ -74,9 +74,9 @@ them in the User Class option in its Discover and every Request. A DHCPv4
 client with `RapidCommit` set asks for a two-message lease in its Discover and
 takes an Ack that carries the option as the lease, and a server that answers
 with an Offer gets the ordinary Request. A DHCPv4 client with `IPv6OnlyPreferred`
-set lists option 108 in its Discover and every Request. An Offer that carries
+set lists that option (RFC 8925) in its Discover and every Request. An Offer that carries
 it gets no Request, Decline or Release: the client waits for the server's
-value, never less than 300 seconds, or until the link comes up again, and then
+value, never less than five minutes, or until the link comes up again, and then
 starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
 and in any other state, a two-message Ack included, the lease stands. A client
 without the flag ignores the option. The wire for the
