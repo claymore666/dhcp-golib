@@ -432,17 +432,17 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestAResumedFormedLeaseIsNotFormedASecondTime`).
   `Params6.IID` picks the identifier instead as RFC 7217's stable, semantically
   opaque one: SHA-256 over the prefix, `IIDNetIface`, `IIDNetworkID`, a
-  per-prefix DAD_Counter and an `IIDSecret` of at least 128 bits, the digest's
-  least significant 64 bits taken (`TestStablePrivacyIIDMatchesAVectorRecomputedOutsideGo`,
+  per-prefix DAD_Counter and an `IIDSecret` no shorter than `MinIIDSecretLen`,
+  the digest's last eight octets taken (`TestStablePrivacyIIDMatchesAVectorRecomputedOutsideGo`,
   `TestAStablePrivacyAddressIsTheHashAndNotTheLinkAddress`). In that mode a
-  duplicate is not the end of the prefix: §6 says "DAD_Counter is
-  incremented by 1." and a new address is formed and checked, up to
-  IDGEN_RETRIES (3) times; the fourth duplicate refuses the prefix as EUI-64
+  duplicate is not the end of the prefix: as §6 asks, the prefix's DAD_Counter
+  moves on and a new address is formed and checked, up to `IDGenRetries`
+  times; the duplicate after the last retry refuses the prefix as EUI-64
   mode does, and the modified EUI-64 address is never tried in its place
   (`TestADuplicateStableAddressIsRetriedAtTheNextCounter`,
   `TestTheFourthDuplicateRefusesThePrefixAndNeverFallsBackToEUI64`). The
   counter lives as long as the machine and is not persisted, so a restart
-  counts from 0 again
+  counts from the start again
   (`TestAResumedRetriedAddressFoundInUseSkipsToTheNextCounter`).
   BOUND, and it is the one thing on this list that has it: this claim is driven
   at ring 1 and ring 2 against tables and decoded options. There is no run
