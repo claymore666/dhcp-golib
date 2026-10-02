@@ -260,7 +260,11 @@ type Params6 struct {
 
 	// IIDSecret, IIDNetIface and IIDNetworkID are RFC 7217 §5's secret_key,
 	// Net_Iface and Network_ID for IIDModeStablePrivacy; the caller chooses
-	// them, and the address is stable for as long as they are (dhcp-golib#54).
+	// them, and the address is stable for as long as they are. The secret is
+	// part of the Params6 snapshot in the lease record, so a replay forms the
+	// same addresses and the record file is as sensitive as the secret; it
+	// never appears in a journal line or an error, which print its length at
+	// most (dhcp-golib#54).
 	IIDSecret    []byte
 	IIDNetIface  []byte
 	IIDNetworkID []byte

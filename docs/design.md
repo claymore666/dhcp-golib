@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.3.0
+## Coverage by claim, through v1.4.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -646,7 +646,11 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `options_v6`, nil for a DHCPv4 lease, so the vendor, timezone and NTP
   accessors are reachable from a caller that sees only `lease.Event`. An
   Information-request Reply reaches the caller as a `Config6` and does not
-  carry it
+  carry it. A lease continued from its record after a restart is rebuilt from
+  the addresses, prefixes, server identifier, timers, DNS servers and search
+  list the record holds for it, and none of the Reply's options, so the first
+  lease event after a restart carries no `OptionsV6` and the record carries
+  none until the next Reply, as the DHCPv4 `Options` field already behaves
   (`TestToLease6CarriesTheReplyOptions`,
   `TestCloneLeaseDoesNotShareTheReplyOptions`,
   `TestTheReplyOptionsSurviveTheRecordFile`,
