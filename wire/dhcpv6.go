@@ -1136,8 +1136,9 @@ const (
 	ntpSubSrvFQDN = 3
 )
 
-// ErrMalformedNTP is returned by NTPServers for an instance of option 56 that
-// is not exactly one well-formed time source (claymore666/docker-net-dhcp#859).
+// ErrMalformedNTP is returned by NTPServers for an instance of option 56 with
+// two or more time sources or a malformed sub-option; an instance with none is
+// dropped (claymore666/docker-net-dhcp#859).
 var ErrMalformedNTP = errors.New("wire: malformed DHCPv6 NTP server option")
 
 // NTPServer is one instance of option 56: a unicast address, a multicast
