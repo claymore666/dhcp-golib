@@ -650,6 +650,18 @@ func TestVendorIdentifyingDecodesEveryEnterpriseBlock(t *testing.T) {
 		t.Fatal("a block's Data aliases the option's own bytes")
 	}
 
+	// An empty block that ENDS the option is as legal as one in the middle: a
+	// guard that wants a data octet after the length refuses it.
+	for name, v := range map[string][]byte{
+		"empty block alone":         {0, 0, 0, 9, 0},
+		"empty block after a block": {0, 0, 0, 7, 1, 0xaa, 0, 0, 0, 9, 0},
+	} {
+		blocks, err := (Options{OptVIVSO: v}).VendorIdentifying()
+		if err != nil || len(blocks) == 0 || blocks[len(blocks)-1].Enterprise != 9 || len(blocks[len(blocks)-1].Data) != 0 {
+			t.Errorf("%s: VendorIdentifying = %+v, %v; want a last block of enterprise 9, no data, no error", name, blocks, err)
+		}
+	}
+
 	for name, o := range map[string]Options{"absent": {}, "present, no blocks": {OptVIVSO: {}}} {
 		if got, err := o.VendorIdentifying(); err != nil || got != nil {
 			t.Errorf("%s: VendorIdentifying = %v, %v; want nil, nil", name, got, err)
