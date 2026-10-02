@@ -1141,8 +1141,9 @@ const (
 var ErrMalformedNTP = errors.New("wire: malformed DHCPv6 NTP server option")
 
 // NTPServer is one instance of option 56: a unicast address, a multicast
-// group address (Multicast set), or a name, never more than one of them
-// (claymore666/docker-net-dhcp#859).
+// group address (Multicast set), or a name, never more than one of them. The
+// kind is the sub-option's code, 1 unicast, 2 multicast, 3 name; the address is
+// not checked against it (claymore666/docker-net-dhcp#859).
 type NTPServer struct {
 	Addr      netip.Addr
 	Multicast bool
