@@ -138,7 +138,7 @@ func TestAPrefixLengthThatDoesNotSumTo128FormsNothing(t *testing.T) {
 			PrefixLen: plen, Autonomous: true,
 			Prefix:        netip.MustParseAddr("2001:db8:1::"),
 			ValidLifetime: 86400, PreferredLifetime: 14400,
-		}, testLinkAddr6)
+		}, iidSource{hw: testLinkAddr6})
 		if formed {
 			t.Errorf("a /%d prefix formed an address; %d + %d is not 128", plen, plen, IIDBits)
 		}
@@ -151,7 +151,7 @@ func TestAPrefixLengthThatDoesNotSumTo128FormsNothing(t *testing.T) {
 		PrefixLen: fits, Autonomous: true,
 		Prefix:        netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: 86400, PreferredLifetime: 14400,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if !formed || why != SLAACIgnoreNone {
 		t.Fatalf("a /%d prefix, which is the length that sums to 128, formed=%v why=%q", fits, formed, why)
 	}
@@ -241,7 +241,7 @@ func TestEachIgnoreRuleIsChargedByName(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var tab slaacTable
-			formed, changed, why := tab.applyPIO(at(0), c.pi, testLinkAddr6)
+			formed, changed, why := tab.applyPIO(at(0), c.pi, iidSource{hw: testLinkAddr6})
 			if formed || changed || len(tab.entries) != 0 {
 				t.Fatalf("%s formed %d address(es)", c.name, len(tab.entries))
 			}
@@ -258,7 +258,7 @@ func TestEachIgnoreRuleIsChargedByName(t *testing.T) {
 	_, _, why := tab.applyPIO(at(0), wire.PrefixInfo{
 		PrefixLen: 48, Prefix: netip.MustParseAddr("fe80::"),
 		ValidLifetime: 600, PreferredLifetime: 601,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if why != SLAACIgnoreNotAutonomous {
 		t.Errorf("an option breaking four rules was charged to %q; §5.5.3's rules are a list in order and a is first", why)
 	}
@@ -268,7 +268,7 @@ func TestEachIgnoreRuleIsChargedByName(t *testing.T) {
 	_, _, why = tab.applyPIO(at(0), wire.PrefixInfo{
 		PrefixLen: 48, Autonomous: true, Prefix: netip.MustParseAddr("fe80::"),
 		ValidLifetime: 86400, PreferredLifetime: 14400,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if why != SLAACIgnoreLinkLocal {
 		t.Errorf("a link-local prefix of an unusable length was charged to %q, want the link-local rule", why)
 	}
@@ -325,7 +325,7 @@ func TestPrefixEqualityIsMaskedAndLengthAware(t *testing.T) {
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: 86400, PreferredLifetime: 14400,
 	}
-	if formed, _, _ := tab.applyPIO(at(0), first, testLinkAddr6); !formed {
+	if formed, _, _ := tab.applyPIO(at(0), first, iidSource{hw: testLinkAddr6}); !formed {
 		t.Fatal("the first advertisement formed nothing")
 	}
 
@@ -334,7 +334,7 @@ func TestPrefixEqualityIsMaskedAndLengthAware(t *testing.T) {
 	dirty := first
 	dirty.Prefix = netip.MustParseAddr("2001:db8:1::dead:beef")
 	dirty.ValidLifetime, dirty.PreferredLifetime = 100000, 20000
-	formed, changed, why := tab.applyPIO(at(int64(Second)*0+1), dirty, testLinkAddr6)
+	formed, changed, why := tab.applyPIO(at(int64(Second)*0+1), dirty, iidSource{hw: testLinkAddr6})
 	if formed {
 		t.Error("a prefix advertised with host bits set formed a SECOND address; §5.5.3 d compares the first prefix-length bits")
 	}
@@ -351,7 +351,7 @@ func TestPrefixEqualityIsMaskedAndLengthAware(t *testing.T) {
 	before := tab.entries[0]
 	short := first
 	short.PrefixLen = 48
-	formed, _, why = tab.applyPIO(at(2), short, testLinkAddr6)
+	formed, _, why = tab.applyPIO(at(2), short, iidSource{hw: testLinkAddr6})
 	if formed || why != SLAACIgnoreBadLength {
 		t.Errorf("a /48 with the same bits as the held /64 was formed=%v why=%q; the lengths differ so it is not the same prefix", formed, why)
 	}
@@ -383,7 +383,7 @@ func TestTheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers(t *testing.T
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: 86400, PreferredLifetime: 14400,
 	}
-	if formed, _, _ := tab.applyPIO(at(0), pi, testLinkAddr6); !formed {
+	if formed, _, _ := tab.applyPIO(at(0), pi, iidSource{hw: testLinkAddr6}); !formed {
 		t.Fatal("the first advertisement formed nothing")
 	}
 
@@ -393,7 +393,7 @@ func TestTheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers(t *testing.T
 	// said 7199 with one second of its own latency; a pure machine with an
 	// exact clock says 7200.
 	pi.ValidLifetime, pi.PreferredLifetime = 0, 0
-	if _, changed, why := tab.applyPIO(at(1), pi, testLinkAddr6); why != SLAACIgnoreNone || !changed {
+	if _, changed, why := tab.applyPIO(at(1), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone || !changed {
 		t.Fatalf("the refresh was refused (%q) or reported no change (%v)", why, changed)
 	}
 	if got := tab.entries[0].remaining(at(1)); got != TwoHours {
@@ -412,7 +412,7 @@ func TestTheTwoHourRuleUsesRemainingLifetimeAndTheKernelsOwnNumbers(t *testing.T
 	// the option with regard to the valid lifetime: the deadline does not
 	// move and the address keeps counting down. Linux, read one second later
 	// again, measured 7198.
-	if _, _, why := tab.applyPIO(at(2), pi, testLinkAddr6); why != SLAACIgnoreNone {
+	if _, _, why := tab.applyPIO(at(2), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 		t.Fatalf("the second refresh was refused: %q", why)
 	}
 	if got, want := tab.entries[0].remaining(at(3)), TwoHours-2*Second; got != want {
@@ -439,7 +439,7 @@ func TestRuleOneIsTriedFirstAndItsArmsAreADisjunction(t *testing.T) {
 			PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 			ValidLifetime: 86400, PreferredLifetime: 14400,
 		}
-		if _, _, why := tab.applyPIO(at(1), pi, testLinkAddr6); why != SLAACIgnoreNone {
+		if _, _, why := tab.applyPIO(at(1), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 			t.Fatalf("refused: %q", why)
 		}
 		if got, want := tab.entries[0].remaining(at(1)), 86400*Second; got != want {
@@ -457,7 +457,7 @@ func TestRuleOneIsTriedFirstAndItsArmsAreADisjunction(t *testing.T) {
 			PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 			ValidLifetime: 600, PreferredLifetime: 300,
 		}
-		if _, _, why := tab.applyPIO(at(1), pi, testLinkAddr6); why != SLAACIgnoreNone {
+		if _, _, why := tab.applyPIO(at(1), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 			t.Fatalf("refused: %q", why)
 		}
 		if got, want := tab.entries[0].remaining(at(1)), 600*Second; got != want {
@@ -474,7 +474,7 @@ func TestRuleOneIsTriedFirstAndItsArmsAreADisjunction(t *testing.T) {
 			PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 			ValidLifetime: 600, PreferredLifetime: 300,
 		}
-		if _, _, why := tab.applyPIO(at(1), pi, testLinkAddr6); why != SLAACIgnoreNone {
+		if _, _, why := tab.applyPIO(at(1), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 			t.Fatalf("refused: %q", why)
 		}
 		if got := tab.entries[0].remaining(at(1)); got != TwoHours {
@@ -490,7 +490,7 @@ func TestRuleOneIsTriedFirstAndItsArmsAreADisjunction(t *testing.T) {
 			PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 			ValidLifetime: 300, PreferredLifetime: 120,
 		}
-		if _, _, why := tab.applyPIO(at(10), pi, testLinkAddr6); why != SLAACIgnoreNone {
+		if _, _, why := tab.applyPIO(at(10), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 			t.Fatalf("refused: %q", why)
 		}
 		if got, want := tab.entries[0].remaining(at(10)), 3590*Second; got != want {
@@ -525,10 +525,10 @@ func TestEachAddressKeepsItsOwnLifetimeOrigin(t *testing.T) {
 	var tab slaacTable
 	a := wire.PrefixInfo{PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"), ValidLifetime: 86400, PreferredLifetime: 14400}
 	b := wire.PrefixInfo{PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:2::"), ValidLifetime: 86400, PreferredLifetime: 14400}
-	if formed, _, _ := tab.applyPIO(at(0), a, testLinkAddr6); !formed {
+	if formed, _, _ := tab.applyPIO(at(0), a, iidSource{hw: testLinkAddr6}); !formed {
 		t.Fatal("prefix A formed nothing")
 	}
-	if formed, _, _ := tab.applyPIO(at(0), b, testLinkAddr6); !formed {
+	if formed, _, _ := tab.applyPIO(at(0), b, iidSource{hw: testLinkAddr6}); !formed {
 		t.Fatal("prefix B formed nothing")
 	}
 
@@ -536,8 +536,8 @@ func TestEachAddressKeepsItsOwnLifetimeOrigin(t *testing.T) {
 	// same number. If they shared an origin, B would come back an hour short.
 	a.ValidLifetime, a.PreferredLifetime = 10000, 5000
 	b.ValidLifetime, b.PreferredLifetime = 10000, 5000
-	tab.applyPIO(at(0), a, testLinkAddr6)
-	tab.applyPIO(at(3600), b, testLinkAddr6)
+	tab.applyPIO(at(0), a, iidSource{hw: testLinkAddr6})
+	tab.applyPIO(at(3600), b, iidSource{hw: testLinkAddr6})
 
 	now := at(3600)
 	if got, want := tab.entries[0].remaining(now), (10000-3600)*Second; got != want {
@@ -556,7 +556,7 @@ func TestTwoAutonomousPrefixesFormTwoAddresses(t *testing.T) {
 		formed, _, why := tab.applyPIO(at(0), wire.PrefixInfo{
 			PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr(p),
 			ValidLifetime: 86400, PreferredLifetime: 14400,
-		}, testLinkAddr6)
+		}, iidSource{hw: testLinkAddr6})
 		if !formed || why != SLAACIgnoreNone {
 			t.Fatalf("%s formed=%v why=%q", p, formed, why)
 		}
@@ -594,7 +594,7 @@ func TestTheFormedSetIsCapped(t *testing.T) {
 			PrefixLen: 64, Autonomous: true,
 			Prefix:        netip.MustParseAddr(fmt.Sprintf("2001:db8:%d::", i+1)),
 			ValidLifetime: 86400, PreferredLifetime: 14400,
-		}, testLinkAddr6)
+		}, iidSource{hw: testLinkAddr6})
 		switch {
 		case i < MaxSLAACAddresses:
 			if !formed || why != SLAACIgnoreNone {
@@ -617,7 +617,7 @@ func TestTheFormedSetIsCapped(t *testing.T) {
 	_, _, why := tab.applyPIO(at(1), wire.PrefixInfo{
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: 100000, PreferredLifetime: 50000,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if why != SLAACIgnoreNone {
 		t.Errorf("a HELD prefix was refused at the cap: %q", why)
 	}
@@ -650,7 +650,7 @@ func TestAnInfiniteLifetimeIsASentinelAndNeverAnInstant(t *testing.T) {
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: 0xffffffff, PreferredLifetime: 0xffffffff,
 	}
-	if _, _, why := tab.applyPIO(at(1), pi, testLinkAddr6); why != SLAACIgnoreNone {
+	if _, _, why := tab.applyPIO(at(1), pi, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 		t.Fatalf("an infinite lifetime was refused: %q", why)
 	}
 	if !tab.entries[0].valid.IsInfinite() || !tab.entries[0].preferred.IsInfinite() {
@@ -691,7 +691,7 @@ func TestAnInfiniteLifetimeIsASentinelAndNeverAnInstant(t *testing.T) {
 	_, _, why := fresh.applyPIO(at(0), wire.PrefixInfo{
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:9::"),
 		ValidLifetime: 3600, PreferredLifetime: 0xffffffff,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if why != SLAACIgnorePreferredOverValid {
 		t.Errorf("an infinite preferred lifetime against a finite valid one was charged to %q", why)
 	}
@@ -699,7 +699,7 @@ func TestAnInfiniteLifetimeIsASentinelAndNeverAnInstant(t *testing.T) {
 	formed, _, why := fresh.applyPIO(at(0), wire.PrefixInfo{
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:9::"),
 		ValidLifetime: 0xffffffff, PreferredLifetime: 3600,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if !formed || why != SLAACIgnoreNone {
 		t.Errorf("an infinite valid lifetime against a finite preferred one was formed=%v why=%q", formed, why)
 	}
@@ -742,7 +742,7 @@ func TestThePreferredLifetimeNeverOutlivesTheValidOneAfterTheRules(t *testing.T)
 			if _, _, why := tab.applyPIO(at(10), wire.PrefixInfo{
 				PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 				ValidLifetime: a[0], PreferredLifetime: a[1],
-			}, testLinkAddr6); why != SLAACIgnoreNone {
+			}, iidSource{hw: testLinkAddr6}); why != SLAACIgnoreNone {
 				t.Fatalf("held %v, advertised %v: refused as %q", h, a, why)
 			}
 			e := tab.entries[0]
@@ -807,7 +807,7 @@ func TestExpiryDropsOnlyTheAddressesWhoseValidLifetimeRanOut(t *testing.T) {
 			PrefixLen: 64, Autonomous: true,
 			Prefix:        netip.MustParseAddr(fmt.Sprintf("2001:db8:%d::", i+1)),
 			ValidLifetime: v, PreferredLifetime: v / 2,
-		}, testLinkAddr6)
+		}, iidSource{hw: testLinkAddr6})
 	}
 	gone := tab.expire(at(150))
 	if len(gone) != 1 || gone[0] != netip.MustParseAddr("2001:db8:1::42:acff:fe11:2") {
@@ -832,7 +832,7 @@ func heldFor(t *testing.T, valid, preferred uint32) *slaacTable {
 	formed, _, why := tab.applyPIO(at(0), wire.PrefixInfo{
 		PrefixLen: 64, Autonomous: true, Prefix: netip.MustParseAddr("2001:db8:1::"),
 		ValidLifetime: valid, PreferredLifetime: preferred,
-	}, testLinkAddr6)
+	}, iidSource{hw: testLinkAddr6})
 	if !formed || why != SLAACIgnoreNone {
 		t.Fatalf("the fixture formed nothing: formed=%v why=%q", formed, why)
 	}
@@ -907,7 +907,7 @@ func TestLease6EqualComparesEveryFieldItConfigures(t *testing.T) {
 // reached by an option c refused. A tree that looked the prefix up first would
 // refresh a held address from an advertisement that is not to be read at all.
 func TestRulesABAndCAreTriedBeforeTheHeldPrefixIsLookedUp(t *testing.T) {
-	hw := testLinkAddr6
+	hw := iidSource{hw: testLinkAddr6}
 
 	t.Run("rule c, on a prefix this client holds", func(t *testing.T) {
 		var tb slaacTable

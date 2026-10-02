@@ -289,10 +289,7 @@ func New6(p Params6) (*Machine6, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	p.DUID = append([]byte(nil), p.DUID...)
-	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
-	p.Resume = p.Resume.Clone()
-	p.Declined = append([]netip.Addr(nil), p.Declined...)
+	p = p.Clone()
 	// THE SEED IS KEPT AS WELL AS COPIED IN, and the two are deliberately
 	// different things rather than one field with two readers. p.Declined is
 	// what this machine was CONFIGURED with and never moves again; m.declined
@@ -338,11 +335,20 @@ func (m *Machine6) Lease() (Lease6, bool) { return m.lease, m.haveLse }
 // retransmission timers. MaxRT() reads them on their own for the one caller
 // that mirrors them.
 func (m *Machine6) Params() Params6 {
-	p := m.params
+	return m.params.Clone()
+}
+
+// Clone deep-copies every slice and pointer of a Params6, the one list New6,
+// Params and lease.SnapshotParams6 share (dhcp-golib#54).
+func (p Params6) Clone() Params6 {
 	p.DUID = append([]byte(nil), p.DUID...)
 	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
 	p.Resume = p.Resume.Clone()
 	p.Declined = append([]netip.Addr(nil), p.Declined...)
+	p.LinkAddr = append([]byte(nil), p.LinkAddr...)
+	p.IIDSecret = append([]byte(nil), p.IIDSecret...)
+	p.IIDNetIface = append([]byte(nil), p.IIDNetIface...)
+	p.IIDNetworkID = append([]byte(nil), p.IIDNetworkID...)
 	return p
 }
 

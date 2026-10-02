@@ -1995,10 +1995,10 @@ func TestALinkAddressNoIdentifierComesFromKeepsNoPrefix(t *testing.T) {
 	ra := mustRA(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400)))
 	pi := ra.Prefixes[0]
 
-	if _, why := slaacFormRules(pi, []byte{0x02, 0x42, 0xac}); why != SLAACIgnoreLinkAddr {
+	if _, why := slaacFormRules(pi, iidSource{hw: []byte{0x02, 0x42, 0xac}}, 0); why != SLAACIgnoreLinkAddr {
 		t.Errorf("a three-octet link address is refused with %s, want %s", why, SLAACIgnoreLinkAddr)
 	}
-	addr, why := slaacFormRules(pi, testLinkAddr6)
+	addr, why := slaacFormRules(pi, iidSource{hw: testLinkAddr6}, 0)
 	if why != SLAACIgnoreNone {
 		t.Fatalf("the same option with a usable link address is refused with %s", why)
 	}

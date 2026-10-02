@@ -148,7 +148,7 @@ func (m *Machine6) maybeInfoRequest(now Instant, rnd uint64, out *actions) {
 func (m *Machine6) applyAdvert(now Instant, ra *wire.RouterAdvert, out *actions) bool {
 	changed := false
 	for _, pi := range ra.Prefixes {
-		formed, moved, why := m.slaac.applyPIO(now, pi, m.params.LinkAddr)
+		formed, moved, why := m.slaac.applyPIO(now, pi, m.params.iidSource())
 		if why != SLAACIgnoreNone {
 			m.slaac.counts.Ignored[why]++
 			out.journal(m, fmt.Sprintf("Prefix Information option %s formed nothing: %s", pi, why))
@@ -194,9 +194,10 @@ func (m *Machine6) reportSLAAC(now Instant, rnd uint64, out *actions) {
 // container's whole IPv6 configuration to whichever node happened to answer
 // for one of its prefixes.
 //
-// AND THERE IS NO RETRY. RFC 4862 §5.4 ends at "the address is not unique";
-// the identifier is this link's own hardware address, so §5.5.3 offers no
-// second candidate to form. The address is dropped and it is REMEMBERED as
+// AND THERE IS NO RETRY IN EUI-64 MODE. RFC 4862 §5.4 ends at "the address is
+// not unique"; the identifier is this link's own hardware address, so §5.5.3
+// offers no second candidate to form. (A stable-privacy identifier has one:
+// see the retry below, dhcp-golib#54.) The address is dropped and it is REMEMBERED as
 // refused, so the router's next advertisement of the same prefix is charged to
 // SLAACIgnoreDuplicate and forms nothing. A machine that is stopped and
 // started again has a new table and tries once more, which is the only event
@@ -204,7 +205,18 @@ func (m *Machine6) reportSLAAC(now Instant, rnd uint64, out *actions) {
 func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 	out.cancel(m, Timer6DAD)
 	bad := append([]netip.Addr(nil), m.dadBad...)
+	retried := false
 	for _, a := range bad {
+		// RFC 7217 §6: the next DAD_Counter forms the next tentative address,
+		// IDGenRetries times; once spent the prefix ends as in EUI-64 mode,
+		// never falling back to another identifier (dhcp-golib#54).
+		if next, n, ok := m.slaac.retry(a, m.params.iidSource()); ok {
+			m.slaac.counts.Conflicts++
+			m.slaac.refuse(a)
+			out.journal(m, fmt.Sprintf("duplicate address detection found %s in use: trying %s, DAD_Counter %d (RFC 7217 §6)", a, next, n))
+			retried = true
+			continue
+		}
 		if m.slaac.drop(a) {
 			m.slaac.counts.Conflicts++
 		}
@@ -229,7 +241,9 @@ func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 		m.slaac.settle(a.Addr)
 	}
 	if rest := m.slaac.tentativeAddrs(); len(rest) > 0 {
-		out.journal(m, fmt.Sprintf("a prefix arrived while duplicate address detection was running: checking %v as well", rest))
+		if !retried {
+			out.journal(m, fmt.Sprintf("a prefix arrived while duplicate address detection was running: checking %v as well", rest))
+		}
 		m.pending = m.slaac.lease(now, m.params.IAID)
 		m.havePending, m.pendingRenewal = true, false
 		m.startDAD(rest, out)
@@ -482,7 +496,7 @@ func (m *Machine6) autoFallbackFired(now Instant, rnd uint64, out *actions) {
 		// THE ORIGIN IS THE OPTION'S OWN INSTANT, not this one. The lifetimes
 		// a router granted are counted from the advertisement that carried
 		// them, and forming with `now` would extend both by the wait.
-		formed, moved, why := m.slaac.applyPIO(d.at, d.info, m.params.LinkAddr)
+		formed, moved, why := m.slaac.applyPIO(d.at, d.info, m.params.iidSource())
 		if why != SLAACIgnoreNone {
 			m.slaac.counts.Ignored[why]++
 			continue
@@ -561,7 +575,7 @@ func (m *Machine6) deferPrefixes(now Instant, ra *wire.RouterAdvert, out *action
 			continue
 		}
 		if why == SLAACIgnoreNone {
-			_, why = slaacFormRules(pi, m.params.LinkAddr)
+			_, why = slaacFormRules(pi, m.params.iidSource(), m.slaac.dadCount[p])
 		}
 		if why == SLAACIgnoreNone && len(m.deferredPrefixes) >= MaxSLAACAddresses {
 			why = SLAACIgnoreCapReached
