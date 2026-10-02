@@ -134,6 +134,7 @@ const (
 	OptV6ClientFQDN    OptionCodeV6 = 39 // RFC 4704 section 4
 	OptV6PosixTimezone OptionCodeV6 = 41 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
 	OptV6TZDatabase    OptionCodeV6 = 42 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
+	OptV6NTPServer     OptionCodeV6 = 56 // RFC 5908 section 4, claymore666/docker-net-dhcp#859
 	OptV6SolMaxRTCode  OptionCodeV6 = 82 // §21.24
 	OptV6InfMaxRTCode  OptionCodeV6 = 83 // §21.25
 )
@@ -161,6 +162,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6ClientFQDN:    "client-fqdn",
 	OptV6PosixTimezone: "posix-timezone",
 	OptV6TZDatabase:    "tz-database",
+	OptV6NTPServer:     "ntp-server",
 	OptV6SolMaxRTCode:  "sol-max-rt",
 	OptV6InfMaxRTCode:  "inf-max-rt",
 }
@@ -1123,6 +1125,89 @@ func (o OptionsV6) VendorOpts() ([]VendorData, error) {
 		})
 	}
 	return out, nil
+}
+
+// The sub-option codes inside option 56, RFC 5908 sections 4.1 to 4.3
+// (claymore666/docker-net-dhcp#859): NTP_SUBOPTION_SRV_ADDR, _MC_ADDR and
+// _SRV_FQDN, in that order.
+const (
+	ntpSubSrvAddr = 1
+	ntpSubMCAddr  = 2
+	ntpSubSrvFQDN = 3
+)
+
+// ErrMalformedNTP is returned by NTPServers for an instance of option 56 that
+// is not exactly one well-formed time source (claymore666/docker-net-dhcp#859).
+var ErrMalformedNTP = errors.New("wire: malformed DHCPv6 NTP server option")
+
+// NTPServer is one instance of option 56: a unicast address, a multicast
+// group address (Multicast set), or a name, never more than one of them
+// (claymore666/docker-net-dhcp#859).
+type NTPServer struct {
+	Addr      netip.Addr
+	Multicast bool
+	FQDN      string
+}
+
+// NTPServers returns every instance of option 56 that carries a readable time
+// source as one record, in wire order (claymore666/docker-net-dhcp#859). RFC
+// 5908 section 4: "This option MUST include one, and only one, time source
+// suboption." A name goes through readNameUncompressed: section 4.3 requires it
+// "encoded as described in [RFC3315], Section 8", which forbids compression. A
+// sub-option other than 1, 2 or 3 is skipped (section 4: "More time source
+// suboptions may be defined"), and an instance with only such is dropped. Any
+// bad instance gives ErrMalformedNTP, wrapping ErrV6BadOption, and no list.
+func (o OptionsV6) NTPServers() ([]NTPServer, error) {
+	var out []NTPServer
+	for _, v := range o.All(OptV6NTPServer) {
+		rec, ok, err := readNTPServer(v)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w: %w", ErrMalformedNTP, ErrV6BadOption, err)
+		}
+		if ok {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func readNTPServer(v []byte) (rec NTPServer, ok bool, err error) {
+	seen := 0
+	for i := 0; i < len(v); {
+		if len(v)-i < 4 {
+			return rec, false, fmt.Errorf("option 56 has %d octet(s) left, a sub-option header needs 4", len(v)-i)
+		}
+		code, n := int(v[i])<<8|int(v[i+1]), int(v[i+2])<<8|int(v[i+3])
+		if n > len(v)-i-4 {
+			return rec, false, fmt.Errorf("option 56 sub-option %d claims %d octet(s), %d remain", code, n, len(v)-i-4)
+		}
+		body := v[i+4 : i+4+n]
+		i += 4 + n
+		switch code {
+		case ntpSubSrvAddr, ntpSubMCAddr:
+			if n != 16 {
+				return rec, false, fmt.Errorf("option 56 sub-option %d is %d octet(s), want 16", code, n)
+			}
+			rec.Addr = netip.AddrFrom16([16]byte(body))
+			rec.Multicast = code == ntpSubMCAddr
+		case ntpSubSrvFQDN:
+			name, next, err := readNameUncompressed(body, 0, "option 56")
+			if err != nil {
+				return rec, false, err
+			}
+			if name == "" || next != n {
+				return rec, false, fmt.Errorf("option 56 FQDN sub-option is %d octet(s), the name uses %d and may not be empty", n, next)
+			}
+			rec.FQDN = name
+		default:
+			continue
+		}
+		seen++
+	}
+	if seen > 1 {
+		return rec, false, fmt.Errorf("option 56 carries %d time source sub-options, RFC 5908 section 4 wants one", seen)
+	}
+	return rec, seen == 1, nil
 }
 
 // readNameUncompressed reads one RFC 1035 section 3.1 name and returns the
