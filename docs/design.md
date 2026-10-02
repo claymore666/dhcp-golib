@@ -607,9 +607,12 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   [#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)).
 - **The NTP server option, read as the whole list.** RFC 5908 allows the
   option more than once and each instance holds one time source, so the
-  accessor returns one record per instance in wire order. A sub-option it does
-  not know is skipped, and an instance that is not exactly one source, a
-  compressed or empty name, and octets after the name are refused
+  accessor returns one record per instance that holds one, in wire order. A
+  sub-option it does not know is skipped, and an instance with no source it
+  knows, one of zero octets or one carrying only unknown sub-options, is
+  dropped without refusing the list. An instance with two or more sources, an
+  address of the wrong length, a sub-option cut short, or a name that is
+  compressed, empty or followed by octets refuses the whole list
   (`TestNTPServerOptionIsNamedByItsRFCNumber`,
   `TestNTPServersReadsEachInstanceInWireOrder`,
   `TestNTPServersSkipsASubOptionItDoesNotKnow`,
