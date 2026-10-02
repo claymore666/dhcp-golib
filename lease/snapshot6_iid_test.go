@@ -40,7 +40,7 @@ func TestASnapshotKeepsTheIdentifierInputsTheCallerChangesAfterwards(t *testing.
 		t.Errorf("the snapshot's identifier mode is %s", snap.IID)
 	}
 
-	// Lead ruling on dhcp-golib#54: the secret is persisted with the record,
+	// the secret is persisted with the record (dhcp-golib#54),
 	// because a replay re-forms the run's addresses only from it.
 	raw, err := json.Marshal(snap)
 	if err != nil {
