@@ -126,7 +126,7 @@ func (r Route) IsDefault() bool { return r.Dest.Bits() == 0 && r.Dest.Addr().Is4
 // twenty.
 var ErrMalformedRoutes = errors.New("wire: malformed route option")
 
-// ClasslessRoutes decodes option 121, RFC 3442.
+// ClasslessRoutes decodes option 121, RFC 3442, or option 249 when 121 is absent.
 //
 // The encoding is a destination descriptor — one octet of mask width, then
 // only the significant octets of the subnet number, "the width of the subnet
@@ -138,27 +138,32 @@ var ErrMalformedRoutes = errors.New("wire: malformed route option")
 // and its own worked example is a destination of 129.210.177.132/25 that must
 // install as 129.210.177.128/25.
 //
-// ok is false with no routes when the option is absent, and
-// ErrMalformedRoutes when it is present and does not decode.
+// Option 249 is read only when 121 is ABSENT: a 121 that is present and does
+// not decode is an error, never a reason to look at 249
+// (claymore666/docker-net-dhcp#1030).
+//
+// The routes are nil with no error when neither option is present, and
+// ErrMalformedRoutes when the one read is present and does not decode.
 func (o Options) ClasslessRoutes() ([]Route, error) {
-	v, ok := o[OptClasslessStaticRte]
+	code := o.ClasslessSource()
+	v, ok := o[code]
 	if !ok {
 		return nil, nil
 	}
 	if len(v) == 0 {
-		return nil, fmt.Errorf("%w: option 121 is empty", ErrMalformedRoutes)
+		return nil, fmt.Errorf("%w: option %d is empty", ErrMalformedRoutes, code)
 	}
 	var out []Route
 	for i := 0; i < len(v); {
 		width := int(v[i])
 		i++
 		if width > 32 {
-			return nil, fmt.Errorf("%w: option 121 mask width %d exceeds 32", ErrMalformedRoutes, width)
+			return nil, fmt.Errorf("%w: option %d mask width %d exceeds 32", ErrMalformedRoutes, code, width)
 		}
 		sig := (width + 7) / 8
 		if i+sig+4 > len(v) {
-			return nil, fmt.Errorf("%w: option 121 truncated: a /%d route needs %d more octet(s), %d remain",
-				ErrMalformedRoutes, width, sig+4, len(v)-i)
+			return nil, fmt.Errorf("%w: option %d truncated: a /%d route needs %d more octet(s), %d remain",
+				ErrMalformedRoutes, code, width, sig+4, len(v)-i)
 		}
 		var dst [4]byte
 		copy(dst[:], v[i:i+sig])
@@ -171,6 +176,17 @@ func (o Options) ClasslessRoutes() ([]Route, error) {
 		})
 	}
 	return out, nil
+}
+
+// ClasslessSource is the option ClasslessRoutes reads: 249 only when 249 is
+// present and 121 is not, otherwise 121.
+func (o Options) ClasslessSource() OptionCode {
+	if _, ok := o[OptClasslessStaticRte]; !ok {
+		if _, ok := o[OptMSClasslessStaticRte]; ok {
+			return OptMSClasslessStaticRte
+		}
+	}
+	return OptClasslessStaticRte
 }
 
 // StaticRoutes decodes option 33, RFC 2132 section 5.8: pairs of four-octet

@@ -480,3 +480,113 @@ func TestEncodeFQDNRefusesUnencodableNames(t *testing.T) {
 		})
 	}
 }
+
+// TestClasslessRoutesReadsOption249ThroughTheRFC3442ExampleTable runs the
+// same rows as TestClasslessRoutesUsesTheRFC3442ExampleTable through option
+// 249, which has 121's wire format: one decoder, the same masking
+// (claymore666/docker-net-dhcp#1030).
+func TestClasslessRoutesReadsOption249ThroughTheRFC3442ExampleTable(t *testing.T) {
+	gw := "192.168.99.1"
+	cases := []struct {
+		name       string
+		descriptor []byte
+		want       string
+	}{
+		{"default route", []byte{0}, "0.0.0.0/0"},
+		{"10.0.0.0/8", []byte{8, 10}, "10.0.0.0/8"},
+		{"10.0.0.0/24", []byte{24, 10, 0, 0}, "10.0.0.0/24"},
+		{"10.17.0.0/16", []byte{16, 10, 17}, "10.17.0.0/16"},
+		{"10.27.129.0/24", []byte{24, 10, 27, 129}, "10.27.129.0/24"},
+		{"10.229.0.128/25", []byte{25, 10, 229, 0, 128}, "10.229.0.128/25"},
+		{"10.198.122.47/32", []byte{32, 10, 198, 122, 47}, "10.198.122.47/32"},
+		{"129.210.177.132/25 masked", []byte{25, 129, 210, 177, 132}, "129.210.177.128/25"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := Options{OptMSClasslessStaticRte: append(append([]byte(nil), c.descriptor...), p4(gw)...)}
+			got, err := o.ClasslessRoutes()
+			if err != nil {
+				t.Fatalf("ClasslessRoutes: %v", err)
+			}
+			if len(got) != 1 || got[0].Dest.String() != c.want || got[0].Router != netip.MustParseAddr(gw) {
+				t.Fatalf("routes = %v, want %s via %s", got, c.want, gw)
+			}
+		})
+	}
+}
+
+// TestClasslessRoutesPrefersOption121OverOption249: both present, 121's
+// routes come back and 249's do not.
+func TestClasslessRoutesPrefersOption121OverOption249(t *testing.T) {
+	o := Options{
+		OptClasslessStaticRte:   append([]byte{24, 10, 1, 0}, p4("192.168.99.1")...),
+		OptMSClasslessStaticRte: append([]byte{24, 10, 2, 0}, p4("192.168.99.2")...),
+	}
+	got, err := o.ClasslessRoutes()
+	if err != nil {
+		t.Fatalf("ClasslessRoutes: %v", err)
+	}
+	if len(got) != 1 || got[0].Dest.String() != "10.1.0.0/24" {
+		t.Fatalf("routes = %v, want option 121's 10.1.0.0/24 alone", got)
+	}
+	if src := o.ClasslessSource(); src != OptClasslessStaticRte {
+		t.Fatalf("ClasslessSource = %v, want 121", src)
+	}
+}
+
+// TestClasslessRoutesNeverFallsThroughFromAPresentOption121 holds that 121
+// present means 249 is ignored: an empty or malformed 121 is an error naming
+// 121, never the routes of the 249 beside it.
+func TestClasslessRoutesNeverFallsThroughFromAPresentOption121(t *testing.T) {
+	good249 := append([]byte{24, 10, 2, 0}, p4("192.168.99.2")...)
+	for name, v121 := range map[string][]byte{"empty": {}, "truncated": {24, 10, 0}} {
+		t.Run(name, func(t *testing.T) {
+			o := Options{OptClasslessStaticRte: v121, OptMSClasslessStaticRte: good249}
+			got, err := o.ClasslessRoutes()
+			if !errors.Is(err, ErrMalformedRoutes) || got != nil {
+				t.Fatalf("routes = %v, err = %v; want no routes and ErrMalformedRoutes", got, err)
+			}
+			if !strings.Contains(err.Error(), "option 121") || strings.Contains(err.Error(), "249") {
+				t.Fatalf("err = %q, want it to name option 121 only", err)
+			}
+		})
+	}
+}
+
+// TestClasslessRoutesRefusesAPartialListFromOption249 is
+// TestClasslessRoutesRefusesAPartialList through 249 with 121 absent: the same
+// refusals, each naming 249.
+func TestClasslessRoutesRefusesAPartialListFromOption249(t *testing.T) {
+	good := append([]byte{24, 10, 0, 0}, p4("192.168.99.1")...)
+	cases := map[string]struct {
+		v      []byte
+		refusa string
+	}{
+		"empty option": {[]byte{}, "option 249 is empty"},
+		"width over 32, complete length": {
+			append(append([]byte(nil), good...), 40, 10, 0, 0, 0, 0, 192, 168, 99, 1),
+			"option 249 mask width 40 exceeds 32",
+		},
+		"truncated router": {append(append([]byte(nil), good...), 24, 10, 1, 0, 192, 168), "option 249 truncated"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := Options{OptMSClasslessStaticRte: c.v}.ClasslessRoutes()
+			if !errors.Is(err, ErrMalformedRoutes) || got != nil {
+				t.Fatalf("routes = %v, err = %v; want no routes and ErrMalformedRoutes", got, err)
+			}
+			if !strings.Contains(err.Error(), c.refusa) {
+				t.Fatalf("err = %q, want it to contain %q", err, c.refusa)
+			}
+		})
+	}
+}
+
+// TestClasslessRoutesWithNeitherOptionIsEmpty is the preservation control:
+// no 121 and no 249 is no routes and no error, so option 33 stays reachable.
+func TestClasslessRoutesWithNeitherOptionIsEmpty(t *testing.T) {
+	got, err := Options{OptStaticRoute: append(p4("10.0.0.0"), p4("192.168.99.1")...)}.ClasslessRoutes()
+	if got != nil || err != nil {
+		t.Fatalf("routes = %v, err = %v, want neither", got, err)
+	}
+}

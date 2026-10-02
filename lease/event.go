@@ -66,8 +66,9 @@ type Lease struct {
 	Preferred time.Time
 	Valid     time.Time
 
-	// Routes is the classless static routes of option 121, or option 33's
-	// when the server sent no 121 (RFC 3442). Gateway is the default route
+	// Routes is the classless static routes of option 121 (or 249 when 121 is
+	// absent, claymore666/docker-net-dhcp#1030), or option 33's when the
+	// server sent neither (RFC 3442). Gateway is the default route
 	// among them, so a caller that only wants a gateway can ignore this.
 	Routes []wire.Route
 

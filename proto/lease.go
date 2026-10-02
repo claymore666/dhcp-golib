@@ -35,8 +35,9 @@ type Lease struct {
 	Router []netip.Addr
 
 	// Routes is the routing table the server supplied, already resolved: the
-	// option 121 routes when there are any, otherwise the option 33 ones.
-	// RFC 3442 supersedes 33 as well as 3.
+	// option 121 routes (or option 249's when 121 is absent,
+	// claymore666/docker-net-dhcp#1030) when there are any, otherwise the
+	// option 33 ones. RFC 3442 supersedes 33 as well as 3.
 	Routes []wire.Route
 
 	DNS []netip.Addr
@@ -340,7 +341,11 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 }
 
 // takeRoutes applies RFC 3442's precedence: option 121 supersedes both the
-// router option (3) and the static-route option (33).
+// router option (3) and the static-route option (33), and so does option 249
+// when 121 is absent (claymore666/docker-net-dhcp#1030).
+//
+// A present 121 that does not decode falls back to 3 and 33 and leaves 249
+// ignored, because 121 present means 249 is ignored.
 //
 // A malformed option 121 FALLS BACK to 3 and 33 rather than superseding them,
 // and the note says so. The supersession rule in RFC 3442 is written about a
@@ -351,6 +356,7 @@ func leaseFromAck(m *wire.Message, sentAt Instant) (Lease, string, bool) {
 // otherwise indistinguishable from the outside.
 func (l *Lease) takeRoutes(o wire.Options) string {
 	classless, err := o.ClasslessRoutes()
+	src := o.ClasslessSource()
 	if err != nil {
 		l.takeStaticRoutes(o)
 		return err.Error() + ": falling back to the router and static-route options (RFC 3442 supersession does not apply to a value that does not decode)"
@@ -359,15 +365,22 @@ func (l *Lease) takeRoutes(o wire.Options) string {
 		l.Routes = classless
 		note := ""
 		if len(l.Router) > 0 {
-			note = "option 121 supersedes the router option (RFC 3442): ignoring " + addrsText(l.Router)
+			note = fmt.Sprintf("option %d supersedes the router option (%s): ignoring %s", src, classlessBasis(src), addrsText(l.Router))
 			l.Router = nil
 		}
 		if _, ok := o[wire.OptStaticRoute]; ok {
-			note = joinNotes(note, "option 121 supersedes the static-route option (RFC 3442)")
+			note = joinNotes(note, fmt.Sprintf("option %d supersedes the static-route option (%s)", src, classlessBasis(src)))
 		}
 		return note
 	}
 	return l.takeStaticRoutes(o)
+}
+
+func classlessBasis(c wire.OptionCode) string {
+	if c == wire.OptMSClasslessStaticRte {
+		return "Microsoft classless static routes"
+	}
+	return "RFC 3442"
 }
 
 func (l *Lease) takeStaticRoutes(o wire.Options) string {
