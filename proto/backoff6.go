@@ -254,6 +254,17 @@ type Params6 struct {
 	// used as supplied.
 	LinkAddr []byte
 
+	// IID chooses the SLAAC interface identifier; the zero value is EUI-64
+	// from LinkAddr (dhcp-golib#54).
+	IID IIDMode
+
+	// IIDSecret, IIDNetIface and IIDNetworkID are RFC 7217 §5's secret_key,
+	// Net_Iface and Network_ID for IIDModeStablePrivacy; the caller chooses
+	// them, and the address is stable for as long as they are (dhcp-golib#54).
+	IIDSecret    []byte
+	IIDNetIface  []byte
+	IIDNetworkID []byte
+
 	// AutoFallback is how long Mode6Auto keeps trying DHCPv6 after a router
 	// has said M=1 before it forms an address from an autonomous prefix
 	// instead.

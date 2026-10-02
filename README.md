@@ -29,7 +29,7 @@ and it needs no root.
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
 | Tell a server that refused apart from one that never answered, and say which code it sent | yes | yes |
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
+| Form an address from a Router Advertisement prefix (SLAAC), from the link address (modified EUI-64) or a stable, opaque identifier (RFC 7217) | n/a | yes |
 | Ask for a delegated prefix and report it (IA_PD, RFC 8415; the library installs nothing) | n/a | yes |
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | yes |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | yes, not on a resumed lease |

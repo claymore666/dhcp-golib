@@ -236,7 +236,21 @@ func (p Params6) validate() error {
 	default:
 		return fmt.Errorf("%w: %s", ErrBadMode6, p.Mode)
 	}
-	if p.Mode.formsAddresses() {
+	if p.IID != IIDModeEUI64 && p.IID != IIDModeStablePrivacy {
+		return fmt.Errorf("%w: %s", ErrBadIIDMode, p.IID)
+	}
+	// stable-privacy reads no link address, so it asks for its own inputs in
+	// LinkAddr's place (dhcp-golib#54).
+	switch {
+	case !p.Mode.formsAddresses():
+	case p.IID == IIDModeStablePrivacy:
+		if len(p.IIDSecret) < MinIIDSecretLen {
+			return fmt.Errorf("%w: %d octets", ErrShortIIDSecret, len(p.IIDSecret))
+		}
+		if len(p.IIDNetIface) == 0 {
+			return ErrNoIIDNetIface
+		}
+	default:
 		if _, err := ModifiedEUI64(p.LinkAddr); err != nil {
 			return fmt.Errorf("%w: %s", ErrNoLinkAddr, err)
 		}

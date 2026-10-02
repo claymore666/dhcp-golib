@@ -1273,9 +1273,10 @@ func SnapshotParams(p proto.Params) proto.Params {
 // that aliased the caller's slices would say a configuration was sent that the
 // caller went on to change afterwards.
 //
-// The slices are the DUID, the Option Request list, the declined set and the
-// Resume, and the Resume is the one that carries slices of its own — Clone is
-// what reaches them.
+// The slices are the DUID, the Option Request list, the declined set, the
+// link address, the three identifier inputs and the Resume, and the Resume is
+// the one that carries slices of its own — proto.Params6.Clone reaches all of
+// them.
 //
 // Declined is copied here as well, and it is the SEED the run was configured
 // with rather than what the run declined: proto.Machine6.Params gives back
@@ -1283,11 +1284,9 @@ func SnapshotParams(p proto.Params) proto.Params {
 // kept. A snapshot that aliased the caller's slice would say a different thing
 // after the caller's next write than it said when the record was written.
 func SnapshotParams6(p proto.Params6) proto.Params6 {
-	p.DUID = append([]byte(nil), p.DUID...)
-	p.ORO = append([]wire.OptionCodeV6(nil), p.ORO...)
-	p.Declined = append([]netip.Addr(nil), p.Declined...)
-	p.Resume = p.Resume.Clone()
-	return p
+	// proto's own list, so the identifier inputs, secret included, are copied
+	// too: a replay re-forms the run's addresses only from them (dhcp-golib#54).
+	return p.Clone()
 }
 
 // familyOf is the family an event lands in: its own, or the record's when the
