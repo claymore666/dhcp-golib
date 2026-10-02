@@ -63,7 +63,8 @@ func TestStablePrivacyIIDReadsEveryInput(t *testing.T) {
 		"DAD_Counter": StablePrivacyIID(p, testIIDNetIface, testIIDNetworkID, 1, testIIDSecret),
 		"secret_key":  StablePrivacyIID(p, testIIDNetIface, testIIDNetworkID, 0, flip(testIIDSecret)),
 		// RFC 7217 §5 concatenates; the length prefixes keep a byte moved
-		// across the Net_Iface/Network_ID boundary from hashing alike.
+		// across the Net_Iface/Network_ID boundary from hashing alike
+		// (dhcp-golib#54).
 		"boundary": StablePrivacyIID(p, append(append([]byte(nil), testIIDNetIface...), 'l'), []byte("an"), 0, testIIDSecret),
 	}
 	for name, got := range others {

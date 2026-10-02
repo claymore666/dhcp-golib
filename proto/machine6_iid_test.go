@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // stableAddr is the address the machine must form on prefix at counter: the
@@ -22,7 +24,8 @@ func stableAddr(prefix string, counter uint8) netip.Addr {
 }
 
 // stableStart is a stable-privacy machine that has seen one advertisement of
-// prefixes, with every action and journal line it produced so far.
+// prefixes, with every action and journal line it produced so far
+// (dhcp-golib#54).
 func stableStart(t *testing.T, p Params6, at0 int64, prefixes ...[]byte) (*Machine6, []Action) {
 	t.Helper()
 	m := newMachine6(t, p)
@@ -58,7 +61,8 @@ func TestAStablePrivacyAddressIsTheHashAndNotTheLinkAddress(t *testing.T) {
 
 func TestOnePrefixFormsOneStableAddressAndTwoPrefixesTwo(t *testing.T) {
 	// The same /64 with host bits left in the advertised prefix field: RFC
-	// 4862 §5.5.3 forms from the prefix length's bits only.
+	// 4862 §5.5.3 forms from the prefix length's bits only
+	// (dhcp-golib#54).
 	_, a := stableStart(t, testParams6Stable(), 0, pio("2001:db8:1::", 64, true, 86400, 14400))
 	_, b := stableStart(t, testParams6Stable(), 0, pio("2001:db8:1::ffff", 64, true, 86400, 14400))
 	if ta, tb := dadTargets(a), dadTargets(b); len(ta) != 1 || len(tb) != 1 || ta[0] != tb[0] {
@@ -235,5 +239,42 @@ func TestTheIdentifierSecretIsNeverJournalled(t *testing.T) {
 		if strings.Contains(text, form) {
 			t.Errorf("the journal carries the secret as %q.%s", form, text)
 		}
+	}
+}
+
+// The Auto fallback forms from the deferred prefixes through the same
+// identifier choice, and stable-privacy mode needs no link address there
+// either (dhcp-golib#54).
+func TestTheAutoFallbackFormsTheStableAddressWithOrWithoutALinkAddress(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		hw   []byte
+	}{
+		{"with a link address", testLinkAddr6},
+		{"without one", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := testParams6Stable()
+			p.Mode = Mode6Auto
+			p.LinkAddr = c.hw
+			m := newMachine6(t, p)
+			m.Step(at(0), 0, Simple(EvStart))
+			_, acts := m.Step(at(1), 0, raEvent6(t, ra6(true, false, pio(testSLAACPrefix, 64, true, 86400, 14400))))
+			d, ok := timerSet(acts, Timer6AutoFallback)
+			if !ok {
+				t.Fatalf("no fallback deadline was armed.%s", journalLines(acts))
+			}
+			_, acts = m.Step(at(2), 0, TimerFired(Timer6Delay))
+			mustSendV6(t, acts, wire.MsgSolicit)
+
+			_, acts = m.Step(at(1).Add(d), 0, TimerFired(Timer6AutoFallback))
+			want := stableAddr("2001:db8:1::/64", 0)
+			if got := dadTargets(acts); len(got) != 1 || got[0] != want {
+				t.Fatalf("the fallback runs duplicate address detection on %v, want [%s].%s", got, want, journalLines(acts))
+			}
+			if n := m.SLAACCounters().Ignored[SLAACIgnoreLinkAddr]; n != 0 {
+				t.Errorf("%d prefix(es) were charged to the link address in stable-privacy mode", n)
+			}
+		})
 	}
 }
