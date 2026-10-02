@@ -3,7 +3,6 @@
 package proto
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -74,7 +73,7 @@ func StablePrivacyIID(prefix netip.Prefix, netIface, networkID []byte, dadCounte
 	in = append(in, networkID...)
 	in = append(in, dadCounter)
 	in = append(in, secret...)
-	sum := sha256.Sum256(in)
+	sum := sha256Sum(in)
 	var iid [8]byte
 	copy(iid[:], sum[len(sum)-8:])
 	return iid
