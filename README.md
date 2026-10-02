@@ -98,6 +98,10 @@ second source for the routes when RFC 3442's is absent
 ([#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)), the vendor-specific options on DHCPv4 and DHCPv6
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)), the DHCPv6 timezone options ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)) and the
 DHCPv6 NTP server option, read as the whole list ([#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+v1.4.0 adds the DHCPv6 Reply's options on the lease a caller receives, as
+`Lease.OptionsV6` ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)), and the RFC 7217 stable, opaque
+interface identifier as a `Params6` choice, retried on a duplicate address
+([#1032](https://github.com/claymore666/docker-net-dhcp/issues/1032)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -110,7 +114,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v130).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v140).
 
 ## Usage
 
