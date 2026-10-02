@@ -975,7 +975,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # OPTION 249 READ WHEN 121 IS ABSENT, claymore666/docker-net-dhcp#1030:
 # ten added, none removed, MEASURED as testroster runs, 1250 before and 1260
 # here. wire/values_test.go 5 and proto/renewal_test.go 5; no netns test.
-MIN_DECLARED_TESTS=1260
+#
+# VENDOR OPTIONS 43, 125 AND DHCPv6 17, claymore666/docker-net-dhcp#1034:
+# ten added, none removed, MEASURED as testroster runs, 1260 before and 1270
+# here. wire/values_test.go 4, wire/dhcpv6_test.go 2 and
+# proto/vendor_options_test.go 4; no netns test.
+MIN_DECLARED_TESTS=1270
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

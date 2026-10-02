@@ -1277,3 +1277,61 @@ func TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode(t *testing.T) {
 		t.Errorf("Summary() = %q, want %q; one undecodable IA Address discards the whole list", got, want)
 	}
 }
+
+// TestVendorOptsReadsOneBlockPerInstance is RFC 8415 section 21.17
+// (claymore666/docker-net-dhcp#1034): an enterprise number and then option-data
+// kept raw, one block per instance, in wire order, and an instance of exactly
+// four octets is a legal empty block.
+func TestVendorOptsReadsOneBlockPerInstance(t *testing.T) {
+	one, err := (OptionsV6{{Code: OptV6VendorOpts, Data: mustHex("0000017f00010003616263")}}).VendorOpts()
+	if err != nil || len(one) != 1 || one[0].Enterprise != 383 || string(one[0].Data) != "\x00\x01\x00\x03abc" {
+		t.Fatalf("one instance = %+v, %v", one, err)
+	}
+
+	two, err := (OptionsV6{
+		{Code: OptV6VendorOpts, Data: mustHex("0000017f01")},
+		{Code: OptV6ClientID, Data: mustHex("00")},
+		{Code: OptV6VendorOpts, Data: mustHex("00000de9")},
+	}).VendorOpts()
+	if err != nil || len(two) != 2 {
+		t.Fatalf("two instances = %+v, %v", two, err)
+	}
+	if two[0].Enterprise != 383 || string(two[0].Data) != "\x01" {
+		t.Errorf("first block = %+v", two[0])
+	}
+	if two[1].Enterprise != 3561 || two[1].Data == nil || len(two[1].Data) != 0 {
+		t.Errorf("a four-octet instance = %+v, want enterprise 3561 with empty data", two[1])
+	}
+
+	if got, err := (OptionsV6{}).VendorOpts(); err != nil || got != nil {
+		t.Errorf("no option 17 = %v, %v; want nil, nil", got, err)
+	}
+	data := mustHex("0000017f01")
+	opts := OptionsV6{{Code: OptV6VendorOpts, Data: data}}
+	blocks, _ := opts.VendorOpts()
+	blocks[0].Data[0] = 0xee
+	if data[4] != 0x01 {
+		t.Error("a block's Data aliases the option's own bytes")
+	}
+	if OptV6VendorOpts.String() != "vendor-opts" {
+		t.Errorf("name = %q", OptV6VendorOpts)
+	}
+}
+
+// TestVendorOptsRefusesAShortInstance guards the enterprise number's width:
+// three octets is not a number, and one bad instance among good ones fails the
+// whole list instead of returning the good ones (claymore666/docker-net-dhcp#1034).
+func TestVendorOptsRefusesAShortInstance(t *testing.T) {
+	for _, bad := range []string{"", "00", "000001"} {
+		got, err := (OptionsV6{
+			{Code: OptV6VendorOpts, Data: mustHex("0000017f01")},
+			{Code: OptV6VendorOpts, Data: mustHex(bad)},
+		}).VendorOpts()
+		if !errors.Is(err, ErrMalformedVendor) || !errors.Is(err, ErrV6BadOption) {
+			t.Errorf("a %d-octet instance: err = %v, want ErrMalformedVendor and ErrV6BadOption", len(bad)/2, err)
+		}
+		if got != nil {
+			t.Errorf("a %d-octet instance: partial list %+v came back", len(bad)/2, got)
+		}
+	}
+}

@@ -25,6 +25,7 @@ const (
 	OptBroadcastAddress   OptionCode = 28
 	OptStaticRoute        OptionCode = 33 // RFC 2132 section 5.8
 	OptNTPServer          OptionCode = 42 // RFC 2132 section 8.3
+	OptVendorSpecific     OptionCode = 43 // RFC 2132 section 8.4, claymore666/docker-net-dhcp#1034
 	OptRequestedIP        OptionCode = 50
 	OptLeaseTime          OptionCode = 51
 	OptOverload           OptionCode = 52
@@ -48,6 +49,7 @@ const (
 	OptIPv6OnlyPreferred  OptionCode = 108 // RFC 8925, claymore666/docker-net-dhcp#1027
 	OptDomainSearch       OptionCode = 119 // RFC 3397
 	OptClasslessStaticRte OptionCode = 121 // RFC 3442
+	OptVIVSO              OptionCode = 125 // RFC 3925 section 4, claymore666/docker-net-dhcp#1034
 	OptForcerenewNonce    OptionCode = 145 // RFC 6704 FORCERENEW_NONCE_CAPABLE, claymore666/docker-net-dhcp#1119
 	// OptMSClasslessStaticRte is option 121's pre-RFC twin: Microsoft servers
 	// sent classless routes as 249 before RFC 3442 assigned 121, with the same
@@ -81,6 +83,7 @@ var optionNames = map[OptionCode]string{
 	OptBroadcastAddress:     "broadcast-address",
 	OptStaticRoute:          "static-route",
 	OptNTPServer:            "ntp-server",
+	OptVendorSpecific:       "vendor-specific",
 	OptRequestedIP:          "requested-ip",
 	OptLeaseTime:            "lease-time",
 	OptOverload:             "overload",
@@ -104,6 +107,7 @@ var optionNames = map[OptionCode]string{
 	OptIPv6OnlyPreferred:    "ipv6-only-preferred",
 	OptDomainSearch:         "domain-search",
 	OptClasslessStaticRte:   "classless-static-route",
+	OptVIVSO:                "vendor-identifying-specific",
 	OptForcerenewNonce:      "forcerenew-nonce-capable",
 	OptMSClasslessStaticRte: "ms-classless-static-route",
 	OptWPAD:                 "wpad",
