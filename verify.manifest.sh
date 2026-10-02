@@ -971,7 +971,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # THE RECONFIGURE KEY'S WINDOW ACROSS A RESTART, claymore666/dhcp-golib#28:
 # one added, none removed, MEASURED as testroster runs, 1249 before and 1250
 # here. proto/machine6_reconfigure_persist_test.go 1; no netns test.
-MIN_DECLARED_TESTS=1250
+#
+# OPTION 249 READ WHEN 121 IS ABSENT, claymore666/docker-net-dhcp#1030:
+# ten added, none removed, MEASURED as testroster runs, 1250 before and 1260
+# here. wire/values_test.go 5 and proto/renewal_test.go 5; no netns test.
+MIN_DECLARED_TESTS=1260
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
