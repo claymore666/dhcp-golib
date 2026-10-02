@@ -627,6 +627,17 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   address comes back with `Multicast` false. And no real server in the
   fixtures sends this option; every test above drives the decoder or the
   in-process fake.
+- **The Reply's options on the outward lease.** `Lease.OptionsV6` holds every
+  option of the Reply, unparsed and in wire order, a copy the record carries as
+  `options_v6`, nil for a DHCPv4 lease, so the vendor, timezone and NTP
+  accessors are reachable from a caller that sees only `lease.Event`. An
+  Information-request Reply reaches the caller as a `Config6` and does not
+  carry it
+  (`TestToLease6CarriesTheReplyOptions`,
+  `TestCloneLeaseDoesNotShareTheReplyOptions`,
+  `TestTheReplyOptionsSurviveTheRecordFile`,
+  `TestAV4LeaseCarriesNoV6Options`;
+  [#53](https://github.com/claymore666/dhcp-golib/issues/53)).
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.
