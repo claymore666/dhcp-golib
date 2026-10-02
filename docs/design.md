@@ -646,7 +646,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `options_v6`, nil for a DHCPv4 lease, so the vendor, timezone and NTP
   accessors are reachable from a caller that sees only `lease.Event`. An
   Information-request Reply reaches the caller as a `Config6` and does not
-  carry it
+  carry it. A lease continued from its record after a restart is rebuilt from
+  its addresses, DNS servers and search list alone, so the first lease event
+  after a restart carries no `OptionsV6` and the record carries none until the
+  next Reply, as the DHCPv4 `Options` field already behaves
   (`TestToLease6CarriesTheReplyOptions`,
   `TestCloneLeaseDoesNotShareTheReplyOptions`,
   `TestTheReplyOptionsSurviveTheRecordFile`,
