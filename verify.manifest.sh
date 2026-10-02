@@ -985,7 +985,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # three added, none removed, MEASURED as testroster runs, 1270 before and 1273
 # here. wire/dhcpv6_test.go 1 and proto/timezone_options_test.go 2; no netns
 # test.
-MIN_DECLARED_TESTS=1273
+#
+# THE DHCPv6 NTP SERVER OPTION 56 AS A LIST, claymore666/docker-net-dhcp#859:
+# nine added, none removed, MEASURED as testroster runs, 1273 before and 1282
+# here. wire/dhcpv6_test.go 7 and proto/ntp_options_test.go 2; no netns test.
+MIN_DECLARED_TESTS=1282
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
