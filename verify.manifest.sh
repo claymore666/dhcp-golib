@@ -994,7 +994,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # removed, MEASURED as testroster runs, 1282 before and 1290 here.
 # lease/options6_test.go 6, wire/dhcpv6_clone_test.go 1 and
 # runtime/recordstore_options6_test.go 1; no netns test.
-MIN_DECLARED_TESTS=1290
+#
+# RFC 7217 STABLE-PRIVACY INTERFACE IDENTIFIERS, dhcp-golib#54: sixteen added,
+# none removed, MEASURED as testroster runs, 1290 before and 1306 here.
+# proto/iid6_test.go 6, proto/machine6_iid_test.go 9 and
+# lease/snapshot6_iid_test.go 1; no netns test.
+MIN_DECLARED_TESTS=1306
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

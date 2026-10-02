@@ -68,7 +68,7 @@ func (m *Machine6) beginSLAAC(now Instant, rnd uint64, out *actions) {
 //
 // THE PREFIX IS DERIVED FROM THE ADDRESS AND NOT REMEMBERED BESIDE IT, and
 // that is sound for exactly this library: every address in this table was
-// formed by SLAACAddress, which forms only where the prefix length plus
+// formed by formSLAAC, which forms only where the prefix length plus
 // IIDBits is 128, so the prefix is the address's first 128-IIDBits bits and
 // there is no second possibility to guess between.
 func (m *Machine6) seedFromResume(now Instant, r *Resume6, out *actions) {
