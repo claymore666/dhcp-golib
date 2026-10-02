@@ -303,13 +303,19 @@ func (c SLAACCounters) IgnoredTotal() uint64 {
 // refuses what that helper does not: a prefix whose length plus IIDBits is not
 // 128, and a link address of a length Appendix A does not cover.
 func SLAACAddress(prefix netip.Addr, prefixLen uint8, hw []byte) (netip.Addr, error) {
+	return formSLAAC(prefix, prefixLen, iidSource{mode: IIDModeEUI64, hw: hw}, 0)
+}
+
+// formSLAAC is SLAACAddress with the identifier taken from src at counter
+// (dhcp-golib#54).
+func formSLAAC(prefix netip.Addr, prefixLen uint8, src iidSource, counter uint8) (netip.Addr, error) {
 	if !prefix.Is6() || prefix.Is4In6() {
 		return netip.Addr{}, fmt.Errorf("proto: %s is not an IPv6 prefix", prefix)
 	}
 	if !lengthsSumTo128(int(prefixLen), IIDBits) {
 		return netip.Addr{}, fmt.Errorf("proto: prefix length %d plus interface identifier length %d is not 128 (RFC 4862 §5.5.3 d)", prefixLen, IIDBits)
 	}
-	iid, err := ModifiedEUI64(hw)
+	iid, err := src.iid(netip.PrefixFrom(prefix, int(prefixLen)), counter)
 	if err != nil {
 		return netip.Addr{}, err
 	}
@@ -460,12 +466,18 @@ type slaacTable struct {
 	counts  SLAACCounters
 
 	// refused is every address duplicate address detection found in use, kept
-	// for the life of the machine. §5.4.5 ends the address and this library
+	// for the life of the machine. §5.4.5 ends the address and EUI-64 mode
 	// has no second identifier to try (RFC 4941's temporary addresses are not
-	// implemented), so the same prefix would form the same address again on
-	// the router's next advertisement, and the check would answer the same
-	// way. It is cleared by a stop, with the rest of the table.
+	// implemented; stable-privacy's retries are, dhcp-golib#54), so the same
+	// prefix would form the same address again on the router's next
+	// advertisement, and the check would answer the same way. It is cleared
+	// by a stop, with the rest of the table.
 	refused map[netip.Addr]bool
+
+	// dadCount is RFC 7217 §5's DAD_Counter per masked prefix. It sits beside
+	// the entries because drop removes the entry on a duplicate, and it goes
+	// with the table at a stop: it is not persisted (dhcp-golib#54).
+	dadCount map[netip.Prefix]uint8
 }
 
 // refuse records an address as in use on the link, so no later advertisement
@@ -536,7 +548,7 @@ func slaacOptionRules(pi wire.PrefixInfo) (netip.Prefix, SLAACIgnore) {
 // table — the held-prefix refresh, this client's cap, and an address duplicate
 // address detection already refused — because the answer to those at the
 // instant an option arrives is not the answer at the instant it is used.
-func slaacFormRules(pi wire.PrefixInfo, hw []byte) (netip.Addr, SLAACIgnore) {
+func slaacFormRules(pi wire.PrefixInfo, src iidSource, counter uint8) (netip.Addr, SLAACIgnore) {
 	if !lengthsSumTo128(int(pi.PrefixLen), IIDBits) {
 		return netip.Addr{}, SLAACIgnoreBadLength
 	}
@@ -546,7 +558,7 @@ func slaacFormRules(pi wire.PrefixInfo, hw []byte) (netip.Addr, SLAACIgnore) {
 	if SecondsToDuration(pi.ValidLifetime) == 0 {
 		return netip.Addr{}, SLAACIgnoreValidZero
 	}
-	addr, err := SLAACAddress(pi.Prefix, pi.PrefixLen, hw)
+	addr, err := formSLAAC(pi.Prefix, pi.PrefixLen, src, counter)
 	if err != nil {
 		return netip.Addr{}, SLAACIgnoreLinkAddr
 	}
@@ -562,7 +574,7 @@ func slaacFormRules(pi wire.PrefixInfo, hw []byte) (netip.Addr, SLAACIgnore) {
 // this client's own. Mode6Auto's deferred union keeps the same order over the
 // same two helpers, so a prefix is admitted there exactly where it would be
 // formed here.
-func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, hw []byte) (formed bool, changed bool, why SLAACIgnore) {
+func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, src iidSource) (formed bool, changed bool, why SLAACIgnore) {
 	p, why := slaacOptionRules(pi)
 	if why != SLAACIgnoreNone {
 		return false, false, why
@@ -573,7 +585,7 @@ func (t *slaacTable) applyPIO(now Instant, pi wire.PrefixInfo, hw []byte) (forme
 		return false, t.refresh(now, i, preferred, valid), SLAACIgnoreNone
 	}
 
-	addr, why := slaacFormRules(pi, hw)
+	addr, why := slaacFormRules(pi, src, t.dadCount[p])
 	if why != SLAACIgnoreNone {
 		return false, false, why
 	}
@@ -718,8 +730,7 @@ func (t *slaacTable) expire(now Instant) []netip.Addr {
 }
 
 // drop removes one address, which is what a duplicate found by RFC 4862 §5.4
-// leaves this client with: the identifier is the link's own hardware address,
-// so §5.5.3 offers no second candidate to try.
+// leaves this client with once retry has nothing left to form.
 func (t *slaacTable) drop(a netip.Addr) bool {
 	for i := range t.entries {
 		if t.entries[i].addr == a {
@@ -728,6 +739,40 @@ func (t *slaacTable) drop(a netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+// retry re-forms a duplicate address from its prefix at the next DAD counter,
+// RFC 7217 §6, skipping addresses already refused, and returns the counter used;
+// false once src.retries()
+// is spent, and always false for EUI-64 (dhcp-golib#54).
+func (t *slaacTable) retry(a netip.Addr, src iidSource) (netip.Addr, uint8, bool) {
+	i := -1
+	for j := range t.entries {
+		if t.entries[j].addr == a {
+			i = j
+			break
+		}
+	}
+	if i < 0 {
+		return netip.Addr{}, 0, false
+	}
+	e := &t.entries[i]
+	if t.dadCount == nil {
+		t.dadCount = map[netip.Prefix]uint8{}
+	}
+	for t.dadCount[e.prefix] < src.retries() {
+		t.dadCount[e.prefix]++
+		next, err := formSLAAC(e.prefix.Addr(), uint8(e.prefix.Bits()), src, t.dadCount[e.prefix])
+		if err != nil {
+			return netip.Addr{}, 0, false
+		}
+		if t.refused[next] {
+			continue
+		}
+		e.addr, e.tentative = next, true
+		return next, t.dadCount[e.prefix], true
+	}
+	return netip.Addr{}, 0, false
 }
 
 // settle marks an address no longer tentative.

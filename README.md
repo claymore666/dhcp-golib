@@ -29,7 +29,7 @@ and it needs no root.
 | Tell a managed, a stateless, a SLAAC-only and a silent link apart (the advertisement's M and O flags) | n/a | yes |
 | Tell a server that refused apart from one that never answered, and say which code it sent | yes | yes |
 | Read what the Router Advertisement carries beyond those flags: the link MTU, the routes, the resolvers, the search list and the advertised prefixes | n/a | yes |
-| Form an address from a Router Advertisement prefix (SLAAC) | n/a | yes |
+| Form an address from a Router Advertisement prefix (SLAAC), from the link address (modified EUI-64) or a stable, opaque identifier (RFC 7217) | n/a | yes |
 | Ask for a delegated prefix and report it (IA_PD, RFC 8415; the library installs nothing) | n/a | yes |
 | Get an address in two messages (Rapid Commit, RFC 4039 / RFC 8415) | yes | yes |
 | Hold a temporary address beside the non-temporary one (IA_TA) | n/a | yes, not on a resumed lease |
@@ -98,6 +98,10 @@ second source for the routes when RFC 3442's is absent
 ([#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)), the vendor-specific options on DHCPv4 and DHCPv6
 ([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)), the DHCPv6 timezone options ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)) and the
 DHCPv6 NTP server option, read as the whole list ([#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
+v1.4.0 adds the DHCPv6 Reply's options on the lease a caller receives, as
+`Lease.OptionsV6` ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)), and the RFC 7217 stable, opaque
+interface identifier as a `Params6` choice, retried on a duplicate address
+([#1032](https://github.com/claymore666/docker-net-dhcp/issues/1032)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -110,7 +114,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v130).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v140).
 
 ## Usage
 

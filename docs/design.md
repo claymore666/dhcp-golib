@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.3.0
+## Coverage by claim, through v1.4.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -395,7 +395,7 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   the RFC's diagram.
 - **An address formed from an advertised prefix.** RFC 4862 §5.5.3 d forms it
   by "combining the advertised prefix with an interface identifier of the
-  link", and RFC 4291 Appendix A's modified EUI-64 is the identifier. The
+  link", and RFC 4291 Appendix A's modified EUI-64 is the default identifier. The
   option is refused where the two do not fit: "If the sum of the prefix length
   and interface identifier length does not equal 128 bits, the Prefix
   Information option MUST be ignored." Every §5.5.3 rule that refuses an option
@@ -430,6 +430,20 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestAnAddressFormedFromAnAdvertisementReachesTheCaller`) and a resumed
   client does not form it a second time
   (`TestAResumedFormedLeaseIsNotFormedASecondTime`).
+  `Params6.IID` picks the identifier instead as RFC 7217's stable, semantically
+  opaque one: SHA-256 over the prefix, `IIDNetIface`, `IIDNetworkID`, a
+  per-prefix DAD_Counter and an `IIDSecret` no shorter than `MinIIDSecretLen`,
+  the digest's last eight octets taken (`TestStablePrivacyIIDMatchesAVectorRecomputedOutsideGo`,
+  `TestAStablePrivacyAddressIsTheHashAndNotTheLinkAddress`). In that mode a
+  duplicate is not the end of the prefix: as §6 asks, the prefix's DAD_Counter
+  moves on and a new address is formed and checked, up to `IDGenRetries`
+  times; the duplicate after the last retry refuses the prefix as EUI-64
+  mode does, and the modified EUI-64 address is never tried in its place
+  (`TestADuplicateStableAddressIsRetriedAtTheNextCounter`,
+  `TestTheFourthDuplicateRefusesThePrefixAndNeverFallsBackToEUI64`). The
+  counter lives as long as the machine and is not persisted, so a restart
+  counts from the start again
+  (`TestAResumedRetriedAddressFoundInUseSkipsToTheNextCounter`).
   BOUND, and it is the one thing on this list that has it: this claim is driven
   at ring 1 and ring 2 against tables and decoded options. There is no run
   against a router advertising on a real link yet, which is the only entry here
@@ -627,6 +641,21 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   address comes back with `Multicast` false. And no real server in the
   fixtures sends this option; every test above drives the decoder or the
   in-process fake.
+- **The Reply's options on the outward lease.** `Lease.OptionsV6` holds every
+  option of the Reply, unparsed and in wire order, a copy the record carries as
+  `options_v6`, nil for a DHCPv4 lease, so the vendor, timezone and NTP
+  accessors are reachable from a caller that sees only `lease.Event`. An
+  Information-request Reply reaches the caller as a `Config6` and does not
+  carry it. A lease continued from its record after a restart is rebuilt from
+  the addresses, prefixes, server identifier, timers, DNS servers and search
+  list the record holds for it, and none of the Reply's options, so the first
+  lease event after a restart carries no `OptionsV6` and the record carries
+  none until the next Reply, as the DHCPv4 `Options` field already behaves
+  (`TestToLease6CarriesTheReplyOptions`,
+  `TestCloneLeaseDoesNotShareTheReplyOptions`,
+  `TestTheReplyOptionsSurviveTheRecordFile`,
+  `TestAV4LeaseCarriesNoV6Options`;
+  [#53](https://github.com/claymore666/dhcp-golib/issues/53)).
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.
