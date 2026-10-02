@@ -10,14 +10,14 @@ import (
 	"net/netip"
 )
 
-// IIDMode is how a SLAAC address's interface identifier is formed.
+// IIDMode is how a SLAAC address's interface identifier is formed (dhcp-golib#54).
 type IIDMode uint8
 
-// The two identifiers.
+// The two identifiers (dhcp-golib#54).
 const (
-	// IIDModeEUI64 is RFC 4291 Appendix A's modified EUI-64 from Params6.LinkAddr.
+	// IIDModeEUI64 is RFC 4291 Appendix A's modified EUI-64 from Params6.LinkAddr (dhcp-golib#54).
 	IIDModeEUI64 IIDMode = iota
-	// IIDModeStablePrivacy is RFC 7217's stable, semantically opaque identifier.
+	// IIDModeStablePrivacy is RFC 7217's stable, semantically opaque identifier (dhcp-golib#54).
 	IIDModeStablePrivacy
 )
 
@@ -32,7 +32,7 @@ func (m IIDMode) String() string {
 	}
 }
 
-// AllIIDModes is every declared IIDMode.
+// AllIIDModes is every declared IIDMode (dhcp-golib#54).
 func AllIIDModes() []IIDMode { return []IIDMode{IIDModeEUI64, IIDModeStablePrivacy} }
 
 // MinIIDSecretLen is RFC 7217 §5's "The secret key SHOULD be of at least 128
@@ -43,13 +43,13 @@ const MinIIDSecretLen = 16
 // after the first one DAD found in use (dhcp-golib#54).
 const IDGenRetries = 3
 
-// The errors New6 answers a stable-privacy Params6 it cannot run with.
+// The errors New6 answers a stable-privacy Params6 it cannot run with (dhcp-golib#54).
 var (
-	// ErrBadIIDMode is a Params6.IID outside the declared set.
+	// ErrBadIIDMode is a Params6.IID outside the declared set (dhcp-golib#54).
 	ErrBadIIDMode = errors.New("proto: Params6.IID is not a declared identifier mode")
-	// ErrShortIIDSecret is a stable-privacy Params6.IIDSecret under MinIIDSecretLen octets.
+	// ErrShortIIDSecret is a stable-privacy IIDSecret under MinIIDSecretLen octets (dhcp-golib#54).
 	ErrShortIIDSecret = errors.New("proto: Params6.IIDSecret is shorter than 16 octets (RFC 7217 section 5)")
-	// ErrNoIIDNetIface is a stable-privacy Params6 with an empty IIDNetIface.
+	// ErrNoIIDNetIface is a stable-privacy Params6 with an empty IIDNetIface (dhcp-golib#54).
 	ErrNoIIDNetIface = errors.New("proto: Params6.IIDNetIface is required for a stable-privacy identifier (RFC 7217 section 5)")
 )
 
@@ -80,7 +80,7 @@ func StablePrivacyIID(prefix netip.Prefix, netIface, networkID []byte, dadCounte
 	return iid
 }
 
-// iidSource is the part of Params6 an interface identifier is formed from.
+// iidSource is the part of Params6 an interface identifier is formed from (dhcp-golib#54).
 type iidSource struct {
 	mode                        IIDMode
 	hw                          []byte
@@ -91,7 +91,7 @@ func (p Params6) iidSource() iidSource {
 	return iidSource{mode: p.IID, hw: p.LinkAddr, netIface: p.IIDNetIface, networkID: p.IIDNetworkID, secret: p.IIDSecret}
 }
 
-// iid is the identifier this source forms for prefix at counter.
+// iid is the identifier this source forms for prefix at counter (dhcp-golib#54).
 func (s iidSource) iid(prefix netip.Prefix, counter uint8) ([8]byte, error) {
 	switch s.mode {
 	case IIDModeEUI64:
@@ -104,7 +104,8 @@ func (s iidSource) iid(prefix netip.Prefix, counter uint8) ([8]byte, error) {
 }
 
 // retries is how many re-formed addresses a duplicate may cost: RFC 7217 §6
-// for stable-privacy, none for EUI-64, whose one identifier has no second.
+// for stable-privacy, none for EUI-64, whose one identifier has no second
+// (dhcp-golib#54).
 func (s iidSource) retries() uint8 {
 	if s.mode == IIDModeStablePrivacy {
 		return IDGenRetries

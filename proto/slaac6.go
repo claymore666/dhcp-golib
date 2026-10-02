@@ -468,9 +468,10 @@ type slaacTable struct {
 	// refused is every address duplicate address detection found in use, kept
 	// for the life of the machine. §5.4.5 ends the address and EUI-64 mode
 	// has no second identifier to try (RFC 4941's temporary addresses are not
-	// implemented; stable-privacy's retries are, dhcp-golib#54), so the same prefix would form the same address again on
-	// the router's next advertisement, and the check would answer the same
-	// way. It is cleared by a stop, with the rest of the table.
+	// implemented; stable-privacy's retries are, dhcp-golib#54), so the same
+	// prefix would form the same address again on the router's next
+	// advertisement, and the check would answer the same way. It is cleared
+	// by a stop, with the rest of the table.
 	refused map[netip.Addr]bool
 
 	// dadCount is RFC 7217 §5's DAD_Counter per masked prefix. It sits beside

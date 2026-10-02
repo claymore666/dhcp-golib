@@ -207,19 +207,6 @@ func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 	bad := append([]netip.Addr(nil), m.dadBad...)
 	retried := false
 	for _, a := range bad {
-		// RFC 7217 §6: the next DAD_Counter forms the next tentative address,
-		// IDGenRetries times; once spent the prefix ends as in EUI-64 mode,
-		// never falling back to another identifier (dhcp-golib#54).
-		if next, n, ok := m.slaac.retry(a, m.params.iidSource()); ok {
-			m.slaac.counts.Conflicts++
-			m.slaac.refuse(a)
-			out.journal(m, fmt.Sprintf("duplicate address detection found %s in use: trying %s, DAD_Counter %d (RFC 7217 §6)", a, next, n))
-			retried = true
-			continue
-		}
-		if m.slaac.drop(a) {
-			m.slaac.counts.Conflicts++
-		}
 		// AND IT IS NOT FORMED AGAIN. The prefix that formed it is
 		// re-advertised every few seconds (RFC 4861 §6.2.1) and would form the
 		// same address from the same link hardware address every time, so
@@ -229,6 +216,18 @@ func (m *Machine6) finishSLAACDAD(now Instant, rnd uint64, out *actions) {
 		// SLAACIgnoreDuplicate instead, and router discovery reaches its own
 		// verdict.
 		m.slaac.refuse(a)
+		// RFC 7217 §6: the next DAD_Counter forms the next tentative address,
+		// IDGenRetries times; once spent the prefix ends as in EUI-64 mode,
+		// never falling back to another identifier (dhcp-golib#54).
+		if next, n, ok := m.slaac.retry(a, m.params.iidSource()); ok {
+			m.slaac.counts.Conflicts++
+			out.journal(m, fmt.Sprintf("duplicate address detection found %s in use: trying %s, DAD_Counter %d (RFC 7217 §6)", a, next, n))
+			retried = true
+			continue
+		}
+		if m.slaac.drop(a) {
+			m.slaac.counts.Conflicts++
+		}
 	}
 	// ONLY THE ADDRESSES THIS ROUND ASKED ABOUT ARE SETTLED. A router repeats
 	// its advertisement while a check is running and a NEW prefix can arrive
