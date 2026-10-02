@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"strings"
@@ -727,6 +728,143 @@ func TestDNSServersRefusesAShortList(t *testing.T) {
 	}
 }
 
+// ntpSub is one option 56 sub-option, RFC 5908 sections 4.1 to 4.3: a code, a
+// length and the body, as hex (claymore666/docker-net-dhcp#859).
+func ntpSub(code, bodyHex string) string {
+	return fmt.Sprintf("%04s%04x", code, len(bodyHex)/2) + bodyHex
+}
+
+// The three bodies of claymore666/docker-net-dhcp#859's tests: 2001:db8::123,
+// ff0e::101 and time.example.org uncompressed.
+const (
+	ntpAddrHex = "20010db8000000000000000000000123"
+	ntpMCHex   = "ff0e0000000000000000000000000101"
+	ntpNameHex = "0474696d65076578616d706c65036f726700"
+)
+
+// TestNTPServersReadsEachInstanceInWireOrder is RFC 5908 section 4
+// (claymore666/docker-net-dhcp#859): each instance is one time source, an
+// address, a multicast group or a name, and none is dropped or merged.
+func TestNTPServersReadsEachInstanceInWireOrder(t *testing.T) {
+	addr := OptionV6{Code: OptV6NTPServer, Data: mustHex(ntpSub("1", ntpAddrHex))}
+	mc := OptionV6{Code: OptV6NTPServer, Data: mustHex(ntpSub("2", ntpMCHex))}
+	name := OptionV6{Code: OptV6NTPServer, Data: mustHex(ntpSub("3", ntpNameHex))}
+
+	one, err := (OptionsV6{addr}).NTPServers()
+	if err != nil || len(one) != 1 || one[0].Addr.String() != "2001:db8::123" || one[0].Multicast || one[0].FQDN != "" {
+		t.Fatalf("one address instance = %+v, %v", one, err)
+	}
+	m, err := (OptionsV6{mc}).NTPServers()
+	if err != nil || len(m) != 1 || m[0].Addr.String() != "ff0e::101" || !m[0].Multicast || m[0].FQDN != "" {
+		t.Fatalf("one multicast instance = %+v, %v", m, err)
+	}
+	n, err := (OptionsV6{name}).NTPServers()
+	if err != nil || len(n) != 1 || n[0].Addr.IsValid() || n[0].Multicast || n[0].FQDN != "time.example.org" {
+		t.Fatalf("one FQDN instance = %+v, %v", n, err)
+	}
+
+	all, err := (OptionsV6{name, {Code: OptV6ClientID, Data: mustHex("00")}, addr, mc}).NTPServers()
+	if err != nil || len(all) != 3 {
+		t.Fatalf("three instances = %+v, %v", all, err)
+	}
+	if all[0].FQDN != "time.example.org" || all[1].Addr.String() != "2001:db8::123" || all[1].Multicast || all[2].Addr.String() != "ff0e::101" || !all[2].Multicast {
+		t.Errorf("three instances out of wire order or mixed up: %+v", all)
+	}
+
+	if got, err := (OptionsV6{}).NTPServers(); err != nil || got != nil {
+		t.Errorf("no option 56 = %v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestNTPServersRefusesAnInstanceThatIsNotOneTimeSource is RFC 5908 section 4's
+// "one, and only one", the sub-option lengths and the sub-option framing, with
+// the whole list refused (claymore666/docker-net-dhcp#859).
+func TestNTPServersRefusesAnInstanceThatIsNotOneTimeSource(t *testing.T) {
+	for name, bad := range map[string]string{
+		"15-octet address":                ntpSub("1", ntpAddrHex[:30]),
+		"17-octet address":                ntpSub("1", ntpAddrHex+"00"),
+		"15-octet multicast address":      ntpSub("2", ntpMCHex[:30]),
+		"two sub-options":                 ntpSub("1", ntpAddrHex) + ntpSub("3", ntpNameHex),
+		"two addresses":                   ntpSub("1", ntpAddrHex) + ntpSub("1", ntpAddrHex),
+		"unknown sub-option past the end": "00040010aabb",
+		"truncated sub-option header":     ntpSub("1", ntpAddrHex) + "00",
+		"sub-option length past the end":  "00010010" + ntpAddrHex[:30],
+		"zero-length name":                ntpSub("3", ""),
+		"name cut mid-label":              ntpSub("3", "0474696d"),
+	} {
+		got, err := (OptionsV6{
+			{Code: OptV6NTPServer, Data: mustHex(ntpSub("1", ntpAddrHex))},
+			{Code: OptV6NTPServer, Data: mustHex(bad)},
+		}).NTPServers()
+		if !errors.Is(err, ErrMalformedNTP) || !errors.Is(err, ErrV6BadOption) {
+			t.Errorf("%s: err = %v, want ErrMalformedNTP and ErrV6BadOption", name, err)
+		}
+		if got != nil {
+			t.Errorf("%s: partial list %+v came back beside the first good instance", name, got)
+		}
+	}
+}
+
+// TestNTPServersSkipsASubOptionItDoesNotKnow is RFC 5908 section 4's "More time
+// source suboptions may be defined in the future": an unknown one is skipped, an
+// instance with only unknown ones is dropped without poisoning the list
+// (claymore666/docker-net-dhcp#859).
+func TestNTPServersSkipsASubOptionItDoesNotKnow(t *testing.T) {
+	got, err := (OptionsV6{
+		{Code: OptV6NTPServer, Data: mustHex(ntpSub("4", "0102") + ntpSub("1", ntpAddrHex) + ntpSub("9", ""))},
+		{Code: OptV6NTPServer, Data: mustHex(ntpSub("4", "00"))},
+		{Code: OptV6NTPServer, Data: nil},
+		{Code: OptV6NTPServer, Data: mustHex(ntpSub("3", ntpNameHex))},
+	}).NTPServers()
+	if err != nil || len(got) != 2 || got[0].Addr.String() != "2001:db8::123" || got[1].FQDN != "time.example.org" {
+		t.Errorf("unknown sub-options = %+v, %v; want the address and the name, nothing else", got, err)
+	}
+	if got, err := (OptionsV6{{Code: OptV6NTPServer, Data: mustHex(ntpSub("4", "00"))}}).NTPServers(); err != nil || len(got) != 0 {
+		t.Errorf("an instance of only an unknown sub-option = %+v, %v; want no record and no error", got, err)
+	}
+}
+
+// TestNTPServersRefusesOctetsAfterTheName: the sub-option's length is the
+// name's length, so a byte after the root label is not a second name
+// (claymore666/docker-net-dhcp#859).
+func TestNTPServersRefusesOctetsAfterTheName(t *testing.T) {
+	got, err := (OptionsV6{{Code: OptV6NTPServer, Data: mustHex(ntpSub("3", ntpNameHex+"00"))}}).NTPServers()
+	if !errors.Is(err, ErrMalformedNTP) || !errors.Is(err, ErrV6BadOption) || got != nil {
+		t.Errorf("a name and one octet = %+v, %v; want ErrMalformedNTP, ErrV6BadOption and no list", got, err)
+	}
+}
+
+// TestNTPServersRefusesAnEmptyName: the root label alone is a record with
+// neither address nor name (claymore666/docker-net-dhcp#859).
+func TestNTPServersRefusesAnEmptyName(t *testing.T) {
+	got, err := (OptionsV6{{Code: OptV6NTPServer, Data: mustHex(ntpSub("3", "00"))}}).NTPServers()
+	if !errors.Is(err, ErrMalformedNTP) || !errors.Is(err, ErrV6BadOption) || got != nil {
+		t.Errorf("the root label alone = %+v, %v; want ErrMalformedNTP, ErrV6BadOption and no list", got, err)
+	}
+}
+
+// TestNTPServersRefusesACompressedName is RFC 3315 section 8, to which RFC 5908
+// section 4.3 sends the name ("encoded as described in [RFC3315], Section 8"):
+// names "MUST NOT be stored in compressed form" (claymore666/docker-net-dhcp#859).
+func TestNTPServersRefusesACompressedName(t *testing.T) {
+	got, err := (OptionsV6{{Code: OptV6NTPServer, Data: mustHex(ntpSub("3", "c000"))}}).NTPServers()
+	if !errors.Is(err, ErrMalformedNTP) || !errors.Is(err, ErrV6BadOption) || !errors.Is(err, ErrV6Name) || got != nil {
+		t.Errorf("a compression pointer: %v, %v; want ErrMalformedNTP, ErrV6BadOption, ErrV6Name and no list", got, err)
+	}
+}
+
+// TestNTPServerOptionIsNamedByItsRFCNumber reads the code by the number RFC
+// 5908 section 4 gives, and the name as the v4 option 42's
+// (claymore666/docker-net-dhcp#859).
+func TestNTPServerOptionIsNamedByItsRFCNumber(t *testing.T) {
+	if OptV6NTPServer != 56 || OptionCodeV6(56).String() != "ntp-server" {
+		t.Errorf("option 56 is %d named %q, want 56 and ntp-server", OptV6NTPServer, OptionCodeV6(56))
+	}
+	if OptV6NTPServer.String() != OptNTPServer.String() {
+		t.Error("the v6 name differs from the v4 name for option 42")
+	}
+}
+
 // TestDomainSearchRefusesACompressionPointer is A-5, and it is the row the v4
 // codec makes easy to get wrong: wire/values.go's readName FOLLOWS RFC 1035
 // §4.1.4 pointers, because a DHCPv4 message is one buffer to point into.
@@ -1275,5 +1413,81 @@ func TestASummaryOfAnIANATruncatedAfterOneAddressIsTheBareCode(t *testing.T) {
 	}
 	if got, want := summary(truncated), "ADVERTISE xid=00beef ia-na"; got != want {
 		t.Errorf("Summary() = %q, want %q; one undecodable IA Address discards the whole list", got, want)
+	}
+}
+
+// TestVendorOptsReadsOneBlockPerInstance is RFC 8415 section 21.17
+// (claymore666/docker-net-dhcp#1034): an enterprise number and then option-data
+// kept raw, one block per instance, in wire order, and an instance of exactly
+// four octets is a legal empty block.
+func TestVendorOptsReadsOneBlockPerInstance(t *testing.T) {
+	one, err := (OptionsV6{{Code: OptV6VendorOpts, Data: mustHex("0000017f00010003616263")}}).VendorOpts()
+	if err != nil || len(one) != 1 || one[0].Enterprise != 383 || string(one[0].Data) != "\x00\x01\x00\x03abc" {
+		t.Fatalf("one instance = %+v, %v", one, err)
+	}
+
+	two, err := (OptionsV6{
+		{Code: OptV6VendorOpts, Data: mustHex("0000017f01")},
+		{Code: OptV6ClientID, Data: mustHex("00")},
+		{Code: OptV6VendorOpts, Data: mustHex("00000de9")},
+	}).VendorOpts()
+	if err != nil || len(two) != 2 {
+		t.Fatalf("two instances = %+v, %v", two, err)
+	}
+	if two[0].Enterprise != 383 || string(two[0].Data) != "\x01" {
+		t.Errorf("first block = %+v", two[0])
+	}
+	if two[1].Enterprise != 3561 || two[1].Data == nil || len(two[1].Data) != 0 {
+		t.Errorf("a four-octet instance = %+v, want enterprise 3561 with empty data", two[1])
+	}
+
+	if got, err := (OptionsV6{}).VendorOpts(); err != nil || got != nil {
+		t.Errorf("no option 17 = %v, %v; want nil, nil", got, err)
+	}
+	data := mustHex("0000017f01")
+	opts := OptionsV6{{Code: OptV6VendorOpts, Data: data}}
+	blocks, _ := opts.VendorOpts()
+	blocks[0].Data[0] = 0xee
+	if data[4] != 0x01 {
+		t.Error("a block's Data aliases the option's own bytes")
+	}
+	if OptV6VendorOpts.String() != "vendor-opts" {
+		t.Errorf("name = %q", OptV6VendorOpts)
+	}
+}
+
+// TestVendorOptsRefusesAShortInstance guards the enterprise number's width:
+// three octets is not a number, and one bad instance among good ones fails the
+// whole list instead of returning the good ones (claymore666/docker-net-dhcp#1034).
+func TestVendorOptsRefusesAShortInstance(t *testing.T) {
+	for _, bad := range []string{"", "00", "000001"} {
+		got, err := (OptionsV6{
+			{Code: OptV6VendorOpts, Data: mustHex("0000017f01")},
+			{Code: OptV6VendorOpts, Data: mustHex(bad)},
+		}).VendorOpts()
+		if !errors.Is(err, ErrMalformedVendor) || !errors.Is(err, ErrV6BadOption) {
+			t.Errorf("a %d-octet instance: err = %v, want ErrMalformedVendor and ErrV6BadOption", len(bad)/2, err)
+		}
+		if got != nil {
+			t.Errorf("a %d-octet instance: partial list %+v came back", len(bad)/2, got)
+		}
+	}
+}
+
+// TestTimezoneOptionsAreNamedByTheirRFCNumbers reads the codes by the numbers
+// RFC 4833 section 3 gives, not by the constants, so a swapped pair cannot pass
+// (claymore666/docker-net-dhcp#1033).
+func TestTimezoneOptionsAreNamedByTheirRFCNumbers(t *testing.T) {
+	if got := OptionCodeV6(41).String(); got != "posix-timezone" {
+		t.Errorf("option 41 is named %q, want posix-timezone", got)
+	}
+	if got := OptionCodeV6(42).String(); got != "tz-database" {
+		t.Errorf("option 42 is named %q, want tz-database", got)
+	}
+	if OptV6PosixTimezone != 41 || OptV6TZDatabase != 42 {
+		t.Errorf("constants are %d and %d, want 41 and 42", OptV6PosixTimezone, OptV6TZDatabase)
+	}
+	if OptPosixTimezone.String() != OptV6PosixTimezone.String() || OptTZDatabase.String() != OptV6TZDatabase.String() {
+		t.Error("the v6 names differ from the v4 names for options 100 and 101")
 	}
 }

@@ -386,7 +386,9 @@ const DefaultRestartDelay = 10 * Second
 // option code, if present", and the same paragraph makes requesting BOTH 121
 // and 3 a MUST for a client that supports 121. Sorting this list breaks a MUST
 // silently, which is why 121 leads it and why the order is pinned by a test on
-// the ENCODED option rather than by this comment.
+// the ENCODED option rather than by this comment. Option 249, the pre-RFC
+// twin of 121 that some servers still send alone, sits directly after 121 for
+// the same reason (claymore666/docker-net-dhcp#1030).
 //
 // It asks for more than this library turns into a Lease, and that is
 // deliberate. Every option a server sends is kept verbatim in Lease.Options
@@ -397,6 +399,7 @@ const DefaultRestartDelay = 10 * Second
 func DefaultParameterList() []wire.OptionCode {
 	return []wire.OptionCode{
 		wire.OptClasslessStaticRte,
+		wire.OptMSClasslessStaticRte,
 		wire.OptRouter,
 		wire.OptStaticRoute,
 		wire.OptSubnetMask,
@@ -412,6 +415,11 @@ func DefaultParameterList() []wire.OptionCode {
 		wire.OptTFTPServer,
 		wire.OptBootfileName,
 		wire.OptWPAD,
+		// 43 is sent on the strength of option 60 but is asked for anyway, so a
+		// server that gates it on this list still sends it
+		// (claymore666/docker-net-dhcp#1034).
+		wire.OptVendorSpecific,
+		wire.OptVIVSO,
 	}
 }
 

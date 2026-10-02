@@ -25,6 +25,7 @@ const (
 	OptBroadcastAddress   OptionCode = 28
 	OptStaticRoute        OptionCode = 33 // RFC 2132 section 5.8
 	OptNTPServer          OptionCode = 42 // RFC 2132 section 8.3
+	OptVendorSpecific     OptionCode = 43 // RFC 2132 section 8.4, claymore666/docker-net-dhcp#1034
 	OptRequestedIP        OptionCode = 50
 	OptLeaseTime          OptionCode = 51
 	OptOverload           OptionCode = 52
@@ -48,7 +49,12 @@ const (
 	OptIPv6OnlyPreferred  OptionCode = 108 // RFC 8925, claymore666/docker-net-dhcp#1027
 	OptDomainSearch       OptionCode = 119 // RFC 3397
 	OptClasslessStaticRte OptionCode = 121 // RFC 3442
+	OptVIVSO              OptionCode = 125 // RFC 3925 section 4, claymore666/docker-net-dhcp#1034
 	OptForcerenewNonce    OptionCode = 145 // RFC 6704 FORCERENEW_NONCE_CAPABLE, claymore666/docker-net-dhcp#1119
+	// OptMSClasslessStaticRte is option 121's pre-RFC twin: Microsoft servers
+	// sent classless routes as 249 before RFC 3442 assigned 121, with the same
+	// wire format. No RFC defines 249; claymore666/docker-net-dhcp#1030.
+	OptMSClasslessStaticRte OptionCode = 249
 	// OptWPAD is the de-facto Web Proxy Auto-Discovery option. It sits in
 	// RFC 2132's site-specific range and NO standards document defines it;
 	// the name is what deployments call it, not what an RFC calls it. It is
@@ -66,43 +72,46 @@ func (c OptionCode) String() string {
 }
 
 var optionNames = map[OptionCode]string{
-	OptPad:                "pad",
-	OptSubnetMask:         "subnet-mask",
-	OptTimeOffset:         "time-offset",
-	OptRouter:             "router",
-	OptDNSServer:          "dns-server",
-	OptHostName:           "host-name",
-	OptDomainName:         "domain-name",
-	OptInterfaceMTU:       "interface-mtu",
-	OptBroadcastAddress:   "broadcast-address",
-	OptStaticRoute:        "static-route",
-	OptNTPServer:          "ntp-server",
-	OptRequestedIP:        "requested-ip",
-	OptLeaseTime:          "lease-time",
-	OptOverload:           "overload",
-	OptMessageType:        "message-type",
-	OptServerID:           "server-id",
-	OptParameterList:      "parameter-list",
-	OptMessage:            "message",
-	OptMaxMessageSize:     "max-message-size",
-	OptRenewalTime:        "renewal-time",
-	OptRebindingTime:      "rebinding-time",
-	OptVendorClassID:      "vendor-class-id",
-	OptClientID:           "client-id",
-	OptTFTPServer:         "tftp-server",
-	OptBootfileName:       "bootfile-name",
-	OptUserClass:          "user-class",
-	OptRapidCommit:        "rapid-commit",
-	OptFQDN:               "fqdn",
-	OptAuthentication:     "authentication",
-	OptPosixTimezone:      "posix-timezone",
-	OptTZDatabase:         "tz-database",
-	OptIPv6OnlyPreferred:  "ipv6-only-preferred",
-	OptDomainSearch:       "domain-search",
-	OptClasslessStaticRte: "classless-static-route",
-	OptForcerenewNonce:    "forcerenew-nonce-capable",
-	OptWPAD:               "wpad",
-	OptEnd:                "end",
+	OptPad:                  "pad",
+	OptSubnetMask:           "subnet-mask",
+	OptTimeOffset:           "time-offset",
+	OptRouter:               "router",
+	OptDNSServer:            "dns-server",
+	OptHostName:             "host-name",
+	OptDomainName:           "domain-name",
+	OptInterfaceMTU:         "interface-mtu",
+	OptBroadcastAddress:     "broadcast-address",
+	OptStaticRoute:          "static-route",
+	OptNTPServer:            "ntp-server",
+	OptVendorSpecific:       "vendor-specific",
+	OptRequestedIP:          "requested-ip",
+	OptLeaseTime:            "lease-time",
+	OptOverload:             "overload",
+	OptMessageType:          "message-type",
+	OptServerID:             "server-id",
+	OptParameterList:        "parameter-list",
+	OptMessage:              "message",
+	OptMaxMessageSize:       "max-message-size",
+	OptRenewalTime:          "renewal-time",
+	OptRebindingTime:        "rebinding-time",
+	OptVendorClassID:        "vendor-class-id",
+	OptClientID:             "client-id",
+	OptTFTPServer:           "tftp-server",
+	OptBootfileName:         "bootfile-name",
+	OptUserClass:            "user-class",
+	OptRapidCommit:          "rapid-commit",
+	OptFQDN:                 "fqdn",
+	OptAuthentication:       "authentication",
+	OptPosixTimezone:        "posix-timezone",
+	OptTZDatabase:           "tz-database",
+	OptIPv6OnlyPreferred:    "ipv6-only-preferred",
+	OptDomainSearch:         "domain-search",
+	OptClasslessStaticRte:   "classless-static-route",
+	OptVIVSO:                "vendor-identifying-specific",
+	OptForcerenewNonce:      "forcerenew-nonce-capable",
+	OptMSClasslessStaticRte: "ms-classless-static-route",
+	OptWPAD:                 "wpad",
+	OptEnd:                  "end",
 }
 
 // Options holds every option in a message, keyed by code, values unparsed.

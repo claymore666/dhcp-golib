@@ -82,7 +82,7 @@ value, never less than five minutes, or until the link comes up again, and then
 starts a new Discover. An Ack that carries it in INIT-REBOOT is the same wait,
 and in any other state, a two-message Ack included, the lease stands. A client
 without the flag ignores the option. The wire and the client behaviour for every
-option in the rows above ship in this release. A DHCPv4 client lists the
+option in the rows above ship. A DHCPv4 client lists the
 Forcerenew Nonce option (RFC 6704) in its Discover and every Request and keeps
 the nonce its Ack gives. A DHCPFORCERENEW is acted on only when it was sent to
 the leased address, names this client, and
@@ -92,7 +92,12 @@ already renewing or rebinding only raises the replay floor), and anything else i
 discarded and counted by reason. An Ack that follows an Offer which listed the option and
 carries no valid nonce is discarded, and the client starts over. A client
 restarted from its record holds no nonce and refuses every DHCPFORCERENEW until
-its next Ack gives one.
+its next Ack gives one. v1.3.0 adds four pieces to what a
+client reads and asks for: the Microsoft classless static routes option as a
+second source for the routes when RFC 3442's is absent
+([#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)), the vendor-specific options on DHCPv4 and DHCPv6
+([#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)), the DHCPv6 timezone options ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)) and the
+DHCPv6 NTP server option, read as the whole list ([#859](https://github.com/claymore666/docker-net-dhcp/issues/859)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -105,7 +110,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v120).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v130).
 
 ## Usage
 

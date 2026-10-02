@@ -115,48 +115,56 @@ type OptionCodeV6 uint16
 // The option codes this milestone names. Everything else round-trips as bytes
 // under its numeric code.
 const (
-	OptV6ClientID     OptionCodeV6 = 1  // §21.2
-	OptV6ServerID     OptionCodeV6 = 2  // §21.3
-	OptV6IANA         OptionCodeV6 = 3  // §21.4
-	OptV6IATA         OptionCodeV6 = 4  // RFC 8415 §21.5, obsoleted by RFC 9915 §21.5
-	OptV6IAAddr       OptionCodeV6 = 5  // §21.6
-	OptV6ORO          OptionCodeV6 = 6  // §21.7
-	OptV6Preference   OptionCodeV6 = 7  // §21.8
-	OptV6ElapsedTime  OptionCodeV6 = 8  // §21.9
-	OptV6StatusCode   OptionCodeV6 = 13 // §21.13
-	OptV6RapidCommit  OptionCodeV6 = 14 // §21.14
-	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
-	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
-	OptV6IAPD         OptionCodeV6 = 25 // §21.21
-	OptV6IAPrefix     OptionCodeV6 = 26 // §21.22
-	OptV6InfoRefresh  OptionCodeV6 = 32 // §21.23
-	OptV6ClientFQDN   OptionCodeV6 = 39 // RFC 4704 section 4
-	OptV6SolMaxRTCode OptionCodeV6 = 82 // §21.24
-	OptV6InfMaxRTCode OptionCodeV6 = 83 // §21.25
+	OptV6ClientID      OptionCodeV6 = 1  // §21.2
+	OptV6ServerID      OptionCodeV6 = 2  // §21.3
+	OptV6IANA          OptionCodeV6 = 3  // §21.4
+	OptV6IATA          OptionCodeV6 = 4  // RFC 8415 §21.5, obsoleted by RFC 9915 §21.5
+	OptV6IAAddr        OptionCodeV6 = 5  // §21.6
+	OptV6ORO           OptionCodeV6 = 6  // §21.7
+	OptV6Preference    OptionCodeV6 = 7  // §21.8
+	OptV6ElapsedTime   OptionCodeV6 = 8  // §21.9
+	OptV6StatusCode    OptionCodeV6 = 13 // §21.13
+	OptV6RapidCommit   OptionCodeV6 = 14 // §21.14
+	OptV6VendorOpts    OptionCodeV6 = 17 // §21.17, claymore666/docker-net-dhcp#1034
+	OptV6DNSServers    OptionCodeV6 = 23 // RFC 3646 section 3
+	OptV6DomainList    OptionCodeV6 = 24 // RFC 3646 section 4
+	OptV6IAPD          OptionCodeV6 = 25 // §21.21
+	OptV6IAPrefix      OptionCodeV6 = 26 // §21.22
+	OptV6InfoRefresh   OptionCodeV6 = 32 // §21.23
+	OptV6ClientFQDN    OptionCodeV6 = 39 // RFC 4704 section 4
+	OptV6PosixTimezone OptionCodeV6 = 41 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
+	OptV6TZDatabase    OptionCodeV6 = 42 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
+	OptV6NTPServer     OptionCodeV6 = 56 // RFC 5908 section 4, claymore666/docker-net-dhcp#859
+	OptV6SolMaxRTCode  OptionCodeV6 = 82 // §21.24
+	OptV6InfMaxRTCode  OptionCodeV6 = 83 // §21.25
 )
 
 var optionV6Names = map[OptionCodeV6]string{
-	OptV6ClientID:     "client-id",
-	OptV6ServerID:     "server-id",
-	OptV6IANA:         "ia-na",
-	OptV6IATA:         "ia-ta",
-	OptV6IAAddr:       "ia-addr",
-	OptV6ORO:          "oro",
-	OptV6Preference:   "preference",
-	OptV6ElapsedTime:  "elapsed-time",
-	OptV6StatusCode:   "status-code",
-	OptV6RapidCommit:  "rapid-commit",
-	OptV6Auth:         "auth",
-	OptV6ReconfMsg:    "reconf-msg",
-	OptV6ReconfAccept: "reconf-accept",
-	OptV6DNSServers:   "dns-servers",
-	OptV6DomainList:   "domain-list",
-	OptV6IAPD:         "ia-pd",
-	OptV6IAPrefix:     "ia-prefix",
-	OptV6InfoRefresh:  "info-refresh-time",
-	OptV6ClientFQDN:   "client-fqdn",
-	OptV6SolMaxRTCode: "sol-max-rt",
-	OptV6InfMaxRTCode: "inf-max-rt",
+	OptV6ClientID:      "client-id",
+	OptV6ServerID:      "server-id",
+	OptV6IANA:          "ia-na",
+	OptV6IATA:          "ia-ta",
+	OptV6IAAddr:        "ia-addr",
+	OptV6ORO:           "oro",
+	OptV6Preference:    "preference",
+	OptV6ElapsedTime:   "elapsed-time",
+	OptV6StatusCode:    "status-code",
+	OptV6RapidCommit:   "rapid-commit",
+	OptV6VendorOpts:    "vendor-opts",
+	OptV6Auth:          "auth",
+	OptV6ReconfMsg:     "reconf-msg",
+	OptV6ReconfAccept:  "reconf-accept",
+	OptV6DNSServers:    "dns-servers",
+	OptV6DomainList:    "domain-list",
+	OptV6IAPD:          "ia-pd",
+	OptV6IAPrefix:      "ia-prefix",
+	OptV6InfoRefresh:   "info-refresh-time",
+	OptV6ClientFQDN:    "client-fqdn",
+	OptV6PosixTimezone: "posix-timezone",
+	OptV6TZDatabase:    "tz-database",
+	OptV6NTPServer:     "ntp-server",
+	OptV6SolMaxRTCode:  "sol-max-rt",
+	OptV6InfMaxRTCode:  "inf-max-rt",
 }
 
 func (c OptionCodeV6) String() string {
@@ -1096,6 +1104,112 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// VendorOpts returns every instance of option 17, RFC 8415 section 21.17, as
+// one block each: a four-octet enterprise number, then the option-data.
+//
+// The option-data is the encapsulated sub-options and stays raw in Data. Section
+// 21.17 allows one instance per enterprise, so several instances are several
+// blocks in wire order, and an instance shorter than four octets fails the whole
+// list with ErrMalformedVendor (claymore666/docker-net-dhcp#1034).
+func (o OptionsV6) VendorOpts() ([]VendorData, error) {
+	var out []VendorData
+	for _, v := range o.All(OptV6VendorOpts) {
+		if len(v) < 4 {
+			return nil, fmt.Errorf("%w: %w: option 17 is %d octet(s), want at least 4", ErrMalformedVendor, ErrV6BadOption, len(v))
+		}
+		out = append(out, VendorData{
+			Enterprise: ube32(v[:4]),
+			Data:       append(make([]byte, 0, len(v)-4), v[4:]...),
+		})
+	}
+	return out, nil
+}
+
+// The sub-option codes inside option 56, RFC 5908 sections 4.1 to 4.3
+// (claymore666/docker-net-dhcp#859): NTP_SUBOPTION_SRV_ADDR, _MC_ADDR and
+// _SRV_FQDN, in that order.
+const (
+	ntpSubSrvAddr = 1
+	ntpSubMCAddr  = 2
+	ntpSubSrvFQDN = 3
+)
+
+// ErrMalformedNTP is returned by NTPServers for an instance of option 56 with
+// two or more time sources or a malformed sub-option; an instance with none is
+// dropped (claymore666/docker-net-dhcp#859).
+var ErrMalformedNTP = errors.New("wire: malformed DHCPv6 NTP server option")
+
+// NTPServer is one instance of option 56: a unicast address, a multicast
+// group address (Multicast set), or a name, never more than one of them. The
+// kind is the sub-option's code, 1 unicast, 2 multicast, 3 name; the address is
+// not checked against it (claymore666/docker-net-dhcp#859).
+type NTPServer struct {
+	Addr      netip.Addr
+	Multicast bool
+	FQDN      string
+}
+
+// NTPServers returns every instance of option 56 that carries a readable time
+// source as one record, in wire order (claymore666/docker-net-dhcp#859). RFC
+// 5908 section 4: "This option MUST include one, and only one, time source
+// suboption." A name goes through readNameUncompressed: section 4.3 requires it
+// "encoded as described in [RFC3315], Section 8", which forbids compression. A
+// sub-option other than 1, 2 or 3 is skipped (section 4: "More time source
+// suboptions may be defined"), and an instance with only such is dropped. Any
+// bad instance gives ErrMalformedNTP, wrapping ErrV6BadOption, and no list.
+func (o OptionsV6) NTPServers() ([]NTPServer, error) {
+	var out []NTPServer
+	for _, v := range o.All(OptV6NTPServer) {
+		rec, ok, err := readNTPServer(v)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w: %w", ErrMalformedNTP, ErrV6BadOption, err)
+		}
+		if ok {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func readNTPServer(v []byte) (rec NTPServer, ok bool, err error) {
+	seen := 0
+	for i := 0; i < len(v); {
+		if len(v)-i < 4 {
+			return rec, false, fmt.Errorf("option 56 has %d octet(s) left, a sub-option header needs 4", len(v)-i)
+		}
+		code, n := int(v[i])<<8|int(v[i+1]), int(v[i+2])<<8|int(v[i+3])
+		if n > len(v)-i-4 {
+			return rec, false, fmt.Errorf("option 56 sub-option %d claims %d octet(s), %d remain", code, n, len(v)-i-4)
+		}
+		body := v[i+4 : i+4+n]
+		i += 4 + n
+		switch code {
+		case ntpSubSrvAddr, ntpSubMCAddr:
+			if n != 16 {
+				return rec, false, fmt.Errorf("option 56 sub-option %d is %d octet(s), want 16", code, n)
+			}
+			rec.Addr = netip.AddrFrom16([16]byte(body))
+			rec.Multicast = code == ntpSubMCAddr
+		case ntpSubSrvFQDN:
+			name, next, err := readNameUncompressed(body, 0, "option 56")
+			if err != nil {
+				return rec, false, err
+			}
+			if name == "" || next != n {
+				return rec, false, fmt.Errorf("option 56 FQDN sub-option is %d octet(s), the name uses %d and may not be empty", n, next)
+			}
+			rec.FQDN = name
+		default:
+			continue
+		}
+		seen++
+	}
+	if seen > 1 {
+		return rec, false, fmt.Errorf("option 56 carries %d time source sub-options, RFC 5908 section 4 wants one", seen)
+	}
+	return rec, seen == 1, nil
 }
 
 // readNameUncompressed reads one RFC 1035 section 3.1 name and returns the

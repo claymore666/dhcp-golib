@@ -1030,6 +1030,165 @@ func TestMalformedClasslessRoutesFallsBackToTheOlderOptions(t *testing.T) {
 	}
 }
 
+// ackedWith drives a machine to BOUND like bound, and also returns the
+// actions of the ACK step, which is where the journal notes are.
+func ackedWith(t *testing.T, tweak func(*wire.Message)) (*Machine, []Action) {
+	t.Helper()
+	m := newMachine(t, testParams())
+	_, acts := m.Step(at(0), 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	_, acts = m.Step(at(1), 2, received(t, offerFor(disc, testLeaseAddr, testServerID)))
+	req := mustSend(t, acts, wire.MsgRequest)
+	ack := ackFor(req, testLeaseAddr, testServerID, 3600)
+	tweak(ack)
+	_, acts = m.Step(at(2), 3, received(t, ack))
+	return m, acts
+}
+
+// TestParameterListRequestsOption249DirectlyAfter121 pins the order of the
+// ENCODED option 55, as TestParameterListRequestsClasslessRoutesFirst does for
+// 121: 121, then 249, then 3 and 33. A list sorted ascending puts 249 last,
+// and a server that answers on request order then never sees 249 asked for
+// ahead of the older options (claymore666/docker-net-dhcp#1030).
+func TestParameterListRequestsOption249DirectlyAfter121(t *testing.T) {
+	m := newMachine(t, testParams())
+	_, acts := m.Step(at(0), 1, Simple(EvStart))
+	disc := mustSend(t, acts, wire.MsgDiscover)
+	pl := disc.Options[wire.OptParameterList]
+	idx := func(c wire.OptionCode) int {
+		for i, b := range pl {
+			if wire.OptionCode(b) == c {
+				return i
+			}
+		}
+		return -1
+	}
+	c121, c249 := idx(wire.OptClasslessStaticRte), idx(wire.OptMSClasslessStaticRte)
+	if c121 != 0 {
+		t.Fatalf("option 121 is at %d, want 0\nlist: %v", c121, pl)
+	}
+	if c249 != c121+1 {
+		t.Fatalf("option 249 is at %d, want directly after 121 at %d\nlist: %v", c249, c121+1, pl)
+	}
+	for _, c := range []wire.OptionCode{wire.OptRouter, wire.OptStaticRoute} {
+		if i := idx(c); i < 0 || i < c249 {
+			t.Fatalf("option %d is at %d, want after option 249 at %d\nlist: %v", c, i, c249, pl)
+		}
+	}
+}
+
+// TestOption249AloneSuppliesTheRoutesAndSupersedesTheOlderOptions: with 121
+// absent, 249 carries the precedence 121 has over options 3 and 33, and the
+// journal names 249 so the record says which option supplied the table
+// (claymore666/docker-net-dhcp#1030).
+func TestOption249AloneSuppliesTheRoutesAndSupersedesTheOlderOptions(t *testing.T) {
+	m, acts := ackedWith(t, func(ack *wire.Message) {
+		ack.Options[wire.OptRouter] = addr4("192.168.99.254")
+		ack.Options[wire.OptStaticRoute] = append(addr4("10.0.0.0"), addr4("192.168.99.253")...)
+		ack.Options[wire.OptMSClasslessStaticRte] = append(
+			append([]byte{0}, addr4("192.168.99.1")...),
+			append([]byte{24, 10, 0, 0}, addr4("192.168.99.2")...)...)
+	})
+	l := m.lease
+	if len(l.Routes) != 2 {
+		t.Fatalf("Routes = %v, want option 249's two", l.Routes)
+	}
+	if g, ok := l.Gateway(); !ok || g != netip.MustParseAddr("192.168.99.1") {
+		t.Fatalf("gateway = %v, %v; want option 249's default route and NOT option 3's", g, ok)
+	}
+	if len(l.Router) != 0 {
+		t.Fatalf("Router = %v; option 3 must be ignored when 249 supplied the routes", l.Router)
+	}
+	for _, r := range l.Routes {
+		if r.Router == netip.MustParseAddr("192.168.99.253") {
+			t.Fatal("a route from option 33 survived")
+		}
+	}
+	if !journalHas(acts, "option 249 supersedes the router option (Microsoft classless static routes)") {
+		t.Fatalf("the journal does not name option 249 as the superseding option:\n%v", RenderActions(acts))
+	}
+	if journalHas(acts, "option 121") {
+		t.Fatalf("the journal names option 121 though only 249 was sent:\n%v", RenderActions(acts))
+	}
+}
+
+// TestOption121WinsWhenBothClasslessOptionsArrive: 121 present means 249 is
+// ignored, so the routes are 121's and the note names 121.
+func TestOption121WinsWhenBothClasslessOptionsArrive(t *testing.T) {
+	m, acts := ackedWith(t, func(ack *wire.Message) {
+		ack.Options[wire.OptRouter] = addr4("192.168.99.254")
+		ack.Options[wire.OptClasslessStaticRte] = append([]byte{0}, addr4("192.168.99.1")...)
+		ack.Options[wire.OptMSClasslessStaticRte] = append(
+			append([]byte{0}, addr4("192.168.99.77")...),
+			append([]byte{16, 10, 1}, addr4("192.168.99.78")...)...)
+	})
+	l := m.lease
+	want := []wire.Route{{Dest: netip.MustParsePrefix("0.0.0.0/0"), Router: netip.MustParseAddr("192.168.99.1")}}
+	if len(l.Routes) != 1 || l.Routes[0] != want[0] {
+		t.Fatalf("Routes = %v, want option 121's %v alone", l.Routes, want)
+	}
+	if !journalHas(acts, "option 121 supersedes the router option (RFC 3442)") {
+		t.Fatalf("the journal does not name option 121:\n%v", RenderActions(acts))
+	}
+	if journalHas(acts, "249") {
+		t.Fatalf("the journal mentions option 249 though 121 supplied the routes:\n%v", RenderActions(acts))
+	}
+}
+
+// TestMalformedOption249FallsBackToTheOlderOptionsAndSaysSo is the 249 twin of
+// TestMalformedClasslessRoutesFallsBackToTheOlderOptions: the journal line
+// names 249, the option that did not decode.
+func TestMalformedOption249FallsBackToTheOlderOptionsAndSaysSo(t *testing.T) {
+	m, acts := ackedWith(t, func(ack *wire.Message) {
+		ack.Options[wire.OptRouter] = addr4("192.168.99.254")
+		ack.Options[wire.OptStaticRoute] = append(addr4("10.9.9.9"), addr4("192.168.99.253")...)
+		ack.Options[wire.OptMSClasslessStaticRte] = []byte{24, 10, 0}
+	})
+	if g, ok := m.lease.Gateway(); !ok || g != netip.MustParseAddr("192.168.99.254") {
+		t.Fatalf("gateway = %v, %v; want option 3's, because option 249 did not decode", g, ok)
+	}
+	want := wire.Route{Dest: netip.MustParsePrefix("10.9.9.9/32"), Router: netip.MustParseAddr("192.168.99.253")}
+	if len(m.lease.Routes) != 1 || m.lease.Routes[0] != want {
+		t.Fatalf("routes = %v; want only option 33's %v", m.lease.Routes, want)
+	}
+	if !journalHas(acts, "option 249 truncated") || !journalHas(acts, "falling back") {
+		t.Fatalf("the fallback is not journalled against option 249:\n%v", RenderActions(acts))
+	}
+}
+
+// TestAPresentButBrokenOption121LeavesOption249Ignored: 121 present means 249
+// is ignored, so a 121 that does not decode (malformed or empty) falls back to
+// options 3 and 33 and the valid 249 beside it supplies nothing.
+func TestAPresentButBrokenOption121LeavesOption249Ignored(t *testing.T) {
+	for name, v121 := range map[string][]byte{
+		"malformed": {24, 10, 0},
+		"empty":     {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, acts := ackedWith(t, func(ack *wire.Message) {
+				ack.Options[wire.OptRouter] = addr4("192.168.99.254")
+				ack.Options[wire.OptStaticRoute] = append(addr4("10.9.9.9"), addr4("192.168.99.253")...)
+				ack.Options[wire.OptClasslessStaticRte] = v121
+				ack.Options[wire.OptMSClasslessStaticRte] = append(
+					append([]byte{0}, addr4("192.168.99.1")...),
+					append([]byte{24, 10, 0, 0}, addr4("192.168.99.2")...)...)
+			})
+			if g, ok := m.lease.Gateway(); !ok || g != netip.MustParseAddr("192.168.99.254") {
+				t.Fatalf("gateway = %v, %v; want option 3's, because 121 is present and 249 is ignored", g, ok)
+			}
+			if len(m.lease.Routes) != 1 || m.lease.Routes[0].Router != netip.MustParseAddr("192.168.99.253") {
+				t.Fatalf("routes = %v; want only option 33's, 249 must supply nothing", m.lease.Routes)
+			}
+			if !journalHas(acts, "option 121") || !journalHas(acts, "falling back") {
+				t.Fatalf("the fallback is not journalled against option 121:\n%v", RenderActions(acts))
+			}
+			if journalHas(acts, "option 249") {
+				t.Fatalf("the journal names option 249, which was ignored:\n%v", RenderActions(acts))
+			}
+		})
+	}
+}
+
 // TestFqdnReplacesTheHostNameOption is RFC 4702 section 3.1: "clients that
 // send the Client FQDN option in their messages MUST NOT also send the Host
 // Name option".

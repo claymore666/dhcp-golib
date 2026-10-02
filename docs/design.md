@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.2.0
+## Coverage by claim, through v1.3.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -287,6 +287,44 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   exactly the errors the consumer received ([#23](https://github.com/claymore666/dhcp-golib/issues/23),
   `TestTheV4TransportReadsOnAfterTheLinkComesUp`,
   `TestALinkThatGoesAwayStillReachesEachSocketAsAnError`).
+- **A second source for the classless routes, read only when the first is absent.**
+  The Microsoft classless static routes option has RFC 3442's encoding, and it
+  is read when RFC 3442's option is not in the message
+  ([#1030](https://github.com/claymore666/docker-net-dhcp/issues/1030)). Alone it supplies the routes and takes the precedence the
+  older option has over the router and static route options
+  (`TestOption249AloneSuppliesTheRoutesAndSupersedesTheOlderOptions`,
+  `TestClasslessRoutesReadsOption249ThroughTheRFC3442ExampleTable`), a partial
+  list is refused (`TestClasslessRoutesRefusesAPartialListFromOption249`), and
+  one that does not decode falls back to the older options with the journal
+  saying so (`TestMalformedOption249FallsBackToTheOlderOptionsAndSaysSo`); with
+  neither option the routes are empty
+  (`TestClasslessRoutesWithNeitherOptionIsEmpty`). RFC 3442's option wins when
+  both arrive
+  (`TestOption121WinsWhenBothClasslessOptionsArrive`,
+  `TestClasslessRoutesPrefersOption121OverOption249`), and one that is present
+  and does not decode is never a reason to read the other
+  (`TestClasslessRoutesNeverFallsThroughFromAPresentOption121`,
+  `TestAPresentButBrokenOption121LeavesOption249Ignored`). The Discover asks
+  for it directly after RFC 3442's
+  (`TestParameterListRequestsOption249DirectlyAfter121`). These are driven in
+  [`wire`](../wire)'s and [`proto`](../proto)'s tables; no server fixture sends it.
+- **The vendor options kept as the server sent them, and asked for.** The
+  vendor-specific option's bytes come back verbatim as a copy, a present empty
+  one told apart from an absent one (`TestVendorSpecificKeepsOptionFortyThreeVerbatim`),
+  and the vendor-identifying option of RFC 3925 decodes into its enterprise
+  blocks in wire order, across repeated instances, with a block cut short
+  refused (`TestVendorIdentifyingDecodesEveryEnterpriseBlock`,
+  `TestVendorIdentifyingReadsBlocksAcrossRepeatedInstances`,
+  `TestVendorIdentifyingRefusesATruncatedBlock`; [#1034](https://github.com/claymore666/docker-net-dhcp/issues/1034)). Both end
+  the Discover's parameter list, and a fake server that sends each only when
+  the Request asked for it delivers it
+  (`TestParameterListEndsWithTheVendorOptions`,
+  `TestAServerThatGatesVendorOptionsOnTheRequestListDeliversThem`). DHCPv6's
+  vendor-specific information option is the same claim: one block per instance,
+  a short instance refused, and the option request asks for it
+  (`TestVendorOptsReadsOneBlockPerInstance`, `TestVendorOptsRefusesAShortInstance`,
+  `TestTheOROAsksForTheVendorOptions`,
+  `TestAV6ServerThatGatesOptionSeventeenOnTheORODeliversIt`).
 - **That same exchange replayed offline.** The journal of the live run is fed
   back through ring 1 and must produce the identical lease. Ring 1 is pure, so
   the replay needs no socket, no clock and no server.
@@ -559,6 +597,36 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
     `TestAnAnswerWithNoIAPDReachesStatsAsAbsent`,
     `TestAnIAPDWithNoPrefixReachesStatsAsRefused`,
     `TestARenewalThatChangesThePrefixReachesStatsAsChanged`).
+- **The timezone options, named and asked for.** The POSIX and the TZ
+  database options of RFC 4833 are named, and the option request carries them
+  in a Solicit, an Information-request and a Renew, where a fake server that
+  sends them only on request delivers them
+  (`TestTimezoneOptionsAreNamedByTheirRFCNumbers`,
+  `TestTheOROAsksForTheTimezoneOptions`,
+  `TestAV6ServerThatGatesTheTimezoneOptionsOnTheORODeliversThem`;
+  [#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)).
+- **The NTP server option, read as the whole list.** RFC 5908 allows the
+  option more than once and each instance holds one time source, so the
+  accessor returns one record per instance that holds one, in wire order. A
+  sub-option it does not know is skipped, and an instance with no source it
+  knows, one of zero octets or one carrying only unknown sub-options, is
+  dropped without refusing the list. An instance with two or more sources, an
+  address of the wrong length, a sub-option cut short, or a name that is
+  compressed, empty or followed by octets refuses the whole list
+  (`TestNTPServerOptionIsNamedByItsRFCNumber`,
+  `TestNTPServersReadsEachInstanceInWireOrder`,
+  `TestNTPServersSkipsASubOptionItDoesNotKnow`,
+  `TestNTPServersRefusesAnInstanceThatIsNotOneTimeSource`,
+  `TestNTPServersRefusesACompressedName`, `TestNTPServersRefusesAnEmptyName`,
+  `TestNTPServersRefusesOctetsAfterTheName`). The option request asks for it,
+  and a fake server that sends its two instances only on request delivers the
+  list (`TestTheOROAsksForTheNTPServerOption`,
+  `TestAV6ServerThatGatesTheNTPOptionOnTheORODeliversTheList`;
+  [#859](https://github.com/claymore666/docker-net-dhcp/issues/859)). Two bounds. A record's kind is its sub-option's code and the
+  address is not checked against it: a unicast code that carries a multicast
+  address comes back with `Multicast` false. And no real server in the
+  fixtures sends this option; every test above drives the decoder or the
+  in-process fake.
 - **The namespace and the thread.** The v6 client's three sockets and its
   link-local address are taken in one call, in the namespace of the thread it
   was built on, and it leases from a server only that namespace can see.

@@ -126,7 +126,7 @@ func (r Route) IsDefault() bool { return r.Dest.Bits() == 0 && r.Dest.Addr().Is4
 // twenty.
 var ErrMalformedRoutes = errors.New("wire: malformed route option")
 
-// ClasslessRoutes decodes option 121, RFC 3442.
+// ClasslessRoutes decodes option 121, RFC 3442, or option 249 when 121 is absent.
 //
 // The encoding is a destination descriptor — one octet of mask width, then
 // only the significant octets of the subnet number, "the width of the subnet
@@ -138,27 +138,32 @@ var ErrMalformedRoutes = errors.New("wire: malformed route option")
 // and its own worked example is a destination of 129.210.177.132/25 that must
 // install as 129.210.177.128/25.
 //
-// ok is false with no routes when the option is absent, and
-// ErrMalformedRoutes when it is present and does not decode.
+// Option 249 is read only when 121 is ABSENT: a 121 that is present and does
+// not decode is an error, never a reason to look at 249
+// (claymore666/docker-net-dhcp#1030).
+//
+// The routes are nil with no error when neither option is present, and
+// ErrMalformedRoutes when the one read is present and does not decode.
 func (o Options) ClasslessRoutes() ([]Route, error) {
-	v, ok := o[OptClasslessStaticRte]
+	code := o.ClasslessSource()
+	v, ok := o[code]
 	if !ok {
 		return nil, nil
 	}
 	if len(v) == 0 {
-		return nil, fmt.Errorf("%w: option 121 is empty", ErrMalformedRoutes)
+		return nil, fmt.Errorf("%w: option %d is empty", ErrMalformedRoutes, code)
 	}
 	var out []Route
 	for i := 0; i < len(v); {
 		width := int(v[i])
 		i++
 		if width > 32 {
-			return nil, fmt.Errorf("%w: option 121 mask width %d exceeds 32", ErrMalformedRoutes, width)
+			return nil, fmt.Errorf("%w: option %d mask width %d exceeds 32", ErrMalformedRoutes, code, width)
 		}
 		sig := (width + 7) / 8
 		if i+sig+4 > len(v) {
-			return nil, fmt.Errorf("%w: option 121 truncated: a /%d route needs %d more octet(s), %d remain",
-				ErrMalformedRoutes, width, sig+4, len(v)-i)
+			return nil, fmt.Errorf("%w: option %d truncated: a /%d route needs %d more octet(s), %d remain",
+				ErrMalformedRoutes, code, width, sig+4, len(v)-i)
 		}
 		var dst [4]byte
 		copy(dst[:], v[i:i+sig])
@@ -171,6 +176,17 @@ func (o Options) ClasslessRoutes() ([]Route, error) {
 		})
 	}
 	return out, nil
+}
+
+// ClasslessSource is the option ClasslessRoutes reads: 249 only when 249 is
+// present and 121 is not, otherwise 121.
+func (o Options) ClasslessSource() OptionCode {
+	if _, ok := o[OptClasslessStaticRte]; !ok {
+		if _, ok := o[OptMSClasslessStaticRte]; ok {
+			return OptMSClasslessStaticRte
+		}
+	}
+	return OptClasslessStaticRte
 }
 
 // StaticRoutes decodes option 33, RFC 2132 section 5.8: pairs of four-octet
@@ -396,6 +412,63 @@ func encodeName(name string) ([]byte, error) {
 	}
 	if root {
 		out = append(out, 0)
+	}
+	return out, nil
+}
+
+// VendorData is one enterprise's block of a vendor option: RFC 3925 section 4
+// for option 125, RFC 8415 section 21.17 for DHCPv6 option 17. Data is kept raw;
+// reading it is the caller's (claymore666/docker-net-dhcp#1034).
+type VendorData struct {
+	Enterprise uint32
+	Data       []byte
+}
+
+// ErrMalformedVendor is returned by VendorIdentifying and VendorOpts for a
+// value that is not a whole list of enterprise blocks. No partial list comes
+// with it, for the reason ErrMalformedRoutes gives.
+var ErrMalformedVendor = errors.New("wire: malformed vendor option")
+
+// VendorSpecific returns option 43's bytes, RFC 2132 section 8.4, verbatim.
+//
+// The bool is presence: a present option of zero octets is (empty, true) and an
+// absent one is (nil, false). The bytes are a copy, so the lease's own map is
+// not reachable through the result (claymore666/docker-net-dhcp#1034).
+func (o Options) VendorSpecific() ([]byte, bool) {
+	v, ok := o[OptVendorSpecific]
+	if !ok {
+		return nil, false
+	}
+	return append(make([]byte, 0, len(v)), v...), true
+}
+
+// VendorIdentifying decodes option 125, RFC 3925 section 4: repeated blocks of
+// a four-octet enterprise number, a one-octet data length and that many octets.
+//
+// The blocks come back in wire order, a block of zero data octets included. Nil
+// with no error when the option is absent or has no blocks, and
+// ErrMalformedVendor with a nil list when any block is cut short. Repeated
+// instances are already one value here (see Decode, RFC 3396), so a block may
+// straddle what were two instances (claymore666/docker-net-dhcp#1034).
+func (o Options) VendorIdentifying() ([]VendorData, error) {
+	v, ok := o[OptVIVSO]
+	if !ok {
+		return nil, nil
+	}
+	var out []VendorData
+	for i := 0; i < len(v); {
+		if i+5 > len(v) {
+			return nil, fmt.Errorf("%w: option 125 has %d octet(s) left, a block needs 5", ErrMalformedVendor, len(v)-i)
+		}
+		n := int(v[i+4])
+		if i+5+n > len(v) {
+			return nil, fmt.Errorf("%w: option 125 block claims %d octet(s), %d remain", ErrMalformedVendor, n, len(v)-i-5)
+		}
+		out = append(out, VendorData{
+			Enterprise: ube32(v[i : i+4]),
+			Data:       append(make([]byte, 0, n), v[i+5:i+5+n]...),
+		})
+		i += 5 + n
 	}
 	return out, nil
 }
