@@ -590,3 +590,120 @@ func TestClasslessRoutesWithNeitherOptionIsEmpty(t *testing.T) {
 		t.Fatalf("routes = %v, err = %v, want neither", got, err)
 	}
 }
+
+// TestVendorSpecificKeepsOptionFortyThreeVerbatim is RFC 2132 section 8.4's
+// opaque blob (claymore666/docker-net-dhcp#1034): present-empty and absent are
+// different answers, and the result is a copy the lease's map cannot be reached
+// through.
+func TestVendorSpecificKeepsOptionFortyThreeVerbatim(t *testing.T) {
+	blob := []byte{0x01, 0x04, 0xc0, 0xa8, 0x63, 0x09, 0xff}
+	o := Options{OptVendorSpecific: blob}
+	got, ok := o.VendorSpecific()
+	if !ok || string(got) != string(blob) {
+		t.Fatalf("VendorSpecific = %x, %v; want %x, true", got, ok, blob)
+	}
+	got[0] = 0xee
+	if again, _ := o.VendorSpecific(); again[0] != 0x01 || o[OptVendorSpecific][0] != 0x01 {
+		t.Fatal("VendorSpecific returned the option's own bytes; a write to the result reached the lease")
+	}
+
+	got, ok = (Options{OptVendorSpecific: {}}).VendorSpecific()
+	if !ok || len(got) != 0 {
+		t.Fatalf("a present, empty option 43 = %x, %v; want empty, true", got, ok)
+	}
+	got, ok = (Options{}).VendorSpecific()
+	if ok || got != nil {
+		t.Fatalf("an absent option 43 = %x, %v; want nil, false", got, ok)
+	}
+	if OptVendorSpecific.String() != "vendor-specific" || OptVIVSO.String() != "vendor-identifying-specific" {
+		t.Fatalf("names = %q, %q", OptVendorSpecific, OptVIVSO)
+	}
+}
+
+// TestVendorIdentifyingDecodesEveryEnterpriseBlock is RFC 3925 section 4's
+// layout with two enterprises and a legal zero-length block between them
+// (claymore666/docker-net-dhcp#1034): every block, in wire order, none skipped.
+func TestVendorIdentifyingDecodesEveryEnterpriseBlock(t *testing.T) {
+	o := Options{OptVIVSO: {
+		0x00, 0x00, 0x01, 0x7f, 3, 'a', 'b', 'c', // enterprise 383
+		0x00, 0x00, 0x00, 0x09, 0, // enterprise 9, no data
+		0x00, 0x00, 0x0d, 0xe9, 2, 0xff, 0x00, // enterprise 3561
+	}}
+	got, err := o.VendorIdentifying()
+	if err != nil {
+		t.Fatalf("VendorIdentifying: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("VendorIdentifying = %+v, want 3 blocks", got)
+	}
+	if got[0].Enterprise != 383 || string(got[0].Data) != "abc" {
+		t.Errorf("block 0 = %+v", got[0])
+	}
+	if got[1].Enterprise != 9 || got[1].Data == nil || len(got[1].Data) != 0 {
+		t.Errorf("block 1 = %+v, want enterprise 9 with empty data", got[1])
+	}
+	if got[2].Enterprise != 3561 || string(got[2].Data) != "\xff\x00" {
+		t.Errorf("block 2 = %+v", got[2])
+	}
+	got[0].Data[0] = 'z'
+	if o[OptVIVSO][5] != 'a' {
+		t.Fatal("a block's Data aliases the option's own bytes")
+	}
+
+	// An empty block that ENDS the option is as legal as one in the middle: a
+	// guard that wants a data octet after the length refuses it.
+	for name, v := range map[string][]byte{
+		"empty block alone":         {0, 0, 0, 9, 0},
+		"empty block after a block": {0, 0, 0, 7, 1, 0xaa, 0, 0, 0, 9, 0},
+	} {
+		blocks, err := (Options{OptVIVSO: v}).VendorIdentifying()
+		if err != nil || len(blocks) == 0 || blocks[len(blocks)-1].Enterprise != 9 || len(blocks[len(blocks)-1].Data) != 0 {
+			t.Errorf("%s: VendorIdentifying = %+v, %v; want a last block of enterprise 9, no data, no error", name, blocks, err)
+		}
+	}
+
+	for name, o := range map[string]Options{"absent": {}, "present, no blocks": {OptVIVSO: {}}} {
+		if got, err := o.VendorIdentifying(); err != nil || got != nil {
+			t.Errorf("%s: VendorIdentifying = %v, %v; want nil, nil", name, got, err)
+		}
+	}
+}
+
+// TestVendorIdentifyingRefusesATruncatedBlock holds the all-or-nothing
+// contract ErrMalformedRoutes sets for routes (claymore666/docker-net-dhcp#1034):
+// a cut-short last block fails the list, and the blocks before it are not
+// handed back as if they were the whole option.
+func TestVendorIdentifyingRefusesATruncatedBlock(t *testing.T) {
+	good := []byte{0, 0, 0, 9, 1, 0xaa}
+	for name, tail := range map[string][]byte{
+		"data shorter than its length": {0, 0, 0, 10, 4, 1, 2},
+		"enterprise without a length":  {0, 0, 0, 10},
+		"three octets of enterprise":   {0, 0, 10},
+		"one stray octet":              {0},
+	} {
+		o := Options{OptVIVSO: append(append([]byte(nil), good...), tail...)}
+		got, err := o.VendorIdentifying()
+		if !errors.Is(err, ErrMalformedVendor) {
+			t.Errorf("%s: err = %v, want ErrMalformedVendor", name, err)
+		}
+		if got != nil {
+			t.Errorf("%s: a partial list %+v came back with the error", name, got)
+		}
+	}
+}
+
+// TestVendorIdentifyingReadsBlocksAcrossRepeatedInstances is RFC 3396's join
+// seen from option 125 (claymore666/docker-net-dhcp#1034): a block longer than
+// one option's 255 octets arrives as two instances, and the decoder must have
+// joined them before VendorIdentifying reads the length.
+func TestVendorIdentifyingReadsBlocksAcrossRepeatedInstances(t *testing.T) {
+	o := Options{}
+	raw := []byte{byte(OptVIVSO), 6, 0, 0, 0, 9, 3, 'x', byte(OptVIVSO), 2, 'y', 'z', byte(OptEnd)}
+	if err := parseOptions(raw, o); err != nil {
+		t.Fatalf("parseOptions: %v", err)
+	}
+	got, err := o.VendorIdentifying()
+	if err != nil || len(got) != 1 || got[0].Enterprise != 9 || string(got[0].Data) != "xyz" {
+		t.Fatalf("VendorIdentifying = %+v, %v; want one block of enterprise 9 with xyz", got, err)
+	}
+}

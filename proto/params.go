@@ -415,6 +415,11 @@ func DefaultParameterList() []wire.OptionCode {
 		wire.OptTFTPServer,
 		wire.OptBootfileName,
 		wire.OptWPAD,
+		// 43 is sent on the strength of option 60 but is asked for anyway, so a
+		// server that gates it on this list still sends it
+		// (claymore666/docker-net-dhcp#1034).
+		wire.OptVendorSpecific,
+		wire.OptVIVSO,
 	}
 }
 

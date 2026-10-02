@@ -125,6 +125,7 @@ const (
 	OptV6ElapsedTime  OptionCodeV6 = 8  // §21.9
 	OptV6StatusCode   OptionCodeV6 = 13 // §21.13
 	OptV6RapidCommit  OptionCodeV6 = 14 // §21.14
+	OptV6VendorOpts   OptionCodeV6 = 17 // §21.17, claymore666/docker-net-dhcp#1034
 	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
 	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
 	OptV6IAPD         OptionCodeV6 = 25 // §21.21
@@ -146,6 +147,7 @@ var optionV6Names = map[OptionCodeV6]string{
 	OptV6ElapsedTime:  "elapsed-time",
 	OptV6StatusCode:   "status-code",
 	OptV6RapidCommit:  "rapid-commit",
+	OptV6VendorOpts:   "vendor-opts",
 	OptV6Auth:         "auth",
 	OptV6ReconfMsg:    "reconf-msg",
 	OptV6ReconfAccept: "reconf-accept",
@@ -1094,6 +1096,27 @@ func (o OptionsV6) DomainSearch() ([]string, error) {
 				out = append(out, name)
 			}
 		}
+	}
+	return out, nil
+}
+
+// VendorOpts returns every instance of option 17, RFC 8415 section 21.17, as
+// one block each: a four-octet enterprise number, then the option-data.
+//
+// The option-data is the encapsulated sub-options and stays raw in Data. Section
+// 21.17 allows one instance per enterprise, so several instances are several
+// blocks in wire order, and an instance shorter than four octets fails the whole
+// list with ErrMalformedVendor (claymore666/docker-net-dhcp#1034).
+func (o OptionsV6) VendorOpts() ([]VendorData, error) {
+	var out []VendorData
+	for _, v := range o.All(OptV6VendorOpts) {
+		if len(v) < 4 {
+			return nil, fmt.Errorf("%w: %w: option 17 is %d octet(s), want at least 4", ErrMalformedVendor, ErrV6BadOption, len(v))
+		}
+		out = append(out, VendorData{
+			Enterprise: ube32(v[:4]),
+			Data:       append(make([]byte, 0, len(v)-4), v[4:]...),
+		})
 	}
 	return out, nil
 }
