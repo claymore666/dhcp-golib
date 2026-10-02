@@ -223,6 +223,18 @@ type OptionV6 struct {
 // preserves.
 type OptionsV6 []OptionV6
 
+// Clone returns a deep copy as Options.Clone does, a nil staying nil (dhcp-golib#53).
+func (o OptionsV6) Clone() OptionsV6 {
+	if o == nil {
+		return nil
+	}
+	out := make(OptionsV6, len(o))
+	for i, opt := range o {
+		out[i] = OptionV6{Code: opt.Code, Data: append([]byte(nil), opt.Data...)}
+	}
+	return out
+}
+
 // First returns the first instance of code.
 func (o OptionsV6) First(c OptionCodeV6) ([]byte, bool) {
 	for _, opt := range o {

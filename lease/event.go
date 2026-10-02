@@ -107,6 +107,13 @@ type Lease struct {
 	// Options is every option from the ACK, unparsed.
 	Options wire.Options
 
+	// OptionsV6 is every option of the Reply a DHCPv6 lease came from,
+	// unparsed and in wire order, nil for a DHCPv4 lease, so a caller reaches
+	// VendorOpts, NTPServers and First through it as it reads Options for v4
+	// (dhcp-golib#53, claymore666/docker-net-dhcp#1033). The record carries it
+	// as options_v6, and a reader that does not know the key ignores it.
+	OptionsV6 wire.OptionsV6 `json:"options_v6,omitempty"`
+
 	// ForcerenewNonce and ForcerenewReplay are the key and the replay floor of
 	// a DHCPv4 lease's FORCERENEW authentication, nil and zero when its ACKs
 	// gave none (RFC 6704 section 3.1.3; claymore666/docker-net-dhcp#1119).
@@ -533,6 +540,7 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 	if pfx, ok := l.Prefix(); ok {
 		out.Addr = pfx
 	}
+	out.OptionsV6 = l.Options.Clone()
 	out.SLAAC = l.SLAAC
 	out.FQDN, out.HasFQDN = l.FQDN, l.HasFQDN
 	out.Addrs = outwardAddrs(l.Addrs, l.Start, b)
