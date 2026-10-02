@@ -394,12 +394,13 @@ func containsCode(hay []wire.OptionCodeV6, c wire.OptionCodeV6) bool {
 }
 
 // DefaultORO is the option codes a caller usually wants beyond the mandatory
-// ones: the two RFC 3646 lists, and option 17 (RFC 8415 section 21.17,
-// claymore666/docker-net-dhcp#1034). They are a DEFAULT and not built in,
+// ones: the two RFC 3646 lists, option 17 (RFC 8415 section 21.17,
+// claymore666/docker-net-dhcp#1034) and the two RFC 4833 timezone options
+// (claymore666/docker-net-dhcp#1033). They are a DEFAULT and not built in,
 // because unlike 82, 83 and 32 no RFC makes them mandatory and a caller running
 // a resolver of its own has a reason not to ask.
 func DefaultORO() []wire.OptionCodeV6 {
-	return []wire.OptionCodeV6{wire.OptV6DNSServers, wire.OptV6DomainList, wire.OptV6VendorOpts}
+	return []wire.OptionCodeV6{wire.OptV6DNSServers, wire.OptV6DomainList, wire.OptV6VendorOpts, wire.OptV6PosixTimezone, wire.OptV6TZDatabase}
 }
 
 // sameDUID compares two DUIDs by bytes, which is what §16.3 asks for: "the

@@ -980,7 +980,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # ten added, none removed, MEASURED as testroster runs, 1260 before and 1270
 # here. wire/values_test.go 4, wire/dhcpv6_test.go 2 and
 # proto/vendor_options_test.go 4; no netns test.
-MIN_DECLARED_TESTS=1270
+#
+# TIMEZONE OPTIONS 41 AND 42 IN THE ORO, claymore666/docker-net-dhcp#1033:
+# three added, none removed, MEASURED as testroster runs, 1270 before and 1273
+# here. wire/dhcpv6_test.go 1 and proto/timezone_options_test.go 2; no netns
+# test.
+MIN_DECLARED_TESTS=1273
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

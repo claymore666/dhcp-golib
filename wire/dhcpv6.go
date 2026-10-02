@@ -115,50 +115,54 @@ type OptionCodeV6 uint16
 // The option codes this milestone names. Everything else round-trips as bytes
 // under its numeric code.
 const (
-	OptV6ClientID     OptionCodeV6 = 1  // §21.2
-	OptV6ServerID     OptionCodeV6 = 2  // §21.3
-	OptV6IANA         OptionCodeV6 = 3  // §21.4
-	OptV6IATA         OptionCodeV6 = 4  // RFC 8415 §21.5, obsoleted by RFC 9915 §21.5
-	OptV6IAAddr       OptionCodeV6 = 5  // §21.6
-	OptV6ORO          OptionCodeV6 = 6  // §21.7
-	OptV6Preference   OptionCodeV6 = 7  // §21.8
-	OptV6ElapsedTime  OptionCodeV6 = 8  // §21.9
-	OptV6StatusCode   OptionCodeV6 = 13 // §21.13
-	OptV6RapidCommit  OptionCodeV6 = 14 // §21.14
-	OptV6VendorOpts   OptionCodeV6 = 17 // §21.17, claymore666/docker-net-dhcp#1034
-	OptV6DNSServers   OptionCodeV6 = 23 // RFC 3646 section 3
-	OptV6DomainList   OptionCodeV6 = 24 // RFC 3646 section 4
-	OptV6IAPD         OptionCodeV6 = 25 // §21.21
-	OptV6IAPrefix     OptionCodeV6 = 26 // §21.22
-	OptV6InfoRefresh  OptionCodeV6 = 32 // §21.23
-	OptV6ClientFQDN   OptionCodeV6 = 39 // RFC 4704 section 4
-	OptV6SolMaxRTCode OptionCodeV6 = 82 // §21.24
-	OptV6InfMaxRTCode OptionCodeV6 = 83 // §21.25
+	OptV6ClientID      OptionCodeV6 = 1  // §21.2
+	OptV6ServerID      OptionCodeV6 = 2  // §21.3
+	OptV6IANA          OptionCodeV6 = 3  // §21.4
+	OptV6IATA          OptionCodeV6 = 4  // RFC 8415 §21.5, obsoleted by RFC 9915 §21.5
+	OptV6IAAddr        OptionCodeV6 = 5  // §21.6
+	OptV6ORO           OptionCodeV6 = 6  // §21.7
+	OptV6Preference    OptionCodeV6 = 7  // §21.8
+	OptV6ElapsedTime   OptionCodeV6 = 8  // §21.9
+	OptV6StatusCode    OptionCodeV6 = 13 // §21.13
+	OptV6RapidCommit   OptionCodeV6 = 14 // §21.14
+	OptV6VendorOpts    OptionCodeV6 = 17 // §21.17, claymore666/docker-net-dhcp#1034
+	OptV6DNSServers    OptionCodeV6 = 23 // RFC 3646 section 3
+	OptV6DomainList    OptionCodeV6 = 24 // RFC 3646 section 4
+	OptV6IAPD          OptionCodeV6 = 25 // §21.21
+	OptV6IAPrefix      OptionCodeV6 = 26 // §21.22
+	OptV6InfoRefresh   OptionCodeV6 = 32 // §21.23
+	OptV6ClientFQDN    OptionCodeV6 = 39 // RFC 4704 section 4
+	OptV6PosixTimezone OptionCodeV6 = 41 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
+	OptV6TZDatabase    OptionCodeV6 = 42 // RFC 4833 section 3, claymore666/docker-net-dhcp#1033
+	OptV6SolMaxRTCode  OptionCodeV6 = 82 // §21.24
+	OptV6InfMaxRTCode  OptionCodeV6 = 83 // §21.25
 )
 
 var optionV6Names = map[OptionCodeV6]string{
-	OptV6ClientID:     "client-id",
-	OptV6ServerID:     "server-id",
-	OptV6IANA:         "ia-na",
-	OptV6IATA:         "ia-ta",
-	OptV6IAAddr:       "ia-addr",
-	OptV6ORO:          "oro",
-	OptV6Preference:   "preference",
-	OptV6ElapsedTime:  "elapsed-time",
-	OptV6StatusCode:   "status-code",
-	OptV6RapidCommit:  "rapid-commit",
-	OptV6VendorOpts:   "vendor-opts",
-	OptV6Auth:         "auth",
-	OptV6ReconfMsg:    "reconf-msg",
-	OptV6ReconfAccept: "reconf-accept",
-	OptV6DNSServers:   "dns-servers",
-	OptV6DomainList:   "domain-list",
-	OptV6IAPD:         "ia-pd",
-	OptV6IAPrefix:     "ia-prefix",
-	OptV6InfoRefresh:  "info-refresh-time",
-	OptV6ClientFQDN:   "client-fqdn",
-	OptV6SolMaxRTCode: "sol-max-rt",
-	OptV6InfMaxRTCode: "inf-max-rt",
+	OptV6ClientID:      "client-id",
+	OptV6ServerID:      "server-id",
+	OptV6IANA:          "ia-na",
+	OptV6IATA:          "ia-ta",
+	OptV6IAAddr:        "ia-addr",
+	OptV6ORO:           "oro",
+	OptV6Preference:    "preference",
+	OptV6ElapsedTime:   "elapsed-time",
+	OptV6StatusCode:    "status-code",
+	OptV6RapidCommit:   "rapid-commit",
+	OptV6VendorOpts:    "vendor-opts",
+	OptV6Auth:          "auth",
+	OptV6ReconfMsg:     "reconf-msg",
+	OptV6ReconfAccept:  "reconf-accept",
+	OptV6DNSServers:    "dns-servers",
+	OptV6DomainList:    "domain-list",
+	OptV6IAPD:          "ia-pd",
+	OptV6IAPrefix:      "ia-prefix",
+	OptV6InfoRefresh:   "info-refresh-time",
+	OptV6ClientFQDN:    "client-fqdn",
+	OptV6PosixTimezone: "posix-timezone",
+	OptV6TZDatabase:    "tz-database",
+	OptV6SolMaxRTCode:  "sol-max-rt",
+	OptV6InfMaxRTCode:  "inf-max-rt",
 }
 
 func (c OptionCodeV6) String() string {

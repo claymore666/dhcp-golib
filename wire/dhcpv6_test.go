@@ -1335,3 +1335,21 @@ func TestVendorOptsRefusesAShortInstance(t *testing.T) {
 		}
 	}
 }
+
+// TestTimezoneOptionsAreNamedByTheirRFCNumbers reads the codes by the numbers
+// RFC 4833 section 3 gives, not by the constants, so a swapped pair cannot pass
+// (claymore666/docker-net-dhcp#1033).
+func TestTimezoneOptionsAreNamedByTheirRFCNumbers(t *testing.T) {
+	if got := OptionCodeV6(41).String(); got != "posix-timezone" {
+		t.Errorf("option 41 is named %q, want posix-timezone", got)
+	}
+	if got := OptionCodeV6(42).String(); got != "tz-database" {
+		t.Errorf("option 42 is named %q, want tz-database", got)
+	}
+	if OptV6PosixTimezone != 41 || OptV6TZDatabase != 42 {
+		t.Errorf("constants are %d and %d, want 41 and 42", OptV6PosixTimezone, OptV6TZDatabase)
+	}
+	if OptPosixTimezone.String() != OptV6PosixTimezone.String() || OptTZDatabase.String() != OptV6TZDatabase.String() {
+		t.Error("the v6 names differ from the v4 names for options 100 and 101")
+	}
+}
