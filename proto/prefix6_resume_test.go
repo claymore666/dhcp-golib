@@ -209,18 +209,31 @@ func TestResumeRebindSuccess(t *testing.T) {
 	}
 }
 
-// TestResumeRebindThatDropsThePrefix: a Reply whose IA_PD is gone is a change
-// and the lease is the address alone (claymore666/docker-net-dhcp#214).
-func TestResumeRebindThatDropsThePrefix(t *testing.T) {
+// TestResumeRebindReplyWithoutIAPDKeepsThePrefix: a Reply to the resumed Rebind
+// that carries the IA_NA and no IA_PD leaves the remembered prefix with its own
+// expiry, counted from the exchange's start (RFC 8415 section 18.2.10.1;
+// claymore666/dhcp-golib#64).
+func TestResumeRebindReplyWithoutIAPDKeepsThePrefix(t *testing.T) {
 	m, reb, _ := pr6Rebinding(t, pr6Params())
 	m.Step(at(2), 3, pr6Reply(t, reb.XID, pr6IANA(t)))
 	_, acts := m.Step(at(3), 0, DADResult(netip.MustParseAddr(pr6Addr), false))
 	a, ok := find(acts, ActLeaseAcquired)
-	if !ok || len(a.Lease6.Prefixes) != 0 || len(a.Lease6.Addrs) != 1 {
-		t.Fatalf("Acquired = %v, want the address alone", a.Lease6)
+	if !ok || len(a.Lease6.Prefixes) != 1 || len(a.Lease6.Addrs) != 1 {
+		t.Fatalf("Acquired = %v, want the address and the remembered prefix", a.Lease6)
 	}
-	if got := m.PrefixCounters(); got.Changed != 1 || got.Absent != 1 {
-		t.Errorf("PrefixCounters = %+v, want Changed 1 and Absent 1", got)
+	p := a.Lease6.Prefixes[0]
+	if p.Prefix != netip.MustParsePrefix(pr6First) {
+		t.Errorf("the prefix is %s, want the remembered %s", p.Prefix, pr6First)
+	}
+	// The record counts from at(0) and the Rebind went out at at(1).
+	if end := a.Lease6.Start.Add(p.Valid); end != at(601) {
+		t.Errorf("the prefix ends at %v, want at(601), the record's 600 s from the exchange's start", end)
+	}
+	if end := a.Lease6.Start.Add(p.Preferred); end != at(301) {
+		t.Errorf("the prefix is preferred until %v, want at(301)", end)
+	}
+	if got := m.PrefixCounters(); got != (Prefix6Counters{Absent: 1}) {
+		t.Errorf("PrefixCounters = %+v, want Absent 1 alone", got)
 	}
 }
 

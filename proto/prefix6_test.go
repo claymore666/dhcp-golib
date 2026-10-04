@@ -609,10 +609,10 @@ func TestPrefixRenewalSameIsNoChange(t *testing.T) {
 	pd6Counters(t, m, Prefix6Counters{Granted: 1})
 }
 
-// TestPrefixRenewalThatChangesThePrefix: a Reply that gives another prefix, no
-// prefix, or the prefix with the lifetime cut is a change, and the counter and
-// the journal say so (RFC 8415 section 18.2.10.1;
-// claymore666/docker-net-dhcp#214).
+// TestPrefixRenewalThatChangesThePrefix: a Reply that ends the prefix or cuts
+// its lifetime is a change, and the counter and the journal say so (RFC 8415
+// section 18.2.10.1; claymore666/docker-net-dhcp#214). A Reply that leaves the
+// prefix out is TestPrefixRenewalWithoutIAPDKeepsThePrefix's.
 func TestPrefixRenewalThatChangesThePrefix(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -620,9 +620,6 @@ func TestPrefixRenewalThatChangesThePrefix(t *testing.T) {
 		want  string
 		moves uint64 // how far prefix_changed moves
 	}{
-		{"another prefix", []wire.OptionV6{optIAPD(t, capIAID, 120, 200, []pd6Spec{{pd6Other, 300, 600}})}, pd6Other, 1},
-		{"NoBinding in the IA_PD alone", []wire.OptionV6{optIAPD(t, capIAID, 0, 0, nil, optStatus(wire.StatusNoBinding))}, "", 1},
-		{"no IA_PD", nil, "", 1},
 		{"zero valid lifetime", []wire.OptionV6{optIAPD(t, capIAID, 120, 200, []pd6Spec{{pd6First, 0, 0}})}, "", 1},
 		{"a shorter lifetime", []wire.OptionV6{optIAPD(t, capIAID, 120, 200, []pd6Spec{{pd6First, 50, 90}})}, pd6First, 0},
 	}
@@ -731,10 +728,15 @@ func TestPrefixCountersAreJournalled(t *testing.T) {
 		m.Step(at(4), 0, DADResult(a, false))
 	}
 	_, acts = pd6Renew(t, m, 152, 153)
-	if !pd6Says(acts, "changed the delegated prefixes") || !pd6Says(acts, "no IA_PD in the message") {
-		t.Errorf("a dropped IA_PD left no journal line:%s", pd6Journal(acts))
+	if !pd6Says(acts, "no IA_PD in the message") || !pd6Says(acts, "1 held prefix(es) the Reply did not name stand") {
+		t.Errorf("a missing IA_PD left no journal line:%s", pd6Journal(acts))
 	}
-	pd6Counters(t, m, Prefix6Counters{Granted: 1, Absent: 1, Changed: 1})
+	pd6Counters(t, m, Prefix6Counters{Granted: 1, Absent: 1})
+	_, acts = pd6Renew(t, m, 252, 253, optIAPD(t, capIAID, 120, 200, []pd6Spec{{pd6First, 0, 0}}))
+	if !pd6Says(acts, "changed the delegated prefixes") {
+		t.Errorf("a dropped prefix left no journal line:%s", pd6Journal(acts))
+	}
+	pd6Counters(t, m, Prefix6Counters{Granted: 1, Refused: 1, Absent: 1, Changed: 1})
 }
 
 // TestPrefixEarliestTimeTable: a zero or an infinite time from one IA gives

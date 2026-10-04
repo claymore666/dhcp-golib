@@ -102,6 +102,10 @@ type Machine6 struct {
 	// the ones that came back duplicate.
 	dadWait []netip.Addr
 	dadBad  []netip.Addr
+	// carried is the held addresses the pending Reply did not name, which the
+	// pending lease keeps under RFC 8415 section 18.2.10.1 (dhcp-golib#64).
+	// A duplicate found on the Reply's own addresses declines those alone.
+	carried []netip.Addr
 
 	// declining is the addresses the Decline exchange in flight names, and
 	// releasing the ones the Release exchange names with their lifetimes.
@@ -1361,7 +1365,7 @@ func (m *Machine6) loseLease(out *actions, r Reason) {
 
 func (m *Machine6) dropPending() {
 	m.pending, m.havePending, m.pendingRenewal = Lease6{}, false, false
-	m.dadWait, m.dadBad = nil, nil
+	m.dadWait, m.dadBad, m.carried = nil, nil, nil
 }
 
 // addrsOf is the addresses of a lease. It is a function of the LEASE rather
@@ -1615,7 +1619,7 @@ func (m *Machine6) takeAdvertise(now Instant, rnd uint64, msg *wire.MessageV6, o
 		// The IA_NA alone makes a lease: an Advertise whose IA_PD says
 		// NoPrefixAvail, or carries none, is still the server to ask
 		// (RFC 8415 section 18.2.10.1; claymore666/docker-net-dhcp#214).
-		a.prefixes, _, _ = m.readPrefixes(msg.Options, false, out)
+		a.prefixes = m.readPrefixes(msg.Options, false, out).prefixes
 	} else {
 		m.ignorePrefixes(msg.Options, out)
 	}
@@ -1751,9 +1755,15 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		return
 	}
 
-	l, notes, iaStatus, ok := leaseFromReply(msg, m.params.IAID, m.exchangeStart)
+	l, zeroed, notes, iaStatus, ok := leaseFromReply(msg, m.params.IAID, m.exchangeStart)
 	for _, n := range notes {
 		out.journal(m, n)
+	}
+	pdOwed := m.pdOwed(renewal)
+	var pd pdResult
+	var pdNotes []string
+	if pdOwed {
+		pd, pdNotes = readIAPD(msg.Options, m.params.IAID)
 	}
 	if iaStatus == wire.StatusNoBinding && renewal && m.resumeRebind && !m.haveLse {
 		// The server holds no binding for the remembered addresses, so there
@@ -1763,13 +1773,21 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		m.restartDiscovery(now, rnd, out)
 		return
 	}
-	if iaStatus == wire.StatusNoBinding && renewal {
+	if renewal && (iaStatus == wire.StatusNoBinding || pd.found && pd.status == wire.StatusNoBinding) {
 		// §18.2.10.1: the client "Sends a Request message to the server that
 		// responded if any of the IAs in the Reply message contain the
 		// NoBinding status code. The client places IA options in this message
 		// for all IAs."
-		out.journal(m, "the IA_NA says NoBinding: requesting from the server that answered (§18.2.10.1)")
+		for _, n := range pdNotes {
+			out.journal(m, n)
+		}
+		which := "IA_NA"
+		if iaStatus != wire.StatusNoBinding {
+			which = "IA_PD"
+		}
+		out.journal(m, "the "+which+" says NoBinding: requesting from the server that answered (§18.2.10.1)")
 		m.server, _ = msg.Options.First(wire.OptV6ServerID)
+		m.pending = m.heldIAs()
 		m.startExchange(now, rnd, wire.MsgRequest6, out)
 		return
 	}
@@ -1815,6 +1833,7 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		return
 	}
 
+	m.carried = nil
 	switch {
 	case renewal:
 		// No IA_TA went out, so none is read; the temporary addresses already
@@ -1822,6 +1841,16 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		// (claymore666/docker-net-dhcp#927).
 		m.ignoreTemporary(msg.Options, out)
 		if m.haveLse {
+			got := l.Addrs
+			l.Addrs = renewedAddrs(m.lease.Addrs, m.lease.Start, got, zeroed, l.Start, now)
+			if n := len(l.Addrs) - len(got); n > 0 {
+				out.journal(m, fmt.Sprintf("%d held address(es) the Reply did not name keep their own expiry (§18.2.10.1)", n))
+				for _, h := range m.lease.Addrs {
+					if addrIndex(got, h.Addr) < 0 && addrIndex(l.Addrs, h.Addr) >= 0 {
+						m.carried = append(m.carried, h.Addr)
+					}
+				}
+			}
 			l.TempAddrs = carryTemp(m.lease.TempAddrs, m.lease.Start, l.Start, now)
 			if n := len(m.lease.TempAddrs) - len(l.TempAddrs); n > 0 {
 				out.journal(m, fmt.Sprintf("%d temporary address(es) reached their valid lifetime and left the lease (RFC 8415 section 13.2)", n))
@@ -1833,12 +1862,19 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		m.ignoreTemporary(msg.Options, out)
 	}
 
-	if m.pdOwed(renewal) {
+	if pdOwed {
 		held := m.heldPrefixes()
-		ps, t1, t2 := m.readPrefixes(msg.Options, !renewal, out)
+		m.countPrefixes(pd, pdNotes, !renewal, out)
+		ps := pd.prefixes
+		if renewal {
+			ps = renewedPrefixes(held, m.heldStart(), pd, l.Start, now)
+			if n := len(ps) - len(pd.prefixes); n > 0 {
+				out.journal(m, fmt.Sprintf("%d held prefix(es) the Reply did not name stand until their valid lifetimes end (§18.2.10.1)", n))
+			}
+		}
 		l.Prefixes = ps
-		if len(ps) > 0 {
-			l.T1, l.T2 = earliestT(l.T1, t1), earliestT(l.T2, t2)
+		if len(pd.prefixes) > 0 {
+			l.T1, l.T2 = earliestT(l.T1, pd.t1), earliestT(l.T2, pd.t2)
 		}
 		if renewal && !samePrefixes(held, ps) {
 			m.pdCounts.Changed++
@@ -1976,18 +2012,30 @@ func (m *Machine6) takeDADResult(now Instant, rnd uint64, ev Event, out *actions
 		return
 	}
 
-	// ANY DUPLICATE FAILS THE WHOLE IA, and that is a BOUND rather than a
-	// reading of §18.2.8. The section says "The client SHOULD NOT send a
-	// Release message for other bindings it may have received just because it
-	// sent a Decline message. The client SHOULD retain the non-conflicting
-	// bindings." Retaining part of an IA means running a Decline exchange and a
-	// bound lease at the same time, which is a second exchange in flight and a
-	// second retransmission schedule; this client asks for one IA_NA with one
-	// address (Params6.IAID, Params6.Hint) and the chassis installs one
-	// address, so the retained set is empty in every configuration this library
-	// can produce. The SHOULD is declined here, in writing, rather than
+	// ANY DUPLICATE FAILS THE WHOLE IA THE REPLY NAMED, and that is a BOUND
+	// rather than a reading of §18.2.8. The section says "The client SHOULD
+	// NOT send a Release message for other bindings it may have received just
+	// because it sent a Decline message. The client SHOULD retain the
+	// non-conflicting bindings." Retaining part of an IA means running a
+	// Decline exchange and a bound lease at the same time, which is a second
+	// exchange in flight and a second retransmission schedule. This client
+	// asks for one IA_NA with one address (Params6.IAID, Params6.Hint), so a
+	// Reply names at most the addresses it was given. The one retained set the
+	// library does produce is the held addresses a Renew/Rebind Reply left out
+	// (dhcp-golib#64): they were not received in this Reply and nobody
+	// contested them, so they stay out of the Decline and in the lease, as on
+	// the base. The SHOULD is declined here, in writing, rather than
 	// implemented untested.
 	bad := m.pending
+	if len(m.carried) > 0 {
+		kept := make([]Addr6, 0, len(bad.Addrs))
+		for _, a := range bad.Addrs {
+			if !containsAddr(m.carried, a.Addr) {
+				kept = append(kept, a)
+			}
+		}
+		bad.Addrs = kept
+	}
 	granted := m.freshTemp(bad)
 	note := fmt.Sprintf("duplicate address detection found %d of %d address(es) in use: declining the IA (§18.2.10.1)", len(m.dadBad), len(bad.Addrs)+len(bad.TempAddrs))
 	out.journal(m, note)

@@ -27,8 +27,9 @@ func (p Prefix6) String() string {
 // answered a client that asked for or holds a prefix. Granted is a Reply to a
 // Solicit or a Request that gave at least one prefix. Refused is an Advertise
 // or a Reply whose IA_PD gave none, with or without a status; Absent is one
-// that carried no IA_PD with our IAID. Changed is a Reply to a Renew or a
-// Rebind whose prefixes differ from the ones held, a dropped IA_PD included.
+// that carried no IA_PD with our IAID, and on a renewal the held prefixes stand.
+// Changed is a Reply to a Renew or a Rebind whose prefixes differ from the ones
+// held, a prefix that reached its valid lifetime included.
 // One exchange can count Refused or Absent twice, once for each message. Every
 // one also writes a journal line (claymore666/docker-net-dhcp#214).
 type Prefix6Counters struct {
@@ -47,6 +48,8 @@ type pdResult struct {
 	status   wire.StatusCode
 	t1, t2   Duration
 	prefixes []Prefix6
+	// zeroed is the prefixes the IA_PD names with a valid lifetime of 0.
+	zeroed []netip.Prefix
 }
 
 // readIAPD finds the IA_PD whose IAID is ours and reads it. The IAID is the
@@ -88,9 +91,10 @@ func readIAPD(o wire.OptionsV6, iaid uint32) (pdResult, []string) {
 		default:
 			out.status = wire.StatusSuccess
 		}
-		ps, pn := iaPrefixes(ia.Options)
+		ps, zs, pn := iaPrefixes(ia.Options)
 		notes = append(notes, pn...)
 		out.prefixes = append(out.prefixes, ps...)
+		out.zeroed = append(out.zeroed, zs...)
 	}
 	if len(ias) > 0 && !out.found {
 		notes = append(notes, fmt.Sprintf("no usable IA_PD with our IAID %d in the message", iaid))
@@ -105,14 +109,16 @@ func readIAPD(o wire.OptionsV6, iaid uint32) (pdResult, []string) {
 	return out, notes
 }
 
-// iaPrefixes reads the IA Prefix options of one IA_PD and applies the discard
-// rules (claymore666/docker-net-dhcp#214).
-func iaPrefixes(o wire.OptionsV6) ([]Prefix6, []string) {
+// iaPrefixes reads the IA Prefix options of one IA_PD, applies the discard
+// rules and returns the prefixes named with a valid lifetime of 0 apart
+// (claymore666/docker-net-dhcp#214).
+func iaPrefixes(o wire.OptionsV6) ([]Prefix6, []netip.Prefix, []string) {
 	var notes []string
 	var out []Prefix6
+	var zeroed []netip.Prefix
 	ps, err := o.Prefixes()
 	if err != nil {
-		return nil, append(notes, "IA Prefix option: "+err.Error())
+		return nil, nil, append(notes, "IA Prefix option: "+err.Error())
 	}
 	for _, p := range ps {
 		// §21.22: "The client MUST discard any prefixes for which the
@@ -124,6 +130,7 @@ func iaPrefixes(o wire.OptionsV6) ([]Prefix6, []string) {
 		}
 		if p.ValidLifetime == 0 {
 			notes = append(notes, fmt.Sprintf("IA Prefix %s has a valid lifetime of 0: discarded (§18.2.10.1)", p.Prefix))
+			zeroed = append(zeroed, p.Prefix.Masked())
 			continue
 		}
 		if !p.Prefix.IsValid() || !p.Prefix.Addr().Is6() || p.Prefix.Addr().Is4In6() || p.Prefix.Bits() < 1 {
@@ -136,15 +143,21 @@ func iaPrefixes(o wire.OptionsV6) ([]Prefix6, []string) {
 			Valid:     SecondsToDuration(p.ValidLifetime),
 		})
 	}
-	return out, notes
+	return out, zeroed, notes
 }
 
 // readPrefixes reads the IA_PD of an Advertise or a Reply to a client that
-// sent one, folds it into the counters and returns the prefixes to keep and the
-// IA_PD's own T1 and T2. A message with no IA_PD, or an empty one, keeps none
-// and the IA_NA lease stands whole (claymore666/docker-net-dhcp#214).
-func (m *Machine6) readPrefixes(o wire.OptionsV6, grant bool, out *actions) ([]Prefix6, Duration, Duration) {
+// sent one and folds it into the counters (claymore666/docker-net-dhcp#214).
+func (m *Machine6) readPrefixes(o wire.OptionsV6, grant bool, out *actions) pdResult {
 	res, notes := readIAPD(o, m.params.IAID)
+	m.countPrefixes(res, notes, grant, out)
+	return res
+}
+
+// countPrefixes folds an IA_PD readIAPD read into the counters and the journal.
+// A message with no IA_PD, or an empty one, grants none and the IA_NA lease
+// stands whole (claymore666/docker-net-dhcp#214).
+func (m *Machine6) countPrefixes(res pdResult, notes []string, grant bool, out *actions) {
 	for _, n := range notes {
 		out.journal(m, n)
 	}
@@ -159,7 +172,60 @@ func (m *Machine6) readPrefixes(o wire.OptionsV6, grant bool, out *actions) ([]P
 		m.pdCounts.Granted++
 		out.journal(m, fmt.Sprintf("the IA_PD gave %d delegated prefix(es)", len(res.prefixes)))
 	}
-	return res.prefixes, res.t1, res.t2
+}
+
+// renewedPrefixes is the prefix set a Reply to a Renew or a Rebind leaves: the
+// held prefixes in their order, each one the IA_PD names taken from it, then the
+// new ones. A held prefix the Reply does not name keeps its own expiry, rebased
+// onto newStart, and leaves once its valid lifetime has passed at now; one named
+// with a valid lifetime of 0 leaves. An IA_PD with a failure status keeps none.
+// §18.2.10.1: "Leave unchanged any information about leases the client has
+// recorded in the IA but that were not included in the IA from the server", and
+// §18.3.4 lets a server that cannot extend a prefix leave it out
+// (claymore666/dhcp-golib#64).
+func renewedPrefixes(held []Prefix6, heldStart Instant, res pdResult, newStart, now Instant) []Prefix6 {
+	if res.found && res.status != wire.StatusSuccess {
+		return res.prefixes
+	}
+	var out []Prefix6
+	for _, h := range held {
+		if i := prefixIndex(res.prefixes, h.Prefix); i >= 0 {
+			out = append(out, res.prefixes[i])
+			continue
+		}
+		if containsPrefix(res.zeroed, h.Prefix) {
+			continue
+		}
+		pref, valid, ok := carryLifetimes(h.Preferred, h.Valid, heldStart, newStart, now)
+		if !ok {
+			continue
+		}
+		out = append(out, Prefix6{Prefix: h.Prefix, Preferred: pref, Valid: valid})
+	}
+	for _, p := range res.prefixes {
+		if prefixIndex(held, p.Prefix) < 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func prefixIndex(ps []Prefix6, p netip.Prefix) int {
+	for i := range ps {
+		if ps[i].Prefix == p {
+			return i
+		}
+	}
+	return -1
+}
+
+func containsPrefix(ps []netip.Prefix, p netip.Prefix) bool {
+	for _, q := range ps {
+		if q == p {
+			return true
+		}
+	}
+	return false
 }
 
 // ignorePrefixes says in the journal that an IA_PD nobody asked for is not
@@ -225,6 +291,29 @@ func (m *Machine6) heldPrefixes() []Prefix6 {
 		return m.resume.usablePrefixes()
 	}
 	return nil
+}
+
+// heldStart is the Instant the held prefixes' lifetimes count from: the lease's
+// Start, or on the resumed Rebind this exchange's start, which is later than
+// the record's base by at most the exchange's initial delay
+// (claymore666/dhcp-golib#64).
+func (m *Machine6) heldStart() Instant {
+	if m.haveLse {
+		return m.lease.Start
+	}
+	return m.exchangeStart
+}
+
+// heldIAs is the bindings the Request after a NoBinding names (claymore666/dhcp-golib#64).
+func (m *Machine6) heldIAs() Lease6 {
+	l := Lease6{IAID: m.params.IAID, Prefixes: m.heldPrefixes()}
+	switch {
+	case m.haveLse:
+		l.Addrs, l.TempAddrs = m.lease.Addrs, m.lease.TempAddrs
+	case m.resumeRebind && m.resume != nil:
+		l.Addrs = m.resume.Addrs
+	}
+	return l
 }
 
 // usablePrefixes is the prefixes of r that can go on the wire.
