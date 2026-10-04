@@ -296,8 +296,12 @@ func TestTemporaryBytesOfEveryMessage(t *testing.T) {
 	released := ta6Bound(t, [2]uint32{200, 1000})
 	_, acts = released.Step(at(10), 9, Simple(EvRelease))
 	rel := mustSendV6(t, acts, wire.MsgRelease6)
-	if nas, tas = ta6IAs(t, rel); len(tas) != 0 || len(nas) != 1 || len(ta6AddrsOf(t, nasOptions(nas[0]))) != 1 {
-		t.Errorf("the Release carries %d IA_NA and %d IA_TA, want the stable binding alone", len(nas), len(tas))
+	// The Release lists every lease it gives back, the temporary address
+	// included (RFC 8415 section 18.2.7, dhcp-golib#60).
+	if nas, tas = ta6IAs(t, rel); len(tas) != 1 || len(nas) != 1 || len(ta6AddrsOf(t, nasOptions(nas[0]))) != 1 {
+		t.Errorf("the Release carries %d IA_NA and %d IA_TA, want one of each", len(nas), len(tas))
+	} else if got := ta6AddrsOf(t, tas[0].Options); len(got) != 1 || got[0].Addr != addr6(ta6Temp) {
+		t.Errorf("the Release's IA_TA = %+v, want %s", got, ta6Temp)
 	}
 
 	_, acts = confirming6(t, p)

@@ -272,8 +272,9 @@ func isTemp(l Lease6, a netip.Addr) bool {
 // Solicit and a Request carry the client's IAID and, in the Request, the
 // addresses the Advertise offered (dnsmasq takes a Request whose IA has no
 // address for a rapid Solicit and allocates another one); a Decline carries the temporary addresses it declines, with
-// lifetimes zero. A Renew, a Rebind, a Release and a Confirm carry none
-// (claymore666/docker-net-dhcp#927).
+// lifetimes zero, and so does a Release, which lists every temporary address
+// the client holds (RFC 8415 section 18.2.7, dhcp-golib#60). A Renew, a Rebind
+// and a Confirm carry none (claymore666/docker-net-dhcp#927).
 func (m *Machine6) buildTA(addrs []Addr6) (wire.OptionV6, error) {
 	ia := &wire.IATA{IAID: m.params.IAID}
 	for _, a := range addrs {
@@ -294,4 +295,17 @@ func (m *Machine6) buildTA(addrs []Addr6) (wire.OptionV6, error) {
 		return wire.OptionV6{}, err
 	}
 	return wire.OptionV6{Code: wire.OptV6IATA, Data: v}, nil
+}
+
+// releaseTemps is the temporary addresses a Release names: the usable ones,
+// lifetimes zero (RFC 8415 section 18.2.7, dhcp-golib#60).
+func releaseTemps(held []Addr6) []Addr6 {
+	var out []Addr6
+	for _, a := range held {
+		if !a.Addr.Is6() || a.Addr.Is4In6() || a.Addr.IsUnspecified() {
+			continue
+		}
+		out = append(out, Addr6{Addr: a.Addr})
+	}
+	return out
 }

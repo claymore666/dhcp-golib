@@ -165,8 +165,17 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		if port == 0 {
 			port = ClientPort6
 		}
-		if src.WithZone("") == rec.Lease.Addr.Addr().WithZone("") {
-			return fmt.Errorf("%w: %s", ErrReleaseSourceIsReleased, cfg.Source)
+		// Every ADDRESS the datagram names: the IA_NA's and each temporary
+		// one (dhcp-golib#60). A delegated prefix is not an address and is
+		// not compared; the host does not hold it on the link.
+		released := []netip.Addr{rec.Lease.Addr.Addr()}
+		for _, t := range rec.Lease.TempAddrs {
+			released = append(released, t.Addr.Addr())
+		}
+		for _, a := range released {
+			if src.WithZone("") == a.WithZone("") {
+				return fmt.Errorf("%w: the source %s is %s", ErrReleaseSourceIsReleased, cfg.Source, a)
+			}
 		}
 	}
 
