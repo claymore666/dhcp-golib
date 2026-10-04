@@ -226,6 +226,10 @@ type Machine6 struct {
 	// (claymore666/docker-net-dhcp#214).
 	resumeRebind bool
 	rebindOwed   bool
+	// pdSent says a message of the exchange in flight carried an IA_PD, so its
+	// Reply answers one although the held prefixes may have ended since
+	// (dhcp-golib#65).
+	pdSent bool
 
 	// hintOffLink is the Hint a Reply+14 answered NotOnLink; solicitHint does
 	// not send it again (claymore666/docker-net-dhcp#926).
@@ -1197,6 +1201,7 @@ func (m *Machine6) startExchangeAnswering(now Instant, rnd uint64, t wire.Messag
 	m.xid = uint32(rnd) & (wire.MaxXID6 - 1)
 	m.exchangeStart = now
 	m.transmits = 0
+	m.pdSent = false
 	m.sched = m.schedule(t)
 	m.rt = m.sched.First(rnd)
 
@@ -1237,6 +1242,9 @@ func (m *Machine6) transmit(now Instant, out *actions) {
 		return
 	}
 	m.transmits++
+	if msg.Options.Count(wire.OptV6IAPD) > 0 {
+		m.pdSent = true
+	}
 	out.sendV6(m, msg, Dest{Addr: wire.AllDHCPRelayAgentsAndServers})
 	out.set(m, Timer6Retransmit, m.rt)
 }
@@ -1340,17 +1348,46 @@ func (m *Machine6) halt(out *actions, r Reason) {
 // fresh transaction id and reset the retransmission schedule of an exchange
 // that is in flight. So the expiry there ends the lease and nothing else.
 func (m *Machine6) expireLease(now Instant, rnd uint64, out *actions) {
-	out.cancel(m, Timer6Expire)
 	if !m.haveLse {
+		out.cancel(m, Timer6Expire)
 		out.journal(m, "the expiry timer fired with no lease held: nothing to end")
 		return
 	}
+	if m.dropEnded(now, out) {
+		return
+	}
+	out.cancel(m, Timer6Expire)
 	out.journal(m, "every valid lifetime in the IA has expired while "+m.state.String()+" (§18.2.5)")
 	m.loseLease(out, ReasonExpired)
 	switch m.state {
 	case State6Bound, State6Renewing, State6Rebinding:
 		m.restartDiscovery(now, rnd, out)
 	}
+}
+
+// dropEnded takes every binding whose valid lifetime has run out at now out of a lease an address still holds, and reports false when the lease ends instead (dhcp-golib#65).
+func (m *Machine6) dropEnded(now Instant, out *actions) bool {
+	// §6.2: the client "is required to terminate the use of an address if the
+	// valid lifetime of the address expires", and §6.3 the same of "a delegated
+	// prefix"; a SLAAC lease ends here only, Timer6SLAAC owns its addresses.
+	d := m.lease.Deadlines()
+	if m.lease.SLAAC || (d.HasExpire && !now.Before(d.Expire)) {
+		return false
+	}
+	l, n := m.lease.withoutEnded(now)
+	if n == 0 {
+		out.journal(m, "the expiry timer fired before any valid lifetime in the lease ran out: armed again")
+		m.armExpiry(now, out)
+		return true
+	}
+	if len(l.Prefixes) < len(m.lease.Prefixes) {
+		m.pdCounts.Changed++
+	}
+	out.journal(m, fmt.Sprintf("%d binding(s) reached the valid lifetime and left the lease (§6.2, §6.3)", n))
+	m.lease = l
+	m.armExpiry(now, out)
+	out.stamp(m, Action{Kind: ActLeaseChanged, Lease6: l})
+	return true
 }
 
 func (m *Machine6) loseLease(out *actions, r Reason) {
@@ -2127,7 +2164,7 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 	}
 	m.armDeadline(now, Timer6Renew, d.Renew, d.HasRenew, out)
 	m.armDeadline(now, Timer6Rebind, d.Rebind, d.HasRebind, out)
-	m.armDeadline(now, Timer6Expire, d.Expire, d.HasExpire, out)
+	m.armExpiry(now, out)
 
 	// §21.23's Information-request, owed since before the exchange that just
 	// ended and given up by abandonRefreshDelay so the lease could be renewed.
@@ -2142,6 +2179,17 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 		out.set(m, Timer6Delay, dd)
 	}
 	m.announceHostname6(now, rnd, out)
+}
+
+// armExpiry arms Timer6Expire for the lease's next valid end, the expiry or a
+// sooner end of one of its bindings (dhcp-golib#65).
+func (m *Machine6) armExpiry(now Instant, out *actions) {
+	d := m.lease.Deadlines()
+	at, has := d.Expire, d.HasExpire
+	if e, ok := m.lease.nextEnd(); ok && (!has || e.Before(at)) {
+		at, has = e, true
+	}
+	m.armDeadline(now, Timer6Expire, at, has, out)
 }
 
 // armDeadline arms t for ts, or cancels it when there is none.
