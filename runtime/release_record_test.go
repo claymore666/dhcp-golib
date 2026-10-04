@@ -404,3 +404,22 @@ func TestAV6ReleaseRefusesToComeFromAnyTemporaryAddressItIsReleasing(t *testing.
 		t.Errorf("an unrelated source reached the transport %d time(s) as %s, want one as %s", f.calls, f.src.Addr(), other)
 	}
 }
+
+// TestAV6ReleaseDoesNotCompareTheSourceWithADelegatedPrefix pins the other
+// half of the source rule (dhcp-golib#60): a delegated prefix is not an
+// address, so a source equal to its base address is not the address being
+// released and goes. The observer is the transport: reached once, no error.
+func TestAV6ReleaseDoesNotCompareTheSourceWithADelegatedPrefix(t *testing.T) {
+	const base = "fd00:99:1::"
+	rec := relRec6()
+	rec.Lease.Prefixes = []lease.Addr6{{Addr: netip.MustParsePrefix(base + "/48")}}
+	f := &relFake{}
+	cfg := relCfg6()
+	cfg.Source = netip.MustParseAddr(base)
+	if err := sendReleaseWith(rec, cfg, f.send); err != nil {
+		t.Fatalf("a source equal to a delegated prefix's base address was refused: %v", err)
+	}
+	if f.calls != 1 || f.src.Addr().String() != base {
+		t.Errorf("the Release reached the transport %d time(s) from %s, want one from %s", f.calls, f.src.Addr(), base)
+	}
+}

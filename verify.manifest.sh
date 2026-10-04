@@ -999,7 +999,7 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # added, none removed, MEASURED as testroster runs, 1290 before and 1310 here.
 # proto/iid6_test.go 6, proto/machine6_iid_test.go 10, proto/sha256_test.go 2
 # and lease/snapshot6_iid_test.go 2; no netns test.
-MIN_DECLARED_TESTS=1324
+MIN_DECLARED_TESTS=1325
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
