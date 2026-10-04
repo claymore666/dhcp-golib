@@ -113,6 +113,9 @@ type Machine6 struct {
 	// releasingPrefixes is the delegated prefixes the Release names
 	// (claymore666/docker-net-dhcp#214).
 	releasingPrefixes []Prefix6
+	// releasingTA is the temporary addresses the Release names, with
+	// lifetimes zero (dhcp-golib#60).
+	releasingTA []Addr6
 	// afterDecline says what to do when the Decline exchange ends.
 	afterDecline func(now Instant, rnd uint64, out *actions)
 
@@ -2224,11 +2227,13 @@ func (m *Machine6) release(now Instant, rnd uint64, out *actions) {
 	m.server = m.lease.ServerDUID
 	addrs := m.lease.Addrs
 	prefixes := m.lease.Prefixes
+	temps := m.lease.TempAddrs
 	m.loseLease(out, ReasonReleased)
 	out.cancel(m, Timer6Renew)
 	out.cancel(m, Timer6Rebind)
 	out.cancel(m, Timer6Expire)
 	m.releasing, m.releasingPrefixes = addrs, prefixes
+	m.releasingTA = releaseTemps(temps)
 	m.state = State6Stopped
 	if len(m.server) == 0 {
 		// §18.2.7's Server Identifier is a MUST and this client cannot invent
@@ -2759,12 +2764,14 @@ func (m *Machine6) build(now Instant, t wire.MessageTypeV6) (*wire.MessageV6, er
 	return msg, nil
 }
 
-// buildIAs renders the IAs this message carries: the IA_NA, then the IA_TA
-// where there is one. The IA_TA rides the Solicit and the Request of a client
-// with Params6.Temporary and a Decline of temporary addresses, and no other
-// message: RFC 8415 section 13.2 makes renewing temporary addresses NOT
-// RECOMMENDED and the Release stays with the stable binding
-// (claymore666/docker-net-dhcp#927).
+// buildIAs renders the IAs this message carries: the IA_NA, the IA_PD where
+// there is one, then the IA_TA where there is one. The IA_TA rides the Solicit
+// and the Request of a client with Params6.Temporary, a Decline of temporary
+// addresses and a Release of a lease that holds some (RFC 8415 section 18.2.7:
+// the Release lists every lease being released); no other message: section
+// 13.2 makes renewing temporary addresses NOT RECOMMENDED
+// (claymore666/docker-net-dhcp#927, dhcp-golib#60). The Release puts the IA_TA
+// before the IA_PD, as the record path's Release does.
 func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
 	var out []wire.OptionV6
 	if na, ok, err := m.buildIA(t); err != nil {
@@ -2776,9 +2783,6 @@ func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ok {
-		out = append(out, pd)
-	}
 	var ta []Addr6
 	switch {
 	case t == wire.MsgSolicit && m.params.Temporary:
@@ -2788,12 +2792,27 @@ func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
 		for _, a := range m.decliningTA {
 			ta = append(ta, Addr6{Addr: a})
 		}
+	case t == wire.MsgRelease6 && len(m.releasingTA) > 0:
+		ta = m.releasingTA
 	default:
+		if ok {
+			out = append(out, pd)
+		}
 		return out, nil
 	}
 	v, err := m.buildTA(ta)
 	if err != nil {
 		return nil, err
+	}
+	if t == wire.MsgRelease6 {
+		out = append(out, v)
+		if ok {
+			out = append(out, pd)
+		}
+		return out, nil
+	}
+	if ok {
+		out = append(out, pd)
 	}
 	return append(out, v), nil
 }

@@ -248,24 +248,48 @@ func buildRelease6(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 		return nil, netip.AddrPort{}, err
 	}
 
+	opts := wire.OptionsV6{
+		// §18.2.7's three MUST-include options, and the Client Identifier
+		// is the DUID ALONE. The record's Identity is the DUID and the
+		// IAID as sent, concatenated; the IAID belongs in the IA_NA above
+		// and a Client Identifier carrying both is a DUID no server has
+		// ever seen.
+		{Code: wire.OptV6ClientID, Data: duid},
+		{Code: wire.OptV6ServerID, Data: rec.Lease.ServerDUID},
+		{Code: wire.OptV6IANA, Data: iana},
+	}
+
+	// A record that holds temporary addresses or a delegated prefix gives
+	// them back in the same datagram, IA_TA then IA_PD after the IA_NA: the
+	// leases to be released MUST be in the IAs (§18.2.7), and a server that
+	// is never told keeps the rows until their valid lifetimes end
+	// (dhcp-golib#60). Neither held, neither sent, and the datagram is the
+	// one v1.4.0 built.
+	ta, err := releaseTA(rec.Lease)
+	if err != nil {
+		return nil, netip.AddrPort{}, err
+	}
+	if ta != nil {
+		opts = append(opts, *ta)
+	}
+	pd, err := releasePD(rec.Lease)
+	if err != nil {
+		return nil, netip.AddrPort{}, err
+	}
+	if pd != nil {
+		opts = append(opts, *pd)
+	}
+
+	// §21.9's elapsed time, "how long the client has been trying to
+	// complete the current DHCP message exchange". This exchange begins at
+	// this datagram, so it is zero, and there is no second datagram for it
+	// to grow in.
+	opts = append(opts, wire.OptionV6{Code: wire.OptV6ElapsedTime, Data: []byte{0, 0}})
+
 	msg := &wire.MessageV6{
-		Type: wire.MsgRelease6,
-		XID:  xid & (wire.MaxXID6 - 1),
-		Options: wire.OptionsV6{
-			// §18.2.7's three MUST-include options, and the Client Identifier
-			// is the DUID ALONE. The record's Identity is the DUID and the
-			// IAID as sent, concatenated; the IAID belongs in the IA_NA above
-			// and a Client Identifier carrying both is a DUID no server has
-			// ever seen.
-			{Code: wire.OptV6ClientID, Data: duid},
-			{Code: wire.OptV6ServerID, Data: rec.Lease.ServerDUID},
-			{Code: wire.OptV6IANA, Data: iana},
-			// §21.9's elapsed time, "how long the client has been trying to
-			// complete the current DHCP message exchange". This exchange
-			// begins at this datagram, so it is zero, and there is no second
-			// datagram for it to grow in.
-			{Code: wire.OptV6ElapsedTime, Data: []byte{0, 0}},
-		},
+		Type:    wire.MsgRelease6,
+		XID:     xid & (wire.MaxXID6 - 1),
+		Options: opts,
 	}
 
 	payload, err := wire.EncodeV6(msg)
@@ -279,4 +303,60 @@ func buildRelease6(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	// goes, and the server DUID rather than an address is what names the
 	// server it is for.
 	return payload, netip.AddrPortFrom(wire.AllDHCPRelayAgentsAndServers, serverPort6), nil
+}
+
+// releasePD is the IA_PD of a Release: the record's IAID and one IA Prefix per
+// delegated prefix, lifetimes zero as in the IA_NA (RFC 8415 §18.2.7, §21.22).
+// An entry that cannot be on the wire (invalid, not IPv6, v4-mapped, length 0)
+// is left out rather than failing the Release of the address; no usable entry
+// returns nil (dhcp-golib#60).
+func releasePD(l Lease) (*wire.OptionV6, error) {
+	ia := &wire.IAPD{IAID: l.IAID}
+	for _, p := range l.Prefixes {
+		pfx := p.Addr
+		if !pfx.IsValid() || !pfx.Addr().Is6() || pfx.Addr().Is4In6() || pfx.Bits() < 1 {
+			continue
+		}
+		v, err := wire.EncodeIAPrefix(&wire.IAPrefix{Prefix: pfx})
+		if err != nil {
+			return nil, err
+		}
+		ia.Options = append(ia.Options, wire.OptionV6{Code: wire.OptV6IAPrefix, Data: v})
+	}
+	if len(ia.Options) == 0 {
+		return nil, nil
+	}
+	v, err := wire.EncodeIAPD(ia)
+	if err != nil {
+		return nil, err
+	}
+	return &wire.OptionV6{Code: wire.OptV6IAPD, Data: v}, nil
+}
+
+// releaseTA is the IA_TA of a Release: the record's IAID and one IA Address
+// per temporary address, lifetimes zero (RFC 8415 §18.2.7, §21.5). An entry
+// that cannot be on the wire (invalid, v4-mapped, unspecified) is left out
+// rather than failing the Release of the stable address; none usable returns
+// nil (dhcp-golib#60).
+func releaseTA(l Lease) (*wire.OptionV6, error) {
+	ia := &wire.IATA{IAID: l.IAID}
+	for _, t := range l.TempAddrs {
+		a := t.Addr.Addr()
+		if !t.Addr.IsValid() || !a.Is6() || a.Is4In6() || a.IsUnspecified() {
+			continue
+		}
+		v, err := wire.EncodeIAAddr(&wire.IAAddr{Addr: a})
+		if err != nil {
+			return nil, err
+		}
+		ia.Options = append(ia.Options, wire.OptionV6{Code: wire.OptV6IAAddr, Data: v})
+	}
+	if len(ia.Options) == 0 {
+		return nil, nil
+	}
+	v, err := wire.EncodeIATA(ia)
+	if err != nil {
+		return nil, err
+	}
+	return &wire.OptionV6{Code: wire.OptV6IATA, Data: v}, nil
 }
