@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -353,5 +354,53 @@ func TestTwoReleasesOfOneRecordCarryDifferentTransactionIDs(t *testing.T) {
 	}
 	if string(first.payload) == string(second.payload) {
 		t.Errorf("two releases of one record produced identical datagrams: % x", first.payload)
+	}
+}
+
+// TestAV6ReleaseRefusesToComeFromAnyTemporaryAddressItIsReleasing is the
+// source rule over every address the datagram names (dhcp-golib#60): the
+// Release now lists the temporary addresses in an IA_TA, and RFC 9915 section
+// 18.2.7 forbids any of them as the source. The record holds two, and the
+// second is offered, so a check that stops at the first one is caught too.
+func TestAV6ReleaseRefusesToComeFromAnyTemporaryAddressItIsReleasing(t *testing.T) {
+	const temp1, temp2, other = "fd00:99::a1", "fd00:99::a2", "fd00:99::b7"
+	rec := func() lease.Record {
+		r := relRec6()
+		r.Lease.TempAddrs = []lease.Addr6{
+			{Addr: netip.MustParsePrefix(temp1 + "/128")},
+			{Addr: netip.MustParsePrefix(temp2 + "/128")},
+		}
+		return r
+	}
+	for _, c := range []struct{ name, src, named string }{
+		{"the stable address", relAddr6, relAddr6},
+		{"the first temporary address", temp1, temp1},
+		{"the second temporary address", temp2, temp2},
+	} {
+		f := &relFake{}
+		cfg := relCfg6()
+		cfg.Source = netip.MustParseAddr(c.src)
+		err := sendReleaseWith(rec(), cfg, f.send)
+		if !errors.Is(err, ErrReleaseSourceIsReleased) {
+			t.Errorf("%s as the source: error = %v, want %v", c.name, err, ErrReleaseSourceIsReleased)
+			continue
+		}
+		if !strings.Contains(err.Error(), "is "+c.named) {
+			t.Errorf("%s as the source: error %q does not name %s", c.name, err, c.named)
+		}
+		if f.calls != 0 {
+			t.Errorf("%s as the source reached the transport %d time(s)", c.name, f.calls)
+		}
+	}
+
+	// An address the record does not hold still goes, and goes unchanged.
+	f := &relFake{}
+	cfg := relCfg6()
+	cfg.Source = netip.MustParseAddr(other)
+	if err := sendReleaseWith(rec(), cfg, f.send); err != nil {
+		t.Fatalf("an unrelated source was refused: %v", err)
+	}
+	if f.calls != 1 || f.src.Addr().String() != other {
+		t.Errorf("an unrelated source reached the transport %d time(s) as %s, want one as %s", f.calls, f.src.Addr(), other)
 	}
 }
