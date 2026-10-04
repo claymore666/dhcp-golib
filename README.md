@@ -102,6 +102,9 @@ v1.4.0 adds the DHCPv6 Reply's options on the lease a caller receives, as
 `Lease.OptionsV6` ([#1033](https://github.com/claymore666/docker-net-dhcp/issues/1033)), and the RFC 7217 stable, opaque
 interface identifier as a `Params6` choice, retried on a duplicate address
 ([#1032](https://github.com/claymore666/docker-net-dhcp/issues/1032)).
+v1.4.1 makes a DHCPv6 Release list every address and prefix the client holds,
+an IA_TA for the temporary addresses and, on the record path, an IA_PD for the
+delegated prefixes ([#60](https://github.com/claymore666/dhcp-golib/issues/60)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -114,7 +117,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v140).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v141).
 
 ## Usage
 

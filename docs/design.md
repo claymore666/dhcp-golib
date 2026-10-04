@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.4.0
+## Coverage by claim, through v1.4.1
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -275,18 +275,27 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   A record that holds temporary addresses or delegated prefixes gives them back
   in the same datagram, as an IA_TA and an IA_PD after the IA_NA, each with the
   record's IAID and one entry per address or prefix at lifetime zero (RFC 8415
-  §18.2.7); one with neither sends the datagram it always did, and Kea's lease
-  file shows the PD row expired
+  §18.2.7). An entry that cannot go on the wire (invalid, v4-mapped, an
+  unspecified address, a prefix with no bits) is left out, so the stable address
+  still releases. A record with neither sends the datagram it always did, and
+  after a record Release that carries a prefix Kea's lease file shows the PD row
+  expired
   (`TestAV6ReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
   `TestAV6ReleaseOrdersTheIAsNAThenTAThenPD`,
   `TestAV6ReleaseNamesEveryDelegatedPrefixInAnIAPDWithZeroLifetimes`,
+  `TestAV6ReleaseLeavesOutAPrefixThatCannotBeOnTheWire`,
   `TestAV6ReleaseOfARecordWithNoPrefixIsTheV140Datagram`,
   `TestKeaTakesAPrefixBackFromARecordRelease`).
   The Release of a client that is still bound lists its temporary addresses
-  the same way, an IA_TA between the IA_NA and the IA_PD
+  too, an IA_TA between the IA_NA and the IA_PD, at lifetime zero; its IA_NA
+  and IA_PD keep the lifetimes the lease held, which RFC 8415 §21.6 and §21.22
+  have the server ignore in a client's message
   (`TestMachineReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
   `TestMachineReleaseOrdersTheIAsNAThenTAThenPD`,
-  `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`).
+  `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`). The source
+  check above compares the source with the IA_NA's address only; `SendRelease`
+  does not compare it with the temporary addresses the datagram now also names,
+  so the caller must not send from one of them.
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
