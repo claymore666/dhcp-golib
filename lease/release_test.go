@@ -5,6 +5,7 @@ package lease
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"net/netip"
 	"testing"
@@ -542,3 +543,264 @@ func TestTheTwoIAIDsAreComparedRatherThanChosenBetween(t *testing.T) {
 }
 
 func containsText(s, sub string) bool { return bytes.Contains([]byte(s), []byte(sub)) }
+
+// relPrefixes is two delegated prefixes of different lengths, so that a builder
+// that sends the first only, or a fixed length, fails here.
+func relPrefixes() []Addr6 {
+	return []Addr6{
+		{Addr: netip.MustParsePrefix("2001:db8:1:2::/64")},
+		{Addr: netip.MustParsePrefix("2001:db8:5::/56")},
+	}
+}
+
+// v1.4.0's datagram for relRecord6 at xid 0x00AABBCC, measured from the v1.4.0
+// tree before the IA_PD change (dhcp-golib#60).
+const relV140NoPrefixHex = "08aabbcc0001000a000300010242c0a863540002000a000100012b000001aabb" +
+	"000300280a0b0c0d000000000000000000050018fd00009900000000000000000000005300" +
+	"00000000000000000800020000"
+
+func TestAV6ReleaseOfARecordWithNoPrefixIsTheV140Datagram(t *testing.T) {
+	payload, _ := mustBuild(t, relRecord6(), 0x00AABBCC)
+	if got := hex.EncodeToString(payload); got != relV140NoPrefixHex {
+		t.Errorf("the no-prefix Release changed:\n got %s\nwant %s", got, relV140NoPrefixHex)
+	}
+	// An empty and a nil slice are the same record.
+	rec := relRecord6()
+	rec.Lease.Prefixes = []Addr6{}
+	payload, _ = mustBuild(t, rec, 0x00AABBCC)
+	if got := hex.EncodeToString(payload); got != relV140NoPrefixHex {
+		t.Errorf("an empty Prefixes slice changed the Release:\n got %s", got)
+	}
+}
+
+// RFC 8415 section 18.2.7: "The leases to be released MUST be included in the
+// IAs." Section 21.22 gives the IA Prefix its lifetimes and prefix length.
+func TestAV6ReleaseNamesEveryDelegatedPrefixInAnIAPDWithZeroLifetimes(t *testing.T) {
+	rec := relRecord6()
+	rec.Lease.Prefixes = relPrefixes()
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+
+	msg, err := wire.DecodeV6(payload)
+	if err != nil {
+		t.Fatalf("the datagram does not decode: %v", err)
+	}
+	pds, err := msg.Options.IAPDs()
+	if err != nil || len(pds) != 1 {
+		t.Fatalf("the Release carries %d IA_PD option(s), err %v, want exactly one", len(pds), err)
+	}
+	if pds[0].IAID != relIAID {
+		t.Errorf("IA_PD IAID = %#x, want the record's %#x", pds[0].IAID, relIAID)
+	}
+	if pds[0].T1 != 0 || pds[0].T2 != 0 {
+		t.Errorf("IA_PD T1/T2 = %d/%d, want 0/0", pds[0].T1, pds[0].T2)
+	}
+	got, err := pds[0].Options.Prefixes()
+	if err != nil {
+		t.Fatalf("reading the IA Prefix options: %v", err)
+	}
+	if len(got) != len(rec.Lease.Prefixes) {
+		t.Fatalf("the IA_PD encloses %d IA Prefix option(s), want %d", len(got), len(rec.Lease.Prefixes))
+	}
+	for i, p := range got {
+		if p.Prefix != rec.Lease.Prefixes[i].Addr {
+			t.Errorf("IA Prefix %d = %s, want %s", i, p.Prefix, rec.Lease.Prefixes[i].Addr)
+		}
+		if p.PreferredLifetime != 0 || p.ValidLifetime != 0 {
+			t.Errorf("IA Prefix %s lifetimes = %d/%d, want 0/0", p.Prefix, p.PreferredLifetime, p.ValidLifetime)
+		}
+	}
+
+	// The IA_NA is untouched, and so are the three MUST options.
+	ias, err := msg.Options.IANAs()
+	if err != nil || len(ias) != 1 {
+		t.Fatalf("the Release carries %d IA_NA option(s), err %v, want exactly one", len(ias), err)
+	}
+	if addrs, _ := ias[0].Options.Addrs(); len(addrs) != 1 || addrs[0].Addr.String() != relAddr6 {
+		t.Errorf("the IA_NA no longer names %s: %+v", relAddr6, addrs)
+	}
+	for _, code := range []wire.OptionCodeV6{wire.OptV6ClientID, wire.OptV6ServerID, wire.OptV6ElapsedTime} {
+		if _, ok := msg.Options.First(code); !ok {
+			t.Errorf("option %d is missing from a Release that carries a prefix", code)
+		}
+	}
+}
+
+// A prefix that cannot be on the wire does not stop the address from being
+// given back, and a record with none usable carries no IA_PD at all.
+func TestAV6ReleaseLeavesOutAPrefixThatCannotBeOnTheWire(t *testing.T) {
+	bad := []Addr6{
+		{},
+		{Addr: netip.MustParsePrefix("::/0")},
+		{Addr: netip.MustParsePrefix("10.1.0.0/16")},
+		{Addr: netip.PrefixFrom(netip.MustParseAddr("::ffff:10.1.0.0"), 112)},
+	}
+
+	rec := relRecord6()
+	rec.Lease.Prefixes = bad
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+	if got := hex.EncodeToString(payload); got != relV140NoPrefixHex {
+		t.Errorf("only unusable prefixes, yet the Release changed:\n got %s", got)
+	}
+
+	rec.Lease.Prefixes = append(append([]Addr6(nil), bad...), relPrefixes()[0])
+	payload, _ = mustBuild(t, rec, 0x00AABBCC)
+	msg, err := wire.DecodeV6(payload)
+	if err != nil {
+		t.Fatalf("the datagram does not decode: %v", err)
+	}
+	pds, err := msg.Options.IAPDs()
+	if err != nil || len(pds) != 1 {
+		t.Fatalf("IA_PDs = %d, err %v, want one", len(pds), err)
+	}
+	got, _ := pds[0].Options.Prefixes()
+	if len(got) != 1 || got[0].Prefix != relPrefixes()[0].Addr {
+		t.Errorf("IA Prefixes = %+v, want only %s", got, relPrefixes()[0].Addr)
+	}
+}
+
+// A v4 record never carries an IA_PD whatever its Prefixes field says.
+func TestAV4ReleaseIgnoresPrefixes(t *testing.T) {
+	want, _ := mustBuild(t, relRecord4(), 0xC0FFEE01)
+	rec := relRecord4()
+	rec.Lease.Prefixes = relPrefixes()
+	got, _ := mustBuild(t, rec, 0xC0FFEE01)
+	if !bytes.Equal(got, want) {
+		t.Errorf("Prefixes changed a v4 Release:\n got %x\nwant %x", got, want)
+	}
+}
+
+// relTemps is two temporary addresses, so that a builder that sends the first
+// only fails here. The Addr6 prefix is the address with its host length.
+func relTemps() []Addr6 {
+	return []Addr6{
+		{Addr: netip.MustParsePrefix("fd00:99::a1/128")},
+		{Addr: netip.MustParsePrefix("fd00:99::a2/128")},
+	}
+}
+
+// RFC 8415 section 18.2.7 for the IA_TA: the temporary addresses are leases
+// too, so they ride in an IA_TA with the record's IAID, beside and never inside
+// the IA_NA.
+func TestAV6ReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes(t *testing.T) {
+	rec := relRecord6()
+	rec.Lease.TempAddrs = relTemps()
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+
+	msg, err := wire.DecodeV6(payload)
+	if err != nil {
+		t.Fatalf("the datagram does not decode: %v", err)
+	}
+	tas, err := msg.Options.IATAs()
+	if err != nil || len(tas) != 1 {
+		t.Fatalf("the Release carries %d IA_TA option(s), err %v, want exactly one", len(tas), err)
+	}
+	if tas[0].IAID != relIAID {
+		t.Errorf("IA_TA IAID = %#x, want the record's %#x", tas[0].IAID, relIAID)
+	}
+	got, err := tas[0].Options.Addrs()
+	if err != nil || len(got) != len(rec.Lease.TempAddrs) {
+		t.Fatalf("the IA_TA encloses %d IA Address option(s), err %v, want %d", len(got), err, len(rec.Lease.TempAddrs))
+	}
+	for i, a := range got {
+		if a.Addr != rec.Lease.TempAddrs[i].Addr.Addr() {
+			t.Errorf("IA Address %d = %s, want %s", i, a.Addr, rec.Lease.TempAddrs[i].Addr.Addr())
+		}
+		if a.PreferredLifetime != 0 || a.ValidLifetime != 0 {
+			t.Errorf("IA Address %s lifetimes = %d/%d, want 0/0", a.Addr, a.PreferredLifetime, a.ValidLifetime)
+		}
+	}
+
+	// The IA_NA still names the stable address alone, and there is no IA_PD.
+	ias, err := msg.Options.IANAs()
+	if err != nil || len(ias) != 1 {
+		t.Fatalf("the Release carries %d IA_NA option(s), err %v, want exactly one", len(ias), err)
+	}
+	if addrs, _ := ias[0].Options.Addrs(); len(addrs) != 1 || addrs[0].Addr.String() != relAddr6 {
+		t.Errorf("the IA_NA names %+v, want only %s", addrs, relAddr6)
+	}
+	if pds, _ := msg.Options.IAPDs(); len(pds) != 0 {
+		t.Errorf("a record with no prefix carries %d IA_PD option(s)", len(pds))
+	}
+}
+
+// The library sends IA_NA, IA_TA, IA_PD and the Elapsed Time last, so a
+// record without the new IAs keeps the v1.4.0 order (dhcp-golib#60).
+func TestAV6ReleaseOrdersTheIAsNAThenTAThenPD(t *testing.T) {
+	rec := relRecord6()
+	rec.Lease.TempAddrs = relTemps()
+	rec.Lease.Prefixes = relPrefixes()
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+	msg, err := wire.DecodeV6(payload)
+	if err != nil {
+		t.Fatalf("the datagram does not decode: %v", err)
+	}
+	var got []wire.OptionCodeV6
+	for _, o := range msg.Options {
+		got = append(got, o.Code)
+	}
+	want := []wire.OptionCodeV6{wire.OptV6ClientID, wire.OptV6ServerID, wire.OptV6IANA,
+		wire.OptV6IATA, wire.OptV6IAPD, wire.OptV6ElapsedTime}
+	if len(got) != len(want) {
+		t.Fatalf("option codes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("option codes = %v, want %v", got, want)
+		}
+	}
+	if pds, _ := msg.Options.IAPDs(); len(pds) != 1 {
+		t.Errorf("IA_PDs = %d, want 1", len(pds))
+	}
+}
+
+// A temporary address that cannot be on the wire does not stop the rest from
+// being given back, and a record with none usable carries no IA_TA at all.
+func TestAV6ReleaseLeavesOutATemporaryAddressThatCannotBeOnTheWire(t *testing.T) {
+	bad := []Addr6{
+		{},
+		{Addr: netip.PrefixFrom(netip.IPv6Unspecified(), 128)},
+		{Addr: netip.MustParsePrefix("10.1.0.7/32")},
+		{Addr: netip.PrefixFrom(netip.MustParseAddr("::ffff:10.1.0.7"), 128)},
+	}
+
+	rec := relRecord6()
+	rec.Lease.TempAddrs = bad
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+	if got := hex.EncodeToString(payload); got != relV140NoPrefixHex {
+		t.Errorf("only unusable temporary addresses, yet the Release changed:\n got %s", got)
+	}
+
+	rec.Lease.TempAddrs = append(append([]Addr6(nil), bad...), relTemps()[0])
+	payload, _ = mustBuild(t, rec, 0x00AABBCC)
+	msg, err := wire.DecodeV6(payload)
+	if err != nil {
+		t.Fatalf("the datagram does not decode: %v", err)
+	}
+	tas, err := msg.Options.IATAs()
+	if err != nil || len(tas) != 1 {
+		t.Fatalf("IA_TAs = %d, err %v, want one", len(tas), err)
+	}
+	got, _ := tas[0].Options.Addrs()
+	if len(got) != 1 || got[0].Addr != relTemps()[0].Addr.Addr() {
+		t.Errorf("IA Addresses = %+v, want only %s", got, relTemps()[0].Addr.Addr())
+	}
+}
+
+// An empty TempAddrs slice is the same record as a nil one, and a v4 record
+// never carries an IA_TA whatever the field says.
+func TestAReleaseOfARecordWithNoTemporaryAddressIsUnchanged(t *testing.T) {
+	rec := relRecord6()
+	rec.Lease.TempAddrs = []Addr6{}
+	payload, _ := mustBuild(t, rec, 0x00AABBCC)
+	if got := hex.EncodeToString(payload); got != relV140NoPrefixHex {
+		t.Errorf("an empty TempAddrs slice changed the Release:\n got %s", got)
+	}
+
+	want, _ := mustBuild(t, relRecord4(), 0xC0FFEE01)
+	rec4 := relRecord4()
+	rec4.Lease.TempAddrs = relTemps()
+	got, _ := mustBuild(t, rec4, 0xC0FFEE01)
+	if !bytes.Equal(got, want) {
+		t.Errorf("TempAddrs changed a v4 Release:\n got %x\nwant %x", got, want)
+	}
+}

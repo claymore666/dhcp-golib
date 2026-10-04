@@ -272,6 +272,21 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   would show the violation. That is a fact about that server, not about every
   server
   (`TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing`).
+  A record that holds temporary addresses or delegated prefixes gives them back
+  in the same datagram, as an IA_TA and an IA_PD after the IA_NA, each with the
+  record's IAID and one entry per address or prefix at lifetime zero (RFC 8415
+  §18.2.7); one with neither sends the datagram it always did, and Kea's lease
+  file shows the PD row expired
+  (`TestAV6ReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
+  `TestAV6ReleaseOrdersTheIAsNAThenTAThenPD`,
+  `TestAV6ReleaseNamesEveryDelegatedPrefixInAnIAPDWithZeroLifetimes`,
+  `TestAV6ReleaseOfARecordWithNoPrefixIsTheV140Datagram`,
+  `TestKeaTakesAPrefixBackFromARecordRelease`).
+  The Release of a client that is still bound lists its temporary addresses
+  the same way, an IA_TA between the IA_NA and the IA_PD
+  (`TestMachineReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
+  `TestMachineReleaseOrdersTheIAsNAThenTAThenPD`,
+  `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine

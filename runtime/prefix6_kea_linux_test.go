@@ -5,6 +5,8 @@
 package runtime
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
@@ -236,6 +238,60 @@ func TestKeaTakesAReleasedPrefixBack(t *testing.T) {
 		last := rows[len(rows)-1]
 		if last.valid != 0 || last.expire > time.Now().Unix() {
 			t.Errorf("Kea's last PD row for %s is %+v after the Release, want a valid lifetime of 0 and an expiry that has passed", pfx.Addr, last)
+		}
+		return
+	}
+	reexecInNamespaces(t)
+}
+
+// TestKeaTakesAPrefixBackFromARecordRelease is dhcp-golib#60: a Release built
+// from the stored record alone, by a sender that holds no client, names the
+// delegated prefix, and Kea's own lease file shows the PD row expired. The
+// client is stopped without a Release, so the only Release on the wire is the
+// record's, and the tap's copy of it is the bytes that left the link.
+func TestKeaTakesAPrefixBackFromARecordRelease(t *testing.T) {
+	if os.Getenv(nsChildEnv) == "1" {
+		r := keaStartClient(t, keaConfig{pdPools: true}, nil, nil)
+		held := awaitV6(t, r.client, lease.Acquired).Lease
+		pfx := onlyPrefix(t, held)
+		if rows := r.pdRows(t, pfx.Addr); len(rows) == 0 || rows[len(rows)-1].valid != keaValidSec {
+			t.Fatalf("Kea does not hold %s before the Release: %+v", pfx.Addr, rows)
+		}
+		r.stop()
+
+		duid, err := hex.DecodeString(strings.ReplaceAll(r.duid, ":", ""))
+		if err != nil {
+			t.Fatalf("the client DUID %q is not hex: %v", r.duid, err)
+		}
+		rec := lease.Record{
+			ID: "rec-pd-released", Scope: "net-a", Family: lease.FamilyV6,
+			Identity: binary.BigEndian.AppendUint32(duid, held.IAID),
+			Lease:    held,
+		}
+		mustRun(t, "ip", "-6", "addr", "add", relHostLLA6+"/64", "dev", test6ClientIf, "nodad")
+		cfg := ReleaseConfig{Interface: test6ClientIf, Source: netip.MustParseAddr(relHostLLA6)}
+		if err := SendRelease(rec, cfg); err != nil {
+			t.Fatalf("SendRelease: %v", err)
+		}
+
+		r.tap.waitCount(t, wire.MsgRelease6, 1)
+		if n := r.tap.count(wire.MsgRelease6); n != 1 {
+			t.Errorf("%d Releases left the link, want only the record's", n)
+		}
+		pds, err := r.tap.ofType(wire.MsgRelease6)[0].Options.IAPDs()
+		if err != nil || len(pds) != 1 {
+			t.Fatalf("the Release's IA_PDs = %v, %v, want one", pds, err)
+		}
+		if got, _ := pds[0].Options.Prefixes(); len(got) != 1 || got[0].Prefix != pfx.Addr {
+			t.Errorf("the Release's IA_PD names %v, want the held %s", got, pfx.Addr)
+		}
+
+		// Kea writes the row before it logs that the prefix was released.
+		r.srv.waitFor(t, "DHCP6_RELEASE_PD_EXPIRED")
+		rows := r.pdRows(t, pfx.Addr)
+		last := rows[len(rows)-1]
+		if last.valid != 0 || last.expire > time.Now().Unix() {
+			t.Errorf("Kea's last PD row for %s is %+v after the record's Release, want a valid lifetime of 0 and an expiry that has passed", pfx.Addr, last)
 		}
 		return
 	}
