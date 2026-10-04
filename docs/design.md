@@ -270,8 +270,11 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   that shape itself and does not trust the caller for it: the one server the
   fixture runs accepts the datagram either way, so no outside evidence from it
   would show the violation. That is a fact about that server, not about every
-  server
-  (`TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing`).
+  server. The refusal covers the IA_NA's address and every temporary address
+  the datagram names, and its error says which one was offered; a delegated
+  prefix is not an address and is not compared
+  (`TestAV6ReleaseRefusesToComeFromTheAddressItIsReleasing`,
+  `TestAV6ReleaseRefusesToComeFromAnyTemporaryAddressItIsReleasing`).
   A record that holds temporary addresses or delegated prefixes gives them back
   in the same datagram, as an IA_TA and an IA_PD after the IA_NA, each with the
   record's IAID and one entry per address or prefix at lifetime zero (RFC 8415
@@ -292,10 +295,7 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   have the server ignore in a client's message
   (`TestMachineReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
   `TestMachineReleaseOrdersTheIAsNAThenTAThenPD`,
-  `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`). The source
-  check above compares the source with the IA_NA's address only; `SendRelease`
-  does not compare it with the temporary addresses the datagram now also names,
-  so the caller must not send from one of them.
+  `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
