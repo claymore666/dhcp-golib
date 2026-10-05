@@ -66,14 +66,6 @@ func BuildRelease(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	}
 }
 
-// The refusals BuildRelease returns, each its own value so that a caller can
-// tell "this record was never going to work" from "this one lost a field".
-//
-// They are refusals and not best-effort datagrams for one reason: a release
-// nothing answers cannot be retried on a failure the sender did not notice.
-// A DHCPRELEASE carrying a zero server identifier, or broadcast because there
-// was no server to unicast to, reaches a server that either ignores it or acts
-// on the wrong binding, and in both cases the caller is told it succeeded.
 // ReleaseDatagram is one datagram of a record's release and where it goes.
 type ReleaseDatagram struct {
 	Payload []byte
@@ -81,7 +73,7 @@ type ReleaseDatagram struct {
 }
 
 // BuildReleases is BuildRelease for every server that allocated the record's
-// leases, RFC 9915 section 18.2.7: a second datagram, with xid+1 and the IA_PD
+// leases, RFC 8415 section 18.2.7: a second datagram, with xid+1 and the IA_PD
 // alone, goes to PrefixServerDUID when it is set (claymore666/dhcp-golib#70).
 func BuildReleases(rec Record, xid uint32) ([]ReleaseDatagram, error) {
 	payload, dst, err := BuildRelease(rec, xid)
@@ -119,6 +111,14 @@ func splitRecord(l Lease) bool {
 	return len(l.PrefixServerDUID) > 0 && !bytes.Equal(l.PrefixServerDUID, l.ServerDUID)
 }
 
+// The refusals BuildRelease returns, each its own value so that a caller can
+// tell "this record was never going to work" from "this one lost a field".
+//
+// They are refusals and not best-effort datagrams for one reason: a release
+// nothing answers cannot be retried on a failure the sender did not notice.
+// A DHCPRELEASE carrying a zero server identifier, or broadcast because there
+// was no server to unicast to, reaches a server that either ignores it or acts
+// on the wrong binding, and in both cases the caller is told it succeeded.
 var (
 	// ErrReleaseFamily is a record whose family is neither v4 nor v6. A record
 	// that never bound has no lease to give back.

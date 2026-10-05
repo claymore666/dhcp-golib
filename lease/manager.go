@@ -131,10 +131,10 @@ type Config struct {
 	// supplying it is what turns the first message on the wire into RFC 9915
 	// section 18.2.3's Confirm instead of a Solicit.
 	//
-	// Addr, Preferred, Valid, Renew, Rebind and ServerDUID are read; the
-	// wall-clock deadlines are converted to the REMAINING durations ring 1
-	// works in, once, at construction, through the same clock bridge
-	// Config.Resume crosses. A deadline already past contributes zero, which
+	// Addr, Preferred, Valid, Renew, Rebind, ServerDUID, Prefixes and
+	// PrefixServerDUID are read; the wall-clock deadlines are converted to
+	// the REMAINING durations ring 1 works in, once, at construction, through
+	// the same clock bridge Config.Resume crosses. A deadline already past contributes zero, which
 	// makes the resumed lease one the machine will renew immediately rather
 	// than one it thinks is live. ReconfigureKey, ReconfigureReplay and
 	// ReconfigureReplaySeen are read too, and restore the RKAP entry of that
@@ -754,9 +754,9 @@ func newManager6(cfg Config) (*Manager, error) {
 			Addrs:      resumed,
 			ServerDUID: append([]byte(nil), cfg.Resume6.ServerDUID...),
 			T1:         remaining(b, cfg.Resume6.Renew),
+			T2:         remaining(b, cfg.Resume6.Rebind),
 
 			PrefixServerDUID: append([]byte(nil), cfg.Resume6.PrefixServerDUID...),
-			T2:               remaining(b, cfg.Resume6.Rebind),
 			// §18.2.3's "any other previously obtained configuration
 			// parameters". A Reply to a Confirm carries no RFC 3646 option
 			// (§16.6), so these lists reach a resumed client from the

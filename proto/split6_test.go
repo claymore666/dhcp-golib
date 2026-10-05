@@ -41,7 +41,12 @@ func split6PD(t *testing.T, t1, t2 uint32) wire.OptionV6 {
 // IA_NA-only Reply at 2 and the clean DAD at 3.
 func split6Bound(t *testing.T) (*Machine6, []Action) {
 	t.Helper()
-	m, reb, _ := pr6Rebinding(t, split6Params())
+	return split6BoundWith(t, split6Params())
+}
+
+func split6BoundWith(t *testing.T, p Params6) (*Machine6, []Action) {
+	t.Helper()
+	m, reb, _ := pr6Rebinding(t, p)
 	m.Step(at(2), 3, split6Reply(t, reb.XID, testServerDUID, split6NA(t)))
 	s, acts := m.Step(at(3), 0, DADResult(netip.MustParseAddr(pr6Addr), false))
 	if s != State6Bound {
@@ -222,7 +227,14 @@ func TestARenewReplyThatLeavesOutADueIAPDIsRateLimited(t *testing.T) {
 		}
 		_, acts = pd6Renew(t, m, now, now)
 		sends++
-		d, _ = timerSet(acts, Timer6Renew)
+		prev, ok := d, false
+		if d, ok = timerSet(acts, Timer6Renew); !ok {
+			// the IA_PD's T2 has passed: the Rebind is next, held off as well
+			if reb, rok := timerSet(acts, Timer6Rebind); !rok || reb < prev*19/10 {
+				t.Errorf("Rebind armed for %v (set %v) after a %v hold-off, want it held off longer", reb, rok, prev)
+			}
+			break
+		}
 		gaps = append(gaps, d)
 	}
 	if sends > 4 {
@@ -271,7 +283,12 @@ func TestAJointLeaseKeepsOneRenewAndOneReleaseWithBothIAs(t *testing.T) {
 // 10, the prefix T1 t1 and T2 t2 counted from 10.
 func split6PDOnly(t *testing.T, t1, t2 uint32) *Machine6 {
 	t.Helper()
-	m, _ := split6Bound(t)
+	return split6PDOnlyWith(t, split6Params(), t1, t2)
+}
+
+func split6PDOnlyWith(t *testing.T, p Params6, t1, t2 uint32) *Machine6 {
+	t.Helper()
+	m, _ := split6BoundWith(t, p)
 	_, acts := m.Step(at(10), 7, TimerFired(Timer6Renew))
 	ren := mustSendV6(t, acts, wire.MsgRenew)
 	m.Step(at(11), 0, split6Reply(t, ren.XID, pr6Server, split6PD(t, t1, t2)))
@@ -344,10 +361,12 @@ func TestARebindReplyThatLeavesOutADueIAPDIsRateLimited(t *testing.T) {
 	reb := mustSendV6(t, acts, wire.MsgRebind)
 	now := d.Rebind.Add(Second)
 	_, acts = m.Step(now, 0, pd6Reply(t, reb.XID))
-	for _, id := range []TimerID{Timer6Renew, Timer6Rebind} {
-		if got, ok := timerSet(acts, id); !ok || got < 9*Second {
-			t.Errorf("%s armed for %v (set %v) after a Rebind Reply that left out the due IA_PD, want one retransmission time (RFC 8415 section 18.2.10.1)", id, got, ok)
-		}
+	rt, ok := timerSet(acts, Timer6Rebind)
+	if !ok || rt < 9*Second {
+		t.Errorf("rebind6 armed for %v (set %v) after a Rebind Reply that left out the due IA_PD, want one retransmission time (RFC 8415 section 18.2.10.1)", rt, ok)
+	}
+	if ren, ok := timerSet(acts, Timer6Renew); ok && ren <= rt {
+		t.Errorf("renew6 armed for %v beside rebind6 for %v: the IA_PD's T2 has passed, so the Rebind alone goes out (RFC 8415 section 18.2.5)", ren, rt)
 	}
 }
 
