@@ -296,7 +296,11 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   hold-off delays the IA_PD's T1 and T2 only: the IA_NA renews at its own, and
   once the IA_PD's T2 has passed its next exchange is a Rebind alone. A
   NoBinding to the Renew of one server sends a Request for that server's IAs
-  only, and an unanswered Request for the IA_PD leaves the lease as held. The
+  only. That Request runs inside the held lease: at the lease's T2 it gives way
+  to a Rebind of every IA, §18.2.4 ends the exchange "when the earliest time T2
+  is reached", and at the lease's expiry it restarts discovery. A Rebind Reply
+  that leaves out an IA_PD past its T1 holds the IA_PD's Renew off the same way.
+  The
   prefix keeps its own T1 and T2 while the lease is held; a resumed record has
   only the earliest of the two, so it renews both groups then. A v1.4.2 journal
   record, which has no `prefix_server_duid`, loads as one server. These run in
@@ -308,6 +312,8 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestARenewReplyThatLeavesOutADueIAPDIsRateLimited`,
   `TestAServerThatNeverNamesTheIAPDStillRenewsTheIANABeforeItsT2`,
   `TestANoBindingForTheIAPDRequestsTheIAPDAloneFromItsServer`,
+  `TestARequestForTheIAPDGivesWayToTheIANAsRebind`,
+  `TestARebindReplyThatLeavesOutAPrefixDueForItsRenewHoldsTheRenewOff`,
   `TestTheDelegatingReplyFirstEndsTheRebindAndALaterReplyIsDiscarded`,
   `TestAResumedSplitRecordRenewsThePrefixWithItsOwnServer`,
   `TestAV142JournalRecordLoadsAsOneServerWithTheSameRelease`).

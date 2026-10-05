@@ -727,6 +727,15 @@ func (m *Machine6) stepRequesting6(now Instant, rnd uint64, ev Event, out *actio
 		}
 		m.takeReply(now, rnd, msg, out)
 	case EvTimerFired:
+		if ev.Timer == Timer6Rebind && m.scope != scopeAll {
+			// a Request for one server's IAs runs inside a held lease, and
+			// §18.2.4 ends that lease's exchange "when the earliest time T2 is
+			// reached" (claymore666/dhcp-golib#70).
+			out.journal(m, "T2 reached while requesting one server's IAs: rebinding every IA (§18.2.4)")
+			m.dropPending()
+			m.enterRebinding(now, rnd, out)
+			return
+		}
 		if ev.Timer != Timer6Retransmit {
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 			return
@@ -1396,8 +1405,9 @@ func (m *Machine6) expireLease(now Instant, rnd uint64, out *actions) {
 	out.cancel(m, Timer6Expire)
 	out.journal(m, "every valid lifetime in the IA has expired while "+m.state.String()+" (§18.2.5)")
 	m.loseLease(out, ReasonExpired)
-	switch m.state {
-	case State6Bound, State6Renewing, State6Rebinding:
+	switch {
+	case m.state == State6Bound, m.state == State6Renewing, m.state == State6Rebinding,
+		m.state == State6Requesting && m.scope != scopeAll:
 		m.restartDiscovery(now, rnd, out)
 	}
 }

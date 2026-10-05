@@ -424,11 +424,7 @@ func (m *Machine6) paceOmission(now Instant, rnd uint64, found bool, l Lease6, o
 		return
 	}
 	_, pd := l.groupDeadlines()
-	due, has := pd.Renew, pd.HasRenew
-	if m.state == State6Rebinding {
-		due, has = pd.Rebind, pd.HasRebind
-	}
-	if !has || due.After(now) {
+	if !pd.HasRenew || pd.Renew.After(now) {
 		return
 	}
 	if m.omitRT == 0 {

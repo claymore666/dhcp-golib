@@ -524,15 +524,17 @@ func TestEqualSeesThePrefixServerAndItsTimes(t *testing.T) {
 }
 
 // B answers the resumed Rebind at 12, after the prefix T1 at 10 and before
-// its T2 at 16: the prefix Renew goes to A at once, nothing is held off.
-func TestAReplyAfterThePrefixT1ButBeforeItsT2RenewsThePrefixAtOnce(t *testing.T) {
+// its T2 at 16: the prefix Renew to A waits out the Rebind's retransmission
+// time, RFC 8415 section 18.2.10.1 (claymore666/dhcp-golib#70 finding 9).
+func TestAReplyAfterThePrefixT1ButBeforeItsT2HoldsThePrefixRenewOff(t *testing.T) {
 	m, reb, _ := pr6Rebinding(t, split6Params())
 	m.Step(at(12), 3, split6Reply(t, reb.XID, testServerDUID, split6NA(t)))
 	_, acts := m.Step(at(12), 0, DADResult(netip.MustParseAddr(pr6Addr), false))
-	if d, ok := timerSet(acts, Timer6Renew); !ok || d > Second {
-		t.Fatalf("Renew armed for %v (set %v), want now: the IA_PD's Rebind is not due, so nothing is rate-limited", d, ok)
+	d, ok := timerSet(acts, Timer6Renew)
+	if !ok || d == 0 || d > m.params.CnfMaxRT {
+		t.Fatalf("Renew armed for %v (set %v), want after a hold-off no longer than the resumed Rebind's retransmission time: the Reply left out the due IA_PD", d, ok)
 	}
-	_, acts = m.Step(at(12), 7, TimerFired(Timer6Renew))
+	_, acts = m.Step(at(12).Add(d), 7, TimerFired(Timer6Renew))
 	if sid, nas, pds := split6IAs(t, mustSendV6(t, acts, wire.MsgRenew)); !bytes.Equal(sid, pr6Server) || nas != 0 || pds != 1 {
 		t.Errorf("the Renew names %x with %d IA_NA and %d IA_PD, want A with the IA_PD alone", sid, nas, pds)
 	}

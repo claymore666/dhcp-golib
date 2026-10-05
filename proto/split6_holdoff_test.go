@@ -25,6 +25,14 @@ type split6Sent struct {
 // sent and how many times the lease was lost.
 func split6Run(t *testing.T, m *Machine6, now Instant, acts []Action, until Instant, na func() wire.OptionV6) ([]split6Sent, int) {
 	t.Helper()
+	return split6RunWith(t, m, now, acts, until, na, nil)
+}
+
+// split6RunWith is split6Run with A (pr6Server) answering a message that names
+// it with a's options when a reports true.
+func split6RunWith(t *testing.T, m *Machine6, now Instant, acts []Action, until Instant, na func() wire.OptionV6,
+	a func(*wire.MessageV6) ([]wire.OptionV6, bool)) ([]split6Sent, int) {
+	t.Helper()
 	timers := map[TimerID]Instant{}
 	var sent []split6Sent
 	lost := 0
@@ -55,6 +63,13 @@ func split6Run(t *testing.T, m *Machine6, now Instant, acts []Action, until Inst
 			pending = pending[1:]
 			sid, nas, pds := split6IAs(t, msg)
 			sent = append(sent, split6Sent{now, msg.Type, sid, nas, pds})
+			if a != nil && bytes.Equal(sid, pr6Server) {
+				if opts, ok := a(msg); ok {
+					_, x := m.Step(now, 0, split6Reply(t, msg.XID, pr6Server, opts...))
+					pending = append(pending, apply(x)...)
+				}
+				continue
+			}
 			if msg.Type != wire.MsgRenew && msg.Type != wire.MsgRebind {
 				continue
 			}
@@ -332,5 +347,107 @@ func TestARequestForTheIANALeavesTheIAPDHoldOffStanding(t *testing.T) {
 	_, acts = m.Step(at(115), 0, split6Reply(t, req.XID, testServerDUID, optIANA(t, capIAID, 200, 300, []iaAddrSpec{{pr6Addr, 400, 400}})))
 	if d, ok := timerSet(acts, Timer6Renew); m.State() != State6Bound || !ok || d < 5*Second {
 		t.Errorf("state %s, Renew armed for %v (set %v) after B's Reply to the Request for the IA_NA, want A's hold-off to stand, not a Renew at once (RFC 8415 section 18.2.10.1)", m.State(), d, ok)
+	}
+}
+
+// split6LongPrefix is a split lease: B's IA_NA from its Reply at 2, and A's
+// prefix (T1 100, T2 1500, valid 3000) from its Reply at 11 to the Renew at 10.
+func split6LongPrefix(t *testing.T) (*Machine6, []Action) {
+	t.Helper()
+	m, _ := split6Bound(t)
+	_, acts := m.Step(at(10), 7, TimerFired(Timer6Renew))
+	ren := mustSendV6(t, acts, wire.MsgRenew)
+	_, acts = m.Step(at(11), 0, split6Reply(t, ren.XID, pr6Server, optIAPD(t, capIAID, 100, 1500, []pd6Spec{{pr6First, 2000, 3000}})))
+	return m, acts
+}
+
+// A answers the IA_PD Renew at 110 with NoBinding and is silent to the Request
+// that follows; B's IA_NA (T1 54, T2 99, valid 120, renewed at 109) is rebound
+// at its T2 while that Request runs.
+func TestARequestForTheIAPDGivesWayToTheIANAsRebind(t *testing.T) {
+	m, acts := split6LongPrefix(t)
+	a := func(msg *wire.MessageV6) ([]wire.OptionV6, bool) {
+		if msg.Type != wire.MsgRenew {
+			return nil, false
+		}
+		return []wire.OptionV6{optIAPD(t, capIAID, 0, 0, nil, optStatus(wire.StatusNoBinding))}, true
+	}
+	sent, lost := split6RunWith(t, m, at(11), acts, at(1500), func() wire.OptionV6 { return split6NA(t) }, a)
+	if lost != 0 {
+		t.Errorf("the lease was lost %d time(s) while B answered every message that named the IA_NA", lost)
+	}
+	split6NAGaps(t, sent, at(11), at(1500), 99*Second)
+	if !hasSent(sent, wire.MsgRequest6) {
+		t.Fatalf("no Request followed A's NoBinding: %v", sent)
+	}
+	l, ok := m.Lease()
+	if !ok || len(l.Addrs) != 1 || len(l.Prefixes) != 1 || !bytes.Equal(l.PrefixServerDUID, pr6Server) {
+		t.Errorf("at the end of the drive the machine is in %s holding %v (held %v) and %v from %x, want B's address and A's prefix", m.State(), l.Addrs, ok, l.Prefixes, l.PrefixServerDUID)
+	}
+}
+
+// The lease ends while the Request for the IA_PD runs: discovery restarts,
+// so no later REQ_MAX_RC returns to BOUND6 with nothing held.
+func TestALeaseThatEndsDuringTheRequestForTheIAPDRestartsDiscovery(t *testing.T) {
+	m, _, _ := split6NoBindingFromA(t, split6Params())
+	l, _ := m.Lease()
+	s, acts := m.Step(l.Deadlines().Expire, 0, TimerFired(Timer6Expire))
+	if _, ok := m.Lease(); ok || s != State6Init || !timerCancelled(acts, Timer6Rebind) {
+		t.Errorf("the lease ended during the Request for the IA_PD and the machine is in %s (lease held %v, Rebind cancelled %v), want discovery restarted", s, ok, timerCancelled(acts, Timer6Rebind))
+	}
+}
+
+// A is silent after delegating the prefix; B answers with the IA_NA alone. A
+// Rebind Reply after the prefix T1 at 111 and before its T2 at 1511 holds the
+// Renew to A off, and the hold-off never outgrows the retransmission bound.
+func TestARebindReplyThatLeavesOutAPrefixDueForItsRenewHoldsTheRenewOff(t *testing.T) {
+	m, acts := split6LongPrefix(t)
+	sent, lost := split6Run(t, m, at(11), acts, at(3000), func() wire.OptionV6 { return split6NA(t) })
+	if lost != 0 {
+		t.Errorf("the lease was lost %d time(s) while B answered every message that named the IA_NA", lost)
+	}
+	split6NAGaps(t, sent, at(11), at(3000), 99*Second)
+	for i := 1; i < len(sent); i++ {
+		if sent[i].at == sent[i-1].at {
+			t.Errorf("%v and %v both went out at %v: a Reply that left out the due IA_PD was not rate-limited (RFC 8415 section 18.2.10.1)", sent[i-1].typ, sent[i].typ, sent[i].at)
+		}
+	}
+	bound := m.params.RenMaxRT + m.params.RenMaxRT/10
+	if m.params.RebMaxRT > m.params.RenMaxRT {
+		bound = m.params.RebMaxRT + m.params.RebMaxRT/10
+	}
+	prev := at(11)
+	for _, s := range sent {
+		if s.pds == 0 {
+			continue
+		}
+		if s.at.Sub(prev) > bound {
+			t.Errorf("no message carried the IA_PD from %v to %v, longer than the retransmission bound %v", prev, s.at, bound)
+		}
+		prev = s.at
+	}
+	if at(3000).Sub(prev) > bound {
+		t.Errorf("no message carried the IA_PD from %v to the end of the drive", prev)
+	}
+}
+
+// One server: a Request after its NoBinding names every IA and runs through
+// T2 and the lease's end as before claymore666/dhcp-golib#70.
+func TestARequestAfterAOneServerNoBindingRunsThroughT2AndTheExpiry(t *testing.T) {
+	m := keepBound(t, optIAPD(t, capIAID, 120, 200, []pd6Spec{{pd6First, 2000, 3000}}))
+	l, _ := m.Lease()
+	d := l.Deadlines()
+	_, acts := m.Step(d.Renew, 7, TimerFired(Timer6Renew))
+	ren := mustSendV6(t, acts, wire.MsgRenew)
+	nb := optIANA(t, capIAID, 0, 0, nil, optStatus(wire.StatusNoBinding))
+	_, acts = m.Step(d.Renew, 0, receivedV6(t, wire.MsgReply, ren.XID, optClientID(capDUID), optServerID(testServerDUID), nb))
+	if _, nas, pds := split6IAs(t, mustSendV6(t, acts, wire.MsgRequest6)); nas != 1 || pds != 1 {
+		t.Fatalf("the Request after the NoBinding names %d IA_NA and %d IA_PD, want both", nas, pds)
+	}
+	if s, acts := m.Step(d.Rebind, 0, TimerFired(Timer6Rebind)); s != State6Requesting || hasSendV6(acts, wire.MsgRebind) {
+		t.Errorf("T2 during the one-server Request left the machine in %s (Rebind sent %v), want the Request running", s, hasSendV6(acts, wire.MsgRebind))
+	}
+	if s, _ := m.Step(d.Expire, 0, TimerFired(Timer6Expire)); s != State6Requesting {
+		t.Errorf("the lease's end during the one-server Request left the machine in %s, want the Request running", s)
 	}
 }
