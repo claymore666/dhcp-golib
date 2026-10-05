@@ -1004,7 +1004,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # none removed, MEASURED as testroster runs, 1325 before and 1345 here.
 # proto/prefix6_keep_test.go 9, proto/prefix6_attack_test.go 10 and
 # lease/prefix_keep_test.go 1; no netns test.
-MIN_DECLARED_TESTS=1345
+#
+# A SUB-BINDING WHOSE VALID LIFETIME ENDS WHILE BOUND, dhcp-golib#65: fourteen
+# added, none removed, MEASURED as testroster runs, 1345 before and 1359 here.
+# proto/subbinding6_expiry_test.go 13 and lease/subbinding_expiry6_test.go 1;
+# no netns test.
+MIN_DECLARED_TESTS=1359
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

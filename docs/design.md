@@ -236,9 +236,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestADnsmasqThatCannotDelegateLeavesTheAddressAlone`). A lease resumed with a
   prefix sends a Rebind and no Confirm, as RFC 8415 §18.2.12 has it, and Kea's
   row is renewed (`TestKeaSeesAResumedPrefixRebind`). The refusals, the
-  earliest T1 and T2 across the IAs, a prefix changed or dropped by a renewal and
-  the resumed Rebind's three outcomes are driven in [`proto`](../proto), where
-  the Reply can be chosen. The Kea tests run in a mount namespace so its lease
+  earliest T1 and T2 across the IAs, a prefix changed or dropped by a renewal,
+  a prefix or temporary address that leaves the lease when its valid lifetime
+  ends while bound, and the resumed Rebind's three outcomes are driven in
+  [`proto`](../proto), where the Reply and the clock can be chosen. The Kea tests run in a mount namespace so its lease
   database sits under the one directory it accepts.
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file

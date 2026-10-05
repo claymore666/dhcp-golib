@@ -226,6 +226,58 @@ func (l Lease6) longestValid() Duration {
 	return out
 }
 
+// nextEnd is the earliest finite valid end of any address, temporary address or prefix in l (dhcp-golib#65).
+func (l Lease6) nextEnd() (Instant, bool) {
+	var at Instant
+	found := false
+	take := func(d Duration) {
+		if e, ok := expiry(l.Start, d); ok && (!found || e.Before(at)) {
+			at, found = e, true
+		}
+	}
+	for _, a := range l.Addrs {
+		take(a.Valid)
+	}
+	for _, a := range l.TempAddrs {
+		take(a.Valid)
+	}
+	for _, p := range l.Prefixes {
+		take(p.Valid)
+	}
+	return at, found
+}
+
+// withoutEnded is l less every binding whose valid lifetime has run out at now, in new slices, and how many left (dhcp-golib#65).
+func (l Lease6) withoutEnded(now Instant) (Lease6, int) {
+	ended := func(d Duration) bool {
+		e, ok := expiry(l.Start, d)
+		return ok && !now.Before(e)
+	}
+	n := 0
+	keep := func(as []Addr6) []Addr6 {
+		var out []Addr6
+		for _, a := range as {
+			if ended(a.Valid) {
+				n++
+				continue
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+	l.Addrs, l.TempAddrs = keep(l.Addrs), keep(l.TempAddrs)
+	var ps []Prefix6
+	for _, p := range l.Prefixes {
+		if ended(p.Valid) {
+			n++
+			continue
+		}
+		ps = append(ps, p)
+	}
+	l.Prefixes = ps
+	return l, n
+}
+
 // PreferredUntil is when the shortest preferred lifetime in the IA runs out,
 // and reports false for an infinite one or an empty IA.
 //

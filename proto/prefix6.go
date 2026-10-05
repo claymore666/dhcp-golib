@@ -29,7 +29,8 @@ func (p Prefix6) String() string {
 // or a Reply whose IA_PD gave none, with or without a status; Absent is one
 // that carried no IA_PD with our IAID, and on a renewal the held prefixes stand.
 // Changed is a Reply to a Renew or a Rebind whose prefixes differ from the ones
-// held, a prefix that reached its valid lifetime included.
+// held, a prefix that reached its valid lifetime included, or a held prefix
+// whose valid lifetime ran out while no Reply was due (dhcp-golib#65).
 // One exchange can count Refused or Absent twice, once for each message. Every
 // one also writes a journal line (claymore666/docker-net-dhcp#214).
 type Prefix6Counters struct {
@@ -273,12 +274,12 @@ func earliestT(a, b Duration) Duration {
 
 // pdOwed reports whether the message that this Reply answers carried an IA_PD:
 // every Solicit and Request of a client with a hint, and every Renew or
-// Rebind from a lease that holds prefixes (claymore666/docker-net-dhcp#214).
+// Rebind that sent one (claymore666/docker-net-dhcp#214, dhcp-golib#65).
 func (m *Machine6) pdOwed(renewal bool) bool {
 	if !renewal {
 		return m.params.PrefixHint > 0 || len(m.pending.Prefixes) > 0
 	}
-	return len(m.heldPrefixes()) > 0
+	return m.pdSent
 }
 
 // heldPrefixes is the prefix set a Renew or Rebind carries: the lease's, or on
