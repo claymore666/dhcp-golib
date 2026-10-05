@@ -3,6 +3,7 @@
 package lease
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 )
 
 // BuildRelease renders the one release datagram that gives a record's lease
-// back, and the address it goes to.
+// back, and the address it goes to. For a record whose prefixes came from
+// another server (PrefixServerDUID) it is the IA_NA's datagram alone, and the
+// IA_PD's is BuildReleases'.
 //
 // It is the RECORD path, and it exists beside proto.Machine's release because
 // the two answer different questions. The machine releases a lease it is
@@ -63,6 +66,51 @@ func BuildRelease(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	default:
 		return nil, netip.AddrPort{}, fmt.Errorf("%w: %s", ErrReleaseFamily, rec.Family)
 	}
+}
+
+// ReleaseDatagram is one datagram of a record's release and where it goes.
+type ReleaseDatagram struct {
+	Payload []byte
+	Dest    netip.AddrPort
+}
+
+// BuildReleases is BuildRelease for every server that allocated the record's
+// leases, RFC 8415 section 18.2.7: a second datagram, with xid+1 and the IA_PD
+// alone, goes to PrefixServerDUID when it is set (claymore666/dhcp-golib#70).
+func BuildReleases(rec Record, xid uint32) ([]ReleaseDatagram, error) {
+	payload, dst, err := BuildRelease(rec, xid)
+	if err != nil {
+		return nil, err
+	}
+	out := []ReleaseDatagram{{Payload: payload, Dest: dst}}
+	if rec.Family != FamilyV6 || !splitRecord(rec.Lease) {
+		return out, nil
+	}
+	pd, err := releasePD(rec.Lease)
+	if err != nil || pd == nil {
+		return out, err
+	}
+	msg := &wire.MessageV6{
+		Type: wire.MsgRelease6,
+		XID:  (xid + 1) & (wire.MaxXID6 - 1),
+		Options: wire.OptionsV6{
+			{Code: wire.OptV6ClientID, Data: rec.Identity[:len(rec.Identity)-iaidLen]},
+			{Code: wire.OptV6ServerID, Data: rec.Lease.PrefixServerDUID},
+			*pd,
+			{Code: wire.OptV6ElapsedTime, Data: []byte{0, 0}},
+		},
+	}
+	payload, err = wire.EncodeV6(msg)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, ReleaseDatagram{Payload: payload, Dest: dst}), nil
+}
+
+// splitRecord reports whether the record's prefixes name a server of their
+// own, RFC 8415 section 18.2.7 (claymore666/dhcp-golib#70).
+func splitRecord(l Lease) bool {
+	return len(l.PrefixServerDUID) > 0 && !bytes.Equal(l.PrefixServerDUID, l.ServerDUID)
 }
 
 // The refusals BuildRelease returns, each its own value so that a caller can
@@ -276,7 +324,7 @@ func buildRelease6(rec Record, xid uint32) ([]byte, netip.AddrPort, error) {
 	if err != nil {
 		return nil, netip.AddrPort{}, err
 	}
-	if pd != nil {
+	if pd != nil && !splitRecord(rec.Lease) {
 		opts = append(opts, *pd)
 	}
 

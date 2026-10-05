@@ -112,6 +112,15 @@ prefix, temporary address or address of several whose valid lifetime ends while
 the lease is bound now leaves the lease at that instant, and the caller gets a
 `Changed` event; the lease still ends with its last address
 ([#65](https://github.com/claymore666/dhcp-golib/issues/65)).
+v1.4.3 fixes a DHCPv6 lease whose address and prefix come from different
+servers. A Reply that names fewer IAs than the client holds no longer moves the
+others to the server that answered: each IA keeps its server and its T1 and T2,
+a Renew goes to each server with its own IAs, and a Release goes to each server
+for what it holds
+([#70](https://github.com/claymore666/dhcp-golib/issues/70)). The new
+`PrefixServerDUID` on `proto.Lease6`, `proto.Resume6` and `lease.Lease`, and
+`lease.BuildReleases` with its return type `lease.ReleaseDatagram`, carry the
+fix; nothing else in the API changes.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -124,7 +133,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v142).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v143).
 
 ## Usage
 

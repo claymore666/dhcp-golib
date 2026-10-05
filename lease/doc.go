@@ -57,8 +57,9 @@
 // bound, on the link the lease was taken on. BuildRelease covers the other
 // case: the container is gone, the link went with it, and the record is all
 // that is left. It renders one datagram and the address to send it to, and it
-// knows nothing about the source address. runtime.SendRelease is the caller
-// facing half and takes the source from its caller.
+// knows nothing about the source address. BuildReleases adds the IA_PD's own
+// datagram when another server delegated the prefix. runtime.SendRelease is
+// the caller facing half and takes the source from its caller.
 //
 // # The ports
 //

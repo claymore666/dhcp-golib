@@ -81,6 +81,19 @@ type Lease6 struct {
 	// both: a v6 server is named by opaque bytes, not by an address.
 	ServerDUID []byte
 
+	// PrefixServerDUID names the server that delegated Prefixes when it is not
+	// ServerDUID and is empty otherwise, since a Reply that omits an IA leaves
+	// that IA's leases unchanged, RFC 8415 section 18.2.10.1
+	// (claymore666/dhcp-golib#70).
+	PrefixServerDUID []byte
+
+	// pdT1 and pdT2 are the IA_PD's own times, counted from pdStart when
+	// pdTimed and from Start otherwise; pdTimed is set once the IA_PD and the
+	// IA_NA come from different Replies (claymore666/dhcp-golib#70).
+	pdT1, pdT2 Duration
+	pdStart    Instant
+	pdTimed    bool
+
 	// T1 and T2 as the server supplied them, zero when it supplied none.
 	// They are NOT defaulted here — see Deadlines, which applies §21.4's
 	// recommendation where it belongs, at the point of use.
@@ -343,8 +356,22 @@ func (l Lease6) Deadlines() Deadlines {
 		return d
 	}
 
-	pref := l.shortestPreferred()
-	renew, rebind := l.T1, l.T2
+	if l.pdTimed && len(l.Prefixes) > 0 {
+		na, pd := l.groupDeadlines()
+		d.Note = na.Note
+		d.Renew, d.HasRenew = earliestDeadline(na.Renew, na.HasRenew, pd.Renew, pd.HasRenew)
+		d.Rebind, d.HasRebind = earliestDeadline(na.Rebind, na.HasRebind, pd.Rebind, pd.HasRebind)
+		return d
+	}
+	r := renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
+	d.Renew, d.HasRenew, d.Rebind, d.HasRebind, d.Note = r.Renew, r.HasRenew, r.Rebind, r.HasRebind, r.Note
+	return d
+}
+
+// renewTimes is §21.4's T1 and T2 for one group of IAs, counted from start.
+func renewTimes(t1, t2 Duration, start Instant, pref, valid Duration) Deadlines {
+	var d Deadlines
+	renew, rebind := t1, t2
 	if renew <= 0 || rebind <= 0 {
 		// §21.4: "If the 'shortest' preferred lifetime is 0xffffffff
 		// ('infinity'), the recommended T1 and T2 values are also
@@ -404,12 +431,89 @@ func (l Lease6) Deadlines() Deadlines {
 	}
 
 	if renew > 0 {
-		d.Renew, d.HasRenew = l.Start.Add(renew), true
+		d.Renew, d.HasRenew = start.Add(renew), true
 	}
 	if rebind > 0 {
-		d.Rebind, d.HasRebind = l.Start.Add(rebind), true
+		d.Rebind, d.HasRebind = start.Add(rebind), true
 	}
 	return d
+}
+
+// groupDeadlines is the renewal times of the IA_NA (with the IA_TA) and of the
+// IA_PD apart: one group's times are never another's (RFC 8415 section
+// 18.2.10.1; claymore666/dhcp-golib#70).
+func (l Lease6) groupDeadlines() (na, pd Deadlines) {
+	valid := l.longestValid()
+	if !l.pdTimed {
+		d := renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
+		return d, d
+	}
+	na = renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
+	pref, pvalid, first := Duration(0), Duration(0), true
+	for _, p := range l.Prefixes {
+		if e, ok := expiry(l.Start, p.Preferred); ok && (first || e.Sub(l.pdStart) < pref) {
+			pref, first = e.Sub(l.pdStart), false
+		}
+		if e, ok := expiry(l.Start, p.Valid); !ok {
+			pvalid = Infinite
+		} else if !pvalid.IsInfinite() && e.Sub(l.pdStart) > pvalid {
+			pvalid = e.Sub(l.pdStart)
+		}
+	}
+	if first {
+		pref = Infinite
+	}
+	pd = renewTimes(l.pdT1, l.pdT2, l.pdStart, pref, pvalid)
+	return na, pd
+}
+
+func earliestDeadline(a Instant, hasA bool, b Instant, hasB bool) (Instant, bool) {
+	if !hasA || hasB && b.Before(a) {
+		return b, hasB
+	}
+	return a, true
+}
+
+// prefixServer is the DUID of the server that delegated Prefixes.
+func (l Lease6) prefixServer() []byte {
+	if len(l.PrefixServerDUID) > 0 {
+		return l.PrefixServerDUID
+	}
+	return l.ServerDUID
+}
+
+// split reports whether the IA_PD names a different server from the IA_NA:
+// canonPD leaves PrefixServerDUID set only then (claymore666/dhcp-golib#70).
+func (l Lease6) split() bool {
+	return len(l.PrefixServerDUID) > 0
+}
+
+// canonPD clears the IA_PD's own server and times when they say nothing more
+// than ServerDUID and T1/T2 would (claymore666/dhcp-golib#70).
+func (l *Lease6) canonPD() {
+	if len(l.Prefixes) == 0 {
+		l.PrefixServerDUID, l.pdT1, l.pdT2, l.pdStart, l.pdTimed = nil, 0, 0, 0, false
+		return
+	}
+	if sameDUID(l.PrefixServerDUID, l.ServerDUID) {
+		l.PrefixServerDUID = nil
+	}
+}
+
+// pdOrigin is the instant pdT1 and pdT2 count from.
+func (l Lease6) pdOrigin() Instant {
+	if l.pdTimed {
+		return l.pdStart
+	}
+	return l.Start
+}
+
+// sameT is two renewal times equal as durations or ending at the same instant.
+func sameT(s1 Instant, a Duration, s2 Instant, b Duration) bool {
+	if a == b {
+		return true
+	}
+	return a > 0 && b > 0 && s1.Add(a) == s2.Add(b)
 }
 
 // Equal reports whether two leases would configure the interface identically.
@@ -445,7 +549,10 @@ func (l Lease6) Equal(o Lease6) bool {
 			return false
 		}
 	}
-	if !sameDUID(l.ServerDUID, o.ServerDUID) {
+	if !sameDUID(l.ServerDUID, o.ServerDUID) || !sameDUID(l.prefixServer(), o.prefixServer()) {
+		return false
+	}
+	if (l.pdTimed || o.pdTimed) && !(sameT(l.pdOrigin(), l.pdT1, o.pdOrigin(), o.pdT1) && sameT(l.pdOrigin(), l.pdT2, o.pdOrigin(), o.pdT2)) {
 		return false
 	}
 	return l.T1 == o.T1 && l.T2 == o.T2 &&

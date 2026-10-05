@@ -92,12 +92,13 @@ var (
 	ErrReleaseSourceIsReleased = errors.New("runtime: the source address is the address being released (RFC 9915 section 18.2.7)")
 )
 
-// SendRelease gives a record's lease back: one datagram, sent once,
-// synchronously, from a source the caller chose.
+// SendRelease gives a record's lease back: one datagram, or a second one for
+// the IA_PD when another server delegated it, each sent once, synchronously,
+// from a source the caller chose.
 //
 // IT NEEDS NO CLIENT, NO MACHINE AND NO NAMESPACE. That is what it is for. A
 // container that has been removed took its link and its socket with it; what
-// is left is the record, and this turns the record into the one message that
+// is left is the record, and this turns the record into the message that
 // tells the server the address is free. proto.Machine's release is the other
 // path and is unchanged: it releases a lease it is still holding, from the
 // address it is holding.
@@ -145,10 +146,11 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		rnd = e
 	}
 
-	payload, dst, err := lease.BuildRelease(rec, uint32(rnd.Uint64()))
+	grams, err := lease.BuildReleases(rec, uint32(rnd.Uint64()))
 	if err != nil {
 		return err
 	}
+	dst := grams[0].Dest
 
 	if src.Is4() != dst.Addr().Is4() {
 		return fmt.Errorf("%w: %s", ErrReleaseSourceFamily, cfg.Source)
@@ -179,7 +181,13 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		}
 	}
 
-	return send(netip.AddrPortFrom(src, port), dst, cfg.Interface, payload)
+	// a split lease is released with each server for its own IAs, RFC 8415
+	// section 18.2.7 (claymore666/dhcp-golib#70).
+	var errs []error
+	for _, g := range grams {
+		errs = append(errs, send(netip.AddrPortFrom(src, port), g.Dest, cfg.Interface, g.Payload))
+	}
+	return errors.Join(errs...)
 }
 
 // sendOneDatagram is the real transport: an ordinary UDP socket, bound to the
