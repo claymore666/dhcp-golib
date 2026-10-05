@@ -451,3 +451,51 @@ func TestARequestAfterAOneServerNoBindingRunsThroughT2AndTheExpiry(t *testing.T)
 		t.Errorf("the lease's end during the one-server Request left the machine in %s, want the Request running", s)
 	}
 }
+
+// split6NoBindingFromB is split6LongPrefix to B's NoBinding for the IA_NA at
+// its T1 and the Request for the IA_NA alone that follows; B stays silent.
+func split6NoBindingFromB(t *testing.T) (*Machine6, Deadlines) {
+	t.Helper()
+	m, _ := split6LongPrefix(t)
+	l, _ := m.Lease()
+	d := l.Deadlines()
+	_, acts := m.Step(d.Renew, 7, TimerFired(Timer6Renew))
+	ren := mustSendV6(t, acts, wire.MsgRenew)
+	nb := optIANA(t, capIAID, 0, 0, nil, optStatus(wire.StatusNoBinding))
+	_, acts = m.Step(d.Renew, 0, split6Reply(t, ren.XID, testServerDUID, nb))
+	if sid, nas, pds := split6IAs(t, mustSendV6(t, acts, wire.MsgRequest6)); !bytes.Equal(sid, testServerDUID) || nas != 1 || pds != 0 {
+		t.Fatalf("the Request after B's NoBinding names %x with %d IA_NA and %d IA_PD, want B with the IA_NA alone", sid, nas, pds)
+	}
+	return m, d
+}
+
+// The Request for the IA_NA alone gives way at the lease's T2 to a Rebind
+// that carries both IAs, as the Request for the IA_PD does.
+func TestARequestForTheIANAGivesWayToARebindOfBothIAs(t *testing.T) {
+	m, d := split6NoBindingFromB(t)
+	s, acts := m.Step(d.Rebind, 0, TimerFired(Timer6Rebind))
+	if s != State6Rebinding || !hasSendV6(acts, wire.MsgRebind) {
+		t.Fatalf("T2 during the Request for the IA_NA left the machine in %s (Rebind sent %v), want a Rebind", s, hasSendV6(acts, wire.MsgRebind))
+	}
+	if sid, nas, pds := split6IAs(t, mustSendV6(t, acts, wire.MsgRebind)); len(sid) != 0 || nas != 1 || pds != 1 {
+		t.Errorf("the Rebind names server %x with %d IA_NA and %d IA_PD, want no server and both IAs", sid, nas, pds)
+	}
+}
+
+// The lease ends while the Request for the IA_NA alone runs: discovery
+// restarts and a Solicit goes out.
+func TestALeaseThatEndsDuringTheRequestForTheIANASolicits(t *testing.T) {
+	m, _ := split6NoBindingFromB(t)
+	l, _ := m.Lease()
+	now := l.Deadlines().Expire
+	s, acts := m.Step(now, 0, TimerFired(Timer6Expire))
+	if _, ok := m.Lease(); ok || s != State6Init {
+		t.Fatalf("the lease ended during the Request for the IA_NA and the machine is in %s (lease held %v), want discovery restarted", s, ok)
+	}
+	d, ok := timerSet(acts, Timer6Delay)
+	if !ok {
+		t.Fatalf("discovery restarted with no first Solicit armed: %v", acts)
+	}
+	_, acts = m.Step(now.Add(d), 0, TimerFired(Timer6Delay))
+	mustSendV6(t, acts, wire.MsgSolicit)
+}
