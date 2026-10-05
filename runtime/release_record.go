@@ -24,9 +24,9 @@ type ReleaseConfig struct {
 	//
 	// Required for a v6 release: the source is a link-local address and the
 	// destination is link-scoped multicast, and neither means anything without
-	// a zone. Optional for v4, where it binds the socket to the device so that
-	// the datagram leaves by the parent rather than by whatever the host's
-	// route table prefers.
+	// a link; the socket is bound to this device by name. Optional for v4,
+	// where it also binds the socket to the device so that the datagram leaves
+	// by the parent rather than by whatever the host's route table prefers.
 	Interface string
 
 	// Source is the address the datagram comes from. Required, and the
@@ -78,7 +78,7 @@ var (
 	ErrReleaseSourceFamily = errors.New("runtime: ReleaseConfig.Source is in the other address family from the record")
 
 	// ErrReleaseNoInterface is a v6 release with no interface. A link-local
-	// source and a link-scoped multicast destination both need the zone.
+	// source and a link-scoped multicast destination both need a link.
 	ErrReleaseNoInterface = errors.New("runtime: ReleaseConfig.Interface is required for a v6 release")
 
 	// ErrReleaseSourceIsReleased is RFC 9915 section 18.2.7's second MUST NOT,
@@ -209,11 +209,13 @@ func sendOneDatagram(src, dst netip.AddrPort, iface string, payload []byte) erro
 		network = "udp6"
 	}
 
-	la := net.UDPAddrFromAddrPort(src)
+	// no zone, not even one on the caller's Source, so the device binding is
+	// the socket's only link: Go resolves a zone name through a process-wide
+	// cache that is up to 60 s stale and blind to the network namespace, and
+	// the kernel lets that index override SO_BINDTODEVICE at bind
+	// (claymore666/dhcp-golib#74).
+	la := net.UDPAddrFromAddrPort(netip.AddrPortFrom(src.Addr().WithZone(""), src.Port()))
 	ra := net.UDPAddrFromAddrPort(dst)
-	if network == "udp6" {
-		la.Zone, ra.Zone = iface, iface
-	}
 
 	d := net.Dialer{LocalAddr: la}
 	if iface != "" {
@@ -221,7 +223,7 @@ func sendOneDatagram(src, dst netip.AddrPort, iface string, payload []byte) erro
 	}
 	conn, err := d.Dial(network, ra.String())
 	if err != nil {
-		return fmt.Errorf("runtime: opening the release socket %s -> %s: %w", la, ra, err)
+		return fmt.Errorf("runtime: opening the release socket %s -> %s on %s: %w", la, ra, iface, err)
 	}
 	defer conn.Close()
 
