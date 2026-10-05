@@ -13,7 +13,9 @@ import (
 )
 
 // BuildRelease renders the one release datagram that gives a record's lease
-// back, and the address it goes to.
+// back, and the address it goes to. For a record whose prefixes came from
+// another server (PrefixServerDUID) it is the IA_NA's datagram alone, and the
+// IA_PD's is BuildReleases'.
 //
 // It is the RECORD path, and it exists beside proto.Machine's release because
 // the two answer different questions. The machine releases a lease it is
