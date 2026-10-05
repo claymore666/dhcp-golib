@@ -1020,7 +1020,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # NAMESPACE, dhcp-golib#74: three added, none removed, MEASURED as testroster
 # runs, 1404 before and 1407 here. runtime/release_zone_linux_test.go 3, all
 # three netns tests, 72 -> 75 by testroster -netns.
-MIN_DECLARED_TESTS=1407
+#
+# A ZERO-WINDOW READ OF THE ROUTER ADVERTISEMENT OBSERVER, dhcp-golib#74: one
+# added, none removed, MEASURED as testroster runs, 1407 before and 1408 here.
+# runtime/dnsmasq6_linux_test.go 1; no netns test.
+MIN_DECLARED_TESTS=1408
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

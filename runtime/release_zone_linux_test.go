@@ -7,12 +7,14 @@ package runtime
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	gosched "runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,39 +92,14 @@ func newReleaseWatch(t *testing.T, ifName string) *releaseWatch {
 
 // next returns the UDP payload of the first datagram to port 547 seen on the
 // link within the window; the deadline is the socket's (gate T2).
-func (w *releaseWatch) next(t *testing.T, within time.Duration) ([]byte, netip.Addr, bool) {
+func (w *releaseWatch) next(t *testing.T, within time.Duration) ([]byte, netip.AddrPort, bool) {
 	t.Helper()
 	buf := make([]byte, maxFrame)
-	read := w.f.Read
-	if within > 0 {
-		if err := w.f.SetReadDeadline(time.Now().Add(within)); err != nil {
-			t.Fatalf("the observer's read deadline: %v", err)
-		}
-	} else {
-		// a passed deadline, this call's or an earlier one's, fails in the
-		// poller before any read, so a zero window clears it and drains what
-		// is queued with non-blocking reads.
-		if err := w.f.SetReadDeadline(time.Time{}); err != nil {
-			t.Fatalf("the observer's read deadline: %v", err)
-		}
-		rc, err := w.f.SyscallConn()
-		if err != nil {
-			t.Fatalf("the observer's raw conn: %v", err)
-		}
-		read = func(b []byte) (n int, err error) {
-			if cerr := rc.Read(func(fd uintptr) bool {
-				n, err = syscall.Read(int(fd), b)
-				return true
-			}); cerr != nil {
-				return 0, cerr
-			}
-			return n, err
-		}
-	}
+	read := windowedRead(t, w.f, within)
 	for {
 		n, err := read(buf)
 		if err != nil || n <= 0 {
-			return nil, netip.Addr{}, false
+			return nil, netip.AddrPort{}, false
 		}
 		frame := buf[:n]
 		if n < ipv6HeaderLen+8 || frame[0]>>4 != ipv6Version || frame[6] != syscall.IPPROTO_UDP {
@@ -132,7 +109,8 @@ func (w *releaseWatch) next(t *testing.T, within time.Duration) ([]byte, netip.A
 		if binary.BigEndian.Uint16(udp[2:4]) != ServerPort6 {
 			continue
 		}
-		return append([]byte(nil), udp[8:]...), netip.AddrFrom16([16]byte(frame[8:24])), true
+		from := netip.AddrPortFrom(netip.AddrFrom16([16]byte(frame[8:24])), binary.BigEndian.Uint16(udp[0:2]))
+		return append([]byte(nil), udp[8:]...), from, true
 	}
 }
 
@@ -166,8 +144,8 @@ func expectRelease(t *testing.T, what string, w, wrong *releaseWatch, want []byt
 			t.Fatalf("%s: the Release never reached %s; it went to %s", what, w.ifName, where)
 		}
 		if bytes.Equal(got, want) {
-			if src != netip.MustParseAddr(zoneSrc) {
-				t.Errorf("%s: the Release arrived from %s, not %s", what, src, zoneSrc)
+			if wantSrc := netip.AddrPortFrom(netip.MustParseAddr(zoneSrc), ClientPort6); src != wantSrc {
+				t.Errorf("%s: the Release arrived from %s, not %s", what, src, wantSrc)
 			}
 			return
 		}
@@ -193,19 +171,38 @@ func releaseAfterRecreate(t *testing.T) {
 	}
 	expectRelease(t, "first link", w, nil, want)
 
-	mustRun(t, "ip", "link", "del", zoneCliIf)
-	zoneLink(t, zoneCliIf, zoneSrvIf)
-	if second := zoneIndex(t, zoneCliIf); second == first {
-		t.Fatalf("premise: %s came back with the same index %d; the recreate changed nothing", zoneCliIf, first)
-	}
-	w = newReleaseWatch(t, zoneSrvIf)
-
+	// one recreate per source: a successful send reads the bound address back
+	// and a miss in Go's zone cache refreshes it, so the send after a plain
+	// source would find the cache fresh for the zoned one.
+	prev := first
 	for i, s := range []netip.Addr{src, src.WithZone(zoneCliIf)} {
+		mustRun(t, "ip", "link", "del", zoneCliIf)
+		zoneLink(t, zoneCliIf, zoneSrvIf)
+		if now := zoneIndex(t, zoneCliIf); now == prev {
+			t.Fatalf("premise: %s came back with the same index %d; the recreate changed nothing", zoneCliIf, prev)
+		} else {
+			prev = now
+		}
+		w = newReleaseWatch(t, zoneSrvIf)
 		want, err := zoneSend(t, s, zoneCliIf, uint64(2+i))
 		if err != nil {
 			t.Fatalf("the Release from %s after %s was recreated: %v", s, zoneCliIf, err)
 		}
 		expectRelease(t, "recreated link, source "+s.String(), w, nil, want)
+	}
+
+	// a source the link does not hold fails at bind, and the error names the
+	// link that was asked for.
+	_, err = zoneSend(t, netip.MustParseAddr("fe80::77"), zoneCliIf, 8)
+	if !errors.Is(err, syscall.EADDRNOTAVAIL) || !strings.Contains(err.Error(), zoneCliIf) {
+		t.Fatalf("a Release from an address %s does not hold returned %v, want EADDRNOTAVAIL naming it", zoneCliIf, err)
+	}
+
+	// a link that is gone is an error that names it.
+	mustRun(t, "ip", "link", "del", zoneCliIf)
+	_, err = zoneSend(t, src, zoneCliIf, 9)
+	if !errors.Is(err, syscall.ENODEV) || !strings.Contains(err.Error(), zoneCliIf) {
+		t.Fatalf("a Release on a link that is gone returned %v, want ENODEV naming %s", err, zoneCliIf)
 	}
 }
 
