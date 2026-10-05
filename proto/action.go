@@ -87,8 +87,10 @@ const (
 	// exchange, and the next delay can only be armed by a state that has
 	// already left this one.
 	Timer6Delay
-	// Timer6Expire is the moment the last valid lifetime in the IA runs out
-	// (§21.6). It is the v6 lease expiry.
+	// Timer6Expire is the next valid lifetime to run out in a lease a server
+	// granted: an address, temporary address or prefix of several leaves the
+	// lease, and the last address ends it (§6.2, §6.3, §18.2.5). One timer for
+	// every binding, for Timer6SLAAC's reason below (dhcp-golib#65).
 	Timer6Expire
 	// Timer6Renew is T1 (§21.4, §18.2.4).
 	Timer6Renew
@@ -136,10 +138,10 @@ const (
 	// address would have needed an id space the size of MaxSLAACAddresses,
 	// which ring 3's timer table indexes by id.
 	//
-	// It is NOT Timer6Expire. That one is the IA_NA's aggregate expiry and it
-	// ends the lease; this one usually does not — an address of several
-	// reaching its valid lifetime leaves the others standing, and only the
-	// last one ends the lease.
+	// It is not Timer6Expire, which serves a lease a server granted; the
+	// SLAAC bind cancels that one. Here too an address of several reaching its
+	// valid lifetime leaves the others standing, and only the last one ends
+	// the lease.
 	Timer6SLAAC
 	// Timer6AutoFallback is Mode6Auto's budget for DHCPv6 after a router said
 	// M=1: when it fires with no lease in hand, the machine forms an address

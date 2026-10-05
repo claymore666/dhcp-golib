@@ -348,8 +348,10 @@ func TestAnIAPDWithNoPrefixReachesStatsAsRefused(t *testing.T) {
 }
 
 // TestARenewalThatChangesThePrefixReachesStatsAsChanged: the Reply to the
-// Renew names another prefix than the one held, and the event the caller gets
-// carries the new one.
+// Renew names another prefix than the one held and leaves the held one out, so
+// the event the caller gets carries both: the held prefix stands until its own
+// valid lifetime ends and the new one joins it (RFC 8415 section 18.2.10.1;
+// claymore666/dhcp-golib#64).
 func TestARenewalThatChangesThePrefixReachesStatsAsChanged(t *testing.T) {
 	const second = "2001:db8:1:200::/64"
 	base := answerNormally6(t)
@@ -378,8 +380,9 @@ func TestARenewalThatChangesThePrefixReachesStatsAsChanged(t *testing.T) {
 	r.clock.advance(renewAt)
 	r.timers.fire(proto.Timer6Renew)
 	ev := r.nextEvent(t)
-	if ev.Kind != Renewed || len(ev.Lease.Prefixes) != 1 || ev.Lease.Prefixes[0].Addr != netip.MustParsePrefix(second) {
-		t.Fatalf("the event after T1 is %s with prefixes %v, want renewed holding %s", ev, ev.Lease.Prefixes, second)
+	if ev.Kind != Renewed || len(ev.Lease.Prefixes) != 2 ||
+		ev.Lease.Prefixes[0].Addr != netip.MustParsePrefix(pfxFirst) || ev.Lease.Prefixes[1].Addr != netip.MustParsePrefix(second) {
+		t.Fatalf("the event after T1 is %s with prefixes %v, want renewed holding %s then %s", ev, ev.Lease.Prefixes, pfxFirst, second)
 	}
 	requirePrefix(t, r, proto.Prefix6Counters{Granted: 1, Changed: 1})
 	if w := foldTwoManagers6(t, r.mgr.Stats()); w.PrefixesChanged != 2 || w.PrefixesGranted != 2 {

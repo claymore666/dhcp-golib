@@ -226,6 +226,58 @@ func (l Lease6) longestValid() Duration {
 	return out
 }
 
+// nextEnd is the earliest finite valid end of any address, temporary address or prefix in l (dhcp-golib#65).
+func (l Lease6) nextEnd() (Instant, bool) {
+	var at Instant
+	found := false
+	take := func(d Duration) {
+		if e, ok := expiry(l.Start, d); ok && (!found || e.Before(at)) {
+			at, found = e, true
+		}
+	}
+	for _, a := range l.Addrs {
+		take(a.Valid)
+	}
+	for _, a := range l.TempAddrs {
+		take(a.Valid)
+	}
+	for _, p := range l.Prefixes {
+		take(p.Valid)
+	}
+	return at, found
+}
+
+// withoutEnded is l less every binding whose valid lifetime has run out at now, in new slices, and how many left (dhcp-golib#65).
+func (l Lease6) withoutEnded(now Instant) (Lease6, int) {
+	ended := func(d Duration) bool {
+		e, ok := expiry(l.Start, d)
+		return ok && !now.Before(e)
+	}
+	n := 0
+	keep := func(as []Addr6) []Addr6 {
+		var out []Addr6
+		for _, a := range as {
+			if ended(a.Valid) {
+				n++
+				continue
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+	l.Addrs, l.TempAddrs = keep(l.Addrs), keep(l.TempAddrs)
+	var ps []Prefix6
+	for _, p := range l.Prefixes {
+		if ended(p.Valid) {
+			n++
+			continue
+		}
+		ps = append(ps, p)
+	}
+	l.Prefixes = ps
+	return l, n
+}
+
 // PreferredUntil is when the shortest preferred lifetime in the IA runs out,
 // and reports false for an infinite one or an empty IA.
 //
@@ -369,7 +421,8 @@ func (l Lease6) Equal(o Lease6) bool {
 		return false
 	}
 	for i := range l.Addrs {
-		if l.Addrs[i] != o.Addrs[i] {
+		x, y := l.Addrs[i], o.Addrs[i]
+		if x.Addr != y.Addr || x.PrefixLen != y.PrefixLen || !sameLifetimes(l.Start, x.Preferred, x.Valid, o.Start, y.Preferred, y.Valid) {
 			return false
 		}
 	}
@@ -387,7 +440,8 @@ func (l Lease6) Equal(o Lease6) bool {
 		return false
 	}
 	for i := range l.Prefixes {
-		if l.Prefixes[i] != o.Prefixes[i] {
+		x, y := l.Prefixes[i], o.Prefixes[i]
+		if x.Prefix != y.Prefix || !sameLifetimes(l.Start, x.Preferred, x.Valid, o.Start, y.Preferred, y.Valid) {
 			return false
 		}
 	}
@@ -396,6 +450,16 @@ func (l Lease6) Equal(o Lease6) bool {
 	}
 	return l.T1 == o.T1 && l.T2 == o.T2 &&
 		addrsEqual(l.DNS, o.DNS) && stringsEqual(l.Search, o.Search)
+}
+
+// sameLifetimes is two lifetime pairs that are equal as durations or end at the
+// same instants: a lease a Reply left unnamed is carried with its own expiry
+// rebased onto the new Start, which is no change (claymore666/dhcp-golib#64).
+func sameLifetimes(s1 Instant, p1, v1 Duration, s2 Instant, p2, v2 Duration) bool {
+	if p1 == p2 && v1 == v2 {
+		return true
+	}
+	return sameEnd(s1, v1, s2, v2) && samePreferred(s1, p1, s2, p2)
 }
 
 // String is the diagnostic rendering. It builds through fmt.Sprintf and
@@ -442,15 +506,18 @@ type iaResult struct {
 	// indicated in a Status Code option".
 	status wire.StatusCode
 	found  bool
+	// zeroed is the addresses the IA names with a valid lifetime of 0.
+	zeroed []netip.Addr
 }
 
 // leaseFromReply builds a Lease6 from a Reply's IA_NA for iaid.
 //
-// It returns the notes for the journal and whether a usable lease came out.
+// It returns the addresses the IA_NA names with a valid lifetime of 0, the
+// notes for the journal and whether a usable lease came out.
 // EVERY REFUSAL IS A NOTE: sequencing §2.6's rule is that a discard is
 // invisible in a passing test, so a message that yields nothing must say which
 // of the six reasons applied.
-func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []string, wire.StatusCode, bool) {
+func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []netip.Addr, []string, wire.StatusCode, bool) {
 	var notes []string
 	l := Lease6{IAID: iaid, Start: sentAt, Options: append(wire.OptionsV6(nil), m.Options...)}
 	if sid, ok := m.Options.First(wire.OptV6ServerID); ok {
@@ -471,7 +538,7 @@ func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []s
 	res, ns := readIA(m.Options, iaid)
 	notes = append(notes, ns...)
 	if !res.found {
-		return Lease6{}, notes, wire.StatusSuccess, false
+		return Lease6{}, nil, notes, wire.StatusSuccess, false
 	}
 	if res.status == wire.StatusNoAddrsAvail && len(res.addrs) > 0 {
 		// §18.2.10.1: "The client uses the addresses, delegated prefixes, and
@@ -499,7 +566,46 @@ func leaseFromReply(m *wire.MessageV6, iaid uint32, sentAt Instant) (Lease6, []s
 	if note != "" {
 		notes = append(notes, note)
 	}
-	return l, notes, res.status, len(l.Addrs) > 0
+	return l, res.zeroed, notes, res.status, len(l.Addrs) > 0
+}
+
+// renewedAddrs is the IA_NA address set a Reply to a Renew or a Rebind leaves,
+// built as renewedPrefixes builds the prefix set: a held address the Reply does
+// not name keeps its own expiry, one named with a valid lifetime of 0 leaves,
+// and a new one is appended. §18.2.10.1: "Leave unchanged any information about
+// leases the client has recorded in the IA but that were not included in the IA
+// from the server" (claymore666/dhcp-golib#64).
+func renewedAddrs(held []Addr6, heldStart Instant, got []Addr6, zeroed []netip.Addr, newStart, now Instant) []Addr6 {
+	var out []Addr6
+	for _, h := range held {
+		if i := addrIndex(got, h.Addr); i >= 0 {
+			out = append(out, got[i])
+			continue
+		}
+		if containsAddr(zeroed, h.Addr) {
+			continue
+		}
+		c := h
+		var ok bool
+		if c.Preferred, c.Valid, ok = carryLifetimes(h.Preferred, h.Valid, heldStart, newStart, now); ok {
+			out = append(out, c)
+		}
+	}
+	for _, a := range got {
+		if addrIndex(held, a.Addr) < 0 {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func addrIndex(as []Addr6, a netip.Addr) int {
+	for i := range as {
+		if as[i].Addr == a {
+			return i
+		}
+	}
+	return -1
 }
 
 // readIA finds the IA_NA whose IAID is ours and reads it.
@@ -553,9 +659,10 @@ func readIA(o wire.OptionsV6, iaid uint32) (iaResult, []string) {
 		default:
 			out.status = wire.StatusSuccess
 		}
-		addrs, ans := iaAddrs(ia.Options, "IA Address option")
+		addrs, zs, ans := iaAddrs(ia.Options, "IA Address option")
 		notes = append(notes, ans...)
 		out.addrs = append(out.addrs, addrs...)
+		out.zeroed = append(out.zeroed, zs...)
 	}
 	if !out.found && len(ias) > 0 {
 		notes = append(notes, fmt.Sprintf("no IA_NA with our IAID %d in the message", iaid))
@@ -563,15 +670,16 @@ func readIA(o wire.OptionsV6, iaid uint32) (iaResult, []string) {
 	return out, notes
 }
 
-// iaAddrs reads the IA Address options of one IA and applies the discard rules
-// both IA types share. what names the option in the notes
-// (claymore666/docker-net-dhcp#927).
-func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []string) {
+// iaAddrs reads the IA Address options of one IA, applies the discard rules
+// both IA types share and returns the addresses named with a valid lifetime of
+// 0 apart. what names the option in the notes (claymore666/docker-net-dhcp#927).
+func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []netip.Addr, []string) {
 	var notes []string
 	var out []Addr6
+	var zeroed []netip.Addr
 	addrs, err := o.Addrs()
 	if err != nil {
-		return nil, append(notes, what+": "+err.Error())
+		return nil, nil, append(notes, what+": "+err.Error())
 	}
 	for _, a := range addrs {
 		// §21.6: "The client MUST discard any addresses for which the
@@ -586,6 +694,7 @@ func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []string) {
 		}
 		if a.ValidLifetime == 0 {
 			notes = append(notes, fmt.Sprintf("IA Address %s has a valid lifetime of 0: discarded (§18.2.10.1)", a.Addr))
+			zeroed = append(zeroed, a.Addr)
 			continue
 		}
 		if !a.Addr.Is6() || a.Addr.Is4In6() || a.Addr.IsUnspecified() {
@@ -598,7 +707,7 @@ func iaAddrs(o wire.OptionsV6, what string) ([]Addr6, []string) {
 			Valid:     SecondsToDuration(a.ValidLifetime),
 		})
 	}
-	return out, notes
+	return out, zeroed, notes
 }
 
 // serverFQDN reads a server's option 39 and the journal line that reports it.

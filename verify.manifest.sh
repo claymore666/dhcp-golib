@@ -999,7 +999,17 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # added, none removed, MEASURED as testroster runs, 1290 before and 1310 here.
 # proto/iid6_test.go 6, proto/machine6_iid_test.go 10, proto/sha256_test.go 2
 # and lease/snapshot6_iid_test.go 2; no netns test.
-MIN_DECLARED_TESTS=1325
+#
+# A RENEW/REBIND REPLY THAT LEAVES A HELD IA OUT, dhcp-golib#64: twenty added,
+# none removed, MEASURED as testroster runs, 1325 before and 1345 here.
+# proto/prefix6_keep_test.go 9, proto/prefix6_attack_test.go 10 and
+# lease/prefix_keep_test.go 1; no netns test.
+#
+# A SUB-BINDING WHOSE VALID LIFETIME ENDS WHILE BOUND, dhcp-golib#65: fourteen
+# added, none removed, MEASURED as testroster runs, 1345 before and 1359 here.
+# proto/subbinding6_expiry_test.go 13 and lease/subbinding_expiry6_test.go 1;
+# no netns test.
+MIN_DECLARED_TESTS=1359
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

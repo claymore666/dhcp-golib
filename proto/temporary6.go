@@ -66,7 +66,7 @@ func readIATA(o wire.OptionsV6, iaid uint32) (taResult, []string) {
 		default:
 			out.status = wire.StatusSuccess
 		}
-		addrs, ans := iaAddrs(ia.Options, "IA_TA Address option")
+		addrs, _, ans := iaAddrs(ia.Options, "IA_TA Address option")
 		notes = append(notes, ans...)
 		out.addrs = append(out.addrs, addrs...)
 	}
@@ -161,21 +161,32 @@ func carryTemp(prev []Addr6, prevStart, newStart, now Instant) []Addr6 {
 	var out []Addr6
 	for _, a := range prev {
 		c := a
-		if end, finite := expiry(prevStart, a.Valid); finite {
-			if !end.After(now) {
-				continue
-			}
-			c.Valid = end.Sub(newStart)
+		var ok bool
+		if c.Preferred, c.Valid, ok = carryLifetimes(a.Preferred, a.Valid, prevStart, newStart, now); ok {
+			out = append(out, c)
 		}
-		if pend, finite := expiry(prevStart, a.Preferred); finite {
-			c.Preferred = pend.Sub(newStart)
-			if c.Preferred < 0 {
-				c.Preferred = 0
-			}
-		}
-		out = append(out, c)
 	}
 	return out
+}
+
+// carryLifetimes rebases two lifetimes counted from prevStart onto newStart so
+// that they end at the same instants, clamps a passed preferred time to zero,
+// and reports false once the valid lifetime has passed at now
+// (claymore666/docker-net-dhcp#927, claymore666/dhcp-golib#64).
+func carryLifetimes(pref, valid Duration, prevStart, newStart, now Instant) (Duration, Duration, bool) {
+	if end, finite := expiry(prevStart, valid); finite {
+		if !end.After(now) {
+			return 0, 0, false
+		}
+		valid = end.Sub(newStart)
+	}
+	if pend, finite := expiry(prevStart, pref); finite {
+		pref = pend.Sub(newStart)
+		if pref < 0 {
+			pref = 0
+		}
+	}
+	return pref, valid, true
 }
 
 // tempEqual compares two temporary-address slices as Lease6.Equal compares the

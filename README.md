@@ -105,6 +105,13 @@ interface identifier as a `Params6` choice, retried on a duplicate address
 v1.4.1 makes a DHCPv6 Release list every address and prefix the client holds,
 an IA_TA for the temporary addresses and, on the record path, an IA_PD for the
 delegated prefixes ([#60](https://github.com/claymore666/dhcp-golib/issues/60)).
+v1.4.2 fixes two DHCPv6 lease-keeping faults. A Renew or Rebind Reply that
+leaves a held prefix or address out no longer drops it: the held binding keeps
+its own expiry ([#64](https://github.com/claymore666/dhcp-golib/issues/64)). A
+prefix, temporary address or address of several whose valid lifetime ends while
+the lease is bound now leaves the lease at that instant, and the caller gets a
+`Changed` event; the lease still ends with its last address
+([#65](https://github.com/claymore666/dhcp-golib/issues/65)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -117,7 +124,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v141).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v142).
 
 ## Usage
 
