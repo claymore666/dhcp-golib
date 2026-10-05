@@ -11,11 +11,12 @@ import (
 
 // bindToDevice returns a net.Dialer Control that pins the socket to one link.
 //
-// It is what makes ReleaseConfig.Interface mean something on the v4 path,
-// where the destination is an ordinary unicast address and the route table
-// would otherwise choose the link. A host with two interfaces on the parent's
-// subnet is the case: the release reaches the server either way, and only one
-// of the two ways is the link the lease was taken on.
+// It is the only link a release socket has on either path: v6 carries no
+// zone (claymore666/dhcp-golib#74), and on v4 the destination is an ordinary
+// unicast address and the route table would otherwise choose the link. A host
+// with two interfaces on the parent's subnet is the case: the release reaches
+// the server either way, and only one of the two ways is the link the lease
+// was taken on.
 //
 // A device that does not exist is an error here and not a silent fallback,
 // which is also the only way to tell this option apart from one that is
