@@ -349,9 +349,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   a resumed record has only the earlier of the two times, so it renews both
   groups then, and a prefix that ends takes its server out of the lease. A
   v1.4.2 journal record, which has no `prefix_server_duid`, loads as one server
-  and releases with the same bytes. These run in [`proto`](../proto), in the
-  lease manager and in `runtime` on a fake clock with two servers; no fixture
-  here runs two servers
+  and releases with the same bytes. The renewal and the wait run in
+  [`proto`](../proto) and the lease manager on a fake clock with two servers,
+  and the record tests build their records by hand; no fixture here runs two
+  servers
   (`TestAResumedSplitRecordRenewsThePrefixWithTheServerThatDelegatedIt`,
   `TestAResumedSplitRecordKeepsItsT1ForThePrefix`,
   `TestAResumeStartedLateCountsThePrefixTimesFromItsRebind`,
@@ -432,9 +433,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   IA_PD goes in a second datagram, with its own transaction ID and the Server ID
   of the server that delegated it, §18.2.7: "The client places the identifier of
   the server that allocated the lease(s) in a Server Identifier option".
-  `lease.BuildReleases` returns the datagrams, `runtime.SendRelease` writes each
-  one even when an earlier write failed and returns every error, and a client
-  still bound sends the same two
+  `lease.BuildReleases` returns the datagrams, and `lease.BuildRelease` alone
+  renders the IA_NA's datagram and leaves the IA_PD out of a split record.
+  `runtime.SendRelease` writes each datagram even when an earlier write failed
+  and returns every error, and a client still bound sends the same two
   (`TestBuildReleasesSendsOneReleaseUnlessThePrefixHasItsOwnServer`,
   `TestASplitRecordReleasesEachIAWithItsOwnServer`,
   `TestASplitRecordIsReleasedWithBothServersEvenWhenOneWriteFails`,

@@ -119,7 +119,8 @@ a Renew goes to each server with its own IAs, and a Release goes to each server
 for what it holds
 ([#70](https://github.com/claymore666/dhcp-golib/issues/70)). The new
 `PrefixServerDUID` on `proto.Lease6`, `proto.Resume6` and `lease.Lease`, and
-`lease.BuildReleases`, carry the fix; nothing else in the API changes.
+`lease.BuildReleases` with its return type `lease.ReleaseDatagram`, carry the
+fix; nothing else in the API changes.
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
