@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.4.2
+## Coverage by claim, through v1.4.3
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -288,34 +288,77 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `ServerDUID` for the IA_NA and `PrefixServerDUID` for the IA_PD, which is
   empty whenever one server holds both. Each server is renewed with its own IAs
   at its own T1, RFC 8415 §18.2.4: "the client sends a Renew message to the
-  server from which the leases were obtained". A Rebind still carries every held
-  IA, and no Server ID, as §18.2.5 has it. A Renew or Rebind Reply that leaves
-  out an IA due for renewal is rate-limited, §18.2.10.1: "the client MUST
-  rate-limit its transmissions ... and MAY just wait for the normal
-  retransmission time"; the next Reply that names it clears the hold-off. The
-  hold-off delays the IA_PD's T1 and T2 only: the IA_NA renews at its own, and
-  once the IA_PD's T2 has passed its next exchange is a Rebind alone. A
-  NoBinding to the Renew of one server sends a Request for that server's IAs
-  only. That Request runs inside the held lease: at the lease's T2 it gives way
-  to a Rebind of every IA, §18.2.4 ends the exchange "when the earliest time T2
-  is reached", and at the lease's expiry it restarts discovery. A Rebind Reply
-  that leaves out an IA_PD past its T1 holds the IA_PD's Renew off the same way.
-  The
-  prefix keeps its own T1 and T2 while the lease is held; a resumed record has
-  only the earliest of the two, so it renews both groups then. A v1.4.2 journal
-  record, which has no `prefix_server_duid`, loads as one server. These run in
-  [`proto`](../proto) and in the lease manager on a fake clock with two servers;
-  no fixture here runs two servers
+  server from which the leases were obtained". The lease's own Renew and
+  Rebind are the earliest of the two groups', and the prefix keeps its own T1
+  and T2 while the lease is held. A Rebind still
+  carries every held IA, and no Server ID, as §18.2.5 has it, and the first
+  Reply that names the IAs ends it. A lease held from one server whose Replies
+  name every IA is unchanged: one Renew and one Release with both IAs
   (`TestTheRenewAtThePrefixT1GoesToTheDelegatingServerWithTheIAPDAlone`,
   `TestAnIANAOnlyReplyLeavesThePrefixRenewalAtTheDelegatingServersT1`,
   `TestAPrefixOnlyRenewReplyKeepsTheIANA`,
-  `TestARenewReplyThatLeavesOutADueIAPDIsRateLimited`,
-  `TestAServerThatNeverNamesTheIAPDStillRenewsTheIANABeforeItsT2`,
-  `TestANoBindingForTheIAPDRequestsTheIAPDAloneFromItsServer`,
-  `TestARequestForTheIAPDGivesWayToTheIANAsRebind`,
-  `TestARebindReplyThatLeavesOutAPrefixDueForItsRenewHoldsTheRenewOff`,
+  `TestBsReplyToTheIANARenewKeepsThePrefixAtItsOwnT1`,
+  `TestAPrefixOnlyReplyIgnoresAnIATA`,
+  `TestASplitLeaseReportsTheServerThatDelegatedThePrefix`,
+  `TestASplitLeaseTimesThePrefixFromItsOwnReply`,
+  `TestEqualSeesThePrefixServerAndItsTimes`,
+  `TestEqualSeesAPrefixTimedByItsOwnReplyAgainstOneReplysTimes`,
   `TestTheDelegatingReplyFirstEndsTheRebindAndALaterReplyIsDiscarded`,
+  `TestTheRebindAfterAnUnansweredPrefixRenewCarriesBothIAs`,
+  `TestAJointLeaseKeepsOneRenewAndOneReleaseWithBothIAs`).
+  A Renew or Rebind Reply that leaves out an IA_PD that is due is
+  rate-limited, §18.2.10.1: "the client MUST rate-limit its transmissions ...
+  and MAY just wait for the normal retransmission time". The IA_PD's next
+  exchange waits one retransmission time, then longer on the retransmission
+  schedule, and the next Reply that names the IA_PD clears the wait. The wait
+  delays the IA_PD's T1 and T2 only: the IA_NA renews at its own, and once the
+  IA_PD's T2 has passed its next exchange is a Rebind without a Renew beside
+  it. A Rebind Reply that leaves out an IA_PD past its T1 holds the IA_PD's
+  Renew off the same way. A Reply to a message that did not carry the IA_PD
+  neither starts nor clears the wait
+  (`TestARenewReplyThatLeavesOutADueIAPDIsRateLimited`,
+  `TestAReplyThatNamesTheIAPDAgainClearsTheHoldOff`,
+  `TestAnIANAReplyThatCouldNotNameTheIAPDHoldsNothingOff`,
+  `TestAServerThatNeverNamesTheIAPDStillRenewsTheIANABeforeItsT2`,
+  `TestAnIANAOnlyServerKeepsTheIANAWhileTheDelegatingServerIsSilent`,
+  `TestAHeldOffIAPDPutsOneMessageOnTheWireAtATime`,
+  `TestARebindReplyThatLeavesOutADueIAPDIsRateLimited`,
+  `TestAReplyAfterThePrefixT1ButBeforeItsT2HoldsThePrefixRenewOff`,
+  `TestARebindReplyThatLeavesOutAPrefixDueForItsRenewHoldsTheRenewOff`,
+  `TestARequestForTheIANALeavesTheIAPDHoldOffStanding`).
+  A NoBinding to the Renew of one server sends a Request for that server's IAs
+  only, to that server; a NoBinding to a Rebind, or from the one server of a
+  joint lease, still sends a Request that names every IA. A Request for one
+  server's IAs runs inside the held lease: at the lease's T2 it gives way to a
+  Rebind of every IA, §18.2.4 ends the exchange "when the earliest time T2 is
+  reached", and at the lease's expiry it restarts discovery. One that goes
+  unanswered leaves the lease as held when it was for the IA_PD, and restarts
+  discovery, as before, when it was for the IA_NA
+  (`TestANoBindingForTheIAPDRequestsTheIAPDAloneFromItsServer`,
+  `TestANoBindingForTheIANARequestsTheIANAAloneAndKeepsThePrefix`,
+  `TestAnUnansweredRequestForTheIAPDKeepsTheSplitLease`,
+  `TestAnUnansweredRequestForTheIANAStillRestartsDiscovery`,
+  `TestARequestForTheIAPDGivesWayToTheIANAsRebind`,
+  `TestARequestForTheIANAGivesWayToARebindOfBothIAs`,
+  `TestALeaseThatEndsDuringTheRequestForTheIAPDRestartsDiscovery`,
+  `TestALeaseThatEndsDuringTheRequestForTheIANASolicits`,
+  `TestARequestAfterAOneServerNoBindingRunsThroughT2AndTheExpiry`).
+  The client runs one exchange at a time: while the Renew or Request for the
+  IA_PD is in flight the IA_NA's T1 waits, and the Rebind at the lease's T2
+  renews the IA_NA. The prefix's own T1 and T2 are not written to the journal:
+  a resumed record has only the earlier of the two times, so it renews both
+  groups then, and a prefix that ends takes its server out of the lease. A
+  v1.4.2 journal record, which has no `prefix_server_duid`, loads as one server
+  and releases with the same bytes. These run in [`proto`](../proto), in the
+  lease manager and in `runtime` on a fake clock with two servers; no fixture
+  here runs two servers
+  (`TestAResumedSplitRecordRenewsThePrefixWithTheServerThatDelegatedIt`,
+  `TestAResumedSplitRecordKeepsItsT1ForThePrefix`,
+  `TestAResumeStartedLateCountsThePrefixTimesFromItsRebind`,
+  `TestAPrefixThatEndsTakesItsServerOutOfTheLease`,
   `TestAResumedSplitRecordRenewsThePrefixWithItsOwnServer`,
+  `TestAPrefixThatBLeftOutStaysWithTheServerThatDelegatedIt`,
+  `TestCloneLeaseCopiesThePrefixServer`,
   `TestAV142JournalRecordLoadsAsOneServerWithTheSameRelease`).
 - **A binding that leaves the lease when its valid lifetime ends while bound.**
   `Timer6Expire` is armed for the next valid end in the lease, not only the
@@ -386,9 +429,19 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   in the same datagram, as an IA_TA and an IA_PD after the IA_NA, each with the
   record's IAID and one entry per address or prefix at lifetime zero (RFC 8415
   §18.2.7). When the prefixes came from another server than the address, the
-  IA_PD goes in a second datagram to that server, §18.2.7: "The client places
-  the identifier of the server that allocated the lease(s) in a Server
-  Identifier option" (`TestASplitRecordReleasesEachIAWithItsOwnServer`). An entry that cannot go on the wire (invalid, v4-mapped, an
+  IA_PD goes in a second datagram, with its own transaction ID and the Server ID
+  of the server that delegated it, §18.2.7: "The client places the identifier of
+  the server that allocated the lease(s) in a Server Identifier option".
+  `lease.BuildReleases` returns the datagrams, `runtime.SendRelease` writes each
+  one even when an earlier write failed and returns every error, and a client
+  still bound sends the same two
+  (`TestBuildReleasesSendsOneReleaseUnlessThePrefixHasItsOwnServer`,
+  `TestASplitRecordReleasesEachIAWithItsOwnServer`,
+  `TestASplitRecordIsReleasedWithBothServersEvenWhenOneWriteFails`,
+  `TestASplitLeaseReleasesEachIAWithItsOwnServer`,
+  `TestARestartDuringASplitReleaseLeavesNoPrefixReleaseBehind`,
+  `TestTheSplitReleaseDocsSitOnTheirOwnDeclarations`). An entry that cannot go
+  on the wire (invalid, v4-mapped, an
   unspecified address, a prefix with no bits) is left out, so the stable address
   still releases. A record with neither sends the datagram it always did, and
   after a record Release that carries a prefix Kea's lease file shows the PD row
