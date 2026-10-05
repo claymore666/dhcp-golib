@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.4.1
+## Coverage by claim, through v1.4.2
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -236,11 +236,83 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestADnsmasqThatCannotDelegateLeavesTheAddressAlone`). A lease resumed with a
   prefix sends a Rebind and no Confirm, as RFC 8415 §18.2.12 has it, and Kea's
   row is renewed (`TestKeaSeesAResumedPrefixRebind`). The refusals, the
-  earliest T1 and T2 across the IAs, a prefix changed or dropped by a renewal,
-  a prefix or temporary address that leaves the lease when its valid lifetime
-  ends while bound, and the resumed Rebind's three outcomes are driven in
-  [`proto`](../proto), where the Reply and the clock can be chosen. The Kea tests run in a mount namespace so its lease
-  database sits under the one directory it accepts.
+  earliest T1 and T2 across the IAs, a prefix a renewal changes or ends with a
+  valid lifetime of zero, a prefix or temporary address that leaves the lease when
+  its valid lifetime ends while bound, and the resumed Rebind's three outcomes
+  are driven in [`proto`](../proto), where the Reply and the clock can be
+  chosen. The Kea tests run in a mount namespace so its lease database sits
+  under the one directory it accepts.
+- **A Renew or Rebind Reply that leaves a held binding out.** A Reply that
+  carries no IA_PD, or an IA_PD that names none of the held prefixes, leaves
+  the held prefixes in the lease, and a Reply whose IA_NA names some of the
+  held addresses keeps the others the same way. RFC 8415 §18.2.10.1: "Leave unchanged
+  any information about leases the client has recorded in the IA but that were
+  not included in the IA from the server". A binding the Reply does not name
+  keeps its own expiry, so its lifetimes are rebased onto the new lease start
+  and end at the same instant as before; it leaves once its valid lifetime has
+  passed. One the Reply names takes the Reply's lifetimes, and one named with a
+  valid lifetime of zero leaves. Two leases that differ only by that rebasing are
+  equal, so a carry is no `ActLeaseChanged`. These run in [`proto`](../proto)
+  and in the lease manager on a fake clock, where the Reply can be chosen, and
+  there is no real server in them: dnsmasq delegates no prefix, and the Kea
+  rows above are the ones that run against a server
+  (`TestPrefixRenewalWithoutIAPDKeepsThePrefix`,
+  `TestPrefixRenewalKeepsWhatTheReplyLeavesOut`,
+  `TestPrefixRenewalWithAnotherPrefixKeepsTheOld`,
+  `TestAddressRenewalKeepsWhatTheReplyLeavesOut`,
+  `TestARenewalTakesTheLifetimesOfAnAddressTheReplyNames`,
+  `TestACarriedPrefixPastItsValidLifetimeLeaves`,
+  `TestRenewedAddrsDropsACarryPastItsValidLifetime`,
+  `TestALaterIAPDUpdatesACarriedPrefix`,
+  `TestLeaseEqualReadsEndsNotDurations`,
+  `TestResumeRebindReplyWithoutIAPDKeepsThePrefix`,
+  `TestARebindReplyWithoutIAPDKeepsTheRememberedPrefix`). A NoBinding in the
+  IA_NA or in the IA_PD of a Reply sends a Request that names every held IA,
+  as §18.2.10.1 has it, and an IA_PD nobody asked for with that status starts
+  nothing; an IA_PD whose only prefix ends with a valid lifetime of zero gives
+  the lease no renewal time of its own, so the T1 and T2 of the IA_NA stay
+  (`TestNoBindingInTheIAPDRequestsWithEveryIA`,
+  `TestResumeRebindNoBindingInTheIAPDRequests`,
+  `TestNoBindingRequestNamesTheHeldTemporaryAddress`,
+  `TestAnIAPDNobodyAskedForSaysNoBindingAndNothingHappens`,
+  `TestAnIAPDThatNamesNoKeptPrefixLeavesT1AndT2Alone`). A duplicate address
+  found on a carried Reply declines the addresses that Reply named and not the
+  held one it left out, and still declines every address it named
+  (`TestADuplicateOnTheRepliesNewAddressDeclinesThatAddressAlone`,
+  `TestADuplicateOnANamedAddressStillDeclinesTheWholeReply`,
+  `TestADuplicateOnANewAddressDeclinesTheNamedHeldOneAndNotTheLeftOutOne`,
+  `TestACarryFromAnEarlierRenewalDoesNotShieldAnAddressALaterReplyNames`,
+  `TestAHeldAddressLeftOutOfOneRenewalIsDeclinedWhenTheNextReplyNamesItAndAnotherIsADuplicate`).
+- **A binding that leaves the lease when its valid lifetime ends while bound.**
+  `Timer6Expire` is armed for the next valid end in the lease, not only the
+  last. When it fires, an address of several, a temporary address or a prefix
+  whose valid lifetime has passed leaves the lease, and the caller gets one
+  `ActLeaseChanged` for all the bindings that ended at that instant, and the
+  lease the bind announced is not rewritten by a later drop. The lease itself
+  ends, as before, when the last IA_NA address has ended, and a prefix still
+  valid goes with it; a prefix that ends under an address with no end leaves
+  alone (RFC 8415 §6.2, §6.3, §18.2.5). A binding that has ended by the time
+  the lease binds is announced at the bind and leaves at once. A fire before
+  any valid end keeps the lease and arms again, and a stale fire on a SLAAC
+  lease arms no expiry timer and announces no Changed. A Renew that carried an IA_PD still takes the
+  Reply's prefix when the held one ended while the Renew was in flight, and one
+  that never carried an IA_PD ignores an IA_PD it did not ask for. The test runs
+  on a fake clock in [`proto`](../proto) and the lease manager, so a timer that
+  fires late on a real clock is not covered
+  (`TestAPrefixWhoseValidLifetimeEndsWhileBoundLeavesTheLeaseAtThatInstant`,
+  `TestATemporaryAddressWhoseValidLifetimeEndsWhileBoundLeavesTheLeaseAtThatInstant`,
+  `TestAnAddressOfSeveralWhoseValidLifetimeEndsWhileBoundLeavesTheLeaseAtThatInstant`,
+  `TestBindingsEndingAtOneInstantLeaveInOneChanged`,
+  `TestABindingEndedBeforeTheBindLeavesTheLeaseAtOnce`,
+  `TestTheLastAddressEndingAfterAnEarlierOneEndsTheLeaseWithItsPrefix`,
+  `TestAPrefixEndingUnderAnAddressWithNoEndLeavesTheLease`,
+  `TestAnExpiryFireBeforeAnyEndKeepsTheLeaseAndArmsAgain`,
+  `TestASLAACLeaseGetsNoExpiryTimerFromAStaleFire`,
+  `TestAPrefixEndingDuringTheRenewStillTakesTheReplysPrefix`,
+  `TestARenewRetransmittedWithoutTheEndedPrefixStillTakesTheReplysPrefix`,
+  `TestARenewAfterThePrefixEndedIgnoresAnUnaskedIAPD`,
+  `TestADropLeavesTheBindsAnnouncementAsItWas`,
+  `TestAPrefixEndingWhileBoundReachesTheCallerAsChanged`).
 - **A DHCPv6 name given to a client that is already running, in the server's
   own table.** The client holds a lease with no name and dnsmasq's lease file
   shows `*`. It is handed one, sends RFC 4704's Client FQDN option with the S
