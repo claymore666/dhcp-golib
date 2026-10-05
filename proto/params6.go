@@ -131,6 +131,10 @@ type Resume6 struct {
 	// server with which the client most recently communicated").
 	ServerDUID []byte
 
+	// PrefixServerDUID is Lease6.PrefixServerDUID: the server that delegated
+	// Prefixes when it is not ServerDUID (claymore666/dhcp-golib#70).
+	PrefixServerDUID []byte
+
 	// T1 and T2 are the last known renewal times. Zero means the same thing
 	// here as it means on the wire, and Lease6.Deadlines applies §21.4's
 	// recommendation at the point of use.
@@ -180,6 +184,7 @@ func (r *Resume6) Clone() *Resume6 {
 	out := *r
 	out.Addrs = append([]Addr6(nil), r.Addrs...)
 	out.ServerDUID = append([]byte(nil), r.ServerDUID...)
+	out.PrefixServerDUID = append([]byte(nil), r.PrefixServerDUID...)
 	out.DNS = append([]netip.Addr(nil), r.DNS...)
 	out.Search = append([]string(nil), r.Search...)
 	out.Prefixes = append([]Prefix6(nil), r.Prefixes...)

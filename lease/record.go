@@ -1310,6 +1310,7 @@ func CloneLease(l Lease) Lease {
 	l.OptionsV6 = l.OptionsV6.Clone()
 	l.ForcerenewNonce = append([]byte(nil), l.ForcerenewNonce...)
 	l.ReconfigureKey = append([]byte(nil), l.ReconfigureKey...)
+	l.PrefixServerDUID = append([]byte(nil), l.PrefixServerDUID...)
 	return l
 }
 

@@ -120,6 +120,11 @@ type Machine6 struct {
 	// releasingTA is the temporary addresses the Release names, with
 	// lifetimes zero (dhcp-golib#60).
 	releasingTA []Addr6
+	// releasePD and releasePDServer are the prefixes of a split lease and
+	// their server, released after the IA_NA: §18.2.7 has the Release name
+	// "the server that allocated the lease(s)" (claymore666/dhcp-golib#70).
+	releasePD       []Prefix6
+	releasePDServer []byte
 	// afterDecline says what to do when the Decline exchange ends.
 	afterDecline func(now Instant, rnd uint64, out *actions)
 
@@ -230,6 +235,18 @@ type Machine6 struct {
 	// Reply answers one although the held prefixes may have ended since
 	// (dhcp-golib#65).
 	pdSent bool
+	// naSent is pdSent for the IA_NA, and scope the IAs this exchange names:
+	// a Renew of a split lease goes to one server with its own IAs (RFC 8415
+	// section 18.2.4; claymore666/dhcp-golib#70).
+	naSent           bool
+	scope, nextScope iaScope
+	// holdoff and omitRT pace a Renew or Rebind whose Reply omitted an IA that
+	// is due: §18.2.10.1 "MAY just wait for the normal retransmission time"
+	// (claymore666/dhcp-golib#70).
+	holdoff Instant
+	omitRT  Duration
+	// resumeAt is the instant Resume6's T1 and T2 count from.
+	resumeAt Instant
 
 	// hintOffLink is the Hint a Reply+14 answered NotOnLink; solicitHint does
 	// not send it again (claymore666/docker-net-dhcp#926).
@@ -605,6 +622,7 @@ func (m *Machine6) stepStopped6(now Instant, rnd uint64, ev Event, out *actions)
 			if _, ok := m.admit(ev, out); ok {
 				out.journal(m, "Reply to the Release: the release is complete")
 				m.endExchange(out)
+				m.releaseDelegated(now, rnd, out)
 			}
 			return
 		}
@@ -614,6 +632,7 @@ func (m *Machine6) stepStopped6(now Instant, rnd uint64, ev Event, out *actions)
 			m.retransmit(now, rnd, out, func(*actions) {
 				out.journal(m, "the Release exchange reached REL_MAX_RC with no Reply: the binding will be reclaimed when its valid lifetime expires (§18.2.7)")
 				m.endExchange(out)
+				m.releaseDelegated(now, rnd, out)
 			})
 			return
 		}
@@ -708,6 +727,15 @@ func (m *Machine6) stepRequesting6(now Instant, rnd uint64, ev Event, out *actio
 		}
 		m.takeReply(now, rnd, msg, out)
 	case EvTimerFired:
+		if ev.Timer == Timer6Rebind && m.scope != scopeAll {
+			// a Request for one server's IAs runs inside a held lease, and
+			// §18.2.4 ends that lease's exchange "when the earliest time T2 is
+			// reached" (claymore666/dhcp-golib#70).
+			out.journal(m, "T2 reached while requesting one server's IAs: rebinding every IA (§18.2.4)")
+			m.dropPending()
+			m.enterRebinding(now, rnd, out)
+			return
+		}
 		if ev.Timer != Timer6Retransmit {
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 			return
@@ -718,7 +746,14 @@ func (m *Machine6) stepRequesting6(now Instant, rnd uint64, ev Event, out *actio
 			// the client might take include the following: Select another
 			// server from a list of servers known to the client ... Initiate
 			// the server discovery process described in Section 18." This
-			// client does both, in that order.
+			// client does both, in that order. A Request for the IA_PD of a
+			// split lease alone leaves the IA_NA's binding as it stands
+			// (claymore666/dhcp-golib#70).
+			if m.scope == scopePD {
+				o.journal(m, "the Request for the IA_PD reached REQ_MAX_RC: the lease stands as held (§18.2.2)")
+				m.resumeBound(now, rnd, o)
+				return
+			}
 			m.tried = append(m.tried, m.server)
 			if m.selectAndRequest(now, rnd, o) {
 				o.journal(m, "the Request exchange reached REQ_MAX_RC: trying the next server that advertised (§18.2.2)")
@@ -1132,6 +1167,7 @@ func (m *Machine6) begin(now Instant, rnd uint64, out *actions) {
 		t = wire.MsgRebind
 		delay = m.params.CnfMaxDelay
 		m.resumeRebind, m.rebindOwed = true, false
+		m.resumeAt = now
 	case m.resume.live():
 		// Design §A.3.3 interlock 3 and §18.2.12: a client with remembered
 		// addresses and no delegated prefixes confirms rather than solicits.
@@ -1187,6 +1223,12 @@ func (m *Machine6) startExchange(now Instant, rnd uint64, t wire.MessageTypeV6, 
 	m.startExchangeAnswering(now, rnd, t, nil, out)
 }
 
+// startExchangeFor starts an exchange that names only the IAs of scope.
+func (m *Machine6) startExchangeFor(now Instant, rnd uint64, t wire.MessageTypeV6, scope iaScope, out *actions) {
+	m.nextScope = scope
+	m.startExchangeAnswering(now, rnd, t, nil, out)
+}
+
 // startExchangeAnswering is startExchange for an exchange that answers a
 // Reconfigure, carrying the Server Identifier §18.2.6 requires.
 //
@@ -1201,7 +1243,8 @@ func (m *Machine6) startExchangeAnswering(now Instant, rnd uint64, t wire.Messag
 	m.xid = uint32(rnd) & (wire.MaxXID6 - 1)
 	m.exchangeStart = now
 	m.transmits = 0
-	m.pdSent = false
+	m.pdSent, m.naSent = false, false
+	m.scope, m.nextScope = m.nextScope, scopeAll
 	m.sched = m.schedule(t)
 	m.rt = m.sched.First(rnd)
 
@@ -1244,6 +1287,9 @@ func (m *Machine6) transmit(now Instant, out *actions) {
 	m.transmits++
 	if msg.Options.Count(wire.OptV6IAPD) > 0 {
 		m.pdSent = true
+	}
+	if msg.Options.Count(wire.OptV6IANA) > 0 {
+		m.naSent = true
 	}
 	out.sendV6(m, msg, Dest{Addr: wire.AllDHCPRelayAgentsAndServers})
 	out.set(m, Timer6Retransmit, m.rt)
@@ -1359,8 +1405,9 @@ func (m *Machine6) expireLease(now Instant, rnd uint64, out *actions) {
 	out.cancel(m, Timer6Expire)
 	out.journal(m, "every valid lifetime in the IA has expired while "+m.state.String()+" (§18.2.5)")
 	m.loseLease(out, ReasonExpired)
-	switch m.state {
-	case State6Bound, State6Renewing, State6Rebinding:
+	switch {
+	case m.state == State6Bound, m.state == State6Renewing, m.state == State6Rebinding,
+		m.state == State6Requesting && m.scope != scopeAll:
 		m.restartDiscovery(now, rnd, out)
 	}
 }
@@ -1384,6 +1431,7 @@ func (m *Machine6) dropEnded(now Instant, out *actions) bool {
 		m.pdCounts.Changed++
 	}
 	out.journal(m, fmt.Sprintf("%d binding(s) reached the valid lifetime and left the lease (§6.2, §6.3)", n))
+	l.canonPD()
 	m.lease = l
 	m.armExpiry(now, out)
 	out.stamp(m, Action{Kind: ActLeaseChanged, Lease6: l})
@@ -1825,8 +1873,20 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		out.journal(m, "the "+which+" says NoBinding: requesting from the server that answered (§18.2.10.1)")
 		m.server, _ = msg.Options.First(wire.OptV6ServerID)
 		m.pending = m.heldIAs()
-		m.startExchange(now, rnd, wire.MsgRequest6, out)
+		// a Renew of a split lease names one server's IAs, and so does the
+		// Request after its NoBinding: the other server's binding is not this
+		// one's to restate (RFC 8415 section 18.2.4; claymore666/dhcp-golib#70).
+		m.startExchangeFor(now, rnd, wire.MsgRequest6, m.scope, out)
 		return
+	}
+	// a Renew that named only the IA_PD leaves the IA_NA as held: §18.2.10.1
+	// "Leave unchanged any information about leases the client has recorded in
+	// the IA but that were not included in the IA from the server"
+	// (claymore666/dhcp-golib#70).
+	naCarried := (renewal || m.scope == scopePD) && !m.naSent && m.haveLse
+	replySrv, _ := msg.Options.First(wire.OptV6ServerID)
+	if naCarried {
+		l, ok = m.lease, true
 	}
 	if !ok {
 		if iaStatus == wire.StatusNoAddrsAvail {
@@ -1872,6 +1932,8 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 
 	m.carried = nil
 	switch {
+	case naCarried:
+		m.ignoreTemporary(msg.Options, out)
 	case renewal:
 		// No IA_TA went out, so none is read; the temporary addresses already
 		// held keep the expiry they were granted
@@ -1903,15 +1965,27 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		held := m.heldPrefixes()
 		m.countPrefixes(pd, pdNotes, !renewal, out)
 		ps := pd.prefixes
+		if naCarried {
+			ps = rebasePrefixes(pd.prefixes, m.exchangeStart, l.Start, now)
+		}
 		if renewal {
-			ps = renewedPrefixes(held, m.heldStart(), pd, l.Start, now)
+			res := pd
+			res.prefixes = ps
+			ps = renewedPrefixes(held, m.heldStart(), res, l.Start, now)
 			if n := len(ps) - len(pd.prefixes); n > 0 {
 				out.journal(m, fmt.Sprintf("%d held prefix(es) the Reply did not name stand until their valid lifetimes end (§18.2.10.1)", n))
 			}
 		}
 		l.Prefixes = ps
-		if len(pd.prefixes) > 0 {
+		switch {
+		case len(pd.prefixes) > 0 && naCarried:
+			l.PrefixServerDUID = replySrv
+			l.pdT1, l.pdT2, l.pdStart, l.pdTimed = pd.t1, pd.t2, m.exchangeStart, true
+		case len(pd.prefixes) > 0:
 			l.T1, l.T2 = earliestT(l.T1, pd.t1), earliestT(l.T2, pd.t2)
+			l.pdT1, l.pdT2 = pd.t1, pd.t2
+		case renewal:
+			m.keepHeldPD(&l)
 		}
 		if renewal && !samePrefixes(held, ps) {
 			m.pdCounts.Changed++
@@ -1919,7 +1993,13 @@ func (m *Machine6) takeReply(now Instant, rnd uint64, msg *wire.MessageV6, out *
 		}
 	} else {
 		m.ignorePrefixes(msg.Options, out)
+		if m.scope == scopeNA && m.haveLse {
+			l.Prefixes = rebasePrefixes(m.lease.Prefixes, m.lease.Start, l.Start, now)
+			m.keepHeldPD(&l)
+		}
 	}
+	l.canonPD()
+	m.paceOmission(now, rnd, pd.found, l, out)
 	m.resumeRebind = false
 
 	m.server = l.ServerDUID
@@ -2162,10 +2242,14 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 			out.stamp(m, Action{Kind: ActLeaseChanged, Lease6: l})
 		}
 	}
-	m.armDeadline(now, Timer6Renew, d.Renew, d.HasRenew, out)
-	m.armDeadline(now, Timer6Rebind, d.Rebind, d.HasRebind, out)
+	m.armRenewal(now, out)
 	m.armExpiry(now, out)
+	m.armOwedRefresh(rnd, out)
+	m.announceHostname6(now, rnd, out)
+}
 
+// armOwedRefresh arms the Information-request a lease exchange put off.
+func (m *Machine6) armOwedRefresh(rnd uint64, out *actions) {
 	// §21.23's Information-request, owed since before the exchange that just
 	// ended and given up by abandonRefreshDelay so the lease could be renewed.
 	// The delay is drawn again rather than resumed: §21.23 fixes no phase, it
@@ -2178,7 +2262,6 @@ func (m *Machine6) enterBound(now Instant, rnd uint64, l Lease6, out *actions) {
 		m.pendingType = wire.MsgInformationRequest
 		out.set(m, Timer6Delay, dd)
 	}
-	m.announceHostname6(now, rnd, out)
 }
 
 // armExpiry arms Timer6Expire for the lease's next valid end, the expiry or a
@@ -2242,8 +2325,18 @@ func (m *Machine6) enterRenewing(now Instant, rnd uint64, out *actions) {
 		return
 	}
 	m.server = m.lease.ServerDUID
+	scope := scopeAll
+	if m.lease.split() {
+		// §18.2.4: "the client sends a Renew message to the server from which
+		// the leases were obtained", so each server is renewed for its own
+		// IAs, the earlier T1 first (claymore666/dhcp-golib#70).
+		scope = scopeNA
+		if na, pd := m.renewalGroups(); pd.HasRenew && (!na.HasRenew || pd.Renew.Before(na.Renew)) {
+			scope, m.server = scopePD, m.lease.PrefixServerDUID
+		}
+	}
 	out.journal(m, "T1: renewing")
-	m.startExchange(now, rnd, wire.MsgRenew, out)
+	m.startExchangeFor(now, rnd, wire.MsgRenew, scope, out)
 }
 
 // enterRebinding is T2. §18.2.5: "At time T2 (which will only be reached if the
@@ -2280,11 +2373,16 @@ func (m *Machine6) continueFromResume(now Instant, rnd uint64, out *actions, how
 		T1:         r.T1,
 		T2:         r.T2,
 		Start:      now,
+		pdT1:       r.T1,
+		pdT2:       r.T2,
+
+		PrefixServerDUID: append([]byte(nil), r.PrefixServerDUID...),
 		// §18.2.3's "any other previously obtained configuration parameters".
 		// See Resume6.DNS: nothing later in this exchange supplies them.
 		DNS:    append([]netip.Addr(nil), r.DNS...),
 		Search: append([]string(nil), r.Search...),
 	}
+	l.canonPD()
 	m.pending, m.havePending, m.pendingRenewal = l, true, false
 	m.msgType = 0
 	out.cancel(m, Timer6Retransmit)
@@ -2321,6 +2419,7 @@ func (m *Machine6) release(now Instant, rnd uint64, out *actions) {
 		return
 	}
 	m.server = m.lease.ServerDUID
+	split, pdServer := m.lease.split(), m.lease.PrefixServerDUID
 	addrs := m.lease.Addrs
 	prefixes := m.lease.Prefixes
 	temps := m.lease.TempAddrs
@@ -2329,6 +2428,10 @@ func (m *Machine6) release(now Instant, rnd uint64, out *actions) {
 	out.cancel(m, Timer6Rebind)
 	out.cancel(m, Timer6Expire)
 	m.releasing, m.releasingPrefixes = addrs, prefixes
+	m.releasePD, m.releasePDServer = nil, nil
+	if split {
+		m.releasingPrefixes, m.releasePD, m.releasePDServer = nil, prefixes, pdServer
+	}
 	m.releasingTA = releaseTemps(temps)
 	m.state = State6Stopped
 	if len(m.server) == 0 {
@@ -2882,7 +2985,7 @@ func (m *Machine6) buildIAs(t wire.MessageTypeV6) ([]wire.OptionV6, error) {
 	var ta []Addr6
 	switch {
 	case t == wire.MsgSolicit && m.params.Temporary:
-	case t == wire.MsgRequest6 && m.params.Temporary:
+	case t == wire.MsgRequest6 && m.params.Temporary && m.scope != scopePD:
 		ta = m.pending.TempAddrs
 	case t == wire.MsgDecline6 && len(m.decliningTA) > 0:
 		for _, a := range m.decliningTA {
@@ -2927,6 +3030,9 @@ func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 		}
 		zeroLifetimes = true
 	case wire.MsgRequest6:
+		if m.scope == scopePD {
+			return wire.OptionV6{}, false, nil
+		}
 		addrs = m.pending.Addrs
 	case wire.MsgConfirm:
 		if m.resume != nil {
@@ -2938,6 +3044,9 @@ func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 		// to 0, as the server will ignore these fields."
 		zeroLifetimes = true
 	case wire.MsgRenew, wire.MsgRebind:
+		if m.scope == scopePD {
+			return wire.OptionV6{}, false, nil
+		}
 		if t == wire.MsgRebind && m.resumeRebind && m.resume != nil {
 			// The resumed Rebind names the remembered addresses with zero
 			// lifetimes, as the Confirm it replaces does: the record's
@@ -2949,6 +3058,9 @@ func (m *Machine6) buildIA(t wire.MessageTypeV6) (wire.OptionV6, bool, error) {
 		}
 		addrs = m.lease.Addrs
 	case wire.MsgRelease6:
+		if len(m.releasing) == 0 {
+			return wire.OptionV6{}, false, nil
+		}
 		addrs = m.releasing
 	case wire.MsgDecline6:
 		if len(m.declining) == 0 {
@@ -3000,8 +3112,14 @@ func (m *Machine6) buildPDFor(t wire.MessageTypeV6) (wire.OptionV6, bool, error)
 	case wire.MsgSolicit:
 		hint = m.params.PrefixHint
 	case wire.MsgRequest6:
+		if m.scope == scopeNA {
+			return wire.OptionV6{}, false, nil
+		}
 		prefixes, hint = m.pending.Prefixes, m.params.PrefixHint
 	case wire.MsgRenew:
+		if m.scope == scopeNA {
+			return wire.OptionV6{}, false, nil
+		}
 		prefixes = m.lease.Prefixes
 	case wire.MsgRebind:
 		prefixes = m.lease.Prefixes

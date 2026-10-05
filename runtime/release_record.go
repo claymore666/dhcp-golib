@@ -145,10 +145,11 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		rnd = e
 	}
 
-	payload, dst, err := lease.BuildRelease(rec, uint32(rnd.Uint64()))
+	grams, err := lease.BuildReleases(rec, uint32(rnd.Uint64()))
 	if err != nil {
 		return err
 	}
+	dst := grams[0].Dest
 
 	if src.Is4() != dst.Addr().Is4() {
 		return fmt.Errorf("%w: %s", ErrReleaseSourceFamily, cfg.Source)
@@ -179,7 +180,13 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 		}
 	}
 
-	return send(netip.AddrPortFrom(src, port), dst, cfg.Interface, payload)
+	// a split lease is released with each server for its own IAs, RFC 8415
+	// section 18.2.7 (claymore666/dhcp-golib#70).
+	var errs []error
+	for _, g := range grams {
+		errs = append(errs, send(netip.AddrPortFrom(src, port), g.Dest, cfg.Interface, g.Payload))
+	}
+	return errors.Join(errs...)
 }
 
 // sendOneDatagram is the real transport: an ordinary UDP socket, bound to the

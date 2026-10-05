@@ -283,6 +283,40 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestADuplicateOnANewAddressDeclinesTheNamedHeldOneAndNotTheLeftOutOne`,
   `TestACarryFromAnEarlierRenewalDoesNotShieldAnAddressALaterReplyNames`,
   `TestAHeldAddressLeftOutOfOneRenewalIsDeclinedWhenTheNextReplyNamesItAndAnotherIsADuplicate`).
+- **An IA_PD held from another server than the IA_NA.** When one server answers
+  for the address and another delegated the prefix, the lease names both:
+  `ServerDUID` for the IA_NA and `PrefixServerDUID` for the IA_PD, which is
+  empty whenever one server holds both. Each server is renewed with its own IAs
+  at its own T1, RFC 8415 §18.2.4: "the client sends a Renew message to the
+  server from which the leases were obtained". A Rebind still carries every held
+  IA, and no Server ID, as §18.2.5 has it. A Renew or Rebind Reply that leaves
+  out an IA due for renewal is rate-limited, §18.2.10.1: "the client MUST
+  rate-limit its transmissions ... and MAY just wait for the normal
+  retransmission time"; the next Reply that names it clears the hold-off. The
+  hold-off delays the IA_PD's T1 and T2 only: the IA_NA renews at its own, and
+  once the IA_PD's T2 has passed its next exchange is a Rebind alone. A
+  NoBinding to the Renew of one server sends a Request for that server's IAs
+  only. That Request runs inside the held lease: at the lease's T2 it gives way
+  to a Rebind of every IA, §18.2.4 ends the exchange "when the earliest time T2
+  is reached", and at the lease's expiry it restarts discovery. A Rebind Reply
+  that leaves out an IA_PD past its T1 holds the IA_PD's Renew off the same way.
+  The
+  prefix keeps its own T1 and T2 while the lease is held; a resumed record has
+  only the earliest of the two, so it renews both groups then. A v1.4.2 journal
+  record, which has no `prefix_server_duid`, loads as one server. These run in
+  [`proto`](../proto) and in the lease manager on a fake clock with two servers;
+  no fixture here runs two servers
+  (`TestTheRenewAtThePrefixT1GoesToTheDelegatingServerWithTheIAPDAlone`,
+  `TestAnIANAOnlyReplyLeavesThePrefixRenewalAtTheDelegatingServersT1`,
+  `TestAPrefixOnlyRenewReplyKeepsTheIANA`,
+  `TestARenewReplyThatLeavesOutADueIAPDIsRateLimited`,
+  `TestAServerThatNeverNamesTheIAPDStillRenewsTheIANABeforeItsT2`,
+  `TestANoBindingForTheIAPDRequestsTheIAPDAloneFromItsServer`,
+  `TestARequestForTheIAPDGivesWayToTheIANAsRebind`,
+  `TestARebindReplyThatLeavesOutAPrefixDueForItsRenewHoldsTheRenewOff`,
+  `TestTheDelegatingReplyFirstEndsTheRebindAndALaterReplyIsDiscarded`,
+  `TestAResumedSplitRecordRenewsThePrefixWithItsOwnServer`,
+  `TestAV142JournalRecordLoadsAsOneServerWithTheSameRelease`).
 - **A binding that leaves the lease when its valid lifetime ends while bound.**
   `Timer6Expire` is armed for the next valid end in the lease, not only the
   last. When it fires, an address of several, a temporary address or a prefix
@@ -351,7 +385,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   A record that holds temporary addresses or delegated prefixes gives them back
   in the same datagram, as an IA_TA and an IA_PD after the IA_NA, each with the
   record's IAID and one entry per address or prefix at lifetime zero (RFC 8415
-  §18.2.7). An entry that cannot go on the wire (invalid, v4-mapped, an
+  §18.2.7). When the prefixes came from another server than the address, the
+  IA_PD goes in a second datagram to that server, §18.2.7: "The client places
+  the identifier of the server that allocated the lease(s) in a Server
+  Identifier option" (`TestASplitRecordReleasesEachIAWithItsOwnServer`). An entry that cannot go on the wire (invalid, v4-mapped, an
   unspecified address, a prefix with no bits) is left out, so the stable address
   still releases. A record with neither sends the datagram it always did, and
   after a record Release that carries a prefix Kea's lease file shows the PD row
