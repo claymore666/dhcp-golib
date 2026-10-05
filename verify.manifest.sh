@@ -1009,7 +1009,12 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # added, none removed, MEASURED as testroster runs, 1345 before and 1359 here.
 # proto/subbinding6_expiry_test.go 13 and lease/subbinding_expiry6_test.go 1;
 # no netns test.
-MIN_DECLARED_TESTS=1359
+#
+# AN IA_PD HELD FROM ANOTHER SERVER THAN THE IA_NA, dhcp-golib#70: twenty-nine
+# added, none removed, MEASURED as testroster runs, 1359 before and 1388 here.
+# proto/split6_test.go 22, lease/split_test.go 6 and
+# runtime/release_split_test.go 1; no netns test.
+MIN_DECLARED_TESTS=1388
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

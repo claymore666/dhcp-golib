@@ -45,6 +45,12 @@ type Lease struct {
 	ServerID   netip.Addr
 	ServerDUID []byte
 
+	// PrefixServerDUID names the server that delegated Prefixes when it is
+	// not ServerDUID, and is empty otherwise: each IA is renewed and released
+	// with the server it came from (RFC 8415 section 18.2.10.1;
+	// claymore666/dhcp-golib#70).
+	PrefixServerDUID []byte `json:"prefix_server_duid,omitempty"`
+
 	// IAID is the identity association this v6 lease belongs to (RFC 9915
 	// §12), zero for v4. It is the caller's Params6.IAID echoed back: the
 	// binding is keyed on (DUID, IA type, IAID), so a record that lost it
@@ -531,7 +537,9 @@ func toLease6(l proto.Lease6, b clockBridge) Lease {
 		DomainSearch: append([]string(nil), l.Search...),
 		ServerDUID:   append([]byte(nil), l.ServerDUID...),
 		IAID:         l.IAID,
-		Acquired:     b.at(l.Start),
+
+		PrefixServerDUID: append([]byte(nil), l.PrefixServerDUID...),
+		Acquired:         b.at(l.Start),
 
 		ReconfigureKey:        append([]byte(nil), l.ReconfigureKey...),
 		ReconfigureReplay:     l.ReconfigureReplay,

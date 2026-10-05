@@ -365,3 +365,96 @@ func (m *Machine6) buildPD(prefixes []Prefix6, hint int, zero bool) (wire.Option
 	}
 	return wire.OptionV6{Code: wire.OptV6IAPD, Data: v}, nil
 }
+
+// iaScope is the IAs an exchange names (claymore666/dhcp-golib#70).
+type iaScope uint8
+
+const (
+	scopeAll iaScope = iota
+	scopeNA
+	scopePD
+)
+
+// heldPD is the IA_PD's server and times as held before a Reply: the ones a
+// Reply that leaves the IA_PD out keeps (RFC 8415 section 18.2.10.1).
+func (m *Machine6) heldPD() (srv []byte, t1, t2 Duration, start Instant) {
+	switch {
+	case m.haveLse:
+		return m.lease.prefixServer(), m.lease.pdT1, m.lease.pdT2, m.lease.pdOrigin()
+	case m.resumeRebind && m.resume != nil:
+		srv = m.resume.PrefixServerDUID
+		if len(srv) == 0 {
+			srv = m.resume.ServerDUID
+		}
+		return srv, m.resume.T1, m.resume.T2, m.resumeAt
+	}
+	return nil, 0, 0, 0
+}
+
+// rebasePrefixes moves prefix lifetimes counted from from onto to, keeping
+// the instants they end at.
+func rebasePrefixes(ps []Prefix6, from, to, now Instant) []Prefix6 {
+	var out []Prefix6
+	for _, p := range ps {
+		if pref, valid, ok := carryLifetimes(p.Preferred, p.Valid, from, to, now); ok {
+			out = append(out, Prefix6{Prefix: p.Prefix, Preferred: pref, Valid: valid})
+		}
+	}
+	return out
+}
+
+// keepHeldPD gives l the IA_PD server and times it held before the Reply.
+func (m *Machine6) keepHeldPD(l *Lease6) {
+	srv, t1, t2, start := m.heldPD()
+	l.PrefixServerDUID = append([]byte(nil), srv...)
+	l.pdT1, l.pdT2, l.pdStart, l.pdTimed = t1, t2, start, true
+}
+
+// paceOmission holds the next Renew or Rebind back when the Reply left out an
+// IA_PD that is already due. §18.2.10.1: "the client MUST rate-limit its
+// transmissions ... and MAY just wait for the normal retransmission time (as
+// if the Reply message had not been received)" (claymore666/dhcp-golib#70).
+func (m *Machine6) paceOmission(now Instant, rnd uint64, omitted bool, l Lease6, out *actions) {
+	if !omitted {
+		m.holdoff, m.omitRT = 0, 0
+		return
+	}
+	_, pd := l.groupDeadlines()
+	due, has := pd.Renew, pd.HasRenew
+	if m.state == State6Rebinding {
+		due, has = pd.Rebind, pd.HasRebind
+	}
+	if !has || due.After(now) {
+		return
+	}
+	if m.omitRT == 0 {
+		m.omitRT = m.rt
+	} else {
+		m.omitRT = m.sched.Next(m.omitRT, rnd)
+	}
+	m.holdoff = now.Add(m.omitRT)
+	out.journal(m, "the Reply left out an IA_PD that is due: the next exchange waits "+m.omitRT.String()+" (§18.2.10.1)")
+}
+
+// laterOf is the later of a deadline and a hold-off.
+func laterOf(at, holdoff Instant) Instant {
+	if holdoff.After(at) {
+		return holdoff
+	}
+	return at
+}
+
+// releaseDelegated sends the second Release of a split lease to the server
+// that delegated the prefixes, §18.2.7: "The client places the identifier of
+// the server that allocated the lease(s) in a Server Identifier option"
+// (claymore666/dhcp-golib#70).
+func (m *Machine6) releaseDelegated(now Instant, rnd uint64, out *actions) {
+	if len(m.releasePD) == 0 {
+		return
+	}
+	m.server = m.releasePDServer
+	m.releasing, m.releasingTA, m.releasingPrefixes = nil, nil, m.releasePD
+	m.releasePD, m.releasePDServer = nil, nil
+	out.journal(m, "releasing the delegated prefixes with the server that delegated them (§18.2.7)")
+	m.startExchange(now, rnd, wire.MsgRelease6, out)
+}
