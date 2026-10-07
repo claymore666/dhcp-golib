@@ -868,7 +868,7 @@ func (m *Machine) beginAcquisition(now Instant, rnd uint64, out *actions, withDe
 //
 // RFC 2131 states no wait after a DHCPNAK (sections 3.1(5), 3.2(3)) or an
 // expiry (4.4.5), and a server that refuses every request or grants zero
-// seconds then holds the client at reply rate; the section 4.1 desync wait
+// seconds then holds the client at reply rate; the section 4.4.1 desync wait
 // cannot pace it because a caller may turn that off. DECISION (dhcp-golib#77):
 // the first restart leaves at once, the n-th after it waits Discover's
 // section 4.1 schedule at n-1, until a lease holds again or the machine stops.

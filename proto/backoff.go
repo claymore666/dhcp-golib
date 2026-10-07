@@ -82,10 +82,10 @@ func (b Backoff) Delay(n int, rnd uint64) Duration {
 }
 
 // validate refuses a schedule that can produce a delay of zero: every delay
-// lies in [Initial-Jitter, Max+Jitter], so Jitter < Initial <= Max is the
-// condition (dhcp-golib#77).
+// lies in [Initial-Jitter, Max+Jitter], so 0 <= Jitter < Initial <= Max is
+// the condition, which also refuses Initial <= 0 (dhcp-golib#77).
 func (b Backoff) validate(name string) error {
-	if b.Initial <= 0 || b.Max < b.Initial || b.Jitter < 0 || b.Jitter >= b.Initial {
+	if b.Jitter < 0 || b.Jitter >= b.Initial || b.Max < b.Initial {
 		return fmt.Errorf("%w: %s %+v", ErrBadBackoff, name, b)
 	}
 	return nil
