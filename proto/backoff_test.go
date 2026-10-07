@@ -53,16 +53,25 @@ func TestBackoffClampsAtMax(t *testing.T) {
 	}
 }
 
-// TestBackoffNeverOverflows is the reason the doubling clamps the SHIFT rather
-// than the result. 4s doubled 62 times overflows int64 and comes back
-// negative; a negative delay is a timer that fires immediately and a
-// retransmission storm that no small-n test can see.
+// TestBackoffNeverOverflows is the reason the doubling stops before it is
+// applied. With no Max, 4s doubled 32 times wraps to 0 and 62 times to a
+// negative; either is a timer that fires at once and a retransmission storm
+// that no small-n test can see (dhcp-golib#77). Every delay must stay at or
+// above the one before it, at both ends of the jitter.
 func TestBackoffNeverOverflows(t *testing.T) {
-	b := Backoff{Initial: 4 * Second, Max: 0, Jitter: 0}
-	for _, n := range []int{62, 63, 64, 1000, 1 << 20} {
-		got := b.Delay(n, 0)
-		if got < 0 {
-			t.Fatalf("Delay(%d) = %s, which is negative", n, got)
+	for _, b := range []Backoff{{Initial: 4 * Second}, {Initial: 4 * Second, Jitter: Second}} {
+		for _, rnd := range []uint64{0, uint64(2 * b.Jitter)} {
+			prev := b.Delay(0, rnd)
+			if prev < b.Initial-b.Jitter {
+				t.Fatalf("%+v: Delay(0) = %s", b, prev)
+			}
+			for _, n := range []int{1, 30, 31, 32, 33, 61, 62, 63, 64, 1000, 1 << 20} {
+				got := b.Delay(n, rnd)
+				if got < prev {
+					t.Fatalf("%+v: Delay(%d) = %s, below the delay before it, %s", b, n, got, prev)
+				}
+				prev = got
+			}
 		}
 	}
 }

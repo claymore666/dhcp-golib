@@ -2,6 +2,11 @@
 
 package proto
 
+import (
+	"fmt"
+	"math"
+)
+
 // Backoff is the retransmission schedule of RFC 2131 section 4.1.
 //
 // The RFC's words: "The delay before the first retransmission SHOULD be 4
@@ -50,10 +55,11 @@ func DefaultBackoff() Backoff {
 // Delay returns the delay before retransmission number n, counting the first
 // retransmission as n == 0.
 //
-// The doubling stops at Max BEFORE it is applied. Doubling first and clamping
-// the result would be wrong for a large n in a way no test on small n can see:
-// 4s doubled 62 times overflows int64 and comes back negative, and a negative
-// delay is a timer that fires immediately and retransmits in a tight loop.
+// The doubling stops at Max, or with no Max at the largest Duration that still
+// doubles, BEFORE it is applied. Doubling first and clamping the result would
+// be wrong for a large n in a way no test on small n can see: 4s doubled 32
+// times wraps to 0 and 62 times to a negative, either one a timer that fires
+// at once and retransmits in a tight loop (dhcp-golib#77).
 // TestBackoffNeverOverflows.
 func (b Backoff) Delay(n int, rnd uint64) Duration {
 	if n < 0 {
@@ -64,7 +70,7 @@ func (b Backoff) Delay(n int, rnd uint64) Duration {
 		d = 0
 	}
 	for i := 0; i < n; i++ {
-		if b.Max > 0 && d >= b.Max {
+		if (b.Max > 0 && d >= b.Max) || d > math.MaxInt64/2 {
 			break
 		}
 		d *= 2
@@ -73,6 +79,16 @@ func (b Backoff) Delay(n int, rnd uint64) Duration {
 		d = b.Max
 	}
 	return jitter(d, b.Jitter, rnd)
+}
+
+// validate refuses a schedule that can produce a delay of zero: every delay
+// lies in [Initial-Jitter, Max+Jitter], so Jitter < Initial <= Max is the
+// condition (dhcp-golib#77).
+func (b Backoff) validate(name string) error {
+	if b.Initial <= 0 || b.Max < b.Initial || b.Jitter < 0 || b.Jitter >= b.Initial {
+		return fmt.Errorf("%w: %s %+v", ErrBadBackoff, name, b)
+	}
+	return nil
 }
 
 // Exhausted reports whether retransmission number n is past the budget.
@@ -96,6 +112,9 @@ func jitter(d, half Duration, rnd uint64) Duration {
 	}
 	span := uint64(half)*2 + 1
 	off := Duration(rnd%span) - half
+	if off > 0 && d > math.MaxInt64-off {
+		return math.MaxInt64
+	}
 	d += off
 	if d < 0 {
 		return 0

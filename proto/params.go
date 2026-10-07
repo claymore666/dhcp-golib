@@ -450,6 +450,10 @@ var ErrCHAddrTooLong = errors.New("proto: Params.CHAddr is longer than 16 octets
 // ErrBadDesync is returned by New when the desync window is inverted.
 var ErrBadDesync = errors.New("proto: Params.DesyncMin is greater than Params.DesyncMax")
 
+// ErrBadBackoff is returned by New for a Discover or Request schedule that can
+// retransmit with no delay.
+var ErrBadBackoff = errors.New("proto: Params.Discover or Params.Request can retransmit with no delay")
+
 // ErrBadRestartDelay is returned by New for a negative restart delay. A
 // negative delay is refused rather than clamped: it is a caller error, and
 // clamping it to the default would hide the mistake behind correct behaviour.
@@ -507,6 +511,12 @@ func (p Params) validate() error {
 	}
 	if p.RestartDelay < 0 {
 		return fmt.Errorf("%w: %s", ErrBadRestartDelay, p.RestartDelay)
+	}
+	if err := p.Discover.validate("Discover"); err != nil {
+		return err
+	}
+	if err := p.Request.validate("Request"); err != nil {
+		return err
 	}
 	if p.Resume != nil && (!p.Resume.Addr.Is4() || p.Resume.Addr.IsUnspecified()) {
 		// Refused at construction rather than ignored at EvStart. A Resume
