@@ -1025,10 +1025,10 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # added, none removed, MEASURED as testroster runs, 1407 before and 1408 here.
 # runtime/dnsmasq6_linux_test.go 1; no netns test.
 #
-# DHCPV6 RENEWAL TIMES, dhcp-golib#78: six added, none removed, MEASURED as
-# testroster runs, 1408 before and 1414 here. proto/lease6_renewtimes_test.go 6;
+# DHCPV6 RENEWAL TIMES, dhcp-golib#78: eight added, none removed, MEASURED as
+# testroster runs, 1408 before and 1416 here. proto/lease6_renewtimes_test.go 8;
 # no netns test.
-MIN_DECLARED_TESTS=1414
+MIN_DECLARED_TESTS=1416
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

@@ -438,8 +438,12 @@ func renewTimes(t1, t2 Duration, start Instant, pref, valid Duration) Deadlines 
 		} else {
 			rebind = (base / 5) * 4
 		}
+		basis := "the shortest preferred lifetime"
+		if !pref.IsInfinite() && pref <= 0 {
+			basis = "the valid lifetime"
+		}
 		d.Note = "T2 (" + was.String() + ") is not earlier than the longest valid lifetime (" +
-			valid.String() + "): using §21.4's 0.8 of the shortest preferred lifetime, " + rebind.String()
+			valid.String() + "): using §21.4's 0.8 of " + basis + ", " + rebind.String()
 	}
 	if !renew.IsInfinite() && !rebind.IsInfinite() && renew >= rebind {
 		// §21.4 makes this the SERVER's error and names the remedy for a

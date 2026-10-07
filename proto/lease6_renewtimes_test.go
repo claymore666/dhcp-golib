@@ -221,3 +221,37 @@ func TestAnInfinitePreferredLifetimeBesideADeprecatedAddressArmsNoRenewal(t *tes
 		t.Errorf("renew %v/%v rebind %v/%v, want neither", d.Renew, d.HasRenew, d.Rebind, d.HasRebind)
 	}
 }
+
+// TestAPrefixDeprecatedAtTheExchangeStartIsNotOneTheServerWillExtend drives
+// the boundary of the prefix group through Step: a prefix-only Renew Reply
+// with T1 and T2 of 0 whose deprecated prefix has its preferred lifetime end
+// exactly where the prefix timers count from (dhcp-golib#78, RFC 9915 §21.4:
+// 0.5 and 0.8 of the prefixes "the server is willing to extend"). The choice
+// comes from the live prefix alone.
+func TestAPrefixDeprecatedAtTheExchangeStartIsNotOneTheServerWillExtend(t *testing.T) {
+	m, _ := split6Bound(t)
+	_, acts := m.Step(at(10), 7, TimerFired(Timer6Renew))
+	ren := mustSendV6(t, acts, wire.MsgRenew)
+	if s, _ := m.Step(at(11), 0, split6Reply(t, ren.XID, pr6Server, optIAPD(t, capIAID, 0, 0, []pd6Spec{
+		{pr6First, 0, 300}, {"2001:db8:1:200::/64", 200, 300}}))); s != State6Bound {
+		t.Fatalf("the prefix-only Reply left the machine in %s, want %s", s, State6Bound)
+	}
+	l, _ := m.Lease()
+	_, pd := l.groupDeadlines()
+	if !pd.HasRenew || pd.Renew != at(10+100) || !pd.HasRebind || pd.Rebind != at(10+160) {
+		t.Errorf("IA_PD renew %v/%v rebind %v/%v, want at(110) and at(170): 0.5 and 0.8 of the live prefix's 200 s counted from the Renew at 10",
+			pd.Renew, pd.HasRenew, pd.Rebind, pd.HasRebind)
+	}
+}
+
+// TestATimeClampedToTheValidLifetimeStillArmsWhenEveryPrefixIsDeprecated pins
+// the T2 clamp where the choice is taken from the valid lifetime (RFC 9915
+// §18.2.5: Rebind ends when the valid lifetimes expire, dhcp-golib#78).
+func TestATimeClampedToTheValidLifetimeStillArmsWhenEveryPrefixIsDeprecated(t *testing.T) {
+	l := split6Lease(0, 500*Second, split6Prefix(pr6First, 0, 410*Second))
+	_, pd := l.groupDeadlines()
+	if !pd.HasRenew || pd.Renew != at(10+200) || !pd.HasRebind || pd.Rebind != at(10+320) {
+		t.Errorf("IA_PD renew %v/%v rebind %v/%v, want at(210) and at(330): a T2 of 500 s past the 400 s of valid lifetime left at the prefix start is 0.8 of 400 s",
+			pd.Renew, pd.HasRenew, pd.Rebind, pd.HasRebind)
+	}
+}
