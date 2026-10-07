@@ -16,8 +16,8 @@ type v4Server func(st State, req *wire.Message) *wire.Message
 // paceRun drives m against srv on a simulated clock: a reply is delivered at
 // the instant its message left, and when nothing is in flight the earliest
 // armed timer fires. It returns, for every DHCPDISCOVER after the first, the
-// time between the restart's cause (a DHCPNAK received or TimerExpire fired)
-// and the DHCPDISCOVER.
+// time between the restart's cause (TimerExpire fired, or a reply that sent the
+// machine back to acquiring) and the DHCPDISCOVER.
 type paceRun struct {
 	t      *testing.T
 	m      *Machine
@@ -39,12 +39,11 @@ func (r *paceRun) step(ev Event) []Action {
 	if ev.Kind == EvTimerFired && ev.Timer == TimerExpire {
 		r.cause, r.caused = r.now, true
 	}
-	if ev.Kind == EvReceived {
-		if t, _ := ev.Msg.Type(); t == wire.MsgNak {
-			r.cause, r.caused = r.now, true
-		}
+	pre := r.m.State()
+	post, acts := r.m.Step(r.now, r.rnd, ev)
+	if ev.Kind == EvReceived && pre != StateInit && pre != StateSelecting && (post == StateInit || post == StateSelecting) {
+		r.cause, r.caused = r.now, true
 	}
-	_, acts := r.m.Step(r.now, r.rnd, ev)
 	for _, a := range acts {
 		switch a.Kind {
 		case ActSetTimer:
@@ -169,6 +168,26 @@ func TestAZeroLeaseLoopIsPaced(t *testing.T) {
 			r.until(r.step(Simple(EvStart)), len(pacedFromTheSecond))
 			checkWaits(t, r.waits, pacedFromTheSecond)
 		})
+	}
+}
+
+// TestAnAckRefusedForOption90IsPacedLikeANak: the RFC 6704 section 3.1.4
+// restart, against a server that offers option 145 and never sends option 90.
+func TestAnAckRefusedForOption90IsPacedLikeANak(t *testing.T) {
+	srv := func(st State, req *wire.Message) *wire.Message {
+		if t, _ := req.Type(); t == wire.MsgDiscover {
+			o := offerFor(req, "192.168.99.50", "192.168.99.1")
+			o.Options[wire.OptForcerenewNonce] = wire.EncodeForcerenewNonceCapable()
+			return o
+		}
+		return ackFor(req, "192.168.99.50", "192.168.99.1", 3600)
+	}
+	m := newMachine(t, testParams())
+	r := newPaceRun(t, m, srv)
+	r.until(r.step(Simple(EvStart)), 4)
+	checkWaits(t, r.waits, pacedFromTheSecond[:4])
+	if c := m.ForcerenewCounters(); c.AckRefused < 4 {
+		t.Fatalf("AckRefused = %d: the run did not take the option 90 path", c.AckRefused)
 	}
 }
 

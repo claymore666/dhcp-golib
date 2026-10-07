@@ -2,7 +2,10 @@
 
 package proto
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestDefaultBackoffMatchesRFC2131 pins the RFC's worked example.
 //
@@ -59,7 +62,8 @@ func TestBackoffClampsAtMax(t *testing.T) {
 // that no small-n test can see (dhcp-golib#77). Every delay must stay at or
 // above the one before it, at both ends of the jitter.
 func TestBackoffNeverOverflows(t *testing.T) {
-	for _, b := range []Backoff{{Initial: 4 * Second}, {Initial: 4 * Second, Jitter: Second}} {
+	near := Duration(math.MaxInt64) - Second
+	for _, b := range []Backoff{{Initial: 4 * Second}, {Initial: 4 * Second, Jitter: Second}, {Initial: near, Jitter: 2 * Second}} {
 		for _, rnd := range []uint64{0, uint64(2 * b.Jitter)} {
 			prev := b.Delay(0, rnd)
 			if prev < b.Initial-b.Jitter {
