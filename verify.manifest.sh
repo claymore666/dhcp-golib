@@ -1025,10 +1025,14 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # added, none removed, MEASURED as testroster runs, 1407 before and 1408 here.
 # runtime/dnsmasq6_linux_test.go 1; no netns test.
 #
+# DHCPV6 RENEWAL TIMES, dhcp-golib#78: eight added, none removed, MEASURED as
+# testroster runs, 1408 before and 1416 here. proto/lease6_renewtimes_test.go 8;
+# no netns test.
+#
 # PACED DHCPv4 RESTARTS AND A BACKOFF THAT CANNOT RESEND AT ONCE,
-# dhcp-golib#77: nine added, none removed, MEASURED as go test -list, 1408
-# before and 1417 here. proto/restart_pacing_test.go 9; no netns test.
-MIN_DECLARED_TESTS=1417
+# dhcp-golib#77: nine added, none removed, MEASURED as go test -list, 1416
+# before and 1425 here. proto/restart_pacing_test.go 9; no netns test.
+MIN_DECLARED_TESTS=1425
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
