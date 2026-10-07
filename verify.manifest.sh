@@ -1024,7 +1024,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # A ZERO-WINDOW READ OF THE ROUTER ADVERTISEMENT OBSERVER, dhcp-golib#74: one
 # added, none removed, MEASURED as testroster runs, 1407 before and 1408 here.
 # runtime/dnsmasq6_linux_test.go 1; no netns test.
-MIN_DECLARED_TESTS=1408
+#
+# DHCPV6 RENEWAL TIMES, dhcp-golib#78: six added, none removed, MEASURED as
+# testroster runs, 1408 before and 1414 here. proto/lease6_renewtimes_test.go 6;
+# no netns test.
+MIN_DECLARED_TESTS=1414
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
