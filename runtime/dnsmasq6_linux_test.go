@@ -701,6 +701,35 @@ func newRAWatch(t *testing.T, ifName string) *raWatch {
 	return w
 }
 
+// windowedRead returns a read bounded by within past now, and for a window of
+// zero or less, one that returns only what is already queued.
+//
+// A deadline already passed, this call's or an earlier one's, fails in the
+// runtime poller before any read, so a zero window reads the raw descriptor
+// and never consults the poller; the observers' sockets are non-blocking, so
+// an empty queue is EAGAIN and never a wait (claymore666/dhcp-golib#74).
+func windowedRead(t *testing.T, f *os.File, within time.Duration) func([]byte) (int, error) {
+	t.Helper()
+	if within > 0 {
+		if err := f.SetReadDeadline(time.Now().Add(within)); err != nil {
+			t.Fatalf("the observer's read deadline: %v", err)
+		}
+		return f.Read
+	}
+	rc, err := f.SyscallConn()
+	if err != nil {
+		t.Fatalf("the observer's raw conn: %v", err)
+	}
+	return func(b []byte) (n int, err error) {
+		if cerr := rc.Control(func(fd uintptr) {
+			n, err = syscall.Read(int(fd), b)
+		}); cerr != nil {
+			return 0, cerr
+		}
+		return n, err
+	}
+}
+
 // next reads until a Router Advertisement arrives or the window closes.
 //
 // The IPv6 header is walked here, by hand, and only the four fields that
@@ -710,13 +739,11 @@ func newRAWatch(t *testing.T, ifName string) *raWatch {
 // not be one this fixture sent.
 func (w *raWatch) next(t *testing.T, within time.Duration) (*wire.RouterAdvert, netip.Addr, bool) {
 	t.Helper()
-	if err := w.f.SetReadDeadline(time.Now().Add(within)); err != nil {
-		t.Fatalf("the observer's read deadline: %v", err)
-	}
+	read := windowedRead(t, w.f, within)
 	buf := make([]byte, maxFrame)
 	for {
-		n, err := w.f.Read(buf)
-		if err != nil {
+		n, err := read(buf)
+		if err != nil || n <= 0 {
 			return nil, netip.Addr{}, false
 		}
 		frame := buf[:n]
@@ -758,6 +785,50 @@ func (w *raWatch) none(t *testing.T, why string, within time.Duration) {
 	t.Helper()
 	if ra, src, ok := w.next(t, within); ok {
 		t.Fatalf("%s: a Router Advertisement arrived from %s — %s", why, src, ra)
+	}
+}
+
+// TestARouterAdvertWatchWithAZeroWindowReadsWhatIsQueued drives none's own
+// contract: a zero window answers from the queue, and an empty queue is silence.
+func TestARouterAdvertWatchWithAZeroWindowReadsWhatIsQueued(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX,
+		syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	f := os.NewFile(uintptr(fds[0]), "ra_watch:pair")
+	t.Cleanup(func() { _ = f.Close(); _ = syscall.Close(fds[1]) })
+	w := &raWatch{f: f, ifName: "pair"}
+
+	// an RA is an IPv6 header, then ICMPv6 type 134, code 0, checksum and the
+	// 12-octet fixed part (RFC 4861 section 4.2) with M set; the observer
+	// reads no checksum.
+	body := make([]byte, 16)
+	body[0] = wire.ICMPv6RouterAdvert
+	body[5] = 0x80
+	frame := make([]byte, ipv6HeaderLen, ipv6HeaderLen+len(body))
+	frame[0] = ipv6Version << 4
+	binary.BigEndian.PutUint16(frame[4:6], uint16(len(body)))
+	frame[6] = wire.ICMPv6NextHeader
+	frame[8], frame[9], frame[23] = 0xfe, 0x80, 0x01
+	frame = append(frame, body...)
+
+	// a timed read of the empty queue first, which leaves a passed deadline
+	// that the zero-window reads below must not inherit.
+	w.none(t, "an empty queue", time.Millisecond)
+	w.none(t, "an empty queue", 0)
+	if _, err := syscall.Write(fds[1], frame); err != nil {
+		t.Fatalf("queueing the advertisement: %v", err)
+	}
+	ra, src, ok := w.next(t, 0)
+	if !ok {
+		t.Fatal("a zero window did not read the advertisement already queued")
+	}
+	if !ra.Managed || src != netip.MustParseAddr("fe80::1") {
+		t.Fatalf("read %s from %s, want the M flag from fe80::1", ra, src)
+	}
+	if _, _, ok := w.next(t, 0); ok {
+		t.Fatal("a second zero-window read returned an advertisement the first had consumed")
 	}
 }
 

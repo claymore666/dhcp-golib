@@ -226,6 +226,31 @@ func (l Lease6) shortestPreferred() Duration {
 	return out
 }
 
+// renewPreferred is the shortest preferred lifetime among the addresses the
+// server is still willing to extend, which is what §21.4's 0.5 and 0.8 are
+// fractions of: an address with preferred lifetime 0 is deprecated and is not
+// one of them (dhcp-golib#78). It is Infinite when only infinite ones remain
+// and 0 when none is left. shortestPreferred keeps counting a deprecated address,
+// because PreferredUntil reports when the first one deprecates.
+func (l Lease6) renewPreferred() Duration {
+	out, live, inf := Duration(0), false, false
+	for _, a := range l.Addrs {
+		switch {
+		case a.Preferred.IsInfinite():
+			inf = true
+		case a.Preferred > 0 && (!live || a.Preferred < out):
+			out, live = a.Preferred, true
+		}
+	}
+	switch {
+	case live:
+		return out
+	case inf:
+		return Infinite
+	}
+	return 0
+}
+
 func (l Lease6) longestValid() Duration {
 	out := Duration(0)
 	for _, a := range l.Addrs {
@@ -363,35 +388,41 @@ func (l Lease6) Deadlines() Deadlines {
 		d.Rebind, d.HasRebind = earliestDeadline(na.Rebind, na.HasRebind, pd.Rebind, pd.HasRebind)
 		return d
 	}
-	r := renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
+	r := renewTimes(l.T1, l.T2, l.Start, l.renewPreferred(), valid)
 	d.Renew, d.HasRenew, d.Rebind, d.HasRebind, d.Note = r.Renew, r.HasRenew, r.Rebind, r.HasRebind, r.Note
 	return d
+}
+
+// chosenTime is base/den*num for a time the client picks (§14.2), and Infinite
+// when base is: §21.4 recommends 0xffffffff for an infinite shortest preferred
+// lifetime.
+func chosenTime(base, den, num Duration) Duration {
+	if base.IsInfinite() {
+		return Infinite
+	}
+	return base / den * num
 }
 
 // renewTimes is §21.4's T1 and T2 for one group of IAs, counted from start.
 func renewTimes(t1, t2 Duration, start Instant, pref, valid Duration) Deadlines {
 	var d Deadlines
 	renew, rebind := t1, t2
-	if renew <= 0 || rebind <= 0 {
-		// §21.4: "If the 'shortest' preferred lifetime is 0xffffffff
-		// ('infinity'), the recommended T1 and T2 values are also
-		// 0xffffffff." An infinite preferred lifetime therefore produces no
-		// renewal timer at all rather than a huge one.
-		if pref.IsInfinite() {
-			if renew <= 0 {
-				renew = Infinite
-			}
-			if rebind <= 0 {
-				rebind = Infinite
-			}
-		} else {
-			if renew <= 0 {
-				renew = pref / 2
-			}
-			if rebind <= 0 {
-				rebind = (pref / 5) * 4
-			}
-		}
+	// base is what the client's own choice is a fraction of: the shortest
+	// preferred lifetime still being extended, or the valid lifetime when
+	// every address is deprecated, because §14.2's "the client MUST choose a
+	// time" leaves no third answer (dhcp-golib#78).
+	base := pref
+	if !base.IsInfinite() && base <= 0 {
+		base = valid
+	}
+	// §21.4: "the client MUST use the values in the T1 and T2 fields for the
+	// T1 and T2 times, unless values in those fields are 0", and 0xffffffff is
+	// "infinity": Infinite is -1 here and is the server's answer, not zero.
+	if renew == 0 || renew < 0 && !renew.IsInfinite() {
+		renew = chosenTime(base, 2, 1)
+	}
+	if rebind == 0 || rebind < 0 && !rebind.IsInfinite() {
+		rebind = chosenTime(base, 5, 4)
 	}
 
 	// §18.2.5 puts the Rebind exchange's end at the expiry: "The message
@@ -402,13 +433,17 @@ func renewTimes(t1, t2 Duration, start Instant, pref, valid Duration) Deadlines 
 	// refusing the Reply hands back a working lease over a server's typo.
 	if !rebind.IsInfinite() && !valid.IsInfinite() && rebind >= valid {
 		was := rebind
-		if pref.IsInfinite() {
+		if base.IsInfinite() {
 			rebind = valid
 		} else {
-			rebind = (pref / 5) * 4
+			rebind = (base / 5) * 4
+		}
+		basis := "the shortest preferred lifetime"
+		if !pref.IsInfinite() && pref <= 0 {
+			basis = "the valid lifetime"
 		}
 		d.Note = "T2 (" + was.String() + ") is not earlier than the longest valid lifetime (" +
-			valid.String() + "): using §21.4's 0.8 of the shortest preferred lifetime, " + rebind.String()
+			valid.String() + "): using §21.4's 0.8 of " + basis + ", " + rebind.String()
 	}
 	if !renew.IsInfinite() && !rebind.IsInfinite() && renew >= rebind {
 		// §21.4 makes this the SERVER's error and names the remedy for a
@@ -445,14 +480,16 @@ func renewTimes(t1, t2 Duration, start Instant, pref, valid Duration) Deadlines 
 func (l Lease6) groupDeadlines() (na, pd Deadlines) {
 	valid := l.longestValid()
 	if !l.pdTimed {
-		d := renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
+		d := renewTimes(l.T1, l.T2, l.Start, l.renewPreferred(), valid)
 		return d, d
 	}
-	na = renewTimes(l.T1, l.T2, l.Start, l.shortestPreferred(), valid)
-	pref, pvalid, first := Duration(0), Duration(0), true
+	na = renewTimes(l.T1, l.T2, l.Start, l.renewPreferred(), valid)
+	pref, pvalid, live := Duration(0), Duration(0), false
 	for _, p := range l.Prefixes {
-		if e, ok := expiry(l.Start, p.Preferred); ok && (first || e.Sub(l.pdStart) < pref) {
-			pref, first = e.Sub(l.pdStart), false
+		// a prefix already deprecated at pdStart is not one the server is
+		// willing to extend, as for an address (dhcp-golib#78)
+		if e, ok := expiry(l.Start, p.Preferred); ok && e.Sub(l.pdStart) > 0 && (!live || e.Sub(l.pdStart) < pref) {
+			pref, live = e.Sub(l.pdStart), true
 		}
 		if e, ok := expiry(l.Start, p.Valid); !ok {
 			pvalid = Infinite
@@ -460,11 +497,22 @@ func (l Lease6) groupDeadlines() (na, pd Deadlines) {
 			pvalid = e.Sub(l.pdStart)
 		}
 	}
-	if first {
+	if !live && l.prefixesPreferForever() {
 		pref = Infinite
 	}
 	pd = renewTimes(l.pdT1, l.pdT2, l.pdStart, pref, pvalid)
 	return na, pd
+}
+
+// prefixesPreferForever is whether no prefix has a finite preferred lifetime,
+// which is also the answer for no prefix at all.
+func (l Lease6) prefixesPreferForever() bool {
+	for _, p := range l.Prefixes {
+		if _, ok := expiry(l.Start, p.Preferred); ok {
+			return false
+		}
+	}
+	return true
 }
 
 func earliestDeadline(a Instant, hasA bool, b Instant, hasB bool) (Instant, bool) {

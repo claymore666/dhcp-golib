@@ -49,6 +49,10 @@ type Machine struct {
 	// transition that sends.
 	sendFailures int
 
+	// restarts counts consecutive server-caused restarts (a DHCPNAK, an
+	// expiry) since a lease last held; restartPaced reads it.
+	restarts int
+
 	// offer is the OFFER being requested, held so REQUEST can carry its
 	// yiaddr and server identifier.
 	offer *wire.Message
@@ -341,8 +345,8 @@ func (m *Machine) stepInit(now Instant, rnd uint64, ev Event, out *actions) {
 			//
 			// withDesync is false: section 4.4.1's one-to-ten-second draw
 			// desynchronises hosts booting together, and the wait that has
-			// just elapsed is section 3.1(5)'s own. Both would be two waits
-			// for two different reasons on one restart.
+			// just elapsed is section 3.1(5)'s own or restartPaced's. Both
+			// would be two waits for two different reasons on one restart.
 			m.beginAcquisition(now, rnd, out, false)
 
 		default:
@@ -469,7 +473,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 				// at wire speed (claymore666/docker-net-dhcp#1119).
 				m.frCounts.AckRefused++
 				out.journal(m, "DHCPACK without a valid option 90 after an OFFER with option 145: discarded, back to INIT (RFC 6704 section 3.1.4)")
-				m.beginAcquisition(now, split(rnd, 1), out, true)
+				m.restartPaced(now, split(rnd, 1), out, true)
 				return
 			}
 			m.noteV6OnlyKept(msg, StateRequesting, out)
@@ -490,7 +494,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 			// message, the client restarts the configuration process."
 			out.cancel(m, TimerRetransmit)
 			out.failed(m, ReasonNak, m.nakText(msg))
-			m.beginAcquisition(now, split(rnd, 1), out, false)
+			m.restartPaced(now, split(rnd, 1), out, false)
 		case wire.MsgOffer:
 			// A second server's OFFER arriving late. We have already selected.
 			out.journal(m, "DHCPOFFER in REQUESTING: discarded")
@@ -589,7 +593,7 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 			// takeResume has already consumed the Resume.
 			out.cancel(m, TimerRetransmit)
 			out.failed(m, ReasonNak, m.nakText(msg))
-			m.beginAcquisition(now, split(rnd, 1), out, false)
+			m.restartPaced(now, split(rnd, 1), out, false)
 		case wire.MsgOffer:
 			out.journal(m, "DHCPOFFER in REBOOTING: discarded (RFC 2131 Figure 5)")
 		default:
@@ -658,7 +662,7 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 			// about desynchronising hosts BOOTING together; a lease that has just
 			// expired needs re-acquiring now, and adding the delay would extend
 			// every outage by up to ten seconds for no benefit.
-			m.beginAcquisition(now, rnd, out, false)
+			m.restartPaced(now, rnd, out, false)
 		case TimerRenew:
 			m.enterRenewing(now, rnd, out)
 		case TimerRebind:
@@ -767,7 +771,7 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 			// this list tears the interface down when it sees ActLeaseLost.
 			m.dropLease(out, ReasonNak)
 			out.failed(m, ReasonNak, m.nakText(msg))
-			m.beginAcquisition(now, split(rnd, 1), out, false)
+			m.restartPaced(now, split(rnd, 1), out, false)
 		default:
 			// A DHCPOFFER, most likely: some server answering the broadcast
 			// REBINDING request as though it were a DISCOVER.
@@ -792,7 +796,7 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 			// stop any other network processing and requests network
 			// initialization parameters as if the client were uninitialized."
 			m.dropLease(out, ReasonExpired)
-			m.beginAcquisition(now, rnd, out, false)
+			m.restartPaced(now, rnd, out, false)
 		case TimerACD:
 			// The lease is held and being renewed while section 2.1's check
 			// on a moved address is still running. Section 2.4's "ongoing
@@ -858,6 +862,27 @@ func (m *Machine) beginAcquisition(now Instant, rnd uint64, out *actions, withDe
 	}
 	out.set(m, TimerDesync, d)
 	out.journal(m, fmt.Sprintf("INIT: waiting %s to desynchronise (RFC 2131 4.4.1)", d))
+}
+
+// restartPaced is beginAcquisition for a restart the server caused.
+//
+// RFC 2131 states no wait after a DHCPNAK (sections 3.1(5), 3.2(3)) or an
+// expiry (4.4.5), and a server that refuses every request or grants zero
+// seconds then holds the client at reply rate; the section 4.4.1 desync wait
+// cannot pace it because a caller may turn that off. DECISION (dhcp-golib#77):
+// the first restart leaves at once, the n-th after it waits Discover's
+// section 4.1 schedule at n-1, until a lease holds again or the machine stops.
+func (m *Machine) restartPaced(now Instant, rnd uint64, out *actions, withDesync bool) {
+	n := m.restarts
+	m.restarts++
+	if n == 0 {
+		m.beginAcquisition(now, rnd, out, withDesync)
+		return
+	}
+	m.toInitIdle(out)
+	d := m.params.Discover.Delay(n-1, split(rnd, 4))
+	out.set(m, TimerRestart, d)
+	out.journal(m, fmt.Sprintf("INIT: restart %d in a row without a lease that held, waiting %s (RFC 2131 4.1 backoff)", n+1, d))
 }
 
 // takeResume consumes the remembered lease and reports whether this
@@ -968,6 +993,7 @@ func (m *Machine) halt(out *actions, r Reason) {
 	m.offer = nil
 	m.retransmits = 0
 	m.sendFailures = 0
+	m.restarts = 0
 }
 
 // declineAndRestart is RFC 2131 section 3.1(5): send a DHCPDECLINE, give up
@@ -1115,6 +1141,9 @@ func (m *Machine) enterBound(now Instant, rnd uint64, l Lease, out *actions, ren
 	}
 	if !d.HasExpire {
 		out.journal(m, "lease is infinite: no expiry timer armed")
+	}
+	if !d.HasExpire || d.Expire.Sub(now) > 0 {
+		m.restarts = 0
 	}
 	m.armDeadline(now, TimerExpire, d.Expire, d.HasExpire, out)
 	m.armDeadline(now, TimerRenew, d.Renew, d.HasRenew, out)

@@ -1015,7 +1015,24 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # proto/split6_test.go 22, proto/split6_holdoff_test.go 15, lease/split_test.go
 # 6, lease/split_doc_test.go 1 and runtime/release_split_test.go 1; no netns
 # test.
-MIN_DECLARED_TESTS=1404
+#
+# A v6 RELEASE AFTER ITS LINK IS RECREATED, RENAMED OR LOOKED UP FROM ANOTHER
+# NAMESPACE, dhcp-golib#74: three added, none removed, MEASURED as testroster
+# runs, 1404 before and 1407 here. runtime/release_zone_linux_test.go 3, all
+# three netns tests, 72 -> 75 by testroster -netns.
+#
+# A ZERO-WINDOW READ OF THE ROUTER ADVERTISEMENT OBSERVER, dhcp-golib#74: one
+# added, none removed, MEASURED as testroster runs, 1407 before and 1408 here.
+# runtime/dnsmasq6_linux_test.go 1; no netns test.
+#
+# DHCPV6 RENEWAL TIMES, dhcp-golib#78: eight added, none removed, MEASURED as
+# testroster runs, 1408 before and 1416 here. proto/lease6_renewtimes_test.go 8;
+# no netns test.
+#
+# PACED DHCPv4 RESTARTS AND A BACKOFF THAT CANNOT RESEND AT ONCE,
+# dhcp-golib#77: nine added, none removed, MEASURED as go test -list, 1416
+# before and 1425 here. proto/restart_pacing_test.go 9; no netns test.
+MIN_DECLARED_TESTS=1425
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
