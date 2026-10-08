@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.4.3
+## Coverage by claim, through v1.4.4
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -182,6 +182,35 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   conformant FORCERENEW server. The refusals and the replay floor are driven
   on the machine's own clock in `proto`
   (`TestEveryRefusalLeavesTheMachineAsItWas`, `TestTheReplayFloorIsStrict`).
+- **A DHCPv4 server that keeps refusing does not hold the client at its reply
+  rate.** A DHCPNAK in REQUESTING, REBOOTING, RENEWING or REBINDING, a lease
+  of zero seconds, a renewal that runs out, and a DHCPACK refused for a missing
+  authentication option (RFC 6704 §3.1.4) each send the client back to a
+  Discover, and RFC 2131 states no wait after a DHCPNAK (§3.1, §3.2) or an
+  expiry (§4.4.5). The first restart of such a run leaves in the same step, so
+  one NAK followed by a lease is unchanged (after a refused authentication option,
+  with the desync wait on, as by default, it still waits the §4.4.1 draw, as before);
+  from the second in a row the client waits Discover's §4.1 schedule (four
+  seconds, doubling to sixty-four, each within a second either way) before the
+  next DHCPDISCOVER. The count resets when a lease binds that has not already
+  expired, and on Stop. The tests drive
+  `proto.Step` on an injected clock and random source and assert the instant
+  each Discover leaves after its cause, with the desync wait off, as the plugin
+  runs it
+  (`TestRepeatedNaksInRequestingArePaced`, `TestNakInRebootingStartsTheSameCount`,
+  `TestAZeroLeaseLoopIsPaced`, `TestAnAckRefusedForOption90IsPacedLikeANak`,
+  `TestRestartsAfterAHeldLeaseArePacedFromTheSecond`,
+  `TestAHeldLeaseResetsThePacing`, `TestStopAndStartResetThePacing`,
+  `TestTheFirstRestartAfterANakLeavesInTheSameStep`). A restart after a lost
+  address and one after an exhausted retransmission budget are not paced by
+  this. `proto.New` refuses a Discover or Request schedule unless its `Jitter`
+  is not negative and below `Initial`, which is at most `Max`
+  (`ErrBadBackoff`). Of the schedules that rule refuses, one with no `Max`, a
+  zero `Initial` or a jitter as large as `Initial` could resend at once; a
+  `Max` below `Initial` and a negative `Jitter` could not, and are refused
+  with them, and `Backoff.Delay` stops doubling before it wraps to zero
+  (`TestNewRefusesABackoffThatCanResendAtOnce`, `TestBackoffNeverOverflows`).
+  No server is involved: the clock is fake, and the count lives in memory only.
 - **A two-message DHCPv6 lease from a real server, and the four-message one
   from the same server.** A client with `RapidCommit` sends the Rapid Commit option in its
   Solicit and in no other message. dnsmasq answers a Solicit that carries it with
@@ -361,6 +390,30 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestAPrefixThatBLeftOutStaysWithTheServerThatDelegatedIt`,
   `TestCloneLeaseCopiesThePrefixServer`,
   `TestAV142JournalRecordLoadsAsOneServerWithTheSameRelease`).
+- **Renewal times that follow RFC 9915 for an infinite or a zero T1 and T2.**
+  A Reply with T1 and T2 of 0xffffffff arms no Renew and no Rebind (§21.4:
+  the client uses the server's values unless they are zero, and 0xffffffff is
+  infinity); each timer is read on its own, so an infinite T1 beside a T2 of zero
+  keeps T1 and chooses T2. With both zero the client chooses half and four fifths of the
+  shortest preferred lifetime among the addresses the server is still willing
+  to extend (§14.2, §21.4), so an address deprecated at a preferred lifetime of zero
+  beside a live one no longer decides the choice and no longer leaves the
+  lease with no timer. When every address is deprecated the times come from
+  the valid lifetime, since §14.2 leaves no way to not choose. The IA_PD group
+  applies the same rule to its prefixes, and a prefix already deprecated at the
+  start of the exchange is not counted. `PreferredUntil` still counts a
+  deprecated address, because it reports when the first one deprecates. These
+  are driven through `proto.Step` on the machine's own clock
+  (`TestAnInfiniteT1AndT2ArmNoRenewalTimer`,
+  `TestAZeroT1AndT2ChooseFromTheAddressesStillPreferred`,
+  `TestADeprecatedAddressStillEndsThePreferredWindow`,
+  `TestThePrefixGroupFollowsTheSameRules`,
+  `TestALeaseWithAnInfiniteTimeStillOrdersTheOthers`,
+  `TestAnInfinitePreferredLifetimeBesideADeprecatedAddressArmsNoRenewal`,
+  `TestAPrefixDeprecatedAtTheExchangeStartIsNotOneTheServerWillExtend`,
+  `TestATimeClampedToTheValidLifetimeStillArmsWhenEveryPrefixIsDeprecated`).
+  No server is involved. During the one-server Request after a NoBinding the
+  machine still ignores T2 and the lease's end, as the entry above pins.
 - **A binding that leaves the lease when its valid lifetime ends while bound.**
   `Timer6Expire` is armed for the next valid end in the lease, not only the
   last. When it fires, an address of several, a temporary address or a prefix
@@ -461,6 +514,25 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestMachineReleaseNamesEveryTemporaryAddressInAnIATAWithZeroLifetimes`,
   `TestMachineReleaseOrdersTheIAsNAThenTAThenPD`,
   `TestMachineReleaseWithNoTemporaryAddressIsTheDatagramOfBefore`).
+  A v6 Release binds its socket to the link by device name and puts no zone
+  on either address, not even one on the caller's `ReleaseConfig.Source`: Go
+  resolves a zone name through a process-wide cache that is refreshed at most
+  every minute, keyed by name and blind to the network namespace, and the kernel
+  lets a non-zero scope id on a link-local bind override the device binding. A
+  link deleted and recreated under the same name, which failed with `bind: no
+  such device`, now gets the datagram; when the link was renamed and another
+  created under the old name, the datagram leaves by the link that now has the
+  name and not by the renamed one; and a name that another namespace's lookup
+  cached does not steer it. Observers are AF_PACKET sockets on the peer links, comparing
+  the exact payload, the source address and the port; a source the link does
+  not hold and a link that is gone each return an error naming the link
+  (`TestAV6ReleaseReachesALinkRecreatedUnderTheSameName`,
+  `TestAV6ReleaseLeavesByTheLinkThatNowHasTheName`,
+  `TestAV6ReleaseIsNotSteeredByANameSeenInAnotherNamespace`). The router
+  advertisement observer those tests share reads what is already queued for a
+  zero window (`TestARouterAdvertWatchWithAZeroWindowReadsWhatIsQueued`). A
+  client whose link is recreated after it opened its AF_PACKET sockets still
+  sends on the dead index, and the caller rebuilds it.
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine

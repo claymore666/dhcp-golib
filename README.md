@@ -121,6 +121,21 @@ for what it holds
 `PrefixServerDUID` on `proto.Lease6`, `proto.Resume6` and `lease.Lease`, and
 `lease.BuildReleases` with its return type `lease.ReleaseDatagram`, carry the
 fix; nothing else in the API changes.
+v1.4.4 fixes three faults. A DHCPv4 client no longer restarts at the server's
+reply rate when the server keeps refusing: the first restart after a DHCPNAK,
+a zero lease or an expiry leaves at once (after a refused authentication
+option it still waits the desync draw, when that is on), and from the second in a row the
+client waits RFC 2131 §4.1's schedule. `proto.New` now refuses a Discover or
+Request schedule unless its jitter is not negative and below its initial delay,
+which is at most its maximum, and the new `proto.ErrBadBackoff` is its error
+([#77](https://github.com/claymore666/dhcp-golib/issues/77)). A DHCPv6 lease
+with T1 and T2 of 0xffffffff arms no renewal, and with both zero the client
+chooses from the addresses still preferred, so a deprecated address beside a
+live one no longer leaves the lease with no timer
+([#78](https://github.com/claymore666/dhcp-golib/issues/78)). A DHCPv6
+Release binds its link by device name and no longer by zone, so it still
+works after the link was recreated under the same name
+([#74](https://github.com/claymore666/dhcp-golib/issues/74)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -133,7 +148,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v143).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v144).
 
 ## Usage
 
