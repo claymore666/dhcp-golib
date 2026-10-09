@@ -1040,8 +1040,9 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # testroster -netns. A server off the leased subnet goes through the gateway,
 # and one probe serves a sweep: six more, none removed, MEASURED as testroster
 # runs, 1431 before and 1437 here, all in runtime/release_link_test.go; no
-# netns test.
-MIN_DECLARED_TESTS=1437
+# netns test. A remembered silent gateway still sends nothing: one more,
+# MEASURED as testroster runs, 1437 before and 1438 here, same file.
+MIN_DECLARED_TESTS=1438
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

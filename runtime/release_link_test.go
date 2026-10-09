@@ -407,6 +407,23 @@ func TestLinkReleaseSharesOneProbePerHopAcrossASweep(t *testing.T) {
 	}
 }
 
+func TestLinkReleaseRemembersASilentGatewayAndStillSendsNothing(t *testing.T) {
+	r := newSilentLinkRig()
+	cfg := linkCfg()
+	cfg.Resolved = NewLinkResolveCache()
+	second := relayedRecord()
+	second.ID, second.Lease.Addr = "rec-link-2", netip.PrefixFrom(netip.MustParseAddr("192.168.99.121"), 24)
+	for _, rec := range []lease.Record{relayedRecord(), second} {
+		if err := sendReleaseOnLinkWith(rec, cfg, r.ports()); !errors.Is(err, ErrLinkReleaseHopSilent) {
+			t.Fatalf("%s: got %v, want %v", rec.ID, err, ErrLinkReleaseHopSilent)
+		}
+	}
+	if len(r.arp.sent) != 1 || len(r.ip.dst) != 0 {
+		t.Fatalf("two releases behind a silent gateway sent %d probe(s) and %v, want one probe and nothing else",
+			len(r.arp.sent), r.ip.hw)
+	}
+}
+
 func TestLinkReleaseRemembersEachHopApart(t *testing.T) {
 	r := newLinkRig(
 		arpFrameFor(t, wire.ARPReply, linkServerMAC, linkServer),
