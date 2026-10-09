@@ -1037,8 +1037,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # claymore666/docker-net-dhcp#1288: six added, none removed, MEASURED as
 # testroster runs, 1425 before and 1431 here. runtime/release_link_test.go 5
 # and runtime/release_link_dnsmasq_linux_test.go 1, a netns test, 75 -> 76 by
-# testroster -netns.
-MIN_DECLARED_TESTS=1431
+# testroster -netns. A server off the leased subnet goes through the gateway,
+# and one probe serves a sweep: six more, none removed, MEASURED as testroster
+# runs, 1431 before and 1437 here, all in runtime/release_link_test.go; no
+# netns test.
+MIN_DECLARED_TESTS=1437
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

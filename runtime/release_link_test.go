@@ -22,6 +22,9 @@ var (
 	linkOtherMAC  = net.HardwareAddr{0x02, 0x00, 0x5e, 0x12, 0x88, 0x03}
 	linkServer    = netip.MustParseAddr("192.168.99.1")
 	linkLeased    = netip.MustParseAddr("192.168.99.120")
+	linkGateway   = netip.MustParseAddr("192.168.99.254")
+	linkRelayed   = netip.MustParseAddr("10.9.9.9")
+	linkRouterMAC = net.HardwareAddr{0x02, 0x00, 0x5e, 0x12, 0x88, 0x04}
 )
 
 type fakeLinkARP struct {
@@ -72,7 +75,24 @@ type linkRig struct {
 	deadline chan time.Time
 }
 
+// newLinkRig hands the probe these frames and then closes the ARP socket, so a
+// probe for a hop nothing answers fails at once rather than waiting on a
+// deadline the rig never fires (claymore666/docker-net-dhcp#1288).
 func newLinkRig(frames ...[]byte) *linkRig {
+	r := openLinkRig(frames...)
+	close(r.arp.in)
+	return r
+}
+
+// newSilentLinkRig hands the probe these frames and then lets the bound run out.
+func newSilentLinkRig(frames ...[]byte) *linkRig {
+	r := openLinkRig(frames...)
+	r.deadline = make(chan time.Time)
+	close(r.deadline)
+	return r
+}
+
+func openLinkRig(frames ...[]byte) *linkRig {
 	r := &linkRig{
 		arp: &fakeLinkARP{in: make(chan lease.ARPInbound, len(frames)+1)},
 		ip:  &fakeLinkIP{},
@@ -113,7 +133,7 @@ func linkRecord() lease.Record {
 		ID: "rec-link", Scope: "net-a", Family: lease.FamilyV4,
 		CHAddr:   net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x09},
 		Identity: []byte{0x01, 0x02, 0x42, 0xac, 0x11, 0x00, 0x09},
-		Lease:    lease.Lease{Addr: netip.PrefixFrom(linkLeased, 24), ServerID: linkServer},
+		Lease:    lease.Lease{Addr: netip.PrefixFrom(linkLeased, 24), ServerID: linkServer, Gateway: linkGateway},
 	}
 }
 
@@ -212,9 +232,7 @@ func TestLinkReleaseProbesWithAZeroSenderAndSendsToTheMACThatAnswered(t *testing
 }
 
 func TestLinkReleaseBroadcastsTheFrameWhenNothingAnswersTheProbe(t *testing.T) {
-	r := newLinkRig(arpFrameFor(t, wire.ARPReply, linkOtherMAC, netip.MustParseAddr("192.168.99.7")))
-	r.deadline = make(chan time.Time)
-	close(r.deadline)
+	r := newSilentLinkRig(arpFrameFor(t, wire.ARPReply, linkOtherMAC, netip.MustParseAddr("192.168.99.7")))
 
 	if err := sendReleaseOnLinkWith(linkRecord(), linkCfg(), r.ports()); err != nil {
 		t.Fatalf("sendReleaseOnLinkWith: %v", err)
@@ -252,7 +270,7 @@ func TestLinkReleaseReturnsEveryFailure(t *testing.T) {
 		{"the ARP socket does not open", func(r *linkRig) { r.arpErr = boom }, 0},
 		{"the probe is not sent", func(r *linkRig) { r.arp.sendErr = boom }, 0},
 		{"the ARP read fails", func(r *linkRig) {
-			<-r.arp.in
+			r.arp.in = make(chan lease.ARPInbound, 1)
 			r.arp.in <- lease.ARPInbound{Err: boom}
 		}, 0},
 		{"the ARP socket does not close", func(r *linkRig) { r.arp.closeErr = boom }, 0},
@@ -273,11 +291,138 @@ func TestLinkReleaseReturnsEveryFailure(t *testing.T) {
 	}
 
 	r2 := newLinkRig()
-	close(r2.arp.in)
 	if err := sendReleaseOnLinkWith(linkRecord(), linkCfg(), r2.ports()); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("an ARP socket that closed under the wait gave %v", err)
 	}
 	if len(r2.ip.dst) != 0 {
 		t.Fatal("a release was sent after the ARP socket closed under the wait")
+	}
+}
+
+func relayedRecord() lease.Record {
+	rec := linkRecord()
+	rec.Lease.ServerID = linkRelayed
+	return rec
+}
+
+func probedFor(t *testing.T, frame []byte) netip.Addr {
+	t.Helper()
+	p, err := wire.DecodeARP(frame)
+	if err != nil {
+		t.Fatalf("the probe does not decode: %v", err)
+	}
+	if !p.IsProbe() {
+		t.Fatalf("%s is not an RFC 5227 probe", p)
+	}
+	return p.TargetIP
+}
+
+func TestLinkReleaseToAServerOffTheSubnetGoesThroughTheGateway(t *testing.T) {
+	r := newLinkRig(
+		arpFrameFor(t, wire.ARPReply, linkServerMAC, linkServer),
+		arpFrameFor(t, wire.ARPReply, linkRouterMAC, linkGateway),
+	)
+	if err := sendReleaseOnLinkWith(relayedRecord(), linkCfg(), r.ports()); err != nil {
+		t.Fatalf("sendReleaseOnLinkWith: %v", err)
+	}
+	if len(r.arp.sent) != 1 || probedFor(t, r.arp.sent[0]) != linkGateway {
+		t.Fatalf("sent %d ARP frame(s), want one probe for the gateway %s", len(r.arp.sent), linkGateway)
+	}
+	if len(r.ip.dst) != 1 || !bytes.Equal(r.ip.hw[0], linkRouterMAC) {
+		t.Fatalf("the release went to %v, want one frame to the gateway's %s", r.ip.hw, linkRouterMAC)
+	}
+	if got := r.ip.dst[0]; got.Broadcast || got.Addr != linkRelayed || got.Src != linkLeased {
+		t.Fatalf("the release is addressed %+v, want unicast IP to the server %s from %s", got, linkRelayed, linkLeased)
+	}
+}
+
+func TestLinkReleaseToAServerOffTheSubnetWithNoGatewayOpensNothing(t *testing.T) {
+	rec := relayedRecord()
+	rec.Lease.Gateway = netip.Addr{}
+	r := newLinkRig()
+	if err := sendReleaseOnLinkWith(rec, linkCfg(), r.ports()); !errors.Is(err, ErrLinkReleaseNoRoute) {
+		t.Fatalf("got %v, want %v", err, ErrLinkReleaseNoRoute)
+	}
+	if len(r.opened) != 0 {
+		t.Fatalf("a release with no way to the server opened %v", r.opened)
+	}
+}
+
+func TestLinkReleaseNeverBroadcastsToAServerOffTheSubnet(t *testing.T) {
+	r := newSilentLinkRig(arpFrameFor(t, wire.ARPReply, linkServerMAC, linkRelayed))
+	if err := sendReleaseOnLinkWith(relayedRecord(), linkCfg(), r.ports()); !errors.Is(err, ErrLinkReleaseHopSilent) {
+		t.Fatalf("got %v, want %v", err, ErrLinkReleaseHopSilent)
+	}
+	if len(r.ip.dst) != 0 {
+		t.Fatalf("sent %v when the gateway did not answer, want nothing: a router drops a broadcast frame", r.ip.hw)
+	}
+}
+
+func TestLinkReleaseOnASlash32LeaseKeepsTheOnLinkPath(t *testing.T) {
+	rec := linkRecord()
+	rec.Lease.Addr = netip.PrefixFrom(linkLeased, 32)
+	r := newLinkRig(arpFrameFor(t, wire.ARPReply, linkServerMAC, linkServer))
+	if err := sendReleaseOnLinkWith(rec, linkCfg(), r.ports()); err != nil {
+		t.Fatalf("sendReleaseOnLinkWith: %v", err)
+	}
+	if len(r.arp.sent) != 1 || probedFor(t, r.arp.sent[0]) != linkServer || !bytes.Equal(r.ip.hw[0], linkServerMAC) {
+		t.Fatalf("a lease with no subnet mask probed %d time(s) and sent to %v, want the server's %s",
+			len(r.arp.sent), r.ip.hw, linkServerMAC)
+	}
+}
+
+func TestLinkReleaseSharesOneProbePerHopAcrossASweep(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		frames func(t *testing.T) [][]byte
+		silent bool
+		want   net.HardwareAddr
+	}{
+		{"an answered hop", func(t *testing.T) [][]byte {
+			return [][]byte{arpFrameFor(t, wire.ARPReply, linkServerMAC, linkServer)}
+		}, false, linkServerMAC},
+		{"a silent hop", func(*testing.T) [][]byte { return nil }, true, broadcastMAC},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newLinkRig(c.frames(t)...)
+			if c.silent {
+				r = newSilentLinkRig(c.frames(t)...)
+			}
+			cfg := linkCfg()
+			cfg.Resolved = NewLinkResolveCache()
+			second := linkRecord()
+			second.ID, second.Lease.Addr = "rec-link-2", netip.PrefixFrom(netip.MustParseAddr("192.168.99.121"), 24)
+			for _, rec := range []lease.Record{linkRecord(), second} {
+				if err := sendReleaseOnLinkWith(rec, cfg, r.ports()); err != nil {
+					t.Fatalf("sendReleaseOnLinkWith %s: %v", rec.ID, err)
+				}
+			}
+			if len(r.arp.sent) != 1 {
+				t.Fatalf("two releases behind one hop sent %d probe(s), want one", len(r.arp.sent))
+			}
+			if len(r.ip.hw) != 2 || !bytes.Equal(r.ip.hw[0], c.want) || !bytes.Equal(r.ip.hw[1], c.want) {
+				t.Fatalf("the releases went to %v, want both to %s", r.ip.hw, c.want)
+			}
+		})
+	}
+}
+
+func TestLinkReleaseRemembersEachHopApart(t *testing.T) {
+	r := newLinkRig(
+		arpFrameFor(t, wire.ARPReply, linkServerMAC, linkServer),
+		arpFrameFor(t, wire.ARPReply, linkRouterMAC, linkGateway),
+	)
+	cfg := linkCfg()
+	cfg.Resolved = NewLinkResolveCache()
+	for _, rec := range []lease.Record{linkRecord(), relayedRecord()} {
+		if err := sendReleaseOnLinkWith(rec, cfg, r.ports()); err != nil {
+			t.Fatalf("sendReleaseOnLinkWith %s: %v", rec.Lease.ServerID, err)
+		}
+	}
+	if len(r.arp.sent) != 2 || probedFor(t, r.arp.sent[1]) != linkGateway {
+		t.Fatalf("sent %d probe(s), want a second one for the gateway", len(r.arp.sent))
+	}
+	if len(r.ip.hw) != 2 || !bytes.Equal(r.ip.hw[1], linkRouterMAC) {
+		t.Fatalf("the relayed release went to %v, want the gateway's %s", r.ip.hw, linkRouterMAC)
 	}
 }

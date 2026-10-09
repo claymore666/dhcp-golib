@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -22,6 +23,51 @@ type LinkReleaseConfig struct {
 	// Rand is the source of the transaction id. Nil means a fresh
 	// crypto/rand-seeded one.
 	Rand *Entropy
+
+	// Resolved, when not nil, is shared across the releases of one sweep so
+	// only the first lease behind a next hop waits out the probe bound. Nil
+	// probes every time.
+	Resolved *LinkResolveCache
+}
+
+// LinkResolveCache remembers, per interface and next hop, the MAC that
+// answered the probe or that nothing did. It is meant for one sweep: a stale
+// entry sends a release to a MAC that has since moved. Safe for concurrent use
+// (claymore666/docker-net-dhcp#1288).
+type LinkResolveCache struct {
+	mu   sync.Mutex
+	hops map[linkHop]net.HardwareAddr
+}
+
+type linkHop struct {
+	iface string
+	addr  netip.Addr
+}
+
+// NewLinkResolveCache is an empty cache for one sweep.
+func NewLinkResolveCache() *LinkResolveCache {
+	return &LinkResolveCache{hops: map[linkHop]net.HardwareAddr{}}
+}
+
+// lookup is the remembered answer, nil for a silent hop; known is false on a
+// nil cache or a hop not probed yet.
+func (c *LinkResolveCache) lookup(iface string, hop netip.Addr) (hw net.HardwareAddr, known bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	hw, known = c.hops[linkHop{iface, hop}]
+	return hw, known
+}
+
+func (c *LinkResolveCache) remember(iface string, hop netip.Addr, hw net.HardwareAddr) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hops[linkHop{iface, hop}] = hw
 }
 
 // The refusals SendReleaseOnLink returns before it opens a socket.
@@ -32,15 +78,26 @@ var (
 
 	// ErrLinkReleaseNoInterface is a LinkReleaseConfig with no interface.
 	ErrLinkReleaseNoInterface = errors.New("runtime: LinkReleaseConfig.Interface is required")
+
+	// ErrLinkReleaseNoRoute is a server outside the leased subnet, a relayed
+	// one, on a record that names no gateway to send it through.
+	ErrLinkReleaseNoRoute = errors.New("runtime: the server is off the leased subnet and the lease names no gateway")
 )
 
-// linkResolveBound is how long SendReleaseOnLink waits for the server to
-// answer its ARP probe before it broadcasts the frame instead.
+// ErrLinkReleaseHopSilent is a gateway that did not answer the probe. Nothing
+// is sent: a router does not forward a frame it got as a link broadcast
+// (claymore666/docker-net-dhcp#1288).
+var ErrLinkReleaseHopSilent = errors.New("runtime: the gateway to an off-link server did not answer the ARP probe")
+
+// linkResolveBound is how long SendReleaseOnLink waits for the next hop to
+// answer its ARP probe before it broadcasts the frame (on-link server) or
+// gives up (gateway).
 const linkResolveBound = time.Second
 
 // SendReleaseOnLink gives a v4 record's lease back from a link the host holds
 // no address on: one DHCPRELEASE from the leased address to the server id,
-// sent once over AF_PACKET. Every failure comes back as an error.
+// sent once over AF_PACKET to the MAC of the server or, for a server off the
+// leased subnet, of the gateway. Every failure comes back as an error.
 func SendReleaseOnLink(rec lease.Record, cfg LinkReleaseConfig) error {
 	return sendReleaseOnLinkWith(rec, cfg, linkPorts{
 		openARP: func(iface string) (linkARP, error) { return NewARPSocket(iface) },
@@ -88,6 +145,10 @@ func sendReleaseOnLinkWith(rec lease.Record, cfg LinkReleaseConfig, ports linkPo
 		return err
 	}
 	server := dst.Addr()
+	hop, onLink, err := nextHop(rec.Lease, server)
+	if err != nil {
+		return err
+	}
 
 	ip, err := ports.openIP(cfg.Interface)
 	if err != nil {
@@ -95,16 +156,24 @@ func sendReleaseOnLinkWith(rec lease.Record, cfg LinkReleaseConfig, ports linkPo
 	}
 	defer func() { err = errors.Join(err, ip.Close()) }()
 
-	arp, err := ports.openARP(cfg.Interface)
-	if err != nil {
-		return err
+	hw, known := cfg.Resolved.lookup(cfg.Interface, hop)
+	if !known {
+		arp, err := ports.openARP(cfg.Interface)
+		if err != nil {
+			return err
+		}
+		var rerr error
+		hw, rerr = resolveByProbe(arp, hop, ports.after(linkResolveBound))
+		if cerr := arp.Close(); rerr == nil {
+			rerr = cerr
+		}
+		if rerr != nil {
+			return rerr
+		}
+		cfg.Resolved.remember(cfg.Interface, hop, hw)
 	}
-	hw, rerr := resolveByProbe(arp, server, ports.after(linkResolveBound))
-	if cerr := arp.Close(); rerr == nil {
-		rerr = cerr
-	}
-	if rerr != nil {
-		return rerr
+	if hw == nil && !onLink {
+		return fmt.Errorf("%w: %s on %s", ErrLinkReleaseHopSilent, hop, cfg.Interface)
 	}
 	// No answer: a router may ignore probes (claymore666/docker-net-dhcp#1288).
 	// Broadcast at the link layer, unicast at IP: the server's kernel takes a
@@ -116,6 +185,22 @@ func sendReleaseOnLinkWith(rec lease.Record, cfg LinkReleaseConfig, ports linkPo
 	// IP source is the leased address: RFC 2131 section 4.4.4 releases from it,
 	// and the host has no address of its own on this link.
 	return ip.sendUnicastTo(proto.Dest{Addr: server, Src: rec.Lease.Addr.Addr()}, hw, payload)
+}
+
+// nextHop is the server itself when the leased subnet holds it, else the
+// lease's gateway, for a server behind a relay (RFC 2131 section 4.4.4 sends
+// the release to it by unicast). A /32 lease, a server that sent no subnet
+// mask, says nothing of the subnet and keeps the on-link path. An RFC 3442
+// route to the server's subnet via another hop is not followed: the stated
+// limit of claymore666/docker-net-dhcp#1288.
+func nextHop(l lease.Lease, server netip.Addr) (hop netip.Addr, onLink bool, err error) {
+	if l.Addr.Bits() == 32 || l.Addr.Contains(server) {
+		return server, true, nil
+	}
+	if !l.Gateway.Is4() {
+		return netip.Addr{}, false, fmt.Errorf("%w: server %s, leased %s", ErrLinkReleaseNoRoute, server, l.Addr)
+	}
+	return l.Gateway, false, nil
 }
 
 // resolveByProbe asks for server's hardware address with an RFC 5227 section
