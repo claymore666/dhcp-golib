@@ -6,6 +6,7 @@ package runtime
 
 import (
 	"errors"
+	"net"
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
@@ -44,6 +45,13 @@ type PacketTransport struct{}
 func NewPacketTransport(string) (*PacketTransport, error) { return nil, ErrUnsupportedPlatform }
 
 func (*PacketTransport) Send(proto.Dest, []byte) error { return ErrUnsupportedPlatform }
+
+func (*PacketTransport) sendUnicastTo(proto.Dest, net.HardwareAddr, []byte) error {
+	return ErrUnsupportedPlatform
+}
+
+// broadcastMAC is the Linux file's, so the platform-neutral release_link.go builds here.
+var broadcastMAC = net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 // Received returns a closed channel.
 func (*PacketTransport) Received() <-chan lease.Inbound {

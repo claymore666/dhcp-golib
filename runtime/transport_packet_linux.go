@@ -275,20 +275,31 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 //
 // A destination never heard from is refused rather than broadcast:
 // broadcasting a message addressed to one server would put a DHCPRELEASE
-// naming this client's binding in front of every server on the link.
-//
-// TTL 64, not the broadcast path's 1: a unicast to the server identifier is an
-// ordinary datagram and is not link-local by definition.
+// naming this client's binding in front of every server on the link. That is
+// this client's decision; SendReleaseOnLink, which has no client and nothing
+// heard, probes and then broadcasts (claymore666/docker-net-dhcp#1288).
 func (t *PacketTransport) sendUnicast(dst proto.Dest, payload []byte) error {
-	if !dst.Addr.Is4() || dst.Addr.IsUnspecified() {
-		return fmt.Errorf("%w: %s", ErrNotUnicast, dst.Addr)
-	}
-	if !dst.Src.Is4() || dst.Src.IsUnspecified() {
-		return fmt.Errorf("%w: %s", ErrUnicastNoSource, dst)
+	if err := checkUnicast(dst); err != nil {
+		return err
 	}
 	hw, ok := t.peerHardwareAddr(dst.Addr)
 	if !ok {
 		return fmt.Errorf("%w: %s has not been heard from and this transport sends no ARP", ErrUnicastUnresolved, dst.Addr)
+	}
+	return t.sendUnicastTo(dst, hw, payload)
+}
+
+// sendUnicastTo frames one unicast datagram for dst and puts it on the wire
+// addressed to hw.
+//
+// TTL 64, not the broadcast path's 1: a unicast to the server identifier is an
+// ordinary datagram and is not link-local by definition.
+func (t *PacketTransport) sendUnicastTo(dst proto.Dest, hw net.HardwareAddr, payload []byte) error {
+	if t.closed.Load() {
+		return ErrTransportClosed
+	}
+	if err := checkUnicast(dst); err != nil {
+		return err
 	}
 	frame, err := BuildIPv4UDP(dst.Src, dst.Addr,
 		ClientPort, ServerPort, uint16(t.ident.Add(1)), 64, payload)
@@ -296,6 +307,17 @@ func (t *PacketTransport) sendUnicast(dst proto.Dest, payload []byte) error {
 		return err
 	}
 	return t.transmit(frame, hw)
+}
+
+// checkUnicast refuses a unicast Dest with no usable destination or source.
+func checkUnicast(dst proto.Dest) error {
+	if !dst.Addr.Is4() || dst.Addr.IsUnspecified() {
+		return fmt.Errorf("%w: %s", ErrNotUnicast, dst.Addr)
+	}
+	if !dst.Src.Is4() || dst.Src.IsUnspecified() {
+		return fmt.Errorf("%w: %s", ErrUnicastNoSource, dst)
+	}
+	return nil
 }
 
 // transmit puts one built frame on the wire, addressed to hw.

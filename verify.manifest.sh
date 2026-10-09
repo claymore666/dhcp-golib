@@ -1032,7 +1032,17 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # PACED DHCPv4 RESTARTS AND A BACKOFF THAT CANNOT RESEND AT ONCE,
 # dhcp-golib#77: nine added, none removed, MEASURED as go test -list, 1416
 # before and 1425 here. proto/restart_pacing_test.go 9; no netns test.
-MIN_DECLARED_TESTS=1425
+#
+# A v4 RELEASE OVER A LINK THE HOST HAS NO ADDRESS ON,
+# claymore666/docker-net-dhcp#1288: six added, none removed, MEASURED as
+# testroster runs, 1425 before and 1431 here. runtime/release_link_test.go 5
+# and runtime/release_link_dnsmasq_linux_test.go 1, a netns test, 75 -> 76 by
+# testroster -netns. A server off the leased subnet goes through the gateway,
+# and one probe serves a sweep: six more, none removed, MEASURED as testroster
+# runs, 1431 before and 1437 here, all in runtime/release_link_test.go; no
+# netns test. A remembered silent gateway still sends nothing: one more,
+# MEASURED as testroster runs, 1437 before and 1438 here, same file.
+MIN_DECLARED_TESTS=1438
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
