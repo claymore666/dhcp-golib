@@ -36,8 +36,8 @@ type ReleaseConfig struct {
 	//
 	// IT MUST BE AN ADDRESS THE HOST REALLY HOLDS ON THE SENDING LINK. The
 	// socket is bound to it, so one the host does not hold fails at the bind
-	// and comes back as an error. A parent the host has no address on leaves
-	// nothing to pass, and this path cannot be used there.
+	// and comes back as an error. A v4 lease on a parent the host has no
+	// address on is released with SendReleaseOnLink instead (claymore666/docker-net-dhcp#1288).
 	//
 	// It is the caller's and this package never picks it. For v6 it MUST NOT
 	// be the address being released — RFC 9915 section 18.2.7: "The client
@@ -198,11 +198,11 @@ func sendReleaseWith(rec lease.Record, cfg ReleaseConfig, send releaseSender) er
 // because a client's first messages leave from 0.0.0.0 to a destination that
 // is not routable and no socket API will produce that datagram. This one is
 // the other case entirely: the source is an address the host really holds, the
-// destination is a server the host can really reach, and the link-layer
-// address of that server is something the kernel already knows and this
-// process does not — there is no DHCPACK frame in hand to learn it from, and
-// ARPing for it here would be this library installing state on a link it has
-// promised not to touch.
+// destination is a server the host can really reach, and the kernel resolves
+// the server's link-layer address itself. With no host address on the link
+// there is no such socket, and SendReleaseOnLink resolves it with an ARP Probe
+// whose zero sender address a server cannot learn a mapping from
+// (claymore666/docker-net-dhcp#1288).
 func sendOneDatagram(src, dst netip.AddrPort, iface string, payload []byte) error {
 	network := "udp4"
 	if !dst.Addr().Is4() {

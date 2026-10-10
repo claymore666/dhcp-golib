@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.4.4
+## Coverage by claim, through v1.5.0
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -533,6 +533,53 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   zero window (`TestARouterAdvertWatchWithAZeroWindowReadsWhatIsQueued`). A
   client whose link is recreated after it opened its AF_PACKET sockets still
   sends on the dead index, and the caller rebuilds it.
+- **A v4 lease given back from a link the host holds no address on.**
+  `runtime.SendRelease` needs a bound UDP source, which a parent interface
+  with no IPv4 address cannot give. `runtime.SendReleaseOnLink` builds the
+  DHCPRELEASE from the record with the leased address as its IP source, which
+  RFC 2131 lets the releasing client use, the server identifier as its
+  destination and the client and server ports, and writes the whole frame
+  once over an AF_PACKET socket on the named interface. The server's hardware
+  address comes from an RFC 5227 §1.1 ARP Probe, whose sender protocol address
+  is the unspecified address, so no receiver learns a mapping from it; an ARP
+  request from the leased address would teach the server that address at the
+  parent's MAC and strand its next holder. When nothing answers within the
+  bound, the frame goes to the broadcast MAC with the unicast IP destination.
+  Asserted against dnsmasq's own log and lease file on a veth end that
+  carries no IPv4 address: the DHCPRELEASE line is there and the binding is
+  gone, and a control lease taken in the same fixture has no DHCPRELEASE line
+  and is still held. With the probe answered, the server's neighbour table
+  holds no entry for the leased address afterwards; with `arp_ignore` set so
+  the server stays silent, the broadcast fallback carries the release
+  (`TestAReleaseFromALinkWithNoHostAddressReachesRealDnsmasq`). A server off
+  the leased subnet, behind a relay, is reached through the lease's gateway:
+  the probe asks for the gateway's hardware address and the datagram, still
+  addressed to the server, goes to that MAC (RFC 2131 §4.4.4). A router does
+  not forward a frame it received as a link broadcast, so on that path a
+  gateway that does not answer returns `ErrLinkReleaseHopSilent`, a lease
+  that names no gateway returns `ErrLinkReleaseNoRoute`, and nothing is sent;
+  the broadcast fallback is for an on-link server only. A lease with no
+  subnet mask from the server says nothing about the subnet and keeps the
+  on-link path. An RFC 3442 route to the server's subnet through another hop
+  is not followed; that is a stated limit. `LinkReleaseConfig.Resolved` takes
+  an optional `LinkResolveCache` a caller shares across one sweep: it
+  remembers the probe's answer per interface and next hop, a silent hop
+  included, so only the first release behind a silent gateway waits out the
+  bound, and a remembered silent gateway still sends nothing. A nil cache
+  probes every time. The relay path and the cache are driven with fakes for
+  the two sockets (`TestLinkReleaseRefusesBeforeOpeningASocket`,
+  `TestLinkReleaseProbesWithAZeroSenderAndSendsToTheMACThatAnswered`,
+  `TestLinkReleaseBroadcastsTheFrameWhenNothingAnswersTheProbe`,
+  `TestLinkReleaseIgnoresAReplyWithNoUsableHardwareAddress`,
+  `TestLinkReleaseReturnsEveryFailure`,
+  `TestLinkReleaseToAServerOffTheSubnetGoesThroughTheGateway`,
+  `TestLinkReleaseToAServerOffTheSubnetWithNoGatewayOpensNothing`,
+  `TestLinkReleaseNeverBroadcastsToAServerOffTheSubnet`,
+  `TestLinkReleaseOnASlash32LeaseKeepsTheOnLinkPath`,
+  `TestLinkReleaseSharesOneProbePerHopAcrossASweep`,
+  `TestLinkReleaseRemembersASilentGatewayAndStillSendsNothing`,
+  `TestLinkReleaseRemembersEachHopApart`;
+  [docker-net-dhcp#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
