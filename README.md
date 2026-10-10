@@ -136,6 +136,19 @@ live one no longer leaves the lease with no timer
 Release binds its link by device name and no longer by zone, so it still
 works after the link was recreated under the same name
 ([#74](https://github.com/claymore666/dhcp-golib/issues/74)).
+v1.5.0 adds a release from a link the host holds no address on. A DHCPv4
+lease record is given back from a parent interface that carries no IPv4
+address: `runtime.SendReleaseOnLink` builds the DHCPRELEASE with the leased
+address as its source, resolves the server's MAC with an RFC 5227 probe that
+teaches the server nothing, and sends it once over a packet socket; when
+nothing answers, the frame goes to the broadcast MAC. A server behind a relay
+is reached through the lease's gateway, and a gateway that does not answer
+gets nothing (`ErrLinkReleaseHopSilent`), since a router does not forward a
+link broadcast. A `LinkResolveCache` shared across one sweep probes each next
+hop once. The new exported identifiers are `LinkReleaseConfig`,
+`LinkResolveCache`, `NewLinkResolveCache`, `SendReleaseOnLink` and the errors
+it returns before it opens a socket
+([docker-net-dhcp#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -148,7 +161,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v144).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v150).
 
 ## Usage
 
