@@ -547,10 +547,10 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   bound, the frame goes to the broadcast MAC with the unicast IP destination.
   Asserted against dnsmasq's own log and lease file on a veth end that
   carries no IPv4 address: the DHCPRELEASE line is there and the binding is
-  gone, a control lease taken in the same fixture has no DHCPRELEASE line and
-  is still held, and the server's neighbour table holds no entry for the
-  leased address; once with the probe answered and once with `arp_ignore` set
-  so the server stays silent and the broadcast fallback carries it
+  gone, and a control lease taken in the same fixture has no DHCPRELEASE line
+  and is still held. With the probe answered, the server's neighbour table
+  holds no entry for the leased address afterwards; with `arp_ignore` set so
+  the server stays silent, the broadcast fallback carries the release
   (`TestAReleaseFromALinkWithNoHostAddressReachesRealDnsmasq`). A server off
   the leased subnet, behind a relay, is reached through the lease's gateway:
   the probe asks for the gateway's hardware address and the datagram, still

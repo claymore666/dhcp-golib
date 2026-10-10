@@ -147,7 +147,8 @@ gets nothing (`ErrLinkReleaseHopSilent`), since a router does not forward a
 link broadcast. A `LinkResolveCache` shared across one sweep probes each next
 hop once. The new exported identifiers are `LinkReleaseConfig`,
 `LinkResolveCache`, `NewLinkResolveCache`, `SendReleaseOnLink` and the errors
-it returns before it opens a socket
+`ErrLinkReleaseFamily`, `ErrLinkReleaseNoInterface`, `ErrLinkReleaseNoRoute`
+and `ErrLinkReleaseHopSilent`
 ([docker-net-dhcp#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
