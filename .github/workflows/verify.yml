@@ -130,7 +130,7 @@ jobs:
 
       - name: Keep this shard's account whatever the verdict was
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: shard-${{ matrix.shard }}.txt
@@ -160,7 +160,7 @@ jobs:
       # verdict over shards nobody re-ran — and the remedy is to re-run the
       # whole run, which is why the publication above may overwrite.
       - name: Collect every shard's account
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: oracle-shard-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: shards
@@ -206,7 +206,7 @@ jobs:
       # run that just aggregated a green matrix at this hash, which is exactly
       # what the previous attempt's artefact said.
       - name: Publish that this arbiter's oracle passed
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oracle-pass-${{ needs.domain.outputs.hash }}
           path: |
@@ -315,7 +315,7 @@ jobs:
 
       - name: Keep the output whatever the verdict was
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verify-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
