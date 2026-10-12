@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.5.0
+## Coverage by claim, through v1.5.1
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -580,6 +580,18 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   `TestLinkReleaseRemembersASilentGatewayAndStillSendsNothing`,
   `TestLinkReleaseRemembersEachHopApart`;
   [docker-net-dhcp#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
+- **A release that leaves beside the host's own DHCP client.** The release
+  socket sets `SO_REUSEADDR` before it binds the client port, so a host client
+  that holds the port with the same option, on the wildcard address or on the
+  link's own address pinned to the link, no longer makes the bind fail and the
+  release goes out. What is asserted is dnsmasq's lease file and log on IPv4,
+  and the datagram seen on the server side of the link on IPv6. A holder
+  without the option still gets the bind refused with `EADDRINUSE`, and that
+  error comes back rather than a release reported as sent; a dhcpcd DHCPv6
+  client is such a holder
+  (`TestAReleaseLeavesWhileAHostClientHoldsTheClientPort`,
+  `TestAV6ReleaseLeavesWhileAHostClientHoldsTheClientPort`;
+  [#89](https://github.com/claymore666/dhcp-golib/issues/89)).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
