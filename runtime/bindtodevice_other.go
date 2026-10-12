@@ -17,3 +17,12 @@ var ErrBindToDevice = errors.New("runtime: binding a socket to one link needs Li
 func bindToDevice(string) func(network, address string, c syscall.RawConn) error {
 	return func(string, string, syscall.RawConn) error { return ErrBindToDevice }
 }
+
+// releaseControl binds the release socket to iface when one is named; sharing
+// the client port is Linux's half (claymore666/dhcp-golib#89).
+func releaseControl(iface string) func(network, address string, c syscall.RawConn) error {
+	if iface == "" {
+		return nil
+	}
+	return bindToDevice(iface)
+}
