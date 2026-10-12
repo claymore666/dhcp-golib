@@ -52,9 +52,10 @@ type ReleaseConfig struct {
 	// port, 68 or 546, which is what RFC 2131 section 4.1 and RFC 9915 section
 	// 7.2 give a client.
 	//
-	// It is settable because a host that already runs a DHCP client of its own
-	// cannot bind the client port a second time, and a release that cannot be
-	// sent at all is worse than one sent from an ephemeral port. MEASURED
+	// It is settable because a host DHCP client that holds the client port
+	// without SO_REUSEADDR leaves it unbindable (claymore666/dhcp-golib#89),
+	// and a release that cannot be sent at all is worse than one sent from an
+	// ephemeral port. MEASURED
 	// against dnsmasq 2.91: a release from an ephemeral port closes the lease.
 	// That is a fact about dnsmasq and not about every server.
 	SourcePort uint16
@@ -217,10 +218,7 @@ func sendOneDatagram(src, dst netip.AddrPort, iface string, payload []byte) erro
 	la := net.UDPAddrFromAddrPort(netip.AddrPortFrom(src.Addr().WithZone(""), src.Port()))
 	ra := net.UDPAddrFromAddrPort(dst)
 
-	d := net.Dialer{LocalAddr: la}
-	if iface != "" {
-		d.Control = bindToDevice(iface)
-	}
+	d := net.Dialer{LocalAddr: la, Control: releaseControl(iface)}
 	conn, err := d.Dial(network, ra.String())
 	if err != nil {
 		return fmt.Errorf("runtime: opening the release socket %s -> %s on %s: %w", la, ra, iface, err)
