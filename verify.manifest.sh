@@ -1041,8 +1041,11 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # and one probe serves a sweep: six more, none removed, MEASURED as testroster
 # runs, 1431 before and 1437 here, all in runtime/release_link_test.go; no
 # netns test. A remembered silent gateway still sends nothing: one more,
-# MEASURED as testroster runs, 1437 before and 1438 here, same file.
-MIN_DECLARED_TESTS=1438
+# MEASURED as testroster runs, 1437 before and 1438 here, same file. A
+# release beside a host client holding the client port (#89): two more, both
+# netns tests, MEASURED as testroster runs, 1438 before and 1440 here, all in
+# runtime/release_port_linux_test.go.
+MIN_DECLARED_TESTS=1440
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

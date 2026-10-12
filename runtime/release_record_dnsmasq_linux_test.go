@@ -216,8 +216,8 @@ func releaseByRecordAgainstDnsmasq(t *testing.T) {
 	t.Logf("dnsmasq closed %s on a release sourced from %s, which never held it", addr, relHostAddr4)
 
 	// ------------------------------- the same thing from an EPHEMERAL source port --
-	// RFC 2131 section 4.1 gives a client port 68, and a host that already runs
-	// a DHCP client of its own cannot bind it twice. Whether a server still
+	// RFC 2131 section 4.1 gives a client port 68, and a host client holding it
+	// without SO_REUSEADDR leaves it unbindable (#89). Whether a server still
 	// acts on a release from another port is a claim about the server, so it
 	// is MEASURED here rather than assumed. BOUND: measured against this
 	// fixture's dnsmasq and nothing else.

@@ -47,3 +47,25 @@ func bindToDevice(iface string) func(network, address string, c syscall.RawConn)
 		return nil
 	}
 }
+
+// releaseControl lets the release socket share the client port with a host
+// DHCP client that set SO_REUSEADDR, as the common ones do: without it the
+// bind is EADDRINUSE and no release leaves (claymore666/dhcp-golib#89). It
+// then binds the socket to iface when one is named.
+func releaseControl(iface string) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, c syscall.RawConn) error {
+		var opErr error
+		if err := c.Control(func(fd uintptr) {
+			opErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		}); err != nil {
+			return err
+		}
+		if opErr != nil {
+			return fmt.Errorf("runtime: sharing the release socket's client port: %w", opErr)
+		}
+		if iface == "" {
+			return nil
+		}
+		return bindToDevice(iface)(network, address, c)
+	}
+}
