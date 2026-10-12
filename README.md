@@ -150,6 +150,14 @@ hop once. The new exported identifiers are `LinkReleaseConfig`,
 `ErrLinkReleaseFamily`, `ErrLinkReleaseNoInterface`, `ErrLinkReleaseNoRoute`
 and `ErrLinkReleaseHopSilent`
 ([docker-net-dhcp#1288](https://github.com/claymore666/docker-net-dhcp/issues/1288)).
+v1.5.1 lets a release leave while a host DHCP client holds the client port.
+`runtime.SendRelease` sets `SO_REUSEADDR` on its socket before the bind, so a
+host client that holds the port with the same option, as the usual ones do, on
+the wildcard address or on the link's own address pinned to the link, no longer
+leaves the bind refused and the release unsent. A holder that did not set the
+option still refuses the bind, and that error still comes back; a dhcpcd DHCPv6
+client is one such holder
+([#89](https://github.com/claymore666/dhcp-golib/issues/89)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -162,7 +170,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v150).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v151).
 
 ## Usage
 
