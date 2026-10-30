@@ -737,6 +737,10 @@ type dnsmasqConfig struct {
 	iface string
 	// extra is appended to the command line.
 	extra []string
+	// router is option 3. Empty means testServerIP.
+	router string
+	// nsPid, when set, runs dnsmasq inside that process's network namespace.
+	nsPid int
 }
 
 func startDnsmasq(t *testing.T) *dnsmasqServer {
@@ -761,7 +765,11 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 	dir := t.TempDir()
 	leasefile := filepath.Join(dir, "leases")
 
-	cmd := exec.Command(bin,
+	router := cfg.router
+	if router == "" {
+		router = testServerIP
+	}
+	args := []string{
 		"--conf-file=/dev/null",
 		// --no-daemon, not --keep-in-foreground, and the difference decides
 		// whether this test can run at all. Both stay in the foreground; only
@@ -780,17 +788,17 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 		"--log-facility=-",
 		"--log-dhcp",
 		"--port=0", // DNS off: this test is about DHCP.
-		"--interface="+cfg.iface,
+		"--interface=" + cfg.iface,
 		"--bind-interfaces",
 		"--except-interface=lo",
-		"--dhcp-range="+cfg.rangeLo+","+cfg.rangeHi+","+testSubnet+","+fmt.Sprint(testLeaseSec),
-		"--dhcp-option=3,"+testServerIP,
-		"--dhcp-option=6,"+testServerIP,
-		"--dhcp-option=15,"+testDomain,
-		"--dhcp-option=26,"+fmt.Sprint(testMTU),
+		"--dhcp-range=" + cfg.rangeLo + "," + cfg.rangeHi + "," + testSubnet + "," + fmt.Sprint(testLeaseSec),
+		"--dhcp-option=3," + router,
+		"--dhcp-option=6," + testServerIP,
+		"--dhcp-option=15," + testDomain,
+		"--dhcp-option=26," + fmt.Sprint(testMTU),
 		"--dhcp-authoritative",
-		"--dhcp-leasefile="+leasefile,
-		"--pid-file="+filepath.Join(dir, "pid"),
+		"--dhcp-leasefile=" + leasefile,
+		"--pid-file=" + filepath.Join(dir, "pid"),
 		"--no-resolv",
 		"--no-hosts",
 		// MEASURED 2026-09-02: without this, every DHCPDISCOVER costs THREE
@@ -801,8 +809,12 @@ func startDnsmasqCfg(t *testing.T, cfg dnsmasqConfig) *dnsmasqServer {
 		// about dnsmasq's conflict detection — and it takes six seconds off
 		// the two tests that acquire twice.
 		"--no-ping",
-	)
-	cmd.Args = append(cmd.Args, cfg.extra...)
+	}
+	args = append(args, cfg.extra...)
+	cmd := exec.Command(bin, args...)
+	if cfg.nsPid != 0 {
+		cmd = exec.Command("nsenter", append([]string{"-t", fmt.Sprint(cfg.nsPid), "-n", bin}, args...)...)
+	}
 	// C locale: dnsmasq translates its startup messages, and a German or
 	// French box would otherwise fail this test on a string nobody changed.
 	// The DHCP transaction lines are protocol keywords and are not

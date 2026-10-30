@@ -158,6 +158,17 @@ leaves the bind refused and the release unsent. A holder that did not set the
 option still refuses the bind, and that error still comes back; a dhcpcd DHCPv6
 client is one such holder
 ([#89](https://github.com/claymore666/dhcp-golib/issues/89)).
+v1.5.2 sends a renewal, and a client's own release, to a server that is behind
+a relay. A relay's reply comes from the relay's address and only names the
+server in its server identifier option, so nothing was ever heard from the
+server's address and the unicast REQUEST at T1 was refused; the lease then
+lived on through the rebind at T2. `runtime.PacketTransport` now remembers the
+hardware address of a reply that names a server other than its sender and
+sends the frame there, the IP destination still the server's (RFC 2131
+§4.4.4 and §4.4.5). A server heard directly keeps the path it had, and a
+server nothing was heard for is refused as before. A relay that is no router
+gets a frame it will not forward, and the rebind at T2 keeps the lease
+([#94](https://github.com/claymore666/dhcp-golib/issues/94)).
 
 v1.0.0 is the DHCPv6 release, and every row of it is in the tree: the Router
 Advertisement read for the five options the row above names, an address formed
@@ -170,7 +181,7 @@ It moves between tags and without a deprecation cycle. Releases are tagged on
 `main`, so a consumer pins a tag.
 
 What works today, claim by claim with the test that drives each one, is
-[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v151).
+[Coverage by claim in `docs/design.md`](docs/design.md#coverage-by-claim-through-v152).
 
 ## Usage
 
