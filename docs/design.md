@@ -68,7 +68,7 @@ them. Work after M8 is named by its issue and by the release it ships in, not
 by a milestone letter.
 
 
-## Coverage by claim, through v1.5.1
+## Coverage by claim, through v1.5.2
 
 One IPv4 lease and one DHCPv6 lease, each taken and KEPT: INIT to BOUND over a
 real socket, renewed at T1 and rebound at T2, given back or refused. Every
@@ -592,6 +592,27 @@ entry below is a test. The DHCPv6 half has its own list after the IPv4 one.
   (`TestAReleaseLeavesWhileAHostClientHoldsTheClientPort`,
   `TestAV6ReleaseLeavesWhileAHostClientHoldsTheClientPort`;
   [#89](https://github.com/claymore666/dhcp-golib/issues/89)).
+- **A renewal and a release that reach a server behind a relay.** A relay
+  forwards the server's reply from its own address, so the sender is the relay
+  and only the server identifier option names the server. The packet
+  transport keeps the hardware address such a reply came from and sends a
+  unicast for that server there, the IP destination still the server's. What is asserted is outside the
+  library: with dnsmasq as the relay and dnsmasq one hop further as the server,
+  the relay's log does not see the RENEW (a unicast is routed past it, a
+  broadcast would be relayed), the server's log does, and the lease is renewed
+  before T2. On a raw link the frame goes to the relay's hardware address and
+  follows the relay when it moves to a new one, a server heard directly keeps
+  its own address, and a reply that names no server a unicast could go to
+  (an unspecified, multicast or broadcast identifier, the sender itself, or no
+  hardware address) teaches nothing and leaves the unicast refused. A relay
+  that is no router gets a frame it will not forward, and the rebind at T2
+  keeps the lease
+  (`TestRenewalBehindADnsmasqRelayIsUnicastAtT1`,
+  `TestPacketTransportSendsToTheRelayThatDeliveredTheServersReply`,
+  `TestPacketTransportPrefersAServerHeardDirectlyToTheRelay`,
+  `TestPacketTransportFollowsARelayToANewHardwareAddress`,
+  `TestPacketTransportLearnsOnlyAnAddressableServerFromAReply`;
+  [#94](https://github.com/claymore666/dhcp-golib/issues/94)).
 - **A socket that keeps the namespace it was opened in.** A client is built on
   a thread inside a network namespace of its own, the thread is then destroyed,
   and the client leases from a server that exists only in there. The goroutine
