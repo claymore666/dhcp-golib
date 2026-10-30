@@ -16,6 +16,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 // ethPIP is ETH_P_IP in host byte order. syscall does not export it.
@@ -64,22 +65,18 @@ var (
 //     Stats.Skipped. An LSF program is the fix; not at M1, because a wrong
 //     filter drops the packet you are debugging and is invisible when it does.
 //   - No ARP. A unicast is sent to the link-layer address the peer was last
-//     HEARD from (see peers), never resolved. A destination never heard from
-//     is refused with ErrUnicastUnresolved rather than broadcast anyway.
-//   - THE RELAY CASE, and it is a real hole rather than a caveat. The map is
-//     keyed on the datagram's IPv4 SOURCE; the lookup key is the server
-//     identifier ring 1 read out of the reply. On a link with no relay agent
-//     those are the same address and RFC 2131 section 4.4.4's DHCPRELEASE can
-//     be addressed. Behind a relay they are not: RFC 1542 section 5.4 has the
-//     relay forward the reply itself, so the source is the relay's address,
-//     nothing is ever learned for the server identifier, and EVERY release on
-//     that link is refused. The refusal is correct — it never mis-delivers,
-//     and it is journalled and counted — but a client behind a relay cannot
-//     release at all, and that is not a case this transport handles.
-//     INFERRED, from RFC 1542: no relay has been run against this code.
-//     RENEWING arrives in a later milestone, where an address on the
-//     interface makes an ordinary UDP socket possible and this whole
-//     mechanism goes away.
+//     HEARD from (see peers and heardVia), never resolved. A destination never
+//     heard from is refused with ErrUnicastUnresolved rather than broadcast
+//     anyway.
+//   - THE RELAY CASE (claymore666/dhcp-golib#94). RFC 1542 section 5.4: a
+//     relay forwards the reply itself, so the IPv4 source is the relay and
+//     nothing is heard from the server identifier. deliver therefore also keeps
+//     the hardware address a reply naming S in option 54 (RFC 2131 section
+//     4.3.1) came from, and a unicast to S falls back to it: RENEW (section
+//     4.4.5) and DHCPRELEASE (section 4.4.4) reach the relay at the link layer,
+//     IP destination the server. Bounds: the answerer is taken for the next
+//     hop, so a relay that is no router gets a frame it will not forward and
+//     REBIND at T2 keeps the lease; and the entry is as unauthenticated as peers.
 //   - No fragment reassembly (see ParseIPv4UDP).
 type PacketTransport struct {
 	f       *os.File
@@ -106,6 +103,12 @@ type PacketTransport struct {
 	// a property of a map literal.
 	peerMu sync.Mutex
 	peers  map[netip.Addr]net.HardwareAddr
+
+	// heardVia is the hardware address a reply naming server S in option 54
+	// was heard from, kept only for replies whose IPv4 source is not S. It is
+	// the relay's, and it is consulted only when peers has nothing for S, so a
+	// server heard directly is never shadowed. Guarded by peerMu.
+	heardVia map[netip.Addr]net.HardwareAddr
 
 	ident atomic.Uint32
 
@@ -227,13 +230,14 @@ func NewPacketTransport(ifName string) (*PacketTransport, error) {
 	}
 
 	t := &PacketTransport{
-		f:       os.NewFile(uintptr(fd), socketLabelIPv4),
-		ifName:  ifName,
-		ifIndex: iface.Index,
-		src:     netip.AddrFrom4([4]byte{0, 0, 0, 0}),
-		inbound: make(chan lease.Inbound, inboundBuffer),
-		peers:   make(map[netip.Addr]net.HardwareAddr),
-		done:    make(chan struct{}),
+		f:        os.NewFile(uintptr(fd), socketLabelIPv4),
+		ifName:   ifName,
+		ifIndex:  iface.Index,
+		src:      netip.AddrFrom4([4]byte{0, 0, 0, 0}),
+		inbound:  make(chan lease.Inbound, inboundBuffer),
+		peers:    make(map[netip.Addr]net.HardwareAddr),
+		heardVia: make(map[netip.Addr]net.HardwareAddr),
+		done:     make(chan struct{}),
 	}
 	t.wg.Add(1)
 	go t.read()
@@ -269,9 +273,9 @@ func (t *PacketTransport) Send(dst proto.Dest, payload []byte) error {
 // on this interface.
 //
 // The link-layer destination is the address the peer was last heard from, not
-// a resolved one, and dst.Addr is therefore refused unless something has
-// already been heard from exactly that address — which behind a relay agent is
-// never the server identifier. See the relay bound on PacketTransport.
+// a resolved one: the address heard FROM dst.Addr, else the one a reply naming
+// dst.Addr as its server was heard from, which is the relay's
+// (claymore666/dhcp-golib#94).
 //
 // A destination never heard from is refused rather than broadcast:
 // broadcasting a message addressed to one server would put a DHCPRELEASE
@@ -282,7 +286,7 @@ func (t *PacketTransport) sendUnicast(dst proto.Dest, payload []byte) error {
 	if err := checkUnicast(dst); err != nil {
 		return err
 	}
-	hw, ok := t.peerHardwareAddr(dst.Addr)
+	hw, ok := t.nextHopHardwareAddr(dst.Addr)
 	if !ok {
 		return fmt.Errorf("%w: %s has not been heard from and this transport sends no ARP", ErrUnicastUnresolved, dst.Addr)
 	}
@@ -356,6 +360,43 @@ func (t *PacketTransport) peerHardwareAddr(src netip.Addr) (net.HardwareAddr, bo
 	defer t.peerMu.Unlock()
 	hw, ok := t.peers[src]
 	return hw, ok
+}
+
+// nextHopHardwareAddr is the link-layer address to send a unicast for dst to:
+// the one dst was heard from, else the one a reply naming dst as its server
+// was heard from.
+func (t *PacketTransport) nextHopHardwareAddr(dst netip.Addr) (net.HardwareAddr, bool) {
+	t.peerMu.Lock()
+	defer t.peerMu.Unlock()
+	if hw, ok := t.peers[dst]; ok {
+		return hw, true
+	}
+	hw, ok := t.heardVia[dst]
+	return hw, ok
+}
+
+// learnServerVia records the hardware address a reply naming a server other
+// than its own sender was heard from (claymore666/dhcp-golib#94). Anything that
+// is not a BOOTREPLY with a unicast option 54 is ignored.
+func (t *PacketTransport) learnServerVia(src netip.Addr, payload []byte, hw net.HardwareAddr) {
+	if len(hw) == 0 {
+		return
+	}
+	m, err := wire.Decode(payload)
+	if err != nil || m.Op != wire.BootReply {
+		return
+	}
+	raw, ok := m.Options[wire.OptServerID]
+	if !ok || len(raw) != 4 {
+		return
+	}
+	sid := netip.AddrFrom4([4]byte(raw))
+	if !src.IsValid() || src.IsUnspecified() || sid == src || sid.IsUnspecified() || sid.IsMulticast() || sid == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return
+	}
+	t.peerMu.Lock()
+	t.heardVia[sid] = append(net.HardwareAddr(nil), hw...)
+	t.peerMu.Unlock()
 }
 
 // learnPeer records the link-layer address an IPv4 source was heard from.
@@ -482,6 +523,7 @@ func (t *PacketTransport) deliver(frame []byte, hw net.HardwareAddr) {
 	// datagram for the client port has an IPv4 source to key on, and only
 	// something that answered a DHCP broadcast has any claim to be the server.
 	t.learnPeer(dg.Src, hw)
+	t.learnServerVia(dg.Src, dg.Payload, hw)
 
 	// The payload aliases buf, which the next read overwrites.
 	p := make([]byte, len(dg.Payload))

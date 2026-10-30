@@ -1045,7 +1045,14 @@ MANIFEST_SHELL_SCRIPTS_N=13
 # release beside a host client holding the client port (#89): two more, both
 # netns tests, MEASURED as testroster runs, 1438 before and 1440 here, all in
 # runtime/release_port_linux_test.go.
-MIN_DECLARED_TESTS=1440
+#
+# A UNICAST RENEWAL BEHIND A RELAY, claymore666/dhcp-golib#94: five added,
+# none removed, MEASURED as testroster runs, 1440 before and 1445 here. Four
+# are netns tests, 78 -> 82 by testroster -netns:
+# runtime/transport_relay_linux_test.go 3 and
+# runtime/relay_renew_dnsmasq_linux_test.go 1; the fifth is a plain unit test in
+# runtime/transport_relay_linux_test.go.
+MIN_DECLARED_TESTS=1445
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #
